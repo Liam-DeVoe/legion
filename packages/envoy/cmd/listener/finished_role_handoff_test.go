@@ -21,7 +21,7 @@ const finishedLegionRole = "legion-infra-infra-205-reviewer"
 const finishedRoleSession = "ses-old-reviewer"
 
 // withFinishedHandoff is withAuditHandoff's opposite number: the registry holds one stopped agent
-// of finishedLegionRole, not released, and the project answers for it.
+// of finishedLegionRole, and the project answers for it.
 func withFinishedHandoff(t *testing.T, d *listenerDeps) {
 	t.Helper()
 	agents, err := legionagents.Open(t.Context(), d.client.Conn, legionagents.WithReplicas(1))
@@ -95,48 +95,5 @@ func TestAPublishToAFinishedLegionRoleIsHandedToItsDaemonAndNotKept(t *testing.T
 	if wire.TargetSession != finishedRoleSession || wire.RoleToken != finishedLegionRole ||
 		wire.OriginalTopic != contracts.RoleTopicPrefix+finishedLegionRole {
 		t.Fatalf("the stored hand-off is %+v, want the publish's topic handed to the finished role's newest session", wire)
-	}
-}
-
-// A role with no live holder whose newest entry is not released, under a project that answers, is
-// answered by that entry's daemon, until the daemon writes the entry released. The publish to the
-// entry not released is answered 200 with its session as recipient and nothing is kept.
-//
-// The control is the same entry written released: the daemon resumes that session on the role's
-// next wake, so the publish is kept for it, 202 kept unclaimed, and nothing more is handed off.
-func TestARoleEntryIsHandedOffUntilTheDaemonWritesItReleased(t *testing.T) {
-	d, client := keptRoleDeps(t)
-	withFinishedHandoff(t, d)
-	agents := d.legionAgents.store()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	recorder, _ := publishToRole(t, d, finishedLegionRole,
-		`{"topic":"`+contracts.RoleTopicPrefix+finishedLegionRole+`","source":"agent","source_session":"ses-architect","message":"the next round starts at abc123"}`)
-	var handed handedPublishAnswer
-	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &handed) != nil || handed.Kept || handed.Recipient != finishedRoleSession {
-		t.Fatalf("publish while the entry is not released: status %d, body %s; want 200 handed off to %s with nothing kept", recorder.Code, recorder.Body.String(), finishedRoleSession)
-	}
-	if got, _ := handoffs(t, client, finishedRoleSession); got != 1 {
-		t.Fatalf("publish while the entry is not released: the stream holds %d hand-offs for %s, want 1", got, finishedRoleSession)
-	}
-	assertNothingKept(t, client, finishedLegionRole)
-
-	if _, err := agents.Put(ctx, legionagents.Entry{
-		SessionID: finishedRoleSession, LegionProject: "infra", Issue: "INFRA-205", Role: "reviewer",
-		RoleToken: finishedLegionRole, Title: "Legion reviewer · INFRA-205", Harness: "omp",
-		StartedAt: "2026-10-26T03:00:00Z", Released: true,
-	}); err != nil {
-		t.Fatalf("write the entry again released: %v", err)
-	}
-	recorder, answer := publishToRole(t, d, finishedLegionRole,
-		`{"topic":"`+contracts.RoleTopicPrefix+finishedLegionRole+`","source":"agent","source_session":"ses-architect","message":"are you back?"}`)
-	if recorder.Code != http.StatusAccepted || !answer.Kept || answer.KeptReason != "unclaimed" {
-		t.Fatalf("control: publish once the entry is released: status %d, kept %t, reason %q, body %s; want 202 kept unclaimed for the resumed worker",
-			recorder.Code, answer.Kept, answer.KeptReason, recorder.Body.String())
-	}
-	waitForKeptRoleMessage(t, client, finishedLegionRole, answer.EventID)
-	if count, _ := handoffs(t, client, finishedRoleSession); count != 1 {
-		t.Fatalf("control: the stream holds %d hand-offs for %s, want only the one before its release", count, finishedRoleSession)
 	}
 }

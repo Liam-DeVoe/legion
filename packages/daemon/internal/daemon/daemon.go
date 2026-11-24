@@ -523,9 +523,6 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// settled) and the workflow open, whose connection the loop reads its hand-offs from.
 	history := newConversationHistory(cfg, plan, st, o.environment(), workflow != nil && workflow.answers != nil, log)
 	plan.registered = history.recorder.Registered
-	if history.mirror != nil {
-		plan.standingsChanged = history.mirror.StandingsChanged
-	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()
 		if err != nil {
@@ -973,10 +970,6 @@ type plan struct {
 	// registered is supervise's Deps.Registered: the daemon's record of its agents' conversations
 	// (conversationHistory), which run sets once the store is open.
 	registered func(ctx context.Context, c supervise.Claim)
-	// standingsChanged is the agent registry's mirror's nudge (agenthistory.Mirror.StandingsChanged),
-	// which the outbox's idle release calls once it has suspended a claim (outbox.standingsChanged),
-	// and which run sets once the store is open; nil for a daemon that keeps no mirror.
-	standingsChanged func()
 	// answers is what readBoot read for the answer loop; the zero value when `answers` is unset.
 	answers answersReads
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;

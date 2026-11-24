@@ -28,8 +28,8 @@
 // value arrives as the empty value it is (SubscribeRequest.Topics and Capabilities). An answer's
 // fields carry the tags the listener has always written them with. LegionAgentEntry is both: the
 // daemon's registry writes send it and the registry's reads answer it, so its fields the daemon
-// leaves out are omitempty, and each of them the listener writes on every answer it gives
-// (recorded_at) or omits there too while it is false (released).
+// leaves out are omitempty, and the listener writes each of them on every answer it gives
+// (recorded_at).
 package listenerwire
 
 import "encoding/json"
@@ -711,20 +711,6 @@ type LegionAgentEntry struct {
 	// it on every entry it stores and answers; a writer's value is ignored, so a writer leaves it
 	// out.
 	RecordedAt string `json:"recorded_at,omitempty"`
-	// Released is whether the session's claim is suspended by idle release: the daemon released
-	// its idle issue pod (dispatch://INFRA-945) and kept the session, its phase and its pending
-	// task, so the next message to the session or its role is a wake that brings the pod back and
-	// resumes that very session, not a question for the daemon's answer loop. The daemon's mirror
-	// sets it from the claim's state each minute, and writes the entry again whenever that changes,
-	// in either direction. It is false by default.
-	//
-	// Every hand-off reads it (the listener's answeringAgent): a released session is never handed
-	// off, on the session path or the role path, so its message gets exactly what it got before
-	// the hand-off existed - the send route's 404 beside its wake, and the give-up's no_holder
-	// notice beside its wake, on the interest path too - and the wake reaches the worker. The
-	// routes decode an entry leniently, so a listener older than this field ignores it and hands
-	// such a session off as it did before.
-	Released bool `json:"released,omitempty"`
 }
 
 // LegionAgent is an entry with what a read derives from the other sessions of its role token,

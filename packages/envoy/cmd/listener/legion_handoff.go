@@ -77,6 +77,12 @@ type legionHandedOff struct {
 	resent    bool
 }
 
+// ack is the stream's verdict on the hand-off's publish, which the route that made it marks its
+// sender's charge by, as a publish's own verdict marks it (senderCharge.published).
+func (h *legionHandedOff) ack() bus.StoredAck {
+	return bus.StoredAck{Duplicate: h.duplicate, Sequence: h.sequence, Resent: h.resent}
+}
+
 // handOffToLegion publishes target to its agent's daemon in place of the answer a message no
 // session took gets, when all of these hold:
 //
@@ -85,8 +91,6 @@ type legionHandedOff struct {
 //   - the Legion agent registry names the session: the session addressed, or the role token's
 //     newest session, whether that entry's issue has left the workflow or not (answeringAgent). A
 //     role the registry holds no entry for keeps its message for the role's first holder instead;
-//   - that session's entry is not released: a claim suspended by idle release is resumed by the
-//     wake its message raises, so the message stays the agent's (legionagents.Entry.Released);
 //   - that session's project last said it answers (project.<legion_project>, legionagents.Project).
 //     Only the flag counts, never its age: a daemon that stated answering: true and then stopped
 //     still gets its agents' messages, which JetStream holds until it reads them (spec v21,
@@ -98,6 +102,14 @@ type legionHandedOff struct {
 //     answering now, perhaps on another listener, and the second keeps its claims and its stored
 //     messages and may answer in a moment, so the message stays the agent's rather than being
 //     answered in its name from a conversation it has moved past.
+//
+// An agent whose issue pod the daemon released because it was idle is handed off as any other
+// stopped agent is: its daemon decides what its message does, and whether it wakes the agent. So
+// every route raises its wake report only when nothing was handed off (sendHandler,
+// roleSend.noHolder, handOffOrKeepRoleSend, unplaceableAgentDelivery): a wake raised beside a
+// hand-off would resume a released agent before its daemon decided. For an agent
+// that is not released this changes nothing, since the daemon acts on a wake report only for a
+// claim of its own that is released (listenerWake in packages/daemon/internal/workflow).
 //
 // It answers the hand-off it published (listenerwire.LegionHandoff, the body the daemon's hand-off
 // reader decodes) with the stream's verdict on it, or nil when one of those does not hold, in
@@ -182,7 +194,8 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 // each route answers as it answers a hand-off whose publish failed, here the 503 with Retry-After:
 // 1 under storedCopyUnreadablePrefix. After a resend (bus.StoredAck.Resent) the copy may be this
 // request's own, so that error is bus.ErrUnacknowledged too (mayBeOwnUnread), and the 503 says
-// maybe_stored. The charge is the wake the route reported, which neither answer changes.
+// maybe_stored. Each route marks the sender's charge for the hand-off by the stream's verdict on
+// its publish, as publishHeld marks a send's own (senderCharge.published).
 func answerHandedOff(ctx context.Context, reader storedReader, record *requestRecord, sender requestSender, handed *legionHandedOff, item *contracts.Envelope) (duplicate bool, err error) {
 	if !handed.duplicate {
 		*item = handed.Envelope
@@ -225,9 +238,9 @@ func (r handoffCopies) NextStoredMessage(ctx context.Context, subject string, se
 // registry naming no session.
 //
 // A role token is answered for by its newest entry, whether that entry's issue has left the
-// workflow or not: a worker that failed, or that the workflow or an operator suspended, has
-// stopped with the role unclaimed, and its daemon answers the role's message from that worker's
-// conversation, as it does for a finished role's.
+// workflow or not: a worker that failed, or that the workflow, an operator or an idle release
+// suspended, has stopped with the role unclaimed, and its daemon answers the role's message from
+// that worker's conversation, as it does for a finished role's.
 // A role the registry holds no entry for is nobody's to answer
 // for, so its message is kept on the role's kept lane for the role's first holder (INFRA-514's
 // 202, roleSend.noHolder), which is what it was before the hand-off existed. A session addressed
@@ -238,13 +251,6 @@ func (r handoffCopies) NextStoredMessage(ctx context.Context, subject string, se
 // for by this rule rather than the session's (handOffOrKeepRoleSend). A role a session holds live
 // is that holder's - a session that took the role over among them - so its message is kept for
 // that holder and never offered here.
-//
-// Neither path answers for an entry that is released (legionagents.Entry.Released): the daemon
-// released that session's idle issue pod and keeps its claim to resume, so the message is a wake
-// for that very session, not a question its daemon answers in its name. Naming no agent leaves
-// each caller where it was before the hand-off existed: the send route's 404 beside the wake it
-// reported first, the give-up's no_holder notice and its wake, and a role's message kept on its
-// kept lane for the resumed worker.
 func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoffTarget) (*legionagents.Entry, error) {
 	agents := h.agents.store()
 	if agents == nil {
@@ -274,9 +280,6 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 			return nil, err
 		}
 		entry = agent.LegionAgentEntry
-	}
-	if entry.Released {
-		return nil, nil
 	}
 	record, found, err := agents.Project(ctx, entry.LegionProject)
 	if err != nil {

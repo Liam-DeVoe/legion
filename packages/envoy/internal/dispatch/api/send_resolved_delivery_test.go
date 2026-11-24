@@ -108,8 +108,8 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 }
 
 // keptForPlanner is the role planner as resolveDeliveryTarget resolves it when no live session
-// holds it and its newest registry entry is released: the role itself, kept for
-// its next holder, beside the listener's own no-holder answer.
+// holds it and the registry holds no entry for it while its project answers: the role itself,
+// kept for its first holder, beside the listener's own no-holder answer.
 func keptForPlanner() ResolvedMention {
 	return ResolvedMention{
 		Target: "role:planner", Delivery: "steer",
@@ -161,10 +161,10 @@ func TestSendResolvedDeliveryWordsAKeptRolesFailuresAsASendsAre(t *testing.T) {
 	}
 }
 
-// A connected-only send asks for a session that is running now, and a role kept for its next
+// A connected-only send asks for a session that is running now, and a role kept for its first
 // holder has none, so it is not kept: nothing is published, and the attempt settles with the
 // listener's own no-holder answer as refused, as a stopped session refuses it.
-func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
+func TestAConnectedOnlySendToAKeptRoleIsNotKept(t *testing.T) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected request %s %s: a connected-only send keeps nothing for a role", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -190,13 +190,12 @@ func TestAConnectedOnlySendToAReleasedRoleIsNotKept(t *testing.T) {
 // is queued as ever ("the listener stored the send for a stopped session" above).
 //
 // Each send is made on its own route, a role's included, and carries no role mark: the registry
-// names a role's session only while no live session holds the role, its newest entry is not
-// released and its project answers, and the listener hands a send to that session to the agent's
-// daemon on its session id, which needs no Dispatch identity. A client
-// that presents no identity, as this one, refuses a marked send outright
-// (envoy.ErrNoListenerIdentity). A recheck that finds the listener's record of that session names
-// no redirect, and its send is marked; the listener hands that one off on the role token
-// (handOffOrKeepRoleSend in cmd/listener).
+// names a role's session only while no live session holds the role and its newest entry's project
+// answers, and the listener hands a send to that session to the agent's daemon on its session id,
+// which needs no Dispatch identity. A client that presents no identity, as this one, refuses a
+// marked send outright (envoy.ErrNoListenerIdentity). A recheck that finds the listener's record of
+// that session names no redirect, and its send is marked; the listener hands that one off on the
+// role token (handOffOrKeepRoleSend in cmd/listener).
 func TestASendTheListenerOnlyStoresForARegistrySessionSettlesWithTheListenersAnswer(t *testing.T) {
 	stopped := "stopped-2"
 	registered := func(answer ResolvedMention) ResolvedMention {

@@ -18,8 +18,8 @@ body: |-
   with the role.
   The listener's send route then hands a send marked with a role whose claim does not name its
   target to the daemon of that role's newest session, while no session holds the role live and
-  on the conditions a role publish's hand-off has (not released, its project answering, the
-  session gone, whether its issue has left the workflow or not), and answers it 200 with that
+  on the conditions a role publish's hand-off has (its project answering, the session gone,
+  whether its issue has left the workflow or not), and answers it 200 with that
   session as recipient, rather than keep it on the role's kept lane. A role that another session
   holds live, such as one a person's resumed or forked session took over, is kept on that lane
   for that holder, with nothing handed to the stopped session's daemon.
@@ -38,11 +38,12 @@ body: |-
   as one matching `ErrNotFound`, each carrying the listener's own text.
 
   A role's newest entry names its session whether that entry's issue has left the workflow or
-  not: a worker that failed, or that the workflow or an operator suspended, is answered by its
-  daemon as a finished role's last worker is. A role whose newest entry is `released` is kept for
-  its next holder: Dispatch publishes the message on the role's topic, the listener keeps it on
-  the role's kept lane and wakes the role, and the attempt records `queued`.
-  So is a role the registry holds no entry for while its project answers, for its first holder:
+  not: a worker that failed, or that the workflow, an operator or the daemon's idle release
+  suspended, is answered by its daemon as a finished role's last worker is, and a session whose
+  idle pod the daemon released is named like any other stopped agent.
+  A role the registry holds no entry for while its project answers is kept for its first holder:
+  Dispatch publishes the message on the role's topic, the listener keeps it on the role's kept
+  lane and wakes the role, and the attempt records `queued`.
   `GET /v1/legion/agents/roles/{token}` now answers `{"entries":[…],"answering":<bool>}`, the
   flag the role token's own project last stated written out beside the entries, an empty list's
   included (an edge listener answers it only for a role of one of its token's projects), and the

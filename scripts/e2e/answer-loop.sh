@@ -3321,10 +3321,10 @@ check_a19() {
 # that record: nothing relaunches a failed claim, and an operator's suspension holds against the
 # boot's resume of a phase's owner. The mention is asked only once the daemon's own state keeps the
 # tree live in implementing, the claim still stands failed, and the listener's registry entry for
-# the implementer's session, the role's one and so its newest, reads under the role's token as not
-# released (registry_entry_not_released): the daemon's state is what makes this an issue that has
-# not left the workflow, and that entry what makes it a role with no live holder whose newest entry
-# the listener hands to its daemon. Then the proof person comments on the issue with a picker
+# the implementer's session, the role's one and so its newest, reads under the role's token
+# (registry_entry_of): the daemon's state is what makes this an issue that has not left the
+# workflow, and that entry what makes it a role with no live holder whose newest entry the
+# listener hands to its daemon. Then the proof person comments on the issue with a picker
 # mention of the role (`role:<token>`), as A3 does. A resolution that names a role's newest entry
 # only once that entry's issue has left the workflow settles this mention's delivery `failed` with
 # `no holder for role <token>`, pins no session, and nobody answers, which is what this row's FAIL
@@ -3371,22 +3371,22 @@ check_a21() {
   note "recorded $issue in implementing, its tree's lifecycle open under the workflow, and its implementer $token (session $session) failed: $(pg_sql "$daemon_db" "select state, suspended_by, failure_cause, failure from claims where token = '$token'")"
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   a21_entry() { envoy "$(listener_url "/v1/legion/agents/sessions/$session")" 2>/dev/null || true; }
-  a21_not_released() { registry_entry_not_released "$(a21_entry)" "$session" "$token"; }
+  a21_registered() { registry_entry_of "$(a21_entry)" "$session" "$token"; }
   if ! soft_wait 300 "the daemon to keep the seeded tree $issue live in implementing" tree_is_live "$issue" implementing; then
     why="the seeded tree $issue was not live in implementing in the daemon's own state ($(legion_cmd state --json | jq -c --arg i "$issue" '{trees: .admission.trees, phase: .issues[$i].phase}' || true))"
   fi
   if [ -z "$why" ] && ! claim_is "$token" '.state == "failed"'; then
     why="the implementer's claim $token did not stand failed after the boot: $(claim_json "$token" | jq -c '{state, session}' || true)"
   fi
-  if [ -z "$why" ] && ! soft_wait 180 "the registry's entry for $session to read under $token, not released" a21_not_released; then
-    why="the listener's registry entry for $session did not read under $token as not released: $(a21_entry | jq -c '(.agent // .) | {session_id, role_token, released, live}' || true)"
+  if [ -z "$why" ] && ! soft_wait 180 "the registry's entry for $session to read under $token" a21_registered; then
+    why="the listener's registry entry for $session did not read under $token: $(a21_entry | jq -c '(.agent // .) | {session_id, role_token, live}' || true)"
   fi
   if [ -n "$why" ]; then
     note "the mention is not asked: $why"
     record_result A21 FAIL "$why"
     return 0
   fi
-  note "the registry's entry for $session: $(a21_entry | jq -c '(.agent // .) | {session_id, role_token, issue, released, live}' || true); the claims of $issue: $(issue_claim_roles "$(claims_cmd list --json)" "$issue")"
+  note "the registry's entry for $session: $(a21_entry | jq -c '(.agent // .) | {session_id, role_token, issue, live}' || true); the claims of $issue: $(issue_claim_roles "$(claims_cmd list --json)" "$issue")"
   panes_before=$(pane_count)
   before=$(date +%s)
   comment=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg body "@implementer $(question_text failed-implementer-role) (question failed-implementer-role of run $run_tag)" \

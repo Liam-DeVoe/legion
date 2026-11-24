@@ -168,8 +168,7 @@ export async function setListsState(state: ListsState): Promise<void> {
 
 /** One Legion agent registry entry as the daemon writes it to the listener
  *  (`packages/envoy/internal/legionagents` `Entry`); `role_token` is
- *  `roleToken(legion_project, issue, role)` from `@legion/contracts`. `released` marks an entry
- *  whose claim the daemon suspended by idle release; the listener writes it only when it is true. */
+ *  `roleToken(legion_project, issue, role)` from `@legion/contracts`. */
 export interface FakeLegionAgent {
   session_id: string;
   legion_project: string;
@@ -180,25 +179,21 @@ export interface FakeLegionAgent {
   harness: "omp" | "claude";
   started_at: string;
   recorded_at?: string;
-  released?: true;
 }
 
 /** One registry entry as the daemon writes it: `omp` harness, the role's own token under the
  *  Legion project, and the title the daemon stamps. A spec that seeds the registry builds its
  *  rows here so the `role_token` a read is checked against is always the one the daemon would
- *  have written for that project, issue and role. `released` is a claim whose idle issue pod the
- *  daemon released, to resume the session on the role's next wake. */
+ *  have written for that project, issue and role. */
 export function legionAgentEntry({
   issue,
   legionProject,
-  released = false,
   role,
   sessionId,
   startedAt,
 }: {
   issue: string;
   legionProject: string;
-  released?: boolean;
   role: LegionRole;
   sessionId: string;
   startedAt: string;
@@ -212,7 +207,6 @@ export function legionAgentEntry({
     session_id: sessionId,
     started_at: startedAt,
     title: `Legion ${role} · ${issue}`,
-    ...(released ? { released: true } : {}),
   };
 }
 
@@ -235,6 +229,14 @@ export type RegistryState = "ok" | "unopened" | "unreadable";
 
 export async function setLegionRegistryState(state: RegistryState): Promise<void> {
   await fixtureRequest("/__fixture/legion-registry", "PUT", { state });
+}
+
+/** Sets the answering flag the fake listener's Legion projects last stated, which its registry
+ *  reads answer on each entry and on the role read: whether a daemon answers for the project's
+ *  stopped agents, so Dispatch keeps a message for a role with no entry for its first holder. It
+ *  is false until set; a session reseed keeps it, and `resetFakeEnvoy` puts it back. */
+export async function setLegionAnswering(answering: boolean): Promise<void> {
+  await fixtureRequest("/__fixture/legion-answering", "PUT", { answering });
 }
 
 export async function getSentMessages(): Promise<Record<string, unknown>[]> {

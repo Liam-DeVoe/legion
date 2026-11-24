@@ -682,14 +682,10 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 	}
 }
 
-// A role stop that suspends its claim tells the agent registry's mirror so
-// (outbox.standingsChanged) once the suspension and the release's record of it both stand, so the
-// claim's entry says `released` at once rather than at the mirror's next minute, during which the
-// listener would hand a message for its session to the answer loop instead of leaving it to the
-// wake. When the mirror is told, the store already names the session released, which is what the
-// read the mirror makes then sees. A role stop that suspends nothing tells it nothing: one of a
-// release that is over, one whose boundary cancels the release, and one whose claim runs nothing.
-func TestARoleStopTellsTheRegistryMirrorOfTheClaimItSuspendedAndOfNoOther(t *testing.T) {
+// A role stop suspends its claim as released while its release stands, and suspends nothing
+// otherwise: the stop of a release that is over, one whose boundary cancels the release, and one
+// whose claim runs nothing.
+func TestARoleStopSuspendsTheClaimOfAReleaseThatStandsAndNoOther(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// before is what happens between the release's decision and the run of its rows. below is
@@ -728,15 +724,6 @@ func TestARoleStopTellsTheRegistryMirrorOfTheClaimItSuspendedAndOfNoOther(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newIdleRig(t)
 			ctx := context.Background()
-			// The outbox runs its rows on this goroutine (RunOnce), so the hook runs here too.
-			var told []map[string]string
-			rig.runner.standingsChanged = func() {
-				released, err := rig.st.ReleasedSessions(ctx, "legion")
-				if err != nil {
-					t.Errorf("read the released claims as the mirror is told: %v", err)
-				}
-				told = append(told, released)
-			}
 			below := rig.outboxID(t)
 			queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
 			if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
@@ -749,40 +736,10 @@ func TestARoleStopTellsTheRegistryMirrorOfTheClaimItSuspendedAndOfNoOther(t *tes
 			rig.drain(t)
 
 			got := rig.machine.Claim()
-			if !tc.suspends {
-				if got.Released() {
-					t.Fatalf("the claim = %s by %s, want the stop to have suspended nothing", got.State, got.SuspendedBy)
-				}
-				if len(told) != 0 {
-					t.Fatalf("the mirror was told %d times, want never: the stop suspended no claim, so no entry changed", len(told))
-				}
-				return
-			}
-			if !got.Released() {
-				t.Fatalf("the claim = %s by %s, want it released", got.State, got.SuspendedBy)
-			}
-			if len(told) != 1 || told[0]["ses-implementer"] != rig.issue.Key {
-				t.Fatalf("the mirror was told %d times, the store then naming %v released; want once, with ses-implementer released on %s: until its entry says released, the listener hands a message for it to the answer loop",
-					len(told), told, rig.issue.Key)
+			if got.Released() != tc.suspends {
+				t.Fatalf("the claim = %s by %s, released %t; want released %t", got.State, got.SuspendedBy, got.Released(), tc.suspends)
 			}
 		})
-	}
-}
-
-// The boot's attach hands the outbox the registry mirror's nudge the plan carries, which run sets
-// from the daemon's mirror (plan.standingsChanged), so the idle release's role stops reach the
-// mirror that writes the registry.
-func TestAttachHandsTheOutboxTheRegistryMirrorsNudge(t *testing.T) {
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	told := 0
-	w := &workflowRuntime{records: record.NewStore(), log: quietLogger()}
-	w.attach(&supervision{supervisor: sup, log: quietLogger(), plan: plan{standingsChanged: func() { told++ }}})
-	if w.outbox.standingsChanged == nil {
-		t.Fatal("attach left the outbox no nudge for the registry's mirror")
-	}
-	w.outbox.standingsChanged()
-	if told != 1 {
-		t.Fatalf("the plan's nudge was called %d times, want once: the outbox must call the mirror's own", told)
 	}
 }
 

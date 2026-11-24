@@ -159,18 +159,17 @@ func resolveThenLock[R, T any](
 // registry.
 //
 // A role's newest entry names its session whether the role's issue has left the workflow or not:
-// a worker that failed, or that the workflow or an operator suspended, has stopped with the role
-// unclaimed, and its daemon answers the message from that worker's own conversation, as it does
-// for a finished role's last worker.
+// a worker that failed, or that the workflow, an operator or an idle release suspended, has
+// stopped with the role unclaimed, and its daemon answers the message from that worker's own
+// conversation, as it does for a finished role's last worker, or wakes the worker for it. A
+// session whose idle issue pod the daemon released is named as any other stopped agent is: its
+// daemon decides what wakes it.
 //
-// Two roles are targets that name no session: a role whose newest registry entry is released,
-// whose daemon released the role's idle issue pod and resumes that session on the next wake of
-// the role, and a role the registry holds no entry for while the role read says its project
-// answers, whose first holder is coming. The target of either is the role itself, kept for that
-// next holder (registryRedirect.keepForRole, unheldRoleTarget): the delivery publishes on the
-// role's topic and the listener keeps the message on the role's kept lane and raises the role's
-// wake, which no send to a session does for it. A released role is kept whatever its project's
-// answering flag says, since no daemon answers for it.
+// One role is a target that names no session: a role the registry holds no entry for while the
+// role read says its project answers, whose first holder is coming. Its target is the role
+// itself, kept for that first holder (registryRedirect.keepForRole, unheldRoleTarget): the
+// delivery publishes on the role's topic and the listener keeps the message on the role's kept
+// lane and raises the role's wake, which no send to a session does for it.
 //
 // The registry is read before the send and the listener decides at the send, so it may still hand
 // the send to no daemon: it refuses it, or, for a project that said it stopped answering in
@@ -226,13 +225,13 @@ type deliveryTarget struct {
 // registryRedirect is a route's target as the Legion agent registry named it in place of the
 // listener's own answer for that route (registeredTarget, unheldRoleTarget). listenerAnswer is
 // that answer, which an attempt records when the listener refuses the send or only stores it.
-// keepForRole names the role token of a role no live session holds whose next holder is coming -
-// its newest entry released, or no entry while its project answers (unheldRoleTarget): the
-// delivery is published on that role's topic and kept for its next holder. It is empty for a
-// stopped agent's session, which the target carrying the redirect names. The two are one value so
-// that no target names a role to keep for without the answer a refusal records: redirect != nil is
-// the one check a reader of either makes. A is the answer's own shape: deliveryTarget where the
-// registry is read, ResolvedMention once a mention carries it (resolvedMention).
+// keepForRole names the role token of a role no live session holds whose first holder is coming -
+// no entry while its project answers (unheldRoleTarget): the delivery is published on that role's
+// topic and kept for its first holder. It is empty for a stopped agent's session, which the target
+// carrying the redirect names. The two are one value so that no target names a role to keep for
+// without the answer a refusal records: redirect != nil is the one check a reader of either makes.
+// A is the answer's own shape: deliveryTarget where the registry is read, ResolvedMention once a
+// mention carries it (resolvedMention).
 type registryRedirect[A any] struct {
 	keepForRole    string
 	listenerAnswer A
@@ -252,15 +251,11 @@ func (s *server) registeredTarget(ctx context.Context, sessionID string, answer 
 // with no live holder, or named a holder its registry calls gone (answer) - by what the Legion
 // agent registry holds for the role token, read once (roleAgents):
 //
-//   - its newest entry is released: the daemon suspended that claim by idle release, released the
-//     role's idle issue pod and resumes the same session on the next wake of the role, whether its
-//     issue has left the workflow or not. That holder is coming, so the target is the role itself,
-//     kept for it (keepForRole), whatever its project's answering flag says, since no daemon
-//     answers for it;
-//   - its newest entry is not released and its project answers (answersForAgent): that entry's
-//     session, whether its issue has left the workflow or not. The listener hands the send to the
-//     agent's daemon, which answers it from the agent's own conversation - a worker that failed, or
-//     one the workflow or an operator suspended, as much as a finished role's last worker;
+//   - its newest entry's project answers (answersForAgent): that entry's session, whether its
+//     issue has left the workflow or not and whether or not the daemon released its idle issue
+//     pod. The listener hands the send to the agent's daemon, which answers it from the agent's
+//     own conversation or wakes the agent for it - a worker that failed, or one the workflow, an
+//     operator or an idle release suspended, as much as a finished role's last worker;
 //   - it holds no entry, and the role read says the role token's project answers: no session of
 //     the role has run yet and its first holder is coming, so the target is the role itself, kept
 //     for it (keepForRole);
@@ -268,7 +263,7 @@ func (s *server) registeredTarget(ctx context.Context, sessionID string, answer 
 //     that is no Legion workflow role - keeps the listener's own answer, exactly as with no
 //     registry.
 //
-// A role kept for its next holder pins no session, since none holds the role now: the delivery
+// A role kept for its first holder pins no session, since none holds the role now: the delivery
 // publishes on the role's topic, which keeps the message on the role's kept lane for the role's
 // next live holder and wakes the role (sendResolvedDelivery). The listener's answer stays beside
 // the registry's target either way, for the send to record should the listener refuse it or only
@@ -278,17 +273,13 @@ func (s *server) unheldRoleTarget(ctx context.Context, route model.Route, answer
 	if !ok {
 		return answer
 	}
-	keep := deliveryTarget{redirect: &registryRedirect[deliveryTarget]{keepForRole: route.ID, listenerAnswer: answer}}
 	if len(role.Entries) == 0 {
 		if role.Answering {
-			return keep
+			return deliveryTarget{redirect: &registryRedirect[deliveryTarget]{keepForRole: route.ID, listenerAnswer: answer}}
 		}
 		return answer
 	}
-	switch newest := role.Entries[0]; {
-	case newest.Released:
-		return keep
-	case answersForAgent(newest):
+	if newest := role.Entries[0]; answersForAgent(newest) {
 		return deliveryTarget{sessionID: newest.SessionID, title: newest.Title, redirect: &registryRedirect[deliveryTarget]{listenerAnswer: answer}}
 	}
 	return answer
@@ -298,12 +289,10 @@ func (s *server) unheldRoleTarget(ctx context.Context, route model.Route, answer
 // record of. A read the registry did not answer is logged and names nothing, so the route keeps
 // the listener's own answer, exactly as before the registry existed.
 //
-// It names no entry that is released (listenerwire.LegionAgentEntry.Released): the daemon
-// released that session's idle issue pod and resumes it on the wake the message raises, so the
-// listener hands it to no daemon. Nor does it name an entry whose project does not answer
-// (answersForAgent): the listener hands that session's messages to no daemon. The route records
-// the listener's answer for either. A role route reads the registry by its role token instead
-// (unheldRoleTarget).
+// It names no entry whose project does not answer (answersForAgent): the listener hands that
+// session's messages to no daemon, and the route records the listener's answer for it. An agent
+// whose idle issue pod the daemon released is named as any other. A role route reads the registry
+// by its role token instead (unheldRoleTarget).
 func (s *server) registeredAgent(ctx context.Context, sessionID string) (listenerwire.LegionAgentAnswer, bool) {
 	agent, err := s.deps.Envoy.Agent(ctx, sessionID)
 	if errors.Is(err, dispatchenvoy.ErrNotFound) {
@@ -341,12 +330,12 @@ func (s *server) roleAgents(ctx context.Context, roleToken string) (listenerwire
 
 // answersForAgent reports whether the listener hands a message for agent's stopped session to the
 // daemon of agent's project, by the rule its hand-off applies to the entry (answeringAgent in
-// cmd/listener/legion_handoff.go): the entry is not released, and its project last said it answers
-// (listenerwire.LegionAgentAnswer.Answering). Only then is the session a delivery's target in
-// place of the listener's own answer: the listener stores a send to any other session it still
-// knows, and a stopped agent's session does not run again to read it.
+// cmd/listener/legion_handoff.go): its project last said it answers
+// (listenerwire.LegionAgentAnswer.Answering). Only then is the session a delivery's target in place
+// of the listener's own answer: the listener stores a send to any other session it still knows,
+// and a stopped agent's session does not run again to read it.
 func answersForAgent(agent listenerwire.LegionAgentAnswer) bool {
-	return !agent.Released && agent.Answering
+	return agent.Answering
 }
 
 // advertisesDelivery reports whether target takes this delivery mode, by the rule the listener

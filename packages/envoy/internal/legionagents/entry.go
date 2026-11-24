@@ -25,8 +25,9 @@ import (
 )
 
 // Entry is one Legion session as the registry stores it, which the listener's wire package
-// declares (listenerwire.LegionAgentEntry), its released flag among it. Readers ignore fields
-// they do not know, so a later writer may add some.
+// declares (listenerwire.LegionAgentEntry). Readers ignore fields they do not know, so a later
+// writer may add some, and an entry an earlier writer stored with a field since dropped, such as
+// the `released` of an idle-released claim, reads as the entry without it.
 type Entry = listenerwire.LegionAgentEntry
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by

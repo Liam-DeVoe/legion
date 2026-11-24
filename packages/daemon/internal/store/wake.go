@@ -178,33 +178,6 @@ func (s *Store) ReleasedClaimsIn(ctx context.Context, project, issue string) ([]
 	return claims, err
 }
 
-// ReleasedSessions names the session of every released claim of project with the issue it works,
-// which the agent registry's mirror writes as each entry's `released` (agenthistory.Mirror): a
-// message to such a session is a wake for it, never a question for the answer loop. A released
-// claim that kept no session has nothing to name.
-func (s *Store) ReleasedSessions(ctx context.Context, project string) (map[string]string, error) {
-	var claims []supervise.Claim
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, releasedClaimSelect,
-			project, string(supervise.StateSuspended), string(supervise.SuspendedByReleased))
-		if err != nil {
-			return err
-		}
-		claims, err = scanReleasedClaims(rows)
-		return err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("read the released claims of project %s: %w", project, err)
-	}
-	sessions := make(map[string]string, len(claims))
-	for _, c := range claims {
-		if c.Session != "" {
-			sessions[c.Session] = c.Issue
-		}
-	}
-	return sessions, nil
-}
-
 // ClaimRoleState is one claim of an issue as a log line names it: the role, and the state the
 // record holds that role's claim in. It is the claim's state alone and never the whole claim,
 // because the one reader of it logs what a pod's roles were doing when the pod went, and a

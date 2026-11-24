@@ -1722,9 +1722,8 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
 // (queueMergeStateFollow). All are set before the records' wake can reach the outbox
-// (outboxWake). Its idle release tells the agent registry's mirror the plan carries of each claim
-// it suspends (standingsChanged). Whether an issue still holds its workspace, which a repository
-// kept for an unrecorded issue is answered while (keptRepository), is read from the runtime
+// (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
+// unrecorded issue is answered while (keptRepository), is read from the runtime
 // (workspaceHeldBy), and so is the rule the end of an issue's pod runs the rename pass under, the
 // outbox's podEnded, which also drops that repository (podEndsOn).
 func (w *workflowRuntime) attach(supervision *supervision) {
@@ -1735,7 +1734,6 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
-	w.outbox.standingsChanged = supervision.plan.standingsChanged
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits

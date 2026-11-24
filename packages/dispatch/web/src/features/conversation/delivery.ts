@@ -252,10 +252,11 @@ export const keptForRoleWait =
 
 /** Whether a queued attempt was kept for its role rather than stored for a session. Dispatch
  *  records a queued attempt that names no session for one target only: a role no live session
- *  holds, whose Legion pod its daemon released, so the listener keeps the message on the role's
- *  kept lane for the role's next session (sjawhar/legion#2230). A queued attempt stored for a
- *  session always names that session, a role's holder included. `target` is the delivery's
- *  address, and `sessionId` the session its attempt recorded, empty or null for none. */
+ *  holds and the Legion agent registry holds no entry for, whose project's daemon answers, so the
+ *  listener keeps the message on the role's kept lane for the role's first session
+ *  (sjawhar/legion#2230). A queued attempt stored for a session always names that session, a
+ *  role's holder included. `target` is the delivery's address, and `sessionId` the session its
+ *  attempt recorded, empty or null for none. */
 export function keptForRole(
   target: string | null | undefined,
   sessionId: string | null | undefined

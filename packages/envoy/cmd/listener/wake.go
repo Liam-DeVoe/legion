@@ -20,18 +20,19 @@ import (
 // The kinds of wake report, as the daemon's decoder reads them
 // (packages/daemon/internal/intake/decode.go, decodeListenerWake).
 const (
-	// wakeKindRole is a message published to a role topic with no live holder. The Legion daemon
-	// resumes the released claim of that role token, if one of its own is released. The publish
-	// route raises it once, beside the 202 kept or the 404 it answers (reportRoleWake): a kept
-	// copy reaches the session the wake brings back inside the copy's hour, and a message sent
-	// with keep: false keeps nothing and reaches that session on its sender's next attempt. The
-	// sweep raises it again while a copy the listener kept on the role's lane has at least twenty
-	// minutes of its hour left and no live session holds the role, at most once for each role in
-	// each roleWakeInterval across every listener (publishSweptRoleWake).
+	// wakeKindRole is a message published to a role topic with no live holder that no daemon took
+	// (handOffToLegion). The Legion daemon resumes the released claim of that role token, if one of
+	// its own is released. The publish route raises it once, beside the 202 kept or the 404 it
+	// answers, and never beside a hand-off (reportRoleWake): a kept copy reaches the session the
+	// wake brings back inside the copy's hour, and a message sent with keep: false keeps nothing
+	// and reaches that session on its sender's next attempt. The sweep raises it again while a copy
+	// the listener kept on the role's lane has at least twenty minutes of its hour left and no live
+	// session holds the role, at most once for each role in each roleWakeInterval across every
+	// listener (publishSweptRoleWake).
 	wakeKindRole = "role_message"
-	// wakeKindAgent is a message sent to the agent subject of a session nothing can place: an
-	// Envoy direct message, or a person's answer, comment or message a Dispatch claim routes to
-	// that session.
+	// wakeKindAgent is a message sent to the agent subject of a session nothing can place and no
+	// daemon took: an Envoy direct message, or a person's answer, comment or message a Dispatch
+	// claim routes to that session.
 	wakeKindAgent = "agent_message"
 	// wakeKindReady is this listener saying it is alive and reporting, published at its start and
 	// every listenerReadyInterval after it. The daemon releases no pod unless it has read one

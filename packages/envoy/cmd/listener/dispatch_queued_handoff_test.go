@@ -14,8 +14,8 @@ import (
 
 // The copy Dispatch queues itself for a session no store of the listener's holds
 // (internal/dispatch/api's queueForUnknownSession) reaches the daemon of a stopped Legion agent
-// through this listener's give-up: the session is gone, the Legion agent registry names it, not
-// released, and its project answers. The envelope is the one Dispatch publishes, built by the two
+// through this listener's give-up: the session is gone, the Legion agent registry names it, and
+// its project answers. The envelope is the one Dispatch publishes, built by the two
 // calls its queuedEnvelope makes (dispatchenvoy.SendInput.EnvelopeMessage, then
 // contracts.AgentSendEnvelope) from the input its listenerSendInput builds for a direct message,
 // and it is published as Dispatch's NATS client publishes it (bus.Client's publish of an

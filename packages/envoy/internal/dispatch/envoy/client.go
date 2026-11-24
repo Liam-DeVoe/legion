@@ -717,8 +717,8 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 }
 
 // Agent returns the Legion agent registry's entry for one session (listenerwire.LegionAgentAnswer,
-// whose Live is never read as "that agent has stopped", and whose Released and Answering say
-// whether the listener hands a message for it to its daemon), or ErrNotFound when the registry
+// whose Live is never read as "that agent has stopped", and whose Answering says whether the
+// listener hands a message for it to its daemon), or ErrNotFound when the registry
 // holds none: a 404, or an id the listener refuses (a 400 or 413), under which no entry can be
 // recorded. Every other status, a body that does not decode and a transport failure
 // are ErrUnavailable carrying the listener's reason: a read the registry did not answer says

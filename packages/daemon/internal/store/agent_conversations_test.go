@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -161,30 +160,6 @@ func TestRoleConversationsAreNewestFirstWithRegisteredBeforeScanned(t *testing.T
 	}
 	if got, want := sessionsOf(all), []string{"old-scanned", "old-registered", "new-registered", "late-scanned", "reviewer"}; !slices.Equal(got, want) {
 		t.Errorf("AgentConversations = %v, want %v", got, want)
-	}
-}
-
-// IssueConversations reads just the rows of one issue of the project, oldest first, equal times
-// ordered by session: the rows the mirror writes again when one of that issue's sessions turns
-// released or stops being so.
-func TestIssueConversationsReadsTheRowsOfOneIssue(t *testing.T) {
-	ctx := context.Background()
-	s := migratedStore(t)
-	rows := map[string]string{"ses-running": "LEGION-209", "ses-second": "LEGION-209", "ses-done": "LEGION-210"}
-	for session, issue := range rows {
-		c := testerConversation(session, at(1))
-		c.Issue, c.Token = issue, claim.Token("legion-legion-"+strings.ToLower(issue)+"-tester")
-		if _, err := s.RegisterConversation(ctx, c); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	held, err := s.IssueConversations(ctx, "legion", "LEGION-209")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := sessionsOf(held), []string{"ses-running", "ses-second"}; !slices.Equal(got, want) {
-		t.Errorf("IssueConversations = %v, want %v", got, want)
 	}
 }
 

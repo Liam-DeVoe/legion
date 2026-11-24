@@ -1,16 +1,14 @@
 kind: Changed
 body: |-
-  The listener hands no message to a Legion daemon for a session whose claim the daemon released
-  when its issue pod sat idle. The Legion agent registry's entry gains `released` (a boolean,
-  absent and false for every writer that does not state it), which the Legion daemon sets while
-  the session's claim is suspended by idle release and clears when the claim resumes. A send to
-  such a session answers 404 and reports the session's wake, and a message nothing could place is
-  given up with its wake, on the interest path as well, each exactly as before the hand-off
-  existed, so the wake brings the pod back and the sender's next attempt reaches the resumed
-  agent. Dispatch's registry reader names no session for a released entry either, and records
-  the listener's own answer, which Dispatch queues itself for a targeted message to that session.
-  The registry routes decode an entry leniently, so a listener from before this change ignores
-  the field and still hands such a message off.
+  The listener reports a Legion wake only for a message it handed to no daemon. A send to a
+  session with no live registration, a role publish with no live holder, a send Dispatch marked
+  with a role whose claim does not name its target, and an agent-subject message given up raise
+  the session's or the role's wake report as before when nothing takes them. One the listener
+  hands to a stopped Legion agent's daemon raises none, an agent whose issue pod the daemon
+  released when it sat idle included: the daemon decides what wakes the agent. A message handed
+  off costs its sender, under the sender limit (`ENVOY_SENDER_MESSAGES_PER_MINUTE`), what the
+  hand-off's publish stored, as a send's own publish does: one for a new copy or one the stream
+  may hold, nothing for a repeat the stream already held under the hand-off's message id.
 time: 2026-11-14T04:40:00.000000000Z
 custom:
     Issue: pr2230

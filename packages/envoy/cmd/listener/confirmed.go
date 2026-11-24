@@ -303,17 +303,18 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 	s.delivered(outcome)
 }
 
-// noHolder answers a role with no live holder. A Legion role whose newest session is not released
-// and whose daemon answers for it takes the message through that daemon (handOffToLegion),
-// answered 200 with the stopped agent's session as recipient, whether the role's issue has left
-// the workflow or not: that agent has stopped, failed or been suspended with the role unclaimed,
-// and the daemon answers this message now from its own conversation. It raises no refusal
-// exception either, since nothing was refused. A hand-off whose publish failed is answered as any
-// publish the bus refused is.
+// noHolder answers a role with no live holder. A Legion role whose newest session's daemon
+// answers for it takes the message through that daemon (handOffToLegion), answered 200 with the
+// stopped agent's session as recipient, whether the role's issue has left the workflow or not:
+// that agent has stopped, failed or been suspended with the role unclaimed, the daemon's idle
+// release among what suspends it, and the daemon answers this message now from its own
+// conversation, or wakes the agent for it. It raises no refusal exception and no wake report
+// either, since nothing was refused and the daemon decides what wakes the agent. A hand-off whose
+// publish failed is answered as any publish the bus refused is. The hand-off costs the sender what
+// its publish stored (senderCharge.published).
 //
-// A role the registry holds no entry for, one whose newest session is released, and one whose
-// project does not answer hand off nothing, so the message is kept below as it was before the
-// hand-off existed (INFRA-514).
+// A role the registry holds no entry for, and one whose project does not answer, hand off
+// nothing, so the message is kept below as it was before the hand-off existed (INFRA-514).
 //
 // For a state the listener keeps for (roleKeepable: a role nobody claims, and a claim whose
 // holder is not live), and while this send's own keep flag asks for it, it keeps the message for
@@ -330,30 +331,34 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 // and a sender that publishes again after the 404 gives the role's next holder the message once
 // more, which at-least-once delivery allows.
 //
-// It is also the one place a message to a Legion role of a released issue pod is seen at all, so
-// it raises the wake report beside the answer, before either answer and waiting for neither
-// (reportRoleWake). Both answers need it: a message kept for the role's next holder waits, for
-// one hour at most, until a live session holds the role again, and a publish with keep: false
-// keeps nothing and is still answered 404, so only the wake brings the released pod back to claim
-// the role, drain what was kept for it (drainKeptRole) and take the sender's next attempt. The
-// report names the role and nothing else; which daemon owns it, and whether any claim of that
-// role is released, is for the daemons to decide.
+// It is also the one place a message to a Legion role of a released issue pod that no daemon
+// answers for is seen at all, so once nothing was handed off it raises the wake report beside the
+// answer, before either answer and waiting for neither (reportRoleWake). Both answers need it: a
+// message kept for the role's next holder waits, for one hour at most, until a live session holds
+// the role again, and a publish with keep: false keeps nothing and is still answered 404, so only
+// the wake brings the released pod back to claim the role, drain what was kept for it
+// (drainKeptRole) and take the sender's next attempt. The report names the role and nothing else;
+// which daemon owns it, and whether any claim of that role is released, is for the daemons to
+// decide, and a daemon acts on it only for a released claim of its own, so for a role whose
+// newest agent is not released the wake raised after the hand-off rather than before it changes
+// nothing.
 func (s *roleSend) noHolder(result roles.Resolution) {
-	reportRoleWake(s.d, s.d.delivery.logger, s.role)
-	// The wake is what this message costs its sender, whether it is handed off, kept or answered
-	// 404 below.
-	s.record.charge.woke()
 	handed, err := s.d.handoff.handOffToLegion(s.ctx, legionHandoffTarget{
 		envelope: s.item, roleToken: s.role, optedOut: s.optedOut,
 	})
 	switch {
 	case err != nil:
+		s.record.charge.published(bus.StoredAck{}, err)
 		s.refused(err)
 		return
 	case handed != nil:
+		s.record.charge.published(handed.ack(), nil)
 		s.handedOff(handed)
 		return
 	}
+	reportRoleWake(s.d, s.d.delivery.logger, s.role)
+	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
+	s.record.charge.woke()
 	if s.keep && roleKeepable(result) {
 		if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
 			s.kept(result, kept)

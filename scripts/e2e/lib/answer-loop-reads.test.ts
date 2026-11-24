@@ -1802,22 +1802,21 @@ describe("Dispatch", () => {
   });
 
   // A21 asks the role mention of a failed implementer only once the registry's entry for its
-  // session reads under the role token the mention names, and not released. The route answers the
-  // entry inside `agent`, or bare.
-  test("registry_entry_not_released reads an entry under its role token, not released", () => {
+  // session reads under the role token the mention names. The route answers the entry inside
+  // `agent`, or bare. An entry the daemon of 043f9c67 wrote `released` reads the same, since no
+  // reader takes that field any more.
+  test("registry_entry_of reads an entry under its role token", () => {
     const entry = (fields: string) =>
       `'{"agent":{"session_id":"session-implementer","role_token":"ALX-11-implementer","issue":"ALX-11","live":false${fields}}}'`;
     const holds = (answer: string, session = "session-implementer", token = "ALX-11-implementer") =>
-      run(`registry_entry_not_released ${answer} ${session} ${token}`).code;
+      run(`registry_entry_of ${answer} ${session} ${token}`).code;
     expect(holds(entry(""))).toBe(0);
-    expect(holds(entry(`,"released":false`))).toBe(0);
+    expect(holds(entry(`,"released":true`))).toBe(0);
     expect(
       holds(
         `'{"session_id":"session-implementer","role_token":"ALX-11-implementer","answering":true}'`
       )
     ).toBe(0);
-    // A claim the daemon released: not the case A21 asks.
-    expect(holds(entry(`,"released":true`))).toBe(1);
     // Another session's entry, another role's, and no entry at all.
     expect(holds(entry(""), "session-other")).toBe(1);
     expect(holds(entry(""), "session-implementer", "ALX-11-tester")).toBe(1);

@@ -1836,10 +1836,13 @@ The listener refuses every registry write that presents a secrets-broker access 
 That refusal closes the broker token's way in and no other: every launch also carries the daemon's Envoy bearer (`ENVOY_TOKEN_FILE`), which names no session, so a session that presents it writes these routes as the daemon does.
 
 The role's newest entry decides what a message to a role **nobody holds** gets, whether its issue has left the workflow or not:
-an entry that is not `released` is a stopped agent its daemon answers for, a worker that failed or that the workflow or an operator suspended as much as a finished role's last worker, so the message is handed to that daemon and its sender answered `200` with the stopped agent as `recipient`;
-a `released` entry's message, and the message of a role the registry holds no entry for, is kept on that role's kept lane for its next worker for one hour and answered `202` with `kept: true`.
+the entry is a stopped agent its daemon answers for, a worker that failed or that the workflow, an operator or an idle release suspended as much as a finished role's last worker, so the message is handed to that daemon and its sender answered `200` with the stopped agent as `recipient`;
+the message of a role the registry holds no entry for is kept on that role's kept lane for its first worker for one hour and answered `202` with `kept: true`.
 A message addressed to a session id is handed off whether its issue is finished or not, ahead of the copy the listener would store for a session it still knows:
 that session has stopped, and the message is for it rather than for a role another session will take.
+A message the listener hands off raises no wake report, an agent whose idle issue pod the daemon released among them: the daemon decides what wakes the agent.
+The listener raises the wake only for a message it handed to no daemon, as it did before the hand-off existed.
+A hand-off costs its sender what its publish stored under the listener's sender limit, as a send's own publish does: one for a new copy, nothing for a repeat the stream already held.
 An edge listener hands nothing off: its grant (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics (`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject `notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so a role publish through an edge listener to a role nobody holds is answered as it was before the hand-off: `404`, with nothing kept.
 
 A hand-off arrives on `notifications.legion.<project>.agents.<session>` (`packages/contracts/src/legion-handoff.ts`), read by a durable consumer, so one published while the daemon was down is read when it returns.
@@ -1891,17 +1894,11 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   the question, with every tool call the loop already made for it, each named with its tool, and its result, goes to the running agent on its role topic, held and offered again until a live session holds the role, and back to the loop if the claim stops first.
   A claim's start waits at most 10 seconds for an answer being appended to its conversation.
 
-- **Never a released claim.**
-  The loop answers for every stopped claim but one:
-  a claim that failed, one the workflow or an operator suspended (a parked child, or a tree whose root left the workflow during its linger), one retired, and one closed.
-  A claim the daemon suspended by idle release is the one it does not answer for:
-  its idle issue pod was released with its session, phase and pending task kept, and the next message to it is the wake that brings the pod back and resumes that very session.
-  So the mirror writes such a session's registry entry `released` as the release suspends the claim, and again without it once a wake resumes the claim, and the listener hands no message for a `released` session or role off.
-  Each gets the listener's own answer instead:
-  a send is stored for the session and answered `state: stopped`, or `404` for a session Envoy knows no record of, beside its wake;
-  a delivery nothing can place is given up with its `no_holder` notice and its wake; and a role message is kept for the role's next holder and wakes the role.
-  Dispatch records a session's answer as the listener gave it, and keeps a person's message to such a role for its next holder (`queued`), whose session may then reply to it.
-  A question that reached the loop before the mirror's write is treated as one to a running conversation (above):
+- **A released claim is the daemon's to decide.**
+  The loop answers for every stopped claim: a claim that failed, one the workflow or an operator suspended (a parked child, or a tree whose root left the workflow during its linger), one retired, and one closed.
+  A claim the daemon suspended by idle release is stopped too, with its session, phase and pending task kept, and the listener hands its messages to the daemon as it hands any stopped agent's, with no wake beside them; Dispatch resolves such a session, and a role whose newest entry it is, to that session.
+  The registry's entry says nothing of the release: the daemon decides what the message does.
+  At this release the loop treats a question for a released claim as one to a running conversation (above):
   forwarded to the role topic, where a message nobody holds wakes the released role, and offered again until the resumed worker holds it, never answered in the name of a worker that is coming back.
 
 - **The model** is the conversation's own:
@@ -3508,7 +3505,7 @@ The first of them restarts this release's daemon, so it comes before every step 
 **The project must stop saying it answers, while this release still runs.**
 This release's daemon writes its project's answering record into the Envoy listener's agent registry, the key `project.<legion_project>` of the `legion_agents` bucket, at its boot and every minute after.
 A listener of this release hands a message off to the project's daemon while that record last said `answering: true`, whatever the record's age:
-a message to a session the registry names, once that session is gone, and a message to a role nobody holds, to the role's newest session once that session is gone, whether the role's issue has left the workflow or not, in either case while that entry is not `released`.
+a message to a session the registry names, once that session is gone, and a message to a role nobody holds, to the role's newest session once that session is gone, whether the role's issue has left the workflow or not, an agent whose idle issue pod the daemon released among them.
 It publishes the message on `notifications.legion.<project>.agents.<session>` and answers its sender as delivered.
 An edge listener hands nothing off: its grant (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics (`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject `notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so a role publish through an edge listener to a role nobody holds is answered as it was before the hand-off: `404`, with nothing kept.
 An earlier daemon writes no record and no entry, so the last `answering: true` stands, and it opens no consumer on that subject, so every message the listener hands off goes unanswered.
@@ -3517,12 +3514,11 @@ without `answers` it still writes the record with its own Envoy credential (`env
 `GET /v1/legion/agents/sessions/<session>` of any session of the project, with the listener's bearer, answers `"answering": false` once that write has landed.
 From then on the listener answers the project's messages as it did before the hand-off existed, a send stored for a session it still knows or a `404`, and a role's message kept for the role's next holder.
 Dispatch reads the same flag before it delivers to a stopped agent, and before it keeps a message for a role the registry holds no entry for (the role read's own `answering`), so its deliveries to a stopped agent and to such a role go back to what they were too.
-One case reads no flag: a message to a role whose newest entry is `released`, which Dispatch keeps for the role's next holder whatever the project says.
 No earlier daemon writes to the bucket, so that `false` stands until this release runs again.
 A hand-off the listener published before the write waits on the stream for this release's durable consumer, which no earlier daemon opens.
 
 **An earlier listener needs nothing.**
-A listener below this release hands nothing off and reads no answering record: its registry reads take a session's key or an issue's or a role's prefix, never `project.`, and it decodes an entry leniently, so the `released` this release wrote means nothing to it.
+A listener below this release hands nothing off and reads no answering record: its registry reads take a session's key or an issue's or a role's prefix, never `project.`, and it decodes an entry leniently.
 The entries stay in the bucket, which deletes nothing, and its routes serve them as before.
 
 **`answers`, `runtime.tmux.session_store` and `runtime.tmux.session_dsn_file` must come out of `legion.yaml`.**
@@ -8450,6 +8446,7 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   The exception is the daemon's own informational role message to a released role (`outbox.roleMessage`: the copy of a head's settled checks it sends to a role that settlement did not wake, a design gate's move, an approved round stuck on its merge state): the daemon does not publish it, so it raises no wake.
   A release that lands between the daemon's read of the claim and that publish is refused `holder_lapsed`, and the refusal wakes the role all the same.
   A role message that a project's pause held for a role that a pause stopped is not such an exception: the daemon publishes it after the resume, and that publish wakes the role ([Pausing a project](#pausing-a-project)).
+  While the project's daemon answers for its stopped agents ([The answer loop](#the-answer-loop)), the listener hands a message to the released session or to its role to that daemon instead, with no wake, and the daemon decides what wakes the role; what follows is what a message gets while no daemon answers for the project.
   An Envoy direct message to the session raises the wake, and the listener stores it for the stopped session, which its known-session store holds for 30 days: the answer says `state: stopped`, and the woken session reads the message.
   Until the listener's reaper frees the role claim, 5 to 10 minutes after the release, a message to the role's topic is answered `202`, kept with `kept_reason: holder_lapsed` and `holder_state: gone`; after that, it is answered `202` and kept with `kept_reason: unclaimed`.
   One sent with `keep: false` is not kept: it is answered `404` with `holder_lapsed` while the claim stands, and `404` with `unclaimed` once the reaper has freed it.

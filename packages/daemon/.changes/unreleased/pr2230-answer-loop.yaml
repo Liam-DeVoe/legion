@@ -23,8 +23,9 @@ body: |-
   A question the loop cannot answer, or a request for work, goes to the controller once
   (`agent-question`, and `questionsForController` in `legion state`). A person's decision on a
   stopped agent's ask goes to the running architect, else to the controller (`agent-decision`).
-  The loop does not answer for a claim the idle release suspended: its message is kept and wakes
-  it, as before.
+  The Envoy listener hands the message of a claim the idle release suspended to the daemon as it
+  hands any stopped agent's, and the daemon decides what wakes it: the loop does not answer for
+  such a claim, and forwards its question to the role's topic, which wakes the claim.
 time: 2026-11-17T05:20:13.000000000Z
 custom:
     Issue: pr2230

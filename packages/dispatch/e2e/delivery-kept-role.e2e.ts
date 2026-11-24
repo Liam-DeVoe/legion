@@ -5,6 +5,7 @@ import {
   getSentMessages,
   legionAgentEntry,
   setLegionAgents,
+  setLegionAnswering,
   setLiveSessions,
 } from "./agents";
 import { createComment, createIssue, createMessage, createProject } from "./api";
@@ -12,13 +13,12 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * cybermonklabs/legion#2230. A role whose holder is gone because the Legion daemon released the
- * role's idle issue pod - its newest registry entry is `released`, and its issue still runs - is
- * coming back: the daemon resumes that session on the role's next wake. A person's message to it
- * is kept for that next holder: Dispatch publishes it on the role's topic through the listener's
- * publish route, which keeps it on the role's kept lane for an hour and wakes the role, and
- * records the attempt taken. The card says so, and offers no Retry. A role whose entry is not
- * released, of a project that does not answer, keeps the listener's no-holder failure.
+ * cybermonklabs/legion#2230. A role the Legion agent registry holds no entry for, while the role
+ * read says its project answers, has a first holder coming: no session of the role has run yet. A
+ * person's message to it is kept for that first holder: Dispatch publishes it on the role's topic
+ * through the listener's publish route, which keeps it on the role's kept lane for an hour and
+ * wakes the role, and records the attempt taken. The card says so, and offers no Retry. A role of
+ * a project that does not answer keeps the listener's no-holder failure.
  *
  * The sentence is spelt out here rather than imported from the SPA, so a change to the SPA's
  * wording fails a row here rather than passing with it.
@@ -37,31 +37,42 @@ function turn(page: Page, text: string): Locator {
     .filter({ has: page.getByText(text, { exact: true }) });
 }
 
-/** An issue of its own, whose planner role's newest registry entry is released or not, and that
- *  role's token. The planner's session is not live, so no live session holds the role. */
-async function plannerRoleOf(title: string, released: boolean): Promise<[string, string]> {
+/** An issue of its own and its planner role's token, which no live session holds. The registry
+ *  holds an entry for the planner when `entry` is set, a stopped session, and none otherwise, and
+ *  the role read says the project answers when `answering` is set. */
+async function plannerRoleOf(
+  title: string,
+  { answering, entry }: { answering: boolean; entry: boolean }
+): Promise<[string, string]> {
   await createProject({ key: "CORE", name: "Core" });
   const issue = (await createIssue({ project: "CORE", title })).key;
   await setLiveSessions([]);
-  await setLegionAgents([
-    legionAgentEntry({
-      issue,
-      legionProject: LEGION_PROJECT,
-      released,
-      role: "planner",
-      sessionId: "e2e-released-planner",
-      startedAt: "2026-11-16T00:00:00Z",
-    }),
-  ]);
+  await setLegionAnswering(answering);
+  await setLegionAgents(
+    entry
+      ? [
+          legionAgentEntry({
+            issue,
+            legionProject: LEGION_PROJECT,
+            role: "planner",
+            sessionId: "e2e-stopped-planner",
+            startedAt: "2026-11-16T00:00:00Z",
+          }),
+        ]
+      : []
+  );
   return [issue, roleToken(LEGION_PROJECT, issue, "planner")];
 }
 
-test("a person's message to a role whose pod was released is kept for the role's next session", async ({
+test("a person's message to a role with no entry, of a project that answers, is kept for the role's first session", async ({
   browser,
 }) => {
-  const [issue, token] = await plannerRoleOf("Message to a released role", true);
+  const [issue, token] = await plannerRoleOf("Message to a role with no entry", {
+    answering: true,
+    entry: false,
+  });
   const role = `role:${token}`;
-  const body = "Pick this back up when you wake.";
+  const body = "Pick this up when you start.";
   await createMessage(issue, { body, delivery: "steer", target: role });
 
   const alice = await asUser(browser, "alice");
@@ -88,13 +99,16 @@ test("a person's message to a role whose pod was released is kept for the role's
   }
 });
 
-test("a mention of a role whose pod was released is kept for the role's next session", async ({
+test("a mention of a role with no entry, of a project that answers, is kept for the role's first session", async ({
   browser,
 }) => {
-  const [issue, token] = await plannerRoleOf("Mention of a released role", true);
+  const [issue, token] = await plannerRoleOf("Mention of a role with no entry", {
+    answering: true,
+    entry: false,
+  });
   const role = `role:${token}`;
   await createComment(issue, {
-    body: "Can the planner explain this when it wakes?",
+    body: "Can the planner explain this when it starts?",
     delivery: "btw",
     mentions: [{ target: role }],
   });
@@ -116,14 +130,16 @@ test("a mention of a role whose pod was released is kept for the role's next ses
   }
 });
 
-// The other half of the rule: a role whose newest entry is not released goes to that entry's
-// session only while its project answers, and this listener's registry answers no `answering`,
-// which reads as a project that does not answer. So its message keeps the listener's own
-// no-holder answer, with nothing published and nothing sent.
-test("a message to a role whose entry is not released, of a project that does not answer, fails with no holder", async ({
+// The other half of the rule: a role of a project that does not answer has no daemon to answer
+// for its stopped entry and no first holder Dispatch keeps for, so its message keeps the
+// listener's own no-holder answer, with nothing published and nothing sent.
+test("a message to a role of a project that does not answer fails with no holder", async ({
   browser,
 }) => {
-  const [issue, token] = await plannerRoleOf("Message to an unheld role", false);
+  const [issue, token] = await plannerRoleOf("Message to an unheld role", {
+    answering: false,
+    entry: true,
+  });
   const body = "Is anyone planning this?";
   await createMessage(issue, { body, delivery: "steer", target: `role:${token}` });
 

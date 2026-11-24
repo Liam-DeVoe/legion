@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -347,23 +346,10 @@ func (rig *senderLimitRig) requireCount(t *testing.T, sender string, has bool) {
 	next.requireNamed(t, sender+"'s next message", sender)
 }
 
-// requireNoWake reads the rig's wake reports until none has arrived for half a second, and fails
-// on one of kind naming name. A report is published off the route's path, so the quiet is what
-// tells a report that will never come from one still on its way.
+// requireNoWake reads the rig's wake reports as requireNoWake does.
 func (rig *senderLimitRig) requireNoWake(t *testing.T, kind, name string) {
 	t.Helper()
-	for {
-		msg, err := rig.wakes.NextMsg(500 * time.Millisecond)
-		if errors.Is(err, natsgo.ErrTimeout) {
-			return
-		}
-		if err != nil {
-			t.Fatalf("read the wake reports: %v", err)
-		}
-		if wakeNamed(wakeReportIn(t, msg), kind, name) {
-			t.Fatalf("a %s wake report named %s, want none", kind, name)
-		}
-	}
+	requireNoWake(t, rig.wakes, kind, name)
 }
 
 // interceptForwards has every role forward the rig's routes make go through intercept, handed the

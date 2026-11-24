@@ -18,17 +18,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Store is the history table as this package writes and reads it, and the project's claims
-// suspended by idle release (store.Store).
+// Store is the history table as this package writes and reads it (store.Store).
 type Store interface {
 	RegisterConversation(ctx context.Context, c store.AgentConversation) (store.AgentConversation, error)
 	ScanConversation(ctx context.Context, c store.AgentConversation) (recorded bool, err error)
 	AgentConversations(ctx context.Context, project string) ([]store.AgentConversation, error)
-	IssueConversations(ctx context.Context, project, issue string) ([]store.AgentConversation, error)
-	// ReleasedSessions names the session of every claim of the project suspended by idle release,
-	// with the issue it works, which the mirror writes as each entry's `released`
-	// (store.ReleasedSessions).
-	ReleasedSessions(ctx context.Context, project string) (map[string]string, error)
 }
 
 // Title is the title a Legion agent's session gives itself (packages/pi-legion/src/session-title.ts,

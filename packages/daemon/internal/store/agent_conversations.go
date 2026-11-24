@@ -149,26 +149,6 @@ func (s *Store) AgentConversations(ctx context.Context, project string) ([]Agent
 	return found, nil
 }
 
-// IssueConversations is every recorded conversation of one issue of the Legion project token,
-// oldest first, equal times ordered by session: the rows whose registry entries are written
-// again when one of that issue's sessions turns released or stops being so (agenthistory.Mirror).
-func (s *Store) IssueConversations(ctx context.Context, project, issue string) ([]AgentConversation, error) {
-	var found []AgentConversation
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `select `+conversationColumns+` from agent_conversations
-			where project = $1 and issue = $2 order by started_at, session`, project, issue)
-		if err != nil {
-			return err
-		}
-		found, err = scanConversations(rows)
-		return err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("read the conversations of %s: %w", issue, err)
-	}
-	return found, nil
-}
-
 func scanConversations(rows pgx.Rows) ([]AgentConversation, error) {
 	defer rows.Close()
 	var found []AgentConversation

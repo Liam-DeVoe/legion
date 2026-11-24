@@ -14,8 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 )
 
-// legionAgentEntry is the registry's entry for a phase worker of the Legion project infra whose
-// claim is not released.
+// legionAgentEntry is the registry's entry for a phase worker of the Legion project infra.
 func legionAgentEntry(sessionID, issue, role string) legionagents.Entry {
 	return legionagents.Entry{
 		SessionID: sessionID, LegionProject: "infra", Issue: issue, Role: role,
@@ -64,13 +63,13 @@ func withLegionAgent(t *testing.T, d *listenerDeps, entry legionagents.Entry) *l
 	return agents
 }
 
-// The case #2643 made a 200 stopped, for a Legion agent: a phase worker that stopped, not
-// released, whose session left no entry within the gone horizon and whose
-// known-session record the store still holds, under a project that last said it answers. A send
-// to it is handed to its daemon ahead of that record, which would store the message for a session
-// that runs again, while the daemon answers it now from the agent's own conversation: 200 with
-// the agent as recipient and no state, one hand-off on notifications.legion.infra.agents.<session>
-// carrying the send, and nothing stored on the agent's own subject.
+// The case #2643 made a 200 stopped, for a Legion agent: a phase worker that stopped, whose
+// session left no entry within the gone horizon and whose known-session record the store still
+// holds, under a project that last said it answers. A send to it is handed to its daemon ahead of
+// that record, which would store the message for a session that runs again, while the daemon
+// answers it now from the agent's own conversation: 200 with the agent as recipient and no state,
+// one hand-off on notifications.legion.infra.agents.<session> carrying the send, and nothing stored
+// on the agent's own subject.
 //
 // The controls are the same send under each thing that turns the hand-off away, each then
 // answered as main answers a session only the known-session store holds, and none handed off: a
@@ -130,101 +129,6 @@ func TestASendToAStoppedLegionAgentTheKnownStoreHoldsIsHandedToItsDaemon(t *test
 	requireStored(2, "the send to a project that does not answer")
 }
 
-// The same shape with the agent's registry entry released - the daemon released its idle issue
-// pod and keeps the claim to resume (INFRA-945) - keeps main's answer for a session only the
-// known-session store holds: the send is stored on the agent's own subject for the pod the wake
-// brings back, answered stopped with the record's last_seen, and the agent wake is reported for
-// that session. Nothing is handed off, since the daemon's answer loop would answer a worker that
-// is about to come back. The same entry written again without released is handed off, which is
-// the control: the rig reaches the hand-off, and only the flag turns it away.
-func TestASendToAReleasedLegionAgentTheKnownStoreHoldsIsStoredForItsWake(t *testing.T) {
-	rig := newKnownSessionRig(t)
-	const agent = "ses_known_released_tester"
-	entry := legionAgentEntry(agent, "INFRA-204", "tester")
-	entry.Released = true
-	agents := withLegionAgent(t, rig.deps, entry)
-	rig.register(t, agent, nil)
-	rig.stop(t, agent)
-	record := rig.record(t, agent)
-	subject := contracts.LegacyAgentSubject(agent)
-	// The wakes are reported and read from here on, so the one awaited below is the send's.
-	lifetime, stop := context.WithCancel(context.Background())
-	t.Cleanup(stop)
-	rig.deps.wakes = newWakeReporter(lifetime, rig.harness.client)
-	wakes := subscribeWakes(t, rig.harness.client.Conn)
-
-	stored := rig.send(t, agent, nil)
-	stored.requireAnswer(t, "a send to the released Legion agent the known-session store holds", sessionStateStopped, session.Gone)
-	if stored.Recipient != agent || stored.LastSeen != record.LastSeen {
-		t.Fatalf("the stopped answer is %s, want recipient %s and the record's last_seen %d", stored.raw, agent, record.LastSeen)
-	}
-	if held := rig.storedOn(t, subject); held != 1 {
-		t.Fatalf("the stream holds %d messages on %s, want the one the send stored for the released agent", held, subject)
-	}
-	awaitWake(t, wakes, wakeKindAgent, agent)
-	if count, data := handoffs(t, rig.harness.client, agent); count != 0 {
-		t.Fatalf("the stream holds %d hand-offs for the released agent %s, want none: its message is a wake for the worker; the last: %s",
-			count, agent, data)
-	}
-
-	entry.Released = false
-	putLegionAgent(t, agents, entry)
-	handed := rig.send(t, agent, nil)
-	if handed.status != http.StatusOK || handed.Recipient != agent || handed.State != "" {
-		t.Fatalf("the same send once the entry is not released: status %d, body %s; want 200 handed off, recipient %s and no state",
-			handed.status, handed.raw, agent)
-	}
-	if count, _ := handoffs(t, rig.harness.client, agent); count != 1 {
-		t.Fatalf("the stream holds %d hand-offs for %s, want the one the send to the entry not released made", count, agent)
-	}
-	if held := rig.storedOn(t, subject); held != 1 {
-		t.Fatalf("the stream holds %d messages on %s, want still the one: the send handed off stores nothing for the agent", held, subject)
-	}
-}
-
-// The role route's counterpart of the released send, through the publish route as a sender
-// reaches it: a publish to a Legion role whose newest session's claim is released is
-// kept on the role's kept lane for the resumed worker - 202, kept, unclaimed - as main keeps a
-// publish to a role nobody holds (INFRA-514), and nothing is handed off.
-// TestARolePublishWhoseNewestSessionIsReleasedIsNotHandedOff pins the hand-off's own refusal; this
-// pins the answer roleSend.noHolder writes with it. The same entry without released is handed off
-// and answered 200 with its session as recipient, the control that the route reaches the hand-off.
-func TestAPublishToARoleWhoseNewestSessionIsReleasedIsKept(t *testing.T) {
-	d, client := keptRoleDeps(t)
-	withFinishedHandoff(t, d)
-	agents := d.legionAgents.store()
-	released := legionAgentEntry(finishedRoleSession, "INFRA-205", "reviewer")
-	released.Released = true
-	if released.RoleToken != finishedLegionRole {
-		t.Fatalf("the entry's role token is %s, want %s: the publish below would address another role", released.RoleToken, finishedLegionRole)
-	}
-	putLegionAgent(t, agents, released)
-	body := `{"topic":"` + contracts.RoleTopicPrefix + finishedLegionRole + `","source":"agent","source_session":"ses-architect","message":"what did the review find?"}`
-
-	recorder, answer := publishToRole(t, d, finishedLegionRole, body)
-	if recorder.Code != http.StatusAccepted || !answer.Kept || answer.KeptReason != "unclaimed" {
-		t.Fatalf("publish to a role whose newest session is released: status %d, kept %t, reason %q, body %s; want 202 kept unclaimed for the resumed worker",
-			recorder.Code, answer.Kept, answer.KeptReason, recorder.Body.String())
-	}
-	waitForKeptRoleMessage(t, client, finishedLegionRole, answer.EventID)
-	if count, data := handoffs(t, client, finishedRoleSession); count != 0 {
-		t.Fatalf("the stream holds %d hand-offs for the released %s, want none; the last: %s", count, finishedRoleSession, data)
-	}
-
-	notReleased := released
-	notReleased.Released = false
-	putLegionAgent(t, agents, notReleased)
-	recorder, _ = publishToRole(t, d, finishedLegionRole, body)
-	var handed handedPublishAnswer
-	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &handed) != nil || handed.Kept || handed.Recipient != finishedRoleSession {
-		t.Fatalf("the same publish once the entry is not released: status %d, body %s; want 200 handed to %s with nothing kept",
-			recorder.Code, recorder.Body.String(), finishedRoleSession)
-	}
-	if count, _ := handoffs(t, client, finishedRoleSession); count != 1 {
-		t.Fatalf("the stream holds %d hand-offs for %s, want the one the publish to the entry not released made", count, finishedRoleSession)
-	}
-}
-
 // markedSendAnswer is one marked send's answer as the test below reads it: the status and raw
 // body, and the fields of a hand-off's 200 and of a keep's 202.
 type markedSendAnswer struct {
@@ -270,10 +174,10 @@ func sendMarkedByDispatch(t *testing.T, rig *knownSessionRig, principal, target,
 // session as recipient and no state, one hand-off carrying the role token, nothing kept on the
 // role's kept lane, and nothing stored on the session's own subject.
 //
-// The control is the same send once the entry is written released: the daemon resumes that session
-// on the role's next wake, so the message is kept on the role's kept lane for it, 202 kept, as
-// #4387 keeps a marked send whose role's claim does not name its target, and nothing more is
-// handed off.
+// The control is the same send once the project says it does not answer: no daemon answers for the
+// role's agent, so the message is kept on the role's kept lane for the role's next holder, 202
+// kept, as #4387 keeps a marked send whose role's claim does not name its target, and nothing more
+// is handed off.
 func TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemon(t *testing.T) {
 	rig := newKnownSessionRig(t)
 	const principal = "system:serviceaccount:dispatch:example-dispatch"
@@ -305,16 +209,14 @@ func TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemon(t *testing.T) {
 		t.Fatalf("the stream holds %d messages on %s, want none: the send was handed off", held, subject)
 	}
 
-	released := stopped
-	released.Released = true
-	putLegionAgent(t, agents, released)
+	stateAnswering(t, agents, false)
 	kept := sendMarkedByDispatch(t, rig, principal, agent, role, "are you back?")
 	if kept.status != http.StatusAccepted || !kept.Kept || kept.KeptUntil == 0 || kept.Recipient != agent {
-		t.Fatalf("control: the same send once the role's entry is released: status %d, body %s; want 202 kept for the resumed worker",
+		t.Fatalf("control: the same send once the project does not answer: status %d, body %s; want 202 kept for the role's next holder",
 			kept.status, kept.raw)
 	}
 	waitForKeptRoleMessage(t, client, role, kept.EventID)
 	if count, _ := handoffs(t, client, agent); count != 1 {
-		t.Fatalf("control: the stream holds %d hand-offs for %s, want only the send's before its release", count, agent)
+		t.Fatalf("control: the stream holds %d hand-offs for %s, want only the send's while its project answered", count, agent)
 	}
 }

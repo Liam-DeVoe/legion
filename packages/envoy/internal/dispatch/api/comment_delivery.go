@@ -28,10 +28,10 @@ import (
 // created: its live holder, or the stopped Legion agent the listener's agent registry names for
 // it (resolveDeliveryTarget). SessionID is nil when neither was found; attemptSessionID remains
 // internal so legacy message attempts retain their existing session-id representation.
-// redirect is set only on a registry's session or on a role no live session holds whose daemon
-// released its idle pod (registryRedirect): it carries the resolution the listener's own answer
-// gave, which the attempt records when the listener refuses the send, and for such a role the
-// role token the delivery is published on and kept for its next holder, which pins no session.
+// redirect is set only on a registry's session or on a role no live session holds whose first
+// holder is coming (registryRedirect): it carries the resolution the listener's own answer gave,
+// which the attempt records when the listener refuses the send, and for such a role the role token
+// the delivery is published on and kept for its first holder, which pins no session.
 // unanswered says the lookup was cut short by its bound while the request was still live
 // (resolveMentionTarget), so the listener has not said who holds the target.
 type ResolvedMention struct {
@@ -75,8 +75,9 @@ const mentionLookupTimeout = 250 * time.Millisecond
 // resolved, so the sender resolves it when it sends (mentionResolutionFor).
 //
 // A target the listener holds no live session for that the Legion agent registry names resolves
-// to that stopped agent's session, and a role whose daemon released its idle pod resolves to the
-// role itself, kept for its next holder; either carries the listener's own answer beside it
+// to that stopped agent's session, an agent whose idle issue pod the daemon released among them,
+// and a role the registry holds no entry for while its project answers resolves to the role
+// itself, kept for its first holder; either carries the listener's own answer beside it
 // (redirect), which the attempt records when the listener refuses the send
 // (sendResolvedDelivery).
 func (s *server) resolveMentionTarget(
@@ -188,8 +189,8 @@ type sendOutcome struct {
 // queues itself for a targeted message to that session (mayQueueForUnknownSession). A send to
 // such a session that the listener only stores (dispatchenvoy.SendStateStopped) settles the same
 // way. Such a send carries no role mark, whatever its route: the registry names a role's session
-// only while no live session holds the role, that newest entry is not released and its project
-// answers (unheldRoleTarget), and the listener hands the send to the agent's daemon on its session
+// only while no live session holds the role and that newest entry's project answers
+// (unheldRoleTarget), and the listener hands the send to the agent's daemon on its session
 // id, which needs no Dispatch identity. The send is marked whenever the target was not redirected,
 // and that includes a role's stopped session the registry named: a recheck of the session pinned
 // on the attempt (mentionResolutionFor, messageDeliveryRoute, renewMessageDeliveryClaim) that finds
@@ -308,11 +309,10 @@ func deliveryExpectsReply(delivery string, wanted contracts.ExpectsReply) contra
 }
 
 // publishForRole delivers in mode delivery to the role a redirect keeps for (kept.keepForRole), a
-// role no live session holds whose daemon released its idle pod: it publishes the frame on the
-// role's topic through the listener's publish route (dispatchenvoy.Client.PublishToRole) with the
-// body, key, urgency and expects_reply a send carries. The listener keeps the message on the
-// role's kept lane for the role's next live holder, for one hour, and raises the role's wake,
-// which brings the released pod back to claim the role and take what was kept for it
+// role no live session holds whose first holder is coming: it publishes the frame on the role's
+// topic through the listener's publish route (dispatchenvoy.Client.PublishToRole) with the body,
+// key, urgency and expects_reply a send carries. The listener keeps the message on the role's kept
+// lane for the role's next live holder, for one hour, and raises the role's wake
 // (cmd/listener/confirmed.go roleSend.noHolder).
 //
 // The listener's 202, kept, is outcome queued with the kept copy's envelope: the listener took

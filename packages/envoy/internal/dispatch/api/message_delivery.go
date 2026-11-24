@@ -300,7 +300,7 @@ type pendingMessageDelivery struct {
 	// earlier release stored has rows with no flag, which a resume claims as they stand, and the
 	// rule's verdict for a Send must not pass to a Use BTW instead, which changes no model. Every
 	// other message - an issue message, a broadcast copy, a BTW, a session's message - is queued
-	// for a stopped session, and a role-routed one for a released role's next holder.
+	// for a stopped session, and a role-routed one for the first holder of a role with no entry.
 	connectedOnly bool
 	frame         []byte
 }

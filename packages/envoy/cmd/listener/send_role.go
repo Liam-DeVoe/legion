@@ -109,9 +109,7 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 // first, as the publish route resolves a role's holder (roles.ResolveHolder, within the send's
 // window): a resolution that failed is answered as a claim read that failed is
 // (refuseRoleClaimRead), with no wake reported and nothing handed off or kept, and the answers
-// below name the holder the resolution read. It then raises the role's wake report: a role
-// released with its pod is brought back only by the wake, and the daemons decide what a wake of a
-// role whose holder is live means. The wake costs the sender one (senderCharge).
+// below name the holder the resolution read.
 //
 // A role that a session holds live is that holder's, whether its issue is finished or not: the
 // session that took the role over - a person's resumed or forked session among them (#4387's
@@ -120,19 +118,26 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 //
 // A role with no live holder - no claim, or a claim whose holder is not live - is answered as the
 // publish route answers a send to such a role (roleSend.noHolder). A Legion role whose newest
-// session is not released and whose daemon answers for it, whether its issue has left the workflow
-// or not, takes the message through that daemon (handOffToLegion on the role token, under the
-// conditions its comment names), answered 200 as the send route answers a send it handed off: the
-// envelope handed off, that session as recipient, and for a repeat whose hand-off the stream
-// already held, that hand-off's envelope, with duplicate where it is another request's
-// (answerHandedOff). Dispatch marks a role's message it sends to that stopped session whenever its
-// recheck of the session pinned on the attempt finds the listener's own record of it, a
-// known-session record among them, which names no registry redirect (mentionResolutionFor,
-// resolveDeliveryTarget in internal/dispatch/api), so this is where such a message reaches the
-// daemon. A body that carried "handoff": false is never handed off. A hand-off whose publish failed
-// is the bus-unavailable 503, which the sender retries under the same key, and the hand-off's MsgId
-// stores that message once. Every other role's message - a released newest session's, a role the
-// registry holds no entry for, a project that does not answer - is kept (keepRoleSend).
+// session's daemon answers for it, whether its issue has left the workflow or not and whether or
+// not the daemon released that session's idle issue pod, takes the message through that daemon
+// (handOffToLegion on the role token, under the conditions its comment names), answered 200 as
+// the send route answers a send it handed off: the envelope handed off, that session as
+// recipient, and for a repeat whose hand-off the stream already held, that hand-off's envelope,
+// with duplicate where it is another request's (answerHandedOff). Dispatch marks a role's message
+// it sends to that stopped session whenever its recheck of the session pinned on the attempt
+// finds the listener's own record of it, a known-session record among them, which names no
+// registry redirect (mentionResolutionFor, resolveDeliveryTarget in internal/dispatch/api), so
+// this is where such a message reaches the daemon. A body that carried "handoff": false is never
+// handed off. A hand-off whose publish failed is the bus-unavailable 503, which the sender retries
+// under the same key, and the hand-off's MsgId stores that message once. The hand-off costs the
+// sender what its publish stored (senderCharge.published), and raises no wake report: the daemon
+// decides what wakes the agent. Every other role's message - a role the registry holds no entry
+// for, a project that does not answer - is kept (keepRoleSend).
+//
+// Every message that is kept raises the role's wake report first: a role released with its pod is
+// brought back only by the wake, and the daemons decide what a wake of a role whose holder is live
+// means, acting on it only for a released claim of their own. The wake costs the sender one
+// (senderCharge).
 func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target, holder string) {
 	live := false
 	if holder != "" {
@@ -143,18 +148,18 @@ func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listen
 		}
 		holder, live = resolved.Holder, resolved.State == roles.Live
 	}
-	reportRoleWake(d, d.delivery.logger, item.Role)
-	charge.woke()
 	if !live {
 		handed, err := d.handoff.handOffToLegion(ctx, legionHandoffTarget{
 			envelope: *item, roleToken: item.Role, stampSender: true,
 			optedOut: optedOutOfHandoff(request.MessageBody),
 		})
 		if err != nil {
+			charge.published(bus.StoredAck{}, err)
 			record.refuseBusUnavailable(w, err)
 			return
 		}
 		if handed != nil {
+			charge.published(handed.ack(), nil)
 			duplicate, err := answerHandedOff(ctx, d.client, record, sender, handed, item)
 			if err != nil {
 				record.refuseBusUnavailable(w, err)
@@ -169,6 +174,8 @@ func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listen
 			return
 		}
 	}
+	reportRoleWake(d, d.delivery.logger, item.Role)
+	charge.woke()
 	keepRoleSend(w, d, record, charge, item, sender, target, holder, request.ExpectsReply)
 }
 

@@ -139,9 +139,7 @@ function listRefusal(lists: Exclude<ListsState, "ok">): Response {
 
 /** One Legion agent registry entry as the daemon writes it (`packages/envoy/internal/legionagents`
  *  `Entry`). `recorded_at` is the listener's own stamp, defaulted to `started_at` when a seed
- *  leaves it out. `released` is an entry whose claim the daemon suspended by idle release - it
- *  released the issue's idle pod and resumes the session on the role's next wake - which the
- *  listener writes only when it is true, as a seed does; every read answers it as seeded. */
+ *  leaves it out. */
 interface FakeLegionAgent {
   readonly session_id: string;
   readonly legion_project: string;
@@ -152,7 +150,6 @@ interface FakeLegionAgent {
   readonly harness: "omp" | "claude";
   readonly started_at: string;
   readonly recorded_at?: string;
-  readonly released?: true;
 }
 
 /** How this listener answers the three Legion agent registry reads, which is a question of its
@@ -223,6 +220,10 @@ interface FakeEnvoyState {
   legionAgents: FakeLegionAgent[];
   /** How the three registry reads answer, which a session reseed keeps as it keeps the entries. */
   legionRegistry: RegistryState;
+  /** The answering flag every Legion project last stated (`project.<legion_project>`), which the
+   *  registry reads answer as `answering` on each entry and on the role read; false, as for a
+   *  project that stated none, until a test sets it. A session reseed keeps it. */
+  legionAnswering: boolean;
   readonly sentMessages: SentMessage[];
   /** Every publish the publish route took, in order, a refused one included. */
   readonly publishes: PublishedMessage[];
@@ -237,6 +238,7 @@ function emptyState(): FakeEnvoyState {
   return {
     interests: [],
     legionAgents: [],
+    legionAnswering: false,
     legionRegistry: "ok",
     lists: "ok",
     liveSessions: new Set(),
@@ -394,6 +396,7 @@ function legionAnswer(selected: readonly FakeLegionAgent[]): Record<string, unkn
           return [
             {
               ...agent,
+              answering: state.legionAnswering,
               live: registrationIsLive(agent.session_id),
               recorded_at: agent.recorded_at ?? agent.started_at,
               replaced_at: next?.started_at ?? null,
@@ -574,6 +577,7 @@ const server = Bun.serve({
       const token = decodeURIComponent(url.pathname.slice("/v1/legion/agents/roles/".length));
       if (state.legionRegistry !== "ok") return registryRefusal(state.legionRegistry);
       return Response.json({
+        answering: state.legionAnswering,
         entries: legionAnswer(state.legionAgents.filter((agent) => agent.role_token === token)),
       });
     }
@@ -699,7 +703,8 @@ const server = Bun.serve({
     }
     // A reseed starts the sessions over (their live set, send statuses, sends, publishes and
     // duplicate window) and keeps the persisted subscriptions, the list answer and the Legion agent
-    // registry - its entries and whether it can be read at all - which a test sets on their own.
+    // registry - its entries, whether it can be read at all and what its projects last stated -
+    // which a test sets on their own.
     if (request.method === "PUT" && url.pathname === "/__fixture/sessions") {
       const sessions = (await request.json()) as FakeSession[];
       const ids = sessions.map((session) => session.session_id);
@@ -707,6 +712,7 @@ const server = Bun.serve({
         ...emptyState(),
         interests: state.interests,
         legionAgents: state.legionAgents,
+        legionAnswering: state.legionAnswering,
         legionRegistry: state.legionRegistry,
         lists: state.lists,
         liveSessions: new Set(ids),
@@ -803,6 +809,15 @@ const server = Bun.serve({
       }
       state.legionRegistry = body.state;
       return Response.json({ state: state.legionRegistry });
+    }
+    // The answering flag the Legion projects last stated, which the registry reads answer.
+    if (request.method === "PUT" && url.pathname === "/__fixture/legion-answering") {
+      const body = (await request.json()) as { answering?: unknown };
+      if (typeof body.answering !== "boolean") {
+        return Response.json({ error: "answering must be true or false" }, { status: 400 });
+      }
+      state.legionAnswering = body.answering;
+      return Response.json({ answering: state.legionAnswering });
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/lists") {
       const body = (await request.json()) as { state?: ListsState };

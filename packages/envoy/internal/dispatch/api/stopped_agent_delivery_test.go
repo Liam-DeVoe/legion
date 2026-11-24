@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A Legion agent whose session has stopped is still a message's recipient while the listener's
@@ -32,20 +33,27 @@ const (
 // Legion agent registry holds two stopped sessions of the role legion-test-test-1-planner,
 // stopped-2 newest and stopped-1 before it, each of a project whose daemon answers (`answering`),
 // and holds no entry for any other role token, such as legion-test-test-1-reviewer. Its registry
-// reads fail while registryDown is set, and its entries carry `released` while released is
-// set, as the entries of a claim whose idle pod the daemon released do, and carry `answering:
-// false` while notAnswering is set, as the entries of a project whose daemon runs without
-// `answers` do. Its role reads answer the role token's project's flag beside the entries, an
-// empty list's included (`answering`, true unless notAnswering is set). It takes every send, as
-// its hand-off does, and records the session each one is for; while refuseSends is set it records
-// each and refuses it as a listener with no daemon answering for
-// the agent does. It records every role publish's body too, and answers it as the publish route
-// answers a role no live session holds: 202 kept, or, while publishAnswer names it, 200 for a
-// live holder that claimed the role meanwhile or 404 for a publish it kept nothing of. While
-// storeSends is set it takes each send as main's listener takes a send to a session Envoy still
-// knows that no daemon answers for (#2643): 200, stored for that session, state stopped. Its role
-// lookup names roleHolder as the role's live holder while that is set, and does not answer while
-// rolesDown is set.
+// reads fail while registryDown is set, and its entries carry `answering: false` while
+// notAnswering is set, as the entries of a project whose daemon runs without `answers` do. While
+// released is set its entries carry `released: true`, as the listener of 043f9c67 answered the
+// entry its daemon wrote for a claim idle release suspended; the registry's entry no longer
+// declares that field, so this is where a TestReleased test writes it. Its role reads answer the
+// role token's project's flag beside the entries, an empty list's included (`answering`, true
+// unless notAnswering is set). It takes every send, as its hand-off does, and records the session
+// each one is for; while refuseSends is set it records each and refuses it as a listener with no
+// daemon answering for the agent does. It records every role publish's body too, and answers it
+// as the publish route answers a role no live session holds: 202 kept, or, while publishAnswer
+// names it, 200 for a live holder that claimed the role meanwhile or 404 for a publish it kept
+// nothing of. While storeSends is set it takes each send as main's listener takes a send to a
+// session Envoy still knows that no daemon answers for (#2643): 200, stored for that session,
+// state stopped. Its role lookup names roleHolder as the role's live holder while that is set, and
+// does not answer while rolesDown is set.
+//
+// It records what the listener's own routes make of each request it took (handedOff, woken): a
+// send it takes as handed off is published on the hand-off subject of its session under the
+// project test (listenerwire.LegionHandoffSubject) and raises no wake, and every other answer -
+// a send refused or only stored, a role publish kept or refused - raises the target's wake
+// report, as the listener raises it only for a message it handed to no daemon.
 type stoppedAgentListener struct {
 	*httptest.Server
 	registryDown  atomic.Bool
@@ -60,6 +68,8 @@ type stoppedAgentListener struct {
 	mu        sync.Mutex
 	sends     []string
 	publishes []map[string]any
+	handoffs  []string
+	wakes     []string
 }
 
 func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
@@ -74,8 +84,8 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 			// false while the project has stated none.
 			"answering": !listener.notAnswering.Load(),
 		}
-		// It writes `released` for a claim whose idle issue pod the daemon released
-		// (legionagents.Entry.Released), and omits it otherwise.
+		// The listener of 043f9c67 answered `released` for the entry its daemon wrote for a claim
+		// idle release suspended, and omitted it otherwise.
 		if listener.released.Load() {
 			entry["released"] = true
 		}
@@ -131,21 +141,24 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 				return
 			}
 			listener.mu.Lock()
+			defer listener.mu.Unlock()
 			listener.sends = append(listener.sends, input.TargetSession)
 			count := len(listener.sends)
-			listener.mu.Unlock()
 			if listener.refuseSends.Load() {
+				listener.wakes = append(listener.wakes, "agent_message "+input.TargetSession)
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"error":"no live session ` + input.TargetSession + `"}`))
 				return
 			}
 			if listener.storeSends.Load() {
+				listener.wakes = append(listener.wakes, "agent_message "+input.TargetSession)
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"event_id": "stored-" + strconv.Itoa(count), "recipient": input.TargetSession,
 					"recipient_state": "gone", "state": "stopped",
 				})
 				return
 			}
+			listener.handoffs = append(listener.handoffs, listenerwire.LegionHandoffSubject("test", input.TargetSession))
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"event_id": "handed-off-" + strconv.Itoa(count), "recipient": input.TargetSession,
 			})
@@ -157,9 +170,9 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 				return
 			}
 			listener.mu.Lock()
+			defer listener.mu.Unlock()
 			listener.publishes = append(listener.publishes, input)
 			count := len(listener.publishes)
-			listener.mu.Unlock()
 			topic, _ := input["topic"].(string)
 			switch listener.publishAnswer.Load() {
 			case http.StatusOK:
@@ -167,10 +180,12 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 					"event_id": "delivered-" + strconv.Itoa(count), "topic": topic, "holder": "woken", "holder_state": "live",
 				})
 			case http.StatusNotFound:
+				listener.wakes = append(listener.wakes, "role_message "+strings.TrimPrefix(topic, "notifications.role."))
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"error":"no holder for role ` + strings.TrimPrefix(topic, "notifications.role.") +
 					`","reason":"unclaimed","claim_revision":0}`))
 			default:
+				listener.wakes = append(listener.wakes, "role_message "+strings.TrimPrefix(topic, "notifications.role."))
 				w.WriteHeader(http.StatusAccepted)
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"event_id": "kept-" + strconv.Itoa(count), "topic": topic, "kept": true,
@@ -197,6 +212,21 @@ func (l *stoppedAgentListener) published() []map[string]any {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]map[string]any{}, l.publishes...)
+}
+
+// handedOff is the hand-off subject of every send the listener took as handed off, in order.
+func (l *stoppedAgentListener) handedOff() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string{}, l.handoffs...)
+}
+
+// woken is every wake report the listener raised for the requests it took, in order, each as its
+// kind and the session or the role it names.
+func (l *stoppedAgentListener) woken() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string{}, l.wakes...)
 }
 
 // assertHandedOff checks a message's one attempt was recorded for sessionID and sent.
@@ -258,8 +288,8 @@ func TestMessageToAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 	assertAnswered(t, "the issue-less message", replyAs(t, handler, issueless.ID, stoppedAgent, "Same answer."), issueless.ID)
 }
 
-// A role's newest session takes the role's messages while no live session holds the role, its
-// entry is not released and its project answers.
+// A role's newest session takes the role's messages while no live session holds the role and its
+// project answers.
 func TestRoleMessageToAStoppedRegisteredRoleGoesToItsNewestSession(t *testing.T) {
 	listener := newStoppedAgentListener(t)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
@@ -281,11 +311,11 @@ func TestRoleMessageToAStoppedRegisteredRoleGoesToItsNewestSession(t *testing.T)
 	assertAnswered(t, "the role message", replyAs(t, handler, message.ID, stoppedNewest, "I did."), message.ID)
 }
 
-// A role whose newest registry entry is a stopped agent that is not released - one whose issue
-// has left the workflow, or one that failed or was suspended by the workflow or the operator -
-// and whose project answers, is answered by that agent's daemon. So a message and a mention of
-// the role are sent to its stopped newest session and settle sent there, and that session's
-// reply, which its daemon posts, answers each. A session named outright is handed off as ever.
+// A role whose newest registry entry is a stopped agent - one whose issue has left the workflow,
+// or one that failed or was suspended by the workflow or the operator - and whose project
+// answers, is answered by that agent's daemon. So a message and a mention of the role are sent to
+// its stopped newest session and settle sent there, and that session's reply, which its daemon
+// posts, answers each. A session named outright is handed off as ever.
 func TestARoleMessageAndARoleMentionOfAStoppedRoleGoToItsNewestSession(t *testing.T) {
 	listener := newStoppedAgentListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
@@ -326,10 +356,9 @@ func TestARoleMessageAndARoleMentionOfAStoppedRoleGoToItsNewestSession(t *testin
 		t.Fatalf("listener sends = %v, want the role message and the role mention sent to %s and the session mention to %s",
 			sent, stoppedNewest, stoppedAgent)
 	}
-	// Its claim is not released, so nothing is kept for the role: nothing is published on the
-	// role's topic.
+	// The role has an entry, so nothing is kept for it: nothing is published on the role's topic.
 	if got := listener.published(); len(got) != 0 {
-		t.Fatalf("listener publishes = %v, want none for a role whose claim is not released", got)
+		t.Fatalf("listener publishes = %v, want none for a role with an entry", got)
 	}
 
 	assertAnswered(t, "the role message", replyAs(t, handler, message.ID, stoppedNewest, "I hold the answer."), message.ID)
@@ -387,29 +416,24 @@ func TestMentionOfAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 
 // A target the registry does not name, every target while the registry does not answer, a
 // target the registry names whose daemon does not answer - the listener refuses the send, having
-// handed it to no daemon - a target whose entry is released - its daemon released the idle issue
-// pod and resumes the session on the message's wake, so the listener hands it to no daemon - and
-// a target whose project does not answer - the listener hands it to no daemon and only stores a
-// send for a session that will not run again, so no send is made - are answered exactly as with
-// no registry, with the session they recorded then: a message to the session, whose listener
-// answer is no live session, is queued by Dispatch itself on the session's own subject
-// (queueForUnknownSession), and a mention of the session keeps the listener's failure, as do a
-// role message and a role mention.
+// handed it to no daemon - and a target whose project does not answer - the listener hands it to
+// no daemon and only stores a send for a session that will not run again, so no send is made -
+// are answered exactly as with no registry, with the session they recorded then: a message to
+// the session, whose listener answer is no live session, is queued by Dispatch itself on the
+// session's own subject (queueForUnknownSession), and a mention of the session keeps the
+// listener's failure, as do a role message and a role mention.
 //
-// Two roles are kept for their next holder instead (roleKept): a role whose newest entry is
-// released, whose daemon resumes that
-// session on the wake the message raises, and a role the registry holds no entry for while the
-// role read says its project answers, whose first worker is coming. Each role message and role
-// mention is published on the role's topic, which the listener keeps on the role's kept lane, and
-// recorded queued with the kept copy's envelope and no session. Their control is the role with
-// no entry whose read says its project does not answer, which keeps the listener's answer as with
-// no registry.
+// One role is kept for its first holder instead (roleKept): a role the registry holds no entry
+// for while the role read says its project answers, whose first worker is coming. Each role
+// message and role mention is published on the role's topic, which the listener keeps on the
+// role's kept lane, and recorded queued with the kept copy's envelope and no session. Its control
+// is the role with no entry whose read says its project does not answer, which keeps the
+// listener's answer as with no registry.
 func TestTargetTheRegistryDoesNotNameKeepsTheListenersAnswer(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		registryDown bool
 		refuseSends  bool
-		released     bool
 		notAnswering bool
 		session      string
 		role         string
@@ -432,18 +456,15 @@ func TestTargetTheRegistryDoesNotNameKeepsTheListenersAnswer(t *testing.T) {
 			name: "no daemon answers", refuseSends: true, session: stoppedAgent, role: registeredRole,
 			wantSends: map[string]int{stoppedAgent: 3, stoppedNewest: 2},
 		},
-		// A released role is kept for its next holder.
-		{name: "released", released: true, session: stoppedAgent, role: registeredRole, roleKept: true},
-		// Not released, so the project's answering flag is the one check that names no session.
-		// Its listener takes a send as main's does for a project that does not answer, stored for
-		// the stopped session; the redirect makes none.
+		// The project's answering flag is the one check that names no session. Its listener
+		// takes a send as main's does for a project that does not answer, stored for the stopped
+		// session; the redirect makes none.
 		{name: "project not answering", notAnswering: true, session: stoppedAgent, role: registeredRole},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := newStoppedAgentListener(t)
 			listener.registryDown.Store(tc.registryDown)
 			listener.refuseSends.Store(tc.refuseSends)
-			listener.released.Store(tc.released)
 			listener.notAnswering.Store(tc.notAnswering)
 			listener.storeSends.Store(tc.notAnswering)
 			handler, database := newTargetedMessageHandler(t, listener.URL)

@@ -177,7 +177,7 @@ test("the Legion agent registry reads derive live and replacement, and outlive a
       entries: [{ session_id: "new-reviewer" }, { session_id: "old-reviewer" }],
     });
     const none = await Bun.fetch(`${origin}/v1/legion/agents/roles/legion-e2elegion-e2e-1-merger`);
-    expect(await none.json()).toEqual({ entries: [] });
+    expect(await none.json()).toEqual({ answering: false, entries: [] });
 
     const old = await Bun.fetch(`${origin}/v1/legion/agents/sessions/old-reviewer`);
     expect(old.status).toBe(200);
@@ -365,12 +365,13 @@ function publish(origin: string, role: string, keep?: boolean) {
   });
 }
 
-// The publish route for a role topic, as Dispatch uses it to keep a message for a role whose
-// Legion pod its daemon released (packages/envoy/cmd/listener/confirmed.go roleSend): a role no
-// live session holds keeps the message, answered 202 `kept` with the end of its hour, unless the
-// publish asked `keep: false`, which keeps nothing and is the role lookup's 404; a role a live
-// session holds takes it, answered 200 naming that holder. Every publish is recorded, and a
-// registry entry seeded `released` is read back released.
+// The publish route for a role topic, as Dispatch uses it to keep a message for a Legion role the
+// registry holds no entry for while its project answers (packages/envoy/cmd/listener/confirmed.go
+// roleSend): a role no live session holds keeps the message, answered 202 `kept` with the end of
+// its hour, unless the publish asked `keep: false`, which keeps nothing and is the role lookup's
+// 404; a role a live session holds takes it, answered 200 naming that holder. Every publish is
+// recorded. The registry reads answer the answering flag the fixture last set, false until it is
+// set, on the role read and on each entry.
 test("a role publish is kept while no live session holds the role, and every publish is recorded", async () => {
   const { origin, stop } = await startFakeEnvoy();
   try {
@@ -424,19 +425,25 @@ test("a role publish is kept while no live session holds the role, and every pub
       { topic: "notifications.team.ops" },
     ]);
 
-    const released = legionAgentEntry({
+    const read = () => Bun.fetch(`${origin}/v1/legion/agents/roles/${planner}`);
+    expect(await (await read()).json()).toEqual({ answering: false, entries: [] });
+    const answering = await putFixture(origin, "/__fixture/legion-answering", { answering: true });
+    expect(await answering.json()).toEqual({ answering: true });
+    const stopped = legionAgentEntry({
       issue: "E2E-2",
       legionProject: "e2elegion",
-      released: true,
       role: "planner",
-      sessionId: "released-planner",
+      sessionId: "stopped-planner",
       startedAt: "2026-10-26T00:00:00Z",
     });
-    expect((await putFixture(origin, "/__fixture/legion-agents", [released])).status).toBe(200);
-    const read = await Bun.fetch(`${origin}/v1/legion/agents/roles/${planner}`);
-    expect(await read.json()).toMatchObject({
-      entries: [{ released: true, role_token: planner, session_id: "released-planner" }],
+    expect((await putFixture(origin, "/__fixture/legion-agents", [stopped])).status).toBe(200);
+    expect(await (await read()).json()).toMatchObject({
+      answering: true,
+      entries: [{ answering: true, role_token: planner, session_id: "stopped-planner" }],
     });
+    expect(
+      (await putFixture(origin, "/__fixture/legion-answering", { answering: "yes" })).status
+    ).toBe(400);
   } finally {
     await stop();
   }

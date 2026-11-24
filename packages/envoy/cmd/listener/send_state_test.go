@@ -623,6 +623,25 @@ func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 	}
 }
 
+// requireNoWake reads wakes until no report has arrived for half a second, and fails on one of
+// kind naming name. A report is published off the route's path, so the quiet is what tells a
+// report that will never come from one still on its way.
+func requireNoWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
+	t.Helper()
+	for {
+		msg, err := wakes.NextMsg(500 * time.Millisecond)
+		if errors.Is(err, natsgo.ErrTimeout) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("read the wake reports: %v", err)
+		}
+		if wakeNamed(wakeReportIn(t, msg), kind, name) {
+			t.Fatalf("a %s wake report named %s, want none", kind, name)
+		}
+	}
+}
+
 // wakeReportIn is the wake report msg carries.
 func wakeReportIn(t *testing.T, msg *natsgo.Msg) wakeReport {
 	t.Helper()

@@ -228,13 +228,15 @@ restarts or loses its connection gets the forward once when it is back. No sessi
 receipt for one.
 A Legion daemon that answers for its stopped agents
 ([Running Legion](/legion/legion/running-legion/#legionyaml), `answers`) reads such a message from
-`notifications.legion.<project>.agents.<session>`: where the registry names the target session,
-not released, and its project last said it answers, the listener hands the message off there in
-place of the `404`, the stored `stopped` answer, the `202` keep or the exception, and the caller
-reads the same `200` a delivered message gets. A role is handed off to its newest session whether
-its issue has left the workflow or not; a session, or a role's newest session, whose idle pod the
-daemon released, and a role the registry holds no entry for, keep the message for the next holder
-and wake it. An edge listener hands nothing off: its grant
+`notifications.legion.<project>.agents.<session>`: where the registry names the target session and
+its project last said it answers, the listener hands the message off there in place of the `404`,
+the stored `stopped` answer, the `202` keep or the exception, and the caller reads the same `200` a
+delivered message gets. A role is handed off to its newest session whether its issue has left the
+workflow or not, and a session whose idle pod the daemon released is handed off like any other
+stopped session: the daemon decides what wakes it. A message handed off raises no wake report,
+and costs its sender what its publish stored, as a send's own publish does. A role the registry
+holds no entry for keeps the message for its first holder and wakes it. An edge listener hands
+nothing off: its grant
 (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics
 (`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject
 `notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so
@@ -252,9 +254,11 @@ retries by itself.
 
 A released Legion role gets the messages kept for it when it comes back. The release ends the
 role's process and leaves its claim standing. The session's record is gone at most about five
-minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
-the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
-the claim at its next pass. Either way it is kept and wakes the role. When the role comes
+minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. While no daemon
+answers for the role's project, a message to the role is then kept as `holder_lapsed`, and as
+`unclaimed` once the role claim reaper releases the claim at its next pass. Either way it is kept
+and wakes the role. While a daemon answers for the project, the listener hands the message to that
+daemon instead, which decides what wakes the role. When the role comes
 back, its session registers again or claims the role, and either one hands it each message kept
 for the role whose hour has not ended, as an Envoy card that carries `kept_at`, the time Envoy
 kept it. The card can arrive before the task the daemon gives the woken role. `envoy_inbox` lists
