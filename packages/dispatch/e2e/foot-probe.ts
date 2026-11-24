@@ -6,7 +6,7 @@
  *  `await page.evaluate(readKeptRoom, FOOT_NAMES)`, `await page.evaluate(readRoomAtStart,
  *  FOOT_NAMES)`, `await page.evaluate(readSidewaysBox, { after, code, toBanner })` and `await
  *  page.evaluate(sampleFootRest, { ms: 2000, names: FOOT_NAMES })`. Each reads the page. Only
- *  three write anything: `readFootEnds` and `readSidewaysBox` set scroll positions,
+ *  four write anything: `readFootEnds` and `readSidewaysBox` set scroll positions,
  *  `readRoomAtStart` scrolls every element back to its start, and `watchRoomHeld` keeps a record
  *  of its own in the page (`window.__footRoomHeld`).
  *
@@ -32,8 +32,10 @@
  *
  *  Beside the reads stand the helpers the rows that read the foot call (`e2e/foot-sweep.e2e.ts`,
  *  `e2e/issues-table.e2e.ts`, `e2e/agents-groups.e2e.ts`): `expectFootClear`, the reading of
- *  both reads while a float shows; `expectNoEndRoom`, the reading after the floats go; and
- *  `footCellLine`, which writes the `FOOT-CELL` line a run's output carries for each reading. */
+ *  both reads while a float shows, against foot elements of `FOOT_ELEMENTS`; `expectNoEndRoom`,
+ *  the reading after the floats go; `navigationProblems`, the problems of a reading of the
+ *  Navigation alone; and `footCellLine`, which writes the `FOOT-CELL` line a run's output carries
+ *  for each reading. */
 import { expect, type Page } from "@playwright/test";
 
 import {
@@ -44,9 +46,9 @@ import {
 
 /** The names by which the hook marks the page (`web/src/hooks/useFootInset.ts`): the attribute of
  *  a scroller that holds end room, the custom property that holds that room, and the attribute of
- *  the element whose content the document scrolls. Each read of the page takes them as its
- *  argument. A read runs in the page and can import nothing there, and a name it spelled itself
- *  would, after a rename in the hook, find no mark and pass. */
+ *  the element whose content the document scrolls. Each read of the page that reads a mark takes
+ *  them as its argument. A read runs in the page and can import nothing there, and a name it
+ *  spelled itself would, after a rename in the hook, find no mark and pass. */
 export interface FootNames {
   readonly mark: string;
   readonly clearance: string;
@@ -68,13 +70,15 @@ interface Edges {
   readonly right: number;
 }
 
-/** One scroller `readFootEnds` walked to its end: its name, the gap left to that end, its box as
- *  `[top, bottom]`, its mark and the room it holds, its last content where it has one, and each
- *  leaf of its own content that meets a float there (`covers`). Its last content is the lowest
- *  leaf of its own content on the screen inside its box: its text, its box as `[top, bottom]`,
- *  and `cell`, whether that leaf is in a cell of a table's row. */
+/** One scroller `readFootEnds` walked to its end: its name, its `data-testid` (null for the
+ *  document, and for a scroller with none), the gap left to that end, its box as `[top, bottom]`,
+ *  its mark and the room it holds, its last content where it has one, and each leaf of its own
+ *  content that meets a float there (`covers`). Its last content is the lowest leaf of its own
+ *  content on the screen inside its box: its text, its box as `[top, bottom]`, and `cell`,
+ *  whether that leaf is in a cell of a table's row. */
 export interface FootScroller {
   readonly name: string;
+  readonly testid: string | null;
   readonly gap: number;
   readonly box: readonly [number, number];
   readonly mark: string;
@@ -99,6 +103,25 @@ export interface FootEnds {
 /** The foot elements `readFootElements` reads the floats against: a name for each, and the CSS
  *  selector of the element so named. */
 export type FootSelectors = Readonly<Record<string, string>>;
+
+/** Every foot element of the page layer a page of the rows that read the foot can show
+ *  (`FOOT_LAYERS` in `web/src/hooks/useFootInset.ts`), each by a selector that matches it and no
+ *  other element of those pages, and the Conversation's and the live view's `Jump to latest`.
+ *  `readFootElements` leaves out each one a page does not show. The selection bar is the one
+ *  toolbar with no name: the new issue page's view row is a toolbar named by its controls. The
+ *  live view's rows - its row of pickers and its switch lines - stand under its composer, outside
+ *  `agent-composer`, in the box `AgentConversationPage` registers. The sweep
+ *  (`e2e/foot-sweep.e2e.ts`) reads all of them; a row that reads one page takes the entries of
+ *  that page from here. */
+export const FOOT_ELEMENTS = {
+  "the selection bar": '[role="toolbar"]:not([aria-label])',
+  "the broadcast composer": 'section[aria-label="Broadcast"]',
+  "the comment composer": 'form[aria-label="Comment composer"]',
+  "the margin's sheet": 'aside[aria-label="Review panel"]',
+  "the live view's composer": '[data-testid="agent-composer"]',
+  "the live view's rows": '[data-testid="agent-composer-footer"]',
+  "Jump to latest": '[data-testid="jump-to-latest"]',
+} as const satisfies FootSelectors;
 
 /** What `readFootElements` answers: each float and each foot element shown, by name, with its box
  *  as `[top, bottom]`, and the problems. */
@@ -375,13 +398,15 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
       // In the page, where this function runs: the DOM's own read of the scroller's label at the
       // instant of this reading, which only names the scroller in a problem and waits for nothing.
       const label = scroller.getAttribute("aria-label");
+      const testid = isDocument ? null : (scroller.dataset.testid ?? null);
       const name = isDocument
         ? "the document"
         : `${scroller.tagName}${scroller.id ? `#${scroller.id}` : ""}${label ? `[${label}]` : ""}${
-            scroller.dataset.testid ? `(${scroller.dataset.testid})` : ""
+            testid ? `(${testid})` : ""
           }`;
       return {
         name,
+        testid,
         gap: Math.round(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight),
         box: [Math.round(box.top), Math.round(box.bottom)],
         mark,
@@ -406,6 +431,8 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
           ) ?? navigation);
     const navRect = column?.getBoundingClientRect();
     const navigationTop = navRect && navRect.height > 0 ? Math.round(navRect.top) : null;
+    // `navigationProblems` finds the second and the third kind of problem here, and the one of a
+    // reading that is not settled, by their words: change them together.
     const problems = [
       ...answers
         .filter((answer) => answer.covers.length > 0)
@@ -587,11 +614,18 @@ export function watchRoomHeld(names: FootNames): void {
   if (window.__footRoomHeld !== undefined) return;
   const held = new Map<Element, number>();
   window.__footRoomHeld = { held };
-  const floats = ['[aria-label="Pending changes"]', '[aria-label="A new version is available"]'];
+  // Each float's element, looked up again only where the one found before is gone from the page.
+  const floats = [
+    '[aria-label="Pending changes"]',
+    '[aria-label="A new version is available"]',
+  ].map((selector) => ({ selector, element: null as Element | null }));
   const frame = () => {
-    const floatShown = floats.some(
-      (selector) => (document.querySelector(selector)?.getBoundingClientRect().height ?? 0) > 0
-    );
+    const floatShown = floats.some((float) => {
+      if (float.element === null || !float.element.isConnected) {
+        float.element = document.querySelector(float.selector);
+      }
+      return (float.element?.getBoundingClientRect().height ?? 0) > 0;
+    });
     if (floatShown) {
       held.clear();
       for (const element of document.querySelectorAll<HTMLElement>(`[${names.mark}]`)) {
@@ -663,10 +697,13 @@ export async function readKeptRoom(names: FootNames): Promise<KeptRoom> {
       const scroll = byDocument ? document.documentElement : element;
       const gap = Math.round(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight);
       const stands = scroll.scrollTop > 0 && gap < room;
+      // Whether a box would be clamped without the room counts only where the reader is out of it.
       const clamps =
+        !stands &&
         byDocument &&
-        [...element.querySelectorAll<HTMLElement>("*")].some(
-          (box) =>
+        Array.prototype.some.call(
+          element.querySelectorAll<HTMLElement>("*"),
+          (box: HTMLElement) =>
             box.scrollTop > 0 &&
             box.scrollHeight - box.scrollTop - box.clientHeight < room &&
             /^(auto|scroll)$/.test(getComputedStyle(box).overflowY)
@@ -862,6 +899,20 @@ export async function sampleFootRest({
  *  the floats it shows, `<page> <WxH> <floats>`, each one word. */
 export function footCellLine(cell: string, problems: readonly string[]): string {
   return `FOOT-CELL ${cell} ${problems.length === 0 ? "clean" : problems.join(" | ")}`;
+}
+
+/** The problems of `ends` that a row which reads only the Navigation takes: the Navigation's own
+ *  ("the Navigation's top ..."), each of a scroller that stopped short of its end ("... did not
+ *  reach its end ..."), and the one of two readings that differ ("the foot was not settled ..."),
+ *  since the Navigation is read at the end of every scroll, as a settled state. Each is found by
+ *  the words `readFootEnds` writes it with: change them together. */
+export function navigationProblems(ends: FootEnds): string[] {
+  return ends.problems.filter(
+    (problem) =>
+      problem.startsWith("the Navigation's top") ||
+      problem.includes("did not reach its end") ||
+      problem.startsWith("the foot was not settled")
+  );
 }
 
 /**

@@ -65,9 +65,10 @@ import {
 import {
   expectFootClear,
   expectNoEndRoom,
+  FOOT_ELEMENTS,
   FOOT_NAMES,
-  type FootSelectors,
   footCellLine,
+  navigationProblems,
   readFootEnds,
   readSidewaysBox,
   type SidewaysReading,
@@ -123,22 +124,6 @@ const MOMENT_SIZES: readonly Size[] = [
   { width: 1280, height: 720 },
   { width: 1600, height: 1000 },
 ];
-
-/** Every foot element of the page layer a page here can show (`FOOT_LAYERS`), each by a selector
- *  that matches it and no other element of these pages, and the Conversation's and the live
- *  view's `Jump to latest`. `readFootElements` leaves out each one a page does not show. The
- *  selection bar is the one toolbar with no name: the new issue page's view row is a toolbar
- *  named by its controls. The live view's rows - its row of pickers and its switch lines - stand
- *  under its composer, outside `agent-composer`, in the box `AgentConversationPage` registers. */
-const FOOT_ELEMENTS: FootSelectors = {
-  "the selection bar": '[role="toolbar"]:not([aria-label])',
-  "the broadcast composer": 'section[aria-label="Broadcast"]',
-  "the comment composer": 'form[aria-label="Comment composer"]',
-  "the margin's sheet": 'aside[aria-label="Review panel"]',
-  "the live view's composer": '[data-testid="agent-composer"]',
-  "the live view's rows": '[data-testid="agent-composer-footer"]',
-  "Jump to latest": '[data-testid="jump-to-latest"]',
-};
 
 /** What a cell shows at the foot: Pending changes, the update banner and, on the issues table,
  *  the selection bar. */
@@ -204,8 +189,7 @@ async function readEverySize(
   page: Page,
   name: string,
   shown: readonly Shown[],
-  stuck = false,
-  sizes: readonly Size[] = SURFACE_SIZES
+  { stuck = false, sizes = SURFACE_SIZES }: { stuck?: boolean; sizes?: readonly Size[] } = {}
 ): Promise<void> {
   if (shown.includes("pending")) await expect(pendingWrites(page)).toBeVisible();
   if (shown.includes("banner")) await expect(updateBanner(page)).toBeVisible();
@@ -336,15 +320,15 @@ async function sweepSurface(page: Page, refusedKey: string, surface: Surface): P
   await surface.ready(page);
   const stuck = surface.stuck === true;
   const sizes = surface.sizes ?? SURFACE_SIZES;
-  await readEverySize(page, surface.name, ["pending", "banner"], stuck, sizes);
+  await readEverySize(page, surface.name, ["pending", "banner"], { stuck, sizes });
   await dismissBanner(page);
-  await readEverySize(page, surface.name, ["pending"], stuck, sizes);
+  await readEverySize(page, surface.name, ["pending"], { stuck, sizes });
   await reloadWithBanner(page, refusedKey, surface.path);
   await surface.ready(page);
   await discardPending(page);
-  await readEverySize(page, surface.name, ["banner"], stuck, sizes);
+  await readEverySize(page, surface.name, ["banner"], { stuck, sizes });
   await dismissBanner(page);
-  await readEverySize(page, surface.name, [], false, sizes);
+  await readEverySize(page, surface.name, [], { sizes });
 }
 
 /** The session that asks the margin's questions and writes the Conversation's messages. */
@@ -810,10 +794,13 @@ const CODE_SPEC = [
  * margin's content fits it, Pending changes lies over it, the margin is the scroller that takes
  * end room for the part of Pending changes over it, `body` carries none, and the shell's
  * Navigation as a reader sees it keeps its top on the screen at the end of the page; read until
- * it holds, each read at the end of every scroll (`readFootEnds`). Pending changes is wider than
- * the margin, so its left edge lies over `main`, which takes room for that part by the same
- * rule: the room `main` holds is read and printed after the cell's `FOOT-CELL` line, which is
- * printed either way, and is no problem of the step's.
+ * it holds, each read at the end of every scroll (`readFootEnds`), as a settled state: the
+ * probe's answer gives the Navigation's problems with those of a scroll short of its end and of
+ * two readings that differ (`navigationProblems`), and the step's own read of the margin and
+ * Pending changes is a problem where two readings two animation frames apart differ. Pending
+ * changes is wider than the margin, so its left edge lies over `main`, which takes room for that
+ * part by the same rule: the room `main` holds is read and printed after the cell's `FOOT-CELL`
+ * line, which is printed either way, and is no problem of the step's.
  */
 async function expectStickyClear(page: Page, cell: string): Promise<void> {
   let problems: readonly string[] = ["the page was never read"];
@@ -824,39 +811,73 @@ async function expectStickyClear(page: Page, cell: string): Promise<void> {
         async () => {
           const ends = await page.evaluate(readFootEnds, FOOT_NAMES);
           const read = await page.evaluate(
-            ({ attribute, property }) => {
-              const column = document.querySelector<HTMLElement>(
-                'aside[aria-label="Review margin"]'
-              );
-              const pending = document.querySelector('[aria-label="Pending changes"]');
-              const shell = document.getElementById("main-content");
-              const mainRoom = shell?.hasAttribute(attribute)
-                ? `main holds ${shell.style.paddingBottom} of end room`
-                : "main holds no end room";
-              if (column === null) return { main: mainRoom, problems: ["no Review margin shows"] };
-              if (pending === null) {
-                return { main: mainRoom, problems: ["no Pending changes shows"] };
-              }
-              const a = column.getBoundingClientRect();
-              const b = pending.getBoundingClientRect();
-              const over =
-                Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
-                Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
-              // The margin's own room lengthens its scroll, so its content is measured without it.
-              const room = Number.parseFloat(column.style.getPropertyValue(property)) || 0;
+            async ({ attribute, property }) => {
+              const once = () => {
+                const column = document.querySelector<HTMLElement>(
+                  'aside[aria-label="Review margin"]'
+                );
+                const pending = document.querySelector('[aria-label="Pending changes"]');
+                const shell = document.getElementById("main-content");
+                const mainRoom = shell?.hasAttribute(attribute)
+                  ? `main holds ${shell.style.paddingBottom} of end room`
+                  : "main holds no end room";
+                if (column === null) {
+                  return { main: mainRoom, boxes: [], problems: ["no Review margin shows"] };
+                }
+                if (pending === null) {
+                  return { main: mainRoom, boxes: [], problems: ["no Pending changes shows"] };
+                }
+                const a = column.getBoundingClientRect();
+                const b = pending.getBoundingClientRect();
+                const over =
+                  Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+                  Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
+                // The margin's own room lengthens its scroll: its content is measured without it.
+                const room = Number.parseFloat(column.style.getPropertyValue(property)) || 0;
+                return {
+                  main: mainRoom,
+                  boxes: [
+                    `the Review margin at y ${Math.round(a.top)}-${Math.round(a.bottom)} ` +
+                      `x ${Math.round(a.left)}-${Math.round(a.right)}`,
+                    `Pending changes at y ${Math.round(b.top)}-${Math.round(b.bottom)} ` +
+                      `x ${Math.round(b.left)}-${Math.round(b.right)}`,
+                  ],
+                  problems: [
+                    ...(over ? [] : ["Pending changes does not lie over the Review margin"]),
+                    ...(column.scrollHeight - room > column.clientHeight + 1
+                      ? ["the Review margin's content does not fit it"]
+                      : []),
+                    ...(column.hasAttribute(attribute)
+                      ? []
+                      : [`the Review margin carries no ${attribute}`]),
+                    ...(document.body.hasAttribute(attribute)
+                      ? [`body carries ${attribute} (${document.body.style.paddingBottom})`]
+                      : []),
+                  ],
+                };
+              };
+              // Settled: "the same answer on two readings at least two animation frames apart",
+              // as the probe's reads take it (`e2e/foot-probe.ts`). The answer is each box and the
+              // problems; where the two readings differ, the answer is the second one, with a
+              // problem that says what changed.
+              const first = once();
+              const frames = Promise.withResolvers<void>();
+              requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+              await frames.promise;
+              const second = once();
+              const before = [...first.boxes, ...first.problems];
+              const after = [...second.boxes, ...second.problems];
+              const went = before.filter((piece) => !after.includes(piece));
+              const came = after.filter((piece) => !before.includes(piece));
+              if (went.length === 0 && came.length === 0) return second;
               return {
-                main: mainRoom,
+                ...second,
                 problems: [
-                  ...(over ? [] : ["Pending changes does not lie over the Review margin"]),
-                  ...(column.scrollHeight - room > column.clientHeight + 1
-                    ? ["the Review margin's content does not fit it"]
-                    : []),
-                  ...(column.hasAttribute(attribute)
-                    ? []
-                    : [`the Review margin carries no ${attribute}`]),
-                  ...(document.body.hasAttribute(attribute)
-                    ? [`body carries ${attribute} (${document.body.style.paddingBottom})`]
-                    : []),
+                  ...second.problems,
+                  `the Review margin and Pending changes were not settled: of two readings two ` +
+                    `animation frames apart, the first read ` +
+                    `${went.slice(0, 3).join("; ") || "nothing more"} and the second ` +
+                    `${came.slice(0, 3).join("; ") || "nothing more"}`,
                 ],
               };
             },
@@ -865,11 +886,8 @@ async function expectStickyClear(page: Page, cell: string): Promise<void> {
           main = read.main;
           problems = [
             ...read.problems,
-            ...(ends.navigationTop === null
-              ? ["the Navigation does not show"]
-              : ends.navigationTop < 0
-                ? [`the Navigation's top is at y ${ends.navigationTop} at the end of the page`]
-                : []),
+            ...(ends.navigationTop === null ? ["the Navigation does not show"] : []),
+            ...navigationProblems(ends),
           ];
           return problems;
         },

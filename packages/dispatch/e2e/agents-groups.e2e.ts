@@ -20,7 +20,7 @@ import {
   patchIssue,
   replyToMessageDelivery,
 } from "./api";
-import { expectFootClear } from "./foot-probe";
+import { expectFootClear, FOOT_ELEMENTS } from "./foot-probe";
 import { pendingWrites } from "./keyed-writes";
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
@@ -641,7 +641,7 @@ test("scrolled to its end in a short window, the Agents page's broadcast compose
       // there.
       await expectFootClear(
         page,
-        { "the broadcast composer": 'section[aria-label="Broadcast"]' },
+        { "the broadcast composer": FOOT_ELEMENTS["the broadcast composer"] },
         `agents ${size.width}x${size.height} pending`
       );
       await expect(ended).toBeInViewport();

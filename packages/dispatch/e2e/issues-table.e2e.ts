@@ -33,9 +33,11 @@ import {
 import {
   expectFootClear,
   expectNoEndRoom,
+  FOOT_ELEMENTS,
   FOOT_NAMES,
   type FootSelectors,
   footCellLine,
+  navigationProblems,
   readFootEnds,
 } from "./foot-probe";
 import { nextFrames } from "./frames";
@@ -412,13 +414,13 @@ const DESKTOP_SIZES: readonly { width: number; height: number }[] = [
 /** The selection bar, the one toolbar with no name, as the foot element the rows of this file
  *  read the floats against (`readFootElements`, e2e/foot-probe.ts). */
 const SELECTION_BAR: FootSelectors = {
-  "the selection bar": '[role="toolbar"]:not([aria-label])',
+  "the selection bar": FOOT_ELEMENTS["the selection bar"],
 };
 
 /** The Agents page's broadcast composer, as the foot element the rows of this file read the
  *  floats against (`readFootElements`, e2e/foot-probe.ts). */
 const BROADCAST_COMPOSER: FootSelectors = {
-  "the broadcast composer": 'section[aria-label="Broadcast"]',
+  "the broadcast composer": FOOT_ELEMENTS["the broadcast composer"],
 };
 
 /** A control a row names, under a name the row gives it rather than one it reads off the page.
@@ -525,25 +527,23 @@ async function expectNamedShown(shown: readonly NamedElement[], at: string): Pro
 }
 
 /**
- * Fails unless the foot of `page` is clear at each of `sizes`, read through the shared probe
- * (`expectFootClear`, e2e/foot-probe.ts) against the foot elements `selectors` names, at the real
- * end of every scroller, and each element of `shown` has a box there with each control it names
- * on the page and free at its centre (`expectNamedShown`). Each reading's `FOOT-CELL` line names
- * it `<page> <WxH> <floats>`. Then scrolls the document and the table's box back to their start,
- * where the rows a row's next press picks are drawn.
+ * Fails unless the foot of the issues table on `page` is clear at each of `sizes`, read through
+ * the shared probe (`expectFootClear`, e2e/foot-probe.ts) against the selection bar
+ * (`SELECTION_BAR`), at the real end of every scroller, and each element of `shown` has a box
+ * there with each control it names on the page and free at its centre (`expectNamedShown`). Each
+ * reading's `FOOT-CELL` line names it `issues-table <WxH> <floats>`. Then scrolls the document and
+ * the table's box back to their start, where the rows a row's next press picks are drawn.
  */
 async function expectFootClearAt(
   page: Page,
-  selectors: FootSelectors,
   sizes: readonly { width: number; height: number }[],
-  name: string,
   floats: string,
   shown: readonly NamedElement[]
 ): Promise<void> {
   for (const size of sizes) {
     await page.setViewportSize(size);
     const at = `${size.width}x${size.height}`;
-    await expectFootClear(page, selectors, `${name} ${at} ${floats}`);
+    await expectFootClear(page, SELECTION_BAR, `issues-table ${at} ${floats}`);
     await expectNamedShown(shown, at);
   }
   await page.evaluate(() => {
@@ -618,7 +618,6 @@ async function walkTheBarCombinations(
     const select = (key: string) =>
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
     const toolbar = page.getByRole("toolbar");
-    const pending = pendingWrites(page);
     const { pendingChanges, update } = namedFloats(page);
     const bar: NamedElement = {
       name: "the selection bar",
@@ -641,42 +640,31 @@ async function walkTheBarCombinations(
     const own = page.viewportSize();
     if (!own) throw new Error("The project gave the page no viewport");
     const sizes = sizesFor(own);
-    const table = "issues-table";
 
-    await expect(updateBanner(page)).toBeVisible();
-    await expectFootClearAt(page, SELECTION_BAR, sizes, table, "banner", [update]);
+    await expect(update.box).toBeVisible();
+    await expectFootClearAt(page, sizes, "banner", [update]);
 
     await select(refused.key).check();
-    await expectFootClearAt(page, SELECTION_BAR, sizes, table, "banner+bar", [bar, update]);
+    await expectFootClearAt(page, sizes, "banner+bar", [bar, update]);
 
     await toolbar.getByRole("button", { name: "Take out of epic" }).click({ timeout: 5_000 });
-    await expect(pending).toContainText(refused.key);
+    await expect(pendingChanges.box).toContainText(refused.key);
     await select(refused.key).setChecked(false);
     await select(other.key).check();
-    await expectFootClearAt(page, SELECTION_BAR, sizes, table, "pending+banner+bar", [
-      bar,
-      pendingChanges,
-      update,
-    ]);
+    await expectFootClearAt(page, sizes, "pending+banner+bar", [bar, pendingChanges, update]);
 
     await toolbar.getByRole("button", { name: "Clear selection" }).click({ timeout: 5_000 });
     await expect(toolbar).toHaveCount(0);
-    await expectFootClearAt(page, SELECTION_BAR, sizes, table, "pending+banner", [
-      pendingChanges,
-      update,
-    ]);
+    await expectFootClearAt(page, sizes, "pending+banner", [pendingChanges, update]);
 
     await dismissBanner(page);
-    await expectFootClearAt(page, SELECTION_BAR, sizes, table, "pending", [pendingChanges]);
+    await expectFootClearAt(page, sizes, "pending", [pendingChanges]);
 
     await select(other.key).check();
-    await expectFootClearAt(page, SELECTION_BAR, sizes, table, "pending+bar", [
-      bar,
-      pendingChanges,
-    ]);
+    await expectFootClearAt(page, sizes, "pending+bar", [bar, pendingChanges]);
 
     await discardPending(page);
-    await expectFootClearAt(page, SELECTION_BAR, sizes, table, "bar", [bar]);
+    await expectFootClearAt(page, sizes, "bar", [bar]);
     const lastSize = sizes[sizes.length - 1];
     await expectNoEndRoom(page, `issues-table ${lastSize.width}x${lastSize.height} bar`);
   } finally {
@@ -898,8 +886,8 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
      * the probe's answer holds the scroller whose `data-testid` is `testid` with a last content:
      * the probe gives no problem for a scroller it never counted, or for one with no last
      * content, so an empty read cannot pass. Both floats have a box there (`expectNamedShown`,
-     * with no control named, as this row read them before). Each reading's `FOOT-CELL` line names
-     * it `<cell> <WxH> pending+banner`. Then closes both floats, and fails unless only room the
+     * with no control named). Each reading's `FOOT-CELL` line names it
+     * `<cell> <WxH> pending+banner`. Then closes both floats, and fails unless only room the
      * reader stands in is kept and, once every scroller is back at its start, no element is
      * marked any more as a scroller that takes end room for them; that reading's `FOOT-CELL` line
      * names it `<cell> 1920x1080 none`, `cell` one word.
@@ -909,7 +897,7 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
         await page.setViewportSize(size);
         const at = `${size.width}x${size.height}`;
         const ends = await expectFootClear(page, {}, `${cell} ${at} pending+banner`);
-        const scroller = ends.scrollers.find((read) => read.name.endsWith(`(${testid})`));
+        const scroller = ends.scrollers.find((read) => read.testid === testid);
         expect(
           scroller?.last ?? null,
           `the probe read no last content of ${testid} at ${at}, among the scrollers ` +
@@ -1040,8 +1028,8 @@ test("with the bar, the banner and Pending changes shown, the table's last row s
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
     await select(refused.key).check();
     await page.getByRole("toolbar").getByRole("button", { name: "Take out of epic" }).click();
-    const pending = pendingWrites(page);
-    await expect(pending).toContainText(refused.key);
+    const { pendingChanges } = namedFloats(page);
+    await expect(pendingChanges.box).toContainText(refused.key);
     await select(refused.key).setChecked(false);
     await select(other.key).check();
     // The box is read at the real end of its scroll, through the shared probe
@@ -1055,15 +1043,13 @@ test("with the bar, the banner and Pending changes shown, the table's last row s
       await page.setViewportSize(size);
       const at = `${size.width}x${size.height}`;
       const ends = await expectFootClear(page, {}, `issues-table ${at} pending+banner+bar`);
-      const box = ends.scrollers.find((scroller) =>
-        scroller.name.endsWith("(issues-table-scroll)")
-      );
+      const box = ends.scrollers.find((scroller) => scroller.testid === "issues-table-scroll");
       expect(
         box?.last?.cell ?? false,
         `the probe read no cell of a table's row as the last content of the table's box at ${at}: ` +
           JSON.stringify(box ?? ends.scrollers.map((scroller) => scroller.name))
       ).toBe(true);
-      await expectNamedShown([{ name: "Pending changes", box: pending, controls: [] }], at);
+      await expectNamedShown([{ ...pendingChanges, controls: [] }], at);
     }
   } finally {
     await context.close();
@@ -1103,7 +1089,9 @@ test("with a refused change pending, an issue page scrolled to its end keeps the
     await expect(page.getByRole("heading", { name: "Ship the parser" })).toBeVisible();
     await expect(pending).toContainText(refused.key);
     // The Navigation is read through the shared probe (`readFootEnds`, e2e/foot-probe.ts), at the
-    // end of every scroll. Its top is null where the probe finds no Navigation, which is no
+    // end of every scroll, as a settled state: the row takes the probe's problems of the
+    // Navigation, of a scroll short of its end and of two readings that differ
+    // (`navigationProblems`). Its top is null where the probe finds no Navigation, which is no
     // problem of the probe's, so the row names it as one.
     for (const size of [
       { width: 1600, height: 1000 },
@@ -1117,13 +1105,11 @@ test("with a refused change pending, an issue page scrolled to its end keeps the
         await expect
           .poll(
             async () => {
-              const { navigationTop } = await page.evaluate(readFootEnds, FOOT_NAMES);
-              problems =
-                navigationTop === null
-                  ? ["the probe found no Navigation"]
-                  : navigationTop < 0
-                    ? [`the Navigation's top is at y ${navigationTop} at the end of the page`]
-                    : [];
+              const ends = await page.evaluate(readFootEnds, FOOT_NAMES);
+              problems = [
+                ...(ends.navigationTop === null ? ["the probe found no Navigation"] : []),
+                ...navigationProblems(ends),
+              ];
               return problems;
             },
             { message: `the Navigation's top at the end of the page at ${at}` }

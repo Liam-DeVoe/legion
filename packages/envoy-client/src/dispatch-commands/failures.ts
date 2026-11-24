@@ -128,6 +128,12 @@ function otherProjectSentence(named: string | undefined, keys: readonly string[]
   return ` ${others.join(", ")} ${one ? "is" : "are"} not in the project of ${named}. A credential scoped to one project is refused a step that writes ${one ? "it" : "them"} (403 PROJECT_SCOPE), so a person, or a credential that names no project, must make that step.`;
 }
 
+/** The call that moves `key` into work, with the clause on what else it moves, as each line of
+ *  `nextSteps` that names a parent writes it. */
+function includeParentCall(key: string): string {
+  return `${commandLine("dispatch_issue_update", { issue: key, status: "in_progress", include_parent: true })}, which also moves each issue above ${key} that is not in work`;
+}
+
 /** What the caller of `tool` with `args` does next about the issues a refusal names: `parents`,
  *  each key of relation `parent`, and `children`, each key of relation `child`
  *  (`parentStatusConflictLines`). */
@@ -141,7 +147,7 @@ function nextSteps(
   if (tool === "dispatch_issue") {
     return parents.map(
       (key) =>
-        `dispatch issue takes no flag that moves a done parent. Reopen ${key} first, with ${commandLine("dispatch_issue_update", { issue: key, status: "in_progress", include_parent: true })}, which also moves each issue above ${key} that is not in work, then run dispatch issue again; or run it with --parent naming an open issue, or with no --parent.`
+        `dispatch issue takes no flag that moves a done parent. Reopen ${key} first, with ${includeParentCall(key)}, then run dispatch issue again; or run it with --parent naming an open issue, or with no --parent.`
     );
   }
   // Only dispatch issue-update's arguments are read here.
@@ -179,7 +185,7 @@ function nextSteps(
         : []),
       ...parents.map(
         (key) =>
-          `dispatch issue-update takes no flag that moves the parent a reparent names. Move ${key} into work first, with ${commandLine("dispatch_issue_update", { issue: key, status: "in_progress", include_parent: true })}, which also moves each issue above ${key} that is not in work; then${afterStatus} run the reparent again: ${reparent}.`
+          `dispatch issue-update takes no flag that moves the parent a reparent names. Move ${key} into work first, with ${includeParentCall(key)}; then${afterStatus} run the reparent again: ${reparent}.`
       ),
     ];
   }

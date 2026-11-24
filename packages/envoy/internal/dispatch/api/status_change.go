@@ -685,7 +685,7 @@ const claimedSessionNameMax = 64
 // nothing left is "a session".
 func claimedSessionName(id string) string {
 	quoted := strings.TrimSpace(strings.Map(func(r rune) rune {
-		if r == '`' || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
+		if r == '`' || unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp) {
 			return -1
 		}
 		return r
@@ -766,9 +766,9 @@ const (
 // head's members in its SQL and adds its entry as a row of request_key_steps
 // (queueStatusChangeStep), and the call marks it finished, with the answer's issue, once its last
 // step has run (markStatusChangeFinished). Every reader reads it with the steps' entries under
-// changed (recoveryPointRead). Each field's json tag is the name of its member above, so a
-// json.Marshal of the point (requestKeyRecoveryArgs) and every json.Unmarshal of it name each
-// member as those statements do, and a member the point does not hold stays empty.
+// changed (recoveryPointRead). Each field's json tag is the name of its member above, so every
+// json.Unmarshal of the point (resumedStatusChange, refuseStatusChangeKey, replayRecovered) names
+// each member as those statements do, and a member the point does not hold stays empty.
 type statusChangeRecovery struct {
 	// Changed is the entry of each step that wrote, in the order the steps committed, each with
 	// its issue as its step's write answered it, which every answer from the point carries.

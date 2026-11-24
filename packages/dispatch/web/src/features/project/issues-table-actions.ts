@@ -15,6 +15,7 @@ import { issueProject } from "../../lib/issue-key";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
 import {
+  cardHasOpenChild,
   dryRunStatusChange,
   isParentStatusConflict,
   optionInput,
@@ -718,8 +719,8 @@ export function useIssueTableActions({
    * refuses the close too. Either refusal comes before the merge's reason, with nothing written.
    */
   const refuseHeldClose = async (source: string, current: readonly IssueSummary[]) => {
-    const children = current.find((issue) => issue.key === source)?.progress.children;
-    if (!children || children.done >= children.total) return;
+    const row = current.find((issue) => issue.key === source);
+    if (row === undefined || !cardHasOpenChild(row)) return;
     try {
       await dryRunStatusChange(client, source, { status: "done" });
     } catch (error) {

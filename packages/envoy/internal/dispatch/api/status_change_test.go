@@ -2027,8 +2027,8 @@ func movedComment(key, from, to, named string) string {
 // TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember: each field of
 // statusChangeRecovery has as its json tag the constant that names its member in every statement
 // that writes or reads the point (pointChanged and the others), and each constant tags one field,
-// so a json.Marshal of the point (requestKeyRecoveryArgs) and every json.Unmarshal of it name
-// each member as those statements do.
+// so every json.Unmarshal of the point (resumedStatusChange, refuseStatusChangeKey,
+// replayRecovered) names each member as those statements do.
 func TestEachFieldOfAStatusChangesRecoveryPointIsTaggedWithItsMember(t *testing.T) {
 	members := map[string]string{
 		"Changed": pointChanged, "Events": pointEvents, "Withdrawn": pointWithdrawn, "Finished": pointFinished, "Issue": pointIssue,

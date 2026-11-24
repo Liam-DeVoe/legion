@@ -9,7 +9,7 @@ import { answerIssuePatches, answerRoute } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
-import { answerStatusChanges } from "../issue/parent-status/status-change-fixtures";
+import { answerStatusChanges, fixtureRefusal } from "../issue/parent-status/status-change-fixtures";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -3013,15 +3013,6 @@ test("Finish of a merge whose source closed since drops its refused move of the 
 /** The dry run of a merge's close of its source CORE-1. */
 const sourceDoneDryRun = { dry_run: true, status: "done" };
 
-/** Dispatch's refusal of CORE-1's close while its child OPS-5, of the project OPS, is open. */
-const openChildInOps = () =>
-  new ApiError(409, {
-    code: "PARENT_STATUS_CONFLICT",
-    error:
-      "this change would leave a parent's status out of line with its children's. OPS-5 (in_progress) is a child of CORE-1 and is not done.",
-    issues: [{ key: "OPS-5", relation: "child", status: "in_progress", title: "Work OPS-5" }],
-  });
-
 // A child of a merge's source can be in another project, which this table does not list, so the
 // merge does not move it. Before the close, the listing read again still counts it under the
 // source, and Dispatch's dry run of the close names it. The merge names it with its project, and
@@ -3034,18 +3025,21 @@ test.each([
 ])("a merge whose source holds an open child in another project, with the rule %s, names the child with its project and closes nothing, on its first run and on Finish, until the child has moved", async (_rule, ruleOn) => {
   const user = userEvent.setup();
   const rows = mergeRows("in_progress");
-  // CORE-1 has two children: CORE-3, which the table lists, and OPS-5, which it does not.
+  // CORE-1 has two children: CORE-3, which the table lists, and ACME-5, which it does not. Each
+  // refusal of CORE-1's close is the recorded one (`conflict`), which names ACME-5, of the project
+  // ACME, as an open child.
   rewrite(rows, "CORE-1", { progress: { tasks: null, children: { done: 0, total: 2 } } });
   const sent = answerOnRows(rows);
   let childOpen = true;
   answerStatusChanges().mockImplementation(async (key, input) => {
     sent.push(["status-change", key, input]);
-    throw openChildInOps();
+    throw fixtureRefusal("conflict");
   });
   if (ruleOn)
     answerIssuePatches().mockImplementation(async (key, input) => {
       sent.push(["PATCH", key, input]);
-      if (key === "CORE-1" && input.status === "done" && childOpen) throw openChildInOps();
+      if (key === "CORE-1" && input.status === "done" && childOpen)
+        throw fixtureRefusal("conflict");
       rewrite(rows, key, {
         ...(input.parent === undefined ? {} : { parent: input.parent }),
         ...(typeof input.status === "string" ? { status: input.status } : {}),
@@ -3053,7 +3047,7 @@ test.each([
       return savedIssue(key);
     });
   const said =
-    "The source epic CORE-1 remains open: OPS-5 “Work OPS-5” (project OPS) still needs to move.";
+    "The source epic CORE-1 remains open: ACME-5 “Child in work” (project ACME) still needs to move.";
   table(rows, "?group=epic");
   await mergeInto(user, "CORE-1", "CORE-2");
   await user.click(
@@ -3077,7 +3071,7 @@ test.each([
   expect(await screen.findByRole("region", { name: "Interrupted table action" })).toBeDefined();
   expect(sent.slice(before)).toEqual([["status-change", "CORE-1", sourceDoneDryRun]]);
 
-  // The reader moves OPS-5 out of CORE-1 in its own project.
+  // The reader moves ACME-5 out of CORE-1 in its own project.
   childOpen = false;
   rewrite(rows, "CORE-1", { progress: { tasks: null, children: { done: 0, total: 0 } } });
   before = sent.length;
