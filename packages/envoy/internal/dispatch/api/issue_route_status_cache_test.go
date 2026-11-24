@@ -365,14 +365,15 @@ func timedRosterServer(t *testing.T, delay time.Duration, hang bool, lifetime co
 }
 
 // An answer's TTL counts from the moment its call was sent, so a slow listener cannot stretch the
-// age of the answers a read is served past the TTL: a 1 s fetch with a 1.5 s TTL is stored to
-// expire 1.5 s after its send, and the refresh, due 0.75 s after the send (half the TTL, under the
-// minute's bound), asks again as soon as that fetch has answered, about 1 s in, where a TTL
-// counted from the answer would leave the listener alone until about 1.75 s.
+// age of the answers a read is served past the TTL: a 2 s fetch with a 4 s TTL is stored to expire
+// 4 s after its send, and the refresh, due 2 s after the send (half the TTL, under the minute's
+// bound), asks again as soon as that fetch has answered, about 2 s in, where a TTL counted from the
+// answer would leave the listener alone until about 4 s. The 1.5 s between the two is a margin a
+// loaded machine running the race detector still keeps.
 func TestAnAnswersTTLCountsFromWhenItsCallWasSent(t *testing.T) {
 	t.Parallel()
-	served, calls := timedRosterServer(t, time.Second, false, nil)
-	served.rosters.ttl, served.rosters.silenceTTL, served.rosters.timeout = 1500*time.Millisecond, time.Minute, time.Minute
+	served, calls := timedRosterServer(t, 2*time.Second, false, nil)
+	served.rosters.ttl, served.rosters.silenceTTL, served.rosters.timeout = 4*time.Second, time.Minute, time.Minute
 	started := time.Now()
 	if !awaitRoster(t, served).answered {
 		t.Fatal("the first fetch did not answer")
@@ -382,12 +383,12 @@ func TestAnAnswersTTLCountsFromWhenItsCallWasSent(t *testing.T) {
 		`select extract(epoch from expires_at - sent_at)::float8 from route_roster`).Scan(&life); err != nil {
 		t.Fatalf("read the stored answer's life: %v", err)
 	}
-	if life != 1.5 {
-		t.Fatalf("the stored answer expires %v s after its call was sent, want the 1.5 s TTL", life)
+	if life != 4 {
+		t.Fatalf("the stored answer expires %v s after its call was sent, want the 4 s TTL", life)
 	}
 	awaitCalls(t, calls, 2)
-	if since := time.Since(started); since >= 1500*time.Millisecond {
-		t.Fatalf("the refresh asked the listener again %v after the first read, want before 1.5 s: a 1 s fetch with a 1.5 s TTL counted from its send is due again at once", since)
+	if since := time.Since(started); since >= 3500*time.Millisecond {
+		t.Fatalf("the refresh asked the listener again %v after the first read, want before 3.5 s: a 2 s fetch with a 4 s TTL counted from its send is due again at once", since)
 	}
 }
 
