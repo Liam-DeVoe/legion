@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -48,15 +50,41 @@ type recordedRequest struct {
 	authorization, proof []string
 }
 
+// mintLine is the line the broker writes for each token it mints for a minted grant
+// (oauth.Provider.MintGrantToken).
+const mintLine = "broker: minted a grant's token"
+
+// postThroughProxy sends one POST to approveHost's path through the proxy port, with the grant's
+// placeholder as its one Authorization header, and answers the status, the body and the headers.
+func postThroughProxy(t *testing.T, client *http.Client, path, held string) (int, string, http.Header) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, "https://"+approveHost+path, strings.NewReader(`{"state": "approved"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "DPoP "+held)
+	request.Header.Set("Content-Type", "application/json")
+	answer, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("POST %s through the proxy port: %v", path, err)
+	}
+	body, _ := io.ReadAll(answer.Body)
+	_ = answer.Body.Close()
+	return answer.StatusCode, string(body), answer.Header
+}
+
 // TestTheBootServesTheApproveCapabilityOfItsDPoPBlock: a broker whose profiles hold the dpop block
 // DISPATCH_APPROVE_TOKEN, on the host BROKER_PROXY_PRIVATE_UPSTREAM sends to a stand-in Dispatch on
 // loopback, logs the capability with the digest of that block and destination
 // (config.MintedEntryDigest). A person's sign-in that asks for the proxy placeholder is answered
-// it, with the proxy's URL and authority and the block's one host; the review sent through the
-// proxy port with that placeholder reaches the stand-in carrying a DPoP token other than the
-// placeholder and a proof; introspection reads that token as the person's, of the scope approve
-// alone, the project scope person and the session, bound to the key the boot logged as the
-// proxy's; and the broker logged the token's SHA-256 and that key's thumbprint, never the token.
+// it, with the proxy's URL and authority and the block's one host. A comment sent first through
+// the proxy port with that placeholder, to a route the block's allow list does not name, is
+// refused 403 REQUEST_NOT_ALLOWED with nothing minted: no access token is written, no mint line is
+// logged, and the stand-in receives nothing. The review sent after it reaches the stand-in
+// carrying a DPoP token other than the placeholder and a proof, the one token the broker minted;
+// introspection reads that token as the person's, of the scope approve alone, the project scope
+// person and the session, bound to the key the boot logged as the proxy's; and the broker logged
+// the token's SHA-256 and that key's thumbprint, never the token.
 func TestTheBootServesTheApproveCapabilityOfItsDPoPBlock(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
@@ -133,20 +161,41 @@ func TestTheBootServesTheApproveCapabilityOfItsDPoPBlock(t *testing.T) {
 	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 		Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 	}}
-	request, err := http.NewRequest(http.MethodPost, "https://"+approveHost+approveReviewPath, strings.NewReader(`{"state": "approved"}`))
-	if err != nil {
-		t.Fatal(err)
+
+	// The comment, before the grant's first allowed call: the mint of its token, had it run, logs
+	// its line before the refusal's, through the one logger, so once the refusal's line is there
+	// the log holds every mint line the request made.
+	db := connectToBroker(t, databaseURL)
+	accessTokens := func() int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(context.Background(), `select count(*) from oauth_access_tokens`).Scan(&n); err != nil {
+			t.Fatalf("count the broker's access tokens: %v", err)
+		}
+		return n
 	}
-	request.Header.Set("Authorization", "DPoP "+held)
-	request.Header.Set("Content-Type", "application/json")
-	answer, err := client.Do(request)
-	if err != nil {
-		t.Fatalf("the review through the proxy port: %v", err)
+	tokensBefore := accessTokens()
+	status, answered, header := postThroughProxy(t, client, "/api/v1/issues/APV-1/comments", held)
+	if status != http.StatusForbidden || header.Get("Cipher-Proxy-Code") != "REQUEST_NOT_ALLOWED" {
+		t.Fatalf("the comment through the proxy port = %d %q (Cipher-Proxy-Code %q); want the proxy's 403 REQUEST_NOT_ALLOWED", status, answered, header.Get("Cipher-Proxy-Code"))
 	}
-	answered, _ := io.ReadAll(answer.Body)
-	_ = answer.Body.Close()
-	if answer.StatusCode != http.StatusCreated {
-		t.Fatalf("the review through the proxy port = %d %s; want the stand-in's 201", answer.StatusCode, answered)
+	broker.AwaitRecord(t, answer.RefusalMessage, map[string]any{"answer_id": header.Get(answer.Header), "code": "REQUEST_NOT_ALLOWED"})
+	if minted := recordsWith(broker.Log(), mintLine, nil); len(minted) != 0 {
+		t.Fatalf("the refused comment minted a token: %v; want no %q line", minted, mintLine)
+	}
+	if tokens := accessTokens(); tokens != tokensBefore {
+		t.Fatalf("access tokens after the refused comment = %d; want the %d there were", tokens, tokensBefore)
+	}
+	mu.Lock()
+	sent := len(seen)
+	mu.Unlock()
+	if sent != 0 {
+		t.Fatalf("the stand-in received %d requests for the refused comment; want none", sent)
+	}
+
+	status, answered, _ = postThroughProxy(t, client, approveReviewPath, held)
+	if status != http.StatusCreated {
+		t.Fatalf("the review through the proxy port = %d %s; want the stand-in's 201", status, answered)
 	}
 	mu.Lock()
 	got := append([]recordedRequest(nil), seen...)
@@ -169,7 +218,13 @@ func TestTheBootServesTheApproveCapabilityOfItsDPoPBlock(t *testing.T) {
 		}
 	}
 	sum := sha256.Sum256([]byte(token))
-	broker.AwaitRecord(t, "broker: minted a grant's token", map[string]any{"token_sha256": hex.EncodeToString(sum[:]), "jkt": podThumbprint})
+	broker.AwaitRecord(t, mintLine, map[string]any{"token_sha256": hex.EncodeToString(sum[:]), "jkt": podThumbprint})
+	if minted := recordsWith(broker.Log(), mintLine, nil); len(minted) != 1 {
+		t.Fatalf("the broker logged %d %q lines; want 1, the review's", len(minted), mintLine)
+	}
+	if tokens := accessTokens(); tokens != tokensBefore+1 {
+		t.Fatalf("access tokens after the review = %d; want %d, the one the review minted", tokens, tokensBefore+1)
+	}
 	if strings.Contains(broker.Log(), token) {
 		t.Fatal("the broker's log holds the token it minted; it logs the token's SHA-256 alone")
 	}

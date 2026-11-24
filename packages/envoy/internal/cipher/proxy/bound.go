@@ -326,12 +326,12 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	}
 	if kind == proxyrules.KindDPoP {
 		// A minted capability (requests.MintedKind, AirlockConnection for its grant's placeholder):
-		// two rules hold every request to its host, each refused before any value is minted or
+		// three rules hold every request to its host, each refused before any value is minted or
 		// any dial is made. An upgrade is refused, since the bytes after its answer are no request
-		// the airlock reads; and the request carries the grant's placeholder as its one
+		// the airlock reads; the request carries the grant's placeholder as its one
 		// Authorization header, which the swap below replaces with the grant's token, so nothing
 		// else a command sends there - its own token, a second header beside the placeholder -
-		// goes on to the service.
+		// goes on to the service; and the entry's rules allow the request.
 		if len(r.Header.Values("Upgrade")) != 0 {
 			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeProtocolSwitch, "a request to this host is never an upgrade: the airlock reads each request it carries there")
 			return
@@ -343,6 +343,16 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.dpopKey == nil {
 			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, "the broker holds no DPoP key for "+chosen.name+", so no proof can be made for this request and nothing was sent")
+			return
+		}
+		// The grant's token is minted by the read of its values below (valuesFor, the broker's
+		// mintedValues), so a request the entry refuses is refused here, before that read, and
+		// mints nothing: the token is minted on the grant's first allowed call. The decision is
+		// Decide's with no value, every rule but the one that reads the value (Carries reads no
+		// empty value); the swap below takes the whole decision again with the token.
+		grant := proxyrules.Grant{Secret: chosen.name, Placeholder: info.grant.Names[chosen.name].Slots[chosen.slot]}
+		if allowed, why := proxyrules.Decide(s.rules, grant, "", request); !allowed {
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNotAllowed, why)
 			return
 		}
 	}

@@ -1551,7 +1551,7 @@ The block's `allow` list narrows what reaches Dispatch by method and path prefix
 /api/v1/artifacts/`, `POST /api/v1/asks/` and the like), so a request under one of those prefixes
 that is no approve route, a document's comment or an ask's decline among them, reaches Dispatch,
 and Dispatch refuses it; a request under no prefix, an issue's comment or any `GET`, is refused at
-the proxy. `dispatch review` sends a person's review this way.
+the proxy before any token is minted for it. `dispatch review` sends a person's review this way.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's
