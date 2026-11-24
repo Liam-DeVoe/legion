@@ -3281,6 +3281,75 @@ run(
   headsFiles({ "daemon.log": signedOffAt(20) }),
   [...header, said(10, "The tester passed it, so I sign off.")]
 );
+// The ci-check-fail cases: k1, a check that no CI job runs, reads yes at #702's head, and k2, a
+// check a CI job runs, reads no for its job's failure there (ci-check-fail) or at the head of #703,
+// the issue's second open pull request (ci-check-fail-other-head). The reviewer requests changes
+// naming k2 in ci-check-fail and approves #702 in ci-check-fail-other-head, where each check reads
+// yes at the head it reviews; the architect sends the issue back naming k2 in both, since it
+// accepts only when each check reads yes at each open head. Each is staged as it passes and as it
+// fails, and a refusal or a move back that names k1 alone fails too.
+const requestedChangesNaming = (check: string) =>
+  `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `${check} reads no at this head: its CI job usage-test ended failure.`], exit: 0 })}\n`;
+const sentBackNaming = (check: string) =>
+  `${JSON.stringify({ at: headsAt(20), path: "/legion/v1/phase/backward", status: 200, body: { to: "implementing", reason: `${check} reads no for its CI job's failure` } })}\n`;
+const ciCheckFiles = (calls: string) =>
+  headsFiles({ "calls.jsonl": calls, "world.json": reviewWorld });
+for (const [name, calls, text] of [
+  [
+    "reviewer-own-head-ci-check-fail-head-91",
+    requestedChangesNaming("k2"),
+    "k2's job failed at #702's head.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-head-92",
+    approvedAt(head),
+    "k1 reads yes, and CI is the implementer's.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-head-93",
+    requestedChangesNaming("k1"),
+    "k1 needs another look.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-other-head-head-91",
+    approvedAt(head),
+    "Each check reads yes at #702's head.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-other-head-head-92",
+    requestedChangesNaming("k2"),
+    "k2 fails at #703's head.",
+  ],
+] as const)
+  run(name, ciCheckFiles(calls), [...header, said(10, text)]);
+for (const [name, log, text] of [
+  [
+    "architect-pass-and-fail-ci-check-fail-head-91",
+    sentBackNaming("k2"),
+    "k2's job failed at the head.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-head-92",
+    signedOffAt(20),
+    "The tester and the reviewer passed it.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-head-93",
+    sentBackNaming("k1"),
+    "k1 needs another round.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-other-head-head-91",
+    sentBackNaming("k2"),
+    "k2 fails at #703's head.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-other-head-head-92",
+    signedOffAt(20),
+    "Each check reads yes at #702.",
+  ],
+] as const)
+  run(name, headsFiles({ "daemon.log": log }), [...header, said(10, text)]);
 
 // ci-pass-and-fail (headsReview, headsTester, headsArchitect): at #702's head k1, a check CI proves,
 // holds the job's pass and later fail while its run is still going. Each role's answer is a
@@ -3491,6 +3560,36 @@ test("the no-verdict cases pass on the decision the head's line asks for, each u
   ])
     expect(out).toMatch(new RegExp(`^${scenario}\\thead\\t1/2\\t`, "m"));
   expect(out).toMatch(/^architect-pass-and-fail\thead\t\d+\/\d+\t/m);
+});
+
+// Catches: a ci-check-fail case scored by the rule of another case, or by the check k1: each run
+// passes only on the decision its case asks for, naming k2 where it refuses, under its own row.
+test("the ci-check-fail cases pass on the decision each check's state at the heads asks for", () => {
+  for (const [run, pass] of [
+    ["reviewer-own-head-ci-check-fail-head-91", true],
+    ["reviewer-own-head-ci-check-fail-head-92", false],
+    ["reviewer-own-head-ci-check-fail-head-93", false],
+    ["reviewer-own-head-ci-check-fail-other-head-head-91", true],
+    ["reviewer-own-head-ci-check-fail-other-head-head-92", false],
+    ["architect-pass-and-fail-ci-check-fail-head-91", true],
+    ["architect-pass-and-fail-ci-check-fail-head-92", false],
+    ["architect-pass-and-fail-ci-check-fail-head-93", false],
+    ["architect-pass-and-fail-ci-check-fail-other-head-head-91", true],
+    ["architect-pass-and-fail-ci-check-fail-other-head-head-92", false],
+  ] as const)
+    expect(rowOf(run)).toMatch(new RegExp(`^${run}\\tpass=${pass}\\t`));
+  expect(rowOf("reviewer-own-head-ci-check-fail-head-91")).toContain("case=ci-check-fail ");
+  expect(rowOf("reviewer-own-head-ci-check-fail-head-91")).toContain("namesK2=true");
+  expect(rowOf("reviewer-own-head-ci-check-fail-other-head-head-91")).toContain(
+    "case=ci-check-fail-other-head "
+  );
+  for (const [scenario, count] of [
+    ["reviewer-own-head:ci-check-fail", "1/3"],
+    ["reviewer-own-head:ci-check-fail-other-head", "1/2"],
+    ["architect-pass-and-fail:ci-check-fail", "1/3"],
+    ["architect-pass-and-fail:ci-check-fail-other-head", "1/2"],
+  ])
+    expect(out).toMatch(new RegExp(`^${scenario}\\thead\\t${count}\\t`, "m"));
 });
 
 // Catches: a test record that still carries the tester's verdict scored as the rule asks: no phase

@@ -24,12 +24,13 @@ const (
 )
 
 // testingJudgement is what the states the daemon holds at the tested head say of each check of the
-// head's set (judgeStates): the checks whose state the move waits for, and each check that does
-// not pass with why, as the implementer's task and the architect's notice name it. A judgement
-// with neither passes.
+// head's set that the judgement reads (judgeStates): the checks whose state the move waits for, and
+// each check that does not pass with why, as the implementer's task and the architect's notice name
+// it. A judgement with neither passes.
 type testingJudgement struct {
-	// Waiting is each check whose state is not conclusive: one with no state, or with no result
-	// while its CI run goes on (ci_case not_completed with the reason no_result).
+	// Waiting is each check whose state is not conclusive: one with no state, or, reading every
+	// check, one with no result while its CI run goes on (ci_case not_completed with the reason
+	// no_result).
 	Waiting []string
 	// Failing is each check with a conclusive state that is not yes, as "k2: no (fail)", "k3:
 	// unknown (pass_and_fail)" or "k4: unknown (read_failed)".
@@ -40,12 +41,24 @@ type testingJudgement struct {
 // rule of a passing check is written: a check passes when it reads yes at its head, whichever
 // results Dispatch counted for it. Every check of the head's set is judged in the set's order, and
 // a state of a check outside the set is no part of it, so a check removed from the Verification
-// document holds nothing. A check with no state, and one with no result while its CI run goes on,
-// wait: neither is a state the check ends at. Every other state is conclusive, and one that is not
-// yes fails: a fail, a pass and a fail whatever its CI run says, and a state Dispatch published
-// because a read it needed failed (read_failed), which is a state of the check all the same. false
-// is no set held at the head, which judges nothing.
-func judgeStates(head record.HeadStates) (testingJudgement, bool) {
+// document holds nothing. A check with no state waits: it has no state it ends at, and it is not
+// known yet whether a CI job runs it, since Dispatch tells that only in a state, by naming the
+// job's case (ci_case) there.
+//
+// leaveCI leaves out each check a CI job runs, the one whose held state names its job's case,
+// whatever that state is. That is the testing move once INFRA-5392's end hold makes the end of a
+// task hold its CI checks: a failure of such a check reaches the implementer at once by a message of
+// its own (tellCIFailure), and the review, the acceptance and the end of the task read it. The
+// testing move passes Config.TestingLeavesCI, which the daemon wires false until INFRA-5392 turns
+// it on with that hold, since a task whose steps after testing hold no review and no acceptance
+// would otherwise end with no gate on its CI checks. Reading every check, one with no result while
+// its CI run goes on waits as well, since that is no state the check ends at, and a fail or a pass
+// and a fail is a fail whatever its CI run says.
+//
+// Every other state of a check judged is conclusive, and one that is not yes fails: a fail, a pass
+// and a fail, and a state Dispatch published because a read it needed failed (read_failed), which
+// is a state of the check all the same. false is no set held at the head, which judges nothing.
+func judgeStates(head record.HeadStates, leaveCI bool) (testingJudgement, bool) {
 	if head.Checks == nil {
 		return testingJudgement{}, false
 	}
@@ -55,6 +68,8 @@ func judgeStates(head record.HeadStates) (testingJudgement, bool) {
 		switch {
 		case !held:
 			judgement.Waiting = append(judgement.Waiting, check)
+		case leaveCI && state.CICase != "":
+			continue
 		case state.State == stateYes:
 			continue
 		case state.Reason == reasonNoResult && state.CICase == ciNotCompleted:
@@ -97,14 +112,17 @@ func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest)
 // it moves nothing until the daemon holds every state event of the issue from the lowest serial it
 // holds through the record's (record.Store.StatesFenceReached), since each event the tester's
 // results caused has a serial at or below it: below that fence the states held may be the ones from
-// before those results. At the fence it decides only once every check of the head's set holds a
-// conclusive state there (judgeStates): a head with no set held, or a check the judgement waits
-// for, moves nothing, whatever the other checks read, since a later state of the waiting check
-// changes what the task must name. Then every check passing moves the issue on to the task's next
-// step, and the step the completion named for its task to return to (row.ReturnTo) is not used,
-// which the log says once, when the pass moves the issue out of testing. Otherwise the work goes
-// back, the task naming each check that does not pass with its state and its reason: to the step
-// the completion named (namedReturn), or, where it named none, by the walk's default, the first
+// before those results. At the fence it decides only once every check it reads holds a conclusive
+// state there (judgeStates with Config.TestingLeavesCI: every check, those a CI job runs among
+// them, as the daemon wires it, until INFRA-5392's end hold makes the end of a task hold the checks
+// a CI job runs; only the checks that no CI job runs, once INFRA-5392 turns it on): a head with no
+// set held, or a check the judgement waits for, a check with no state among them, moves nothing,
+// whatever the other checks read, since a later state of the waiting check changes what the task
+// must name. Then every check it reads passing moves the issue on to the task's next step, and the
+// step the completion named for its task to return to (row.ReturnTo) is not used, which the log
+// says once, when the pass moves the issue out of testing. Otherwise the work goes back, the task
+// naming each check it reads that does not pass with its state and its reason: to the step the
+// completion named (namedReturn), or, where it named none, by the walk's default, the first
 // implementation step before the tester (transition's returnOf), implementing for a run with no
 // plan rows. atCompletion is whether the tester's completion is the fact deciding: only that one
 // tells the architect of a wait, in one phase-finished notice that names what the move waits for,
@@ -128,7 +146,7 @@ func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return err
 	}
-	judgement, judged := judgeStates(held)
+	judgement, judged := judgeStates(held, e.cfg.TestingLeavesCI)
 	switch {
 	case !judged:
 		return e.testingWaits(ctx, tx, issue, row, head, atCompletion, "the move waits for Dispatch's states at "+head)
@@ -206,6 +224,11 @@ func (e *Engine) testingWaits(ctx context.Context, tx pgx.Tx, issue record.Issue
 // and the event's serial, which the testing move's fence counts (PutCheckStateSerial). An event of
 // an issue the workflow does not record is no state of its work and is held nowhere.
 //
+// A newer state of a check a CI job runs that says its job ended at the head without a pass
+// (ciJobFailed), where the state the daemon held there before said no such failure, is told to the
+// implementer at once, in the same transaction and in any phase (tellCIFailure): the failure does
+// not wait for the tester's or the reviewer's step to end, and it moves nothing.
+//
 // While the issue is in testing and its tester has completed, the event decides the testing move
 // again (decideTesting), whatever head it names: an event at another head can still be the one the
 // fence waits for. In any other phase, and before the tester's completion, it is held and moves
@@ -219,9 +242,26 @@ func (e *Engine) checkState(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 		return intake.Result{}, err
 	}
 	if fact.Check != "" {
-		if _, err := e.store.PutCheckState(ctx, tx, record.CheckState{Issue: fact.Key, Repo: fact.Repo, Head: fact.Head, Check: fact.Check,
-			State: fact.State, Reason: fact.Reason, CICase: fact.CICase, Roles: fact.Roles, Seq: fact.Mark.Seq}); err != nil {
+		failed := ciJobFailed(fact.State, fact.CICase)
+		var before record.CheckState
+		var wasHeld bool
+		if failed {
+			held, err := e.store.HeadStates(ctx, tx, fact.Key, fact.Repo, fact.Head)
+			if err != nil {
+				return intake.Result{}, err
+			}
+			before, wasHeld = held.States[fact.Check]
+		}
+		state := record.CheckState{Issue: fact.Key, Repo: fact.Repo, Head: fact.Head, Check: fact.Check,
+			State: fact.State, Reason: fact.Reason, CICase: fact.CICase, Roles: fact.Roles, Seq: fact.Mark.Seq}
+		newer, err := e.store.PutCheckState(ctx, tx, state)
+		if err != nil {
 			return intake.Result{}, err
+		}
+		if failed && newer && !(wasHeld && sameFailure(before, state)) {
+			if err := e.tellCIFailure(ctx, tx, *issue, state); err != nil {
+				return intake.Result{}, err
+			}
 		}
 	}
 	if err := e.store.PutCheckStateSerial(ctx, tx, fact.Key, fact.Serial); err != nil {
@@ -241,4 +281,66 @@ func (e *Engine) checkState(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.decideTesting(ctx, tx, *issue, row, pr, false)
+}
+
+// ciJobNotEnded are the CI cases Dispatch names for a check a CI job runs whose job has not ended
+// at the head, or whose end Dispatch could not read (envoy's results_ci.go): its run has not
+// concluded, no run of its name is on the head, Dispatch holds no head to read at, GitHub did not
+// answer, a result of the job named no repository Dispatch could resolve, or the read had not
+// started when its batch's bound ended. Every other case names an end: a conclusion as GitHub wrote
+// it, or a result the job recorded of its own.
+var ciJobNotEnded = map[string]bool{
+	ciNotCompleted: true, "absent": true, "no_head": true, "github_unreadable": true, "read_failed": true, "not_started": true,
+}
+
+// ciJobFailed says whether a state of a check is one of a check a CI job runs whose job ended at
+// its head without a pass: the state names a CI case that is an end, the case is not a success,
+// and the state is not yes. A cancelled or skipped job ended without a pass too.
+func ciJobFailed(state, ciCase string) bool {
+	return ciCase != "" && !ciJobNotEnded[ciCase] && ciCase != "success" && state != stateYes
+}
+
+// sameFailure says whether two states of one check at one head say the same failure: the same
+// answer, the same reason and the same case of its job, whatever roles the results came from.
+func sameFailure(a, b record.CheckState) bool {
+	return a.State == b.State && a.Reason == b.Reason && a.CICase == b.CICase
+}
+
+// tellCIFailure tells the implementer of issue that state, a check a CI job runs, fails at its
+// head: one message on the implementer's role topic (record.RoleMessage) naming the pull request,
+// the check, the head, the job's case and the state, written in the state event's own transaction.
+// The implementer reads the job's log and decides whose failure it is. Only a state at the head of
+// the open pull request on record, in its repository, is told: a head the pull request has left is
+// no head the implementer works on. It tells no other role, starts no implementer and moves
+// nothing, so the tester or the reviewer that works goes on. Linger holds a member of a closed tree
+// where it stood (record.TreeLingers), so nobody is told there, as tellChecks tells nobody.
+func (e *Engine) tellCIFailure(ctx context.Context, tx pgx.Tx, issue record.Issue, state record.CheckState) error {
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil || pr == nil {
+		return err
+	}
+	if pr.State != record.PullRequestOpen || pr.Repo != state.Repo || pr.HeadSHA != state.Head {
+		return nil
+	}
+	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
+		return err
+	}
+	addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}, nil)
+	if err != nil {
+		return err
+	}
+	answer := state.State
+	if state.Reason != "" {
+		answer += " (" + state.Reason + ")"
+	}
+	body := fmt.Sprintf("Pull request #%d: check %s fails at %s, where its CI job ended %s; its state there is %s. Nothing moved on it: read the job's log and decide whose failure it is.",
+		pr.Number, state.Check, state.Head, state.CICase, answer)
+	for _, to := range addressed {
+		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+			return err
+		}
+	}
+	e.logOnCommit(ctx, "workflow: the implementer is told of a failed CI job", "issue", issue.Key, "check", state.Check,
+		"repo", state.Repo, "head", state.Head, "ci_case", state.CICase)
+	return nil
 }

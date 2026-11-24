@@ -26,6 +26,14 @@ const HEADS_BASE = RIG_WORLD.defaultBranch;
  * rig-world.json's, which the agent's gh stand-in (rig.sh's heads_routes) serves too. */
 const CI_JOB = RIG_WORLD.ciJobs["ci-only"];
 const CI_RUNNING_JOB = RIG_WORLD.ciJobs["ci-pass-and-fail"];
+/** The job of k2's `ci_check` in the ci-check-fail worlds: its failed run, at #702's head in
+ * ci-check-fail and at #703's in ci-check-fail-other-head, and its passed run at #702's head in the
+ * second. */
+const CI_FAIL_JOB = RIG_WORLD.ciJobs["ci-check-fail"];
+const CI_PASS_JOB = RIG_WORLD.ciJobs["ci-check-pass"];
+/** Whether a world is one of a failed CI check: of reviewer-own-head, named by its case alone, or
+ * of architect-pass-and-fail, by the scenario's name and the case. */
+const ciCheckWorld = (world: string) => /(^|-)ci-check-fail(-other-head)?$/.test(world);
 /** The run of k1 with no `ci_check`, which every recorded result names: it proves R1, the line of
  * docs/usage.md that names `widgets --help` and says it lists every command (the `.` stands for the
  * backquote the page writes). A check that served no requirement, or whose run matched any line
@@ -158,6 +166,16 @@ export async function headsIssue(file: string, world: string): Promise<void> {
     ciJob !== ""
       ? `${serves} ci_check="${ciJob}" when="before_merge" negative_control="Drop the line from docs/usage.md and the ${ciJob} job fails."`
       : `${serves} run="${K1_RUN}" when="before_merge" negative_control="Drop the line from docs/usage.md and grep prints 0 and exits 1."`;
+  // In the worlds of a failed CI check the document holds k2 beside k1: a check of R1 that a CI
+  // job runs, the test of the page against the commands the CLI lists.
+  const k2 = ciCheckWorld(world)
+    ? [
+        "",
+        `:::check{#k2 surface="cli" ${serves} ci_check="${CI_FAIL_JOB.name}" when="before_merge" negative_control="Drop a command from the list docs/usage.md gives and the ${CI_FAIL_JOB.name} job fails."}`,
+        "The page `docs/usage.md` lists each command that `widgets --help` lists.",
+        ":::",
+      ]
+    : [];
   const verification = await createIssueArtifact(
     issue.key,
     {
@@ -168,6 +186,7 @@ export async function headsIssue(file: string, world: string): Promise<void> {
         `:::check{#k1 surface="cli" ${attributes}}`,
         "`docs/usage.md` names `widgets --help`, which lists every command.",
         ":::",
+        ...k2,
       ].join("\n"),
     },
     { as: "agent" }
@@ -200,10 +219,12 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
 
 /** `heads-events <file> <heads file> <scenario> [<case>]`, after heads_fixture: the GitHub
  * stand-in, seeded again since a seed replaces what it holds, now serves the repository's commits
- * and the open pull requests #702 and #703 (#702 alone in architect-pass-and-fail, its cases, and
- * ci-pass-and-fail), each at its head from <heads file>, with a title that names the issue; in the
- * case ci-only a `success` of k1's job at #702's head, and in ci-pass-and-fail that job's run
- * there `in_progress`. It serves no `commit_pulls`, so an event is the one thing that teaches
+ * and the open pull requests #702 and #703 (#702 alone in architect-pass-and-fail, its cases but
+ * ci-check-fail-other-head, and ci-pass-and-fail), each at its head from <heads file>, with a title
+ * that names the issue; in the case ci-only a `success` of k1's job at #702's head, in
+ * ci-pass-and-fail that job's run there `in_progress`, and in ci-check-fail k2's job `failure` at
+ * #702's head, or in ci-check-fail-other-head `success` there and `failure` at #703's. It serves
+ * no `commit_pulls`, so an event is the one thing that teaches
  * Dispatch a head. One `opened` envelope of each pull request goes out on the NATS
  * DISPATCH_E2E_NATS_URL names, with the subject and the body of `publishPullRequest`
  * (scripts/e2e/verification-results.ts). Then the case's results, each as the role it names, and
@@ -227,6 +248,10 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  *     tester, the `test` record for the reviewer, and the `test` and `review` records for the
  *     architect. The CI job's own pass and fail at #702's head are rig.sh's (ci_job_results), since
  *     only a job's results token records them through the route.
+ *   - ci-check-fail and ci-check-fail-other-head, of reviewer-own-head and architect-pass-and-fail:
+ *     a pass of the implementer and one of the tester of k1 at the head of each open pull request,
+ *     then the `test` record, and for the architect the `review` record. k2, the check a CI job
+ *     runs, holds no result of a role: its state is its job's.
  * Each record is written as its role's session (IMPLEMENTER, TESTER, REVIEWER), with the fields its
  * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's
  * `implementerProof` is `{how}` alone, since no phase completion or record carries its verdict. It
@@ -237,7 +262,12 @@ export async function headsEvents(file: string, headsFile: string, world: string
     .record(z.string(), z.string().regex(/^[0-9a-f]{40}$/))
     .parse(JSON.parse(readFileSync(headsFile, "utf8")));
   const ciRunning = world.startsWith("ci-pass-and-fail-");
-  const prs = world.startsWith("architect-pass-and-fail") || ciRunning ? ["702"] : ["702", "703"];
+  const ciCheck = ciCheckWorld(world);
+  const otherHead = ciCheck && world.endsWith("-other-head");
+  const prs =
+    (world.startsWith("architect-pass-and-fail") && !otherHead) || ciRunning
+      ? ["702"]
+      : ["702", "703"];
   const headOf = (pr: string): string => {
     const head = heads[pr];
     if (head === undefined) throw new Error(`${headsFile} names no head of #${pr}`);
@@ -301,7 +331,38 @@ export async function headsEvents(file: string, headsFile: string, world: string
               ],
             },
           }
-        : {}),
+        : ciCheck
+          ? {
+              // k2's job at each head the world runs it at: failed at #702's head, or passed there
+              // and failed at #703's.
+              check_runs: Object.fromEntries(
+                (otherHead
+                  ? ([
+                      ["702", CI_PASS_JOB],
+                      ["703", CI_FAIL_JOB],
+                    ] as const)
+                  : ([["702", CI_FAIL_JOB]] as const)
+                ).map(([pr, job]) => [
+                  headOf(pr),
+                  [
+                    {
+                      id: job.checkRun,
+                      name: job.name,
+                      check_suite_id: job.suite,
+                      status: "completed",
+                      conclusion: job.conclusion ?? "success",
+                      completed_at: new Date(Date.now() - 60_000).toISOString(),
+                      html_url: `https://github.com/${HEADS_REPO}/actions/runs/${job.run}/job/${job.checkRun}`,
+                      output: {
+                        title: `${job.name} ${job.conclusion ?? "success"}`,
+                        summary: `The ${job.name} job concluded ${job.conclusion ?? "success"}.`,
+                      },
+                    },
+                  ],
+                ])
+              ),
+            }
+          : {}),
   });
 
   const natsUrl = process.env.DISPATCH_E2E_NATS_URL ?? "";
@@ -463,6 +524,15 @@ export async function headsEvents(file: string, headsFile: string, world: string
   } else if (ciRunning) {
     test = await handoff("test");
     if (world === "ci-pass-and-fail-architect") review = await handoff("review");
+  } else if (ciCheck) {
+    // k1, the check that no CI job runs, passes from both roles at each open head the world has;
+    // k2's state is its job's, at the heads seeded above.
+    for (const pr of prs) {
+      await record({ ...IMPLEMENTER_PASS, pr });
+      await record({ ...TESTER_PASS, pr });
+    }
+    test = await handoff("test");
+    if (world.startsWith("architect-pass-and-fail")) review = await handoff("review");
   } else if (world === "reviewer-pass-and-fail" || world === "architect-pass-and-fail") {
     await record(IMPLEMENTER_PASS);
     await record(TESTER_PASS);

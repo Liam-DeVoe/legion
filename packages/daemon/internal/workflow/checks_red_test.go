@@ -452,9 +452,9 @@ func pushedFromTo(from, to, pusher string) intake.Fact {
 }
 
 // toldBody is the whole message a role is sent for one settlement of pull request 42 (workflow's
-// tellChecks): what the settlement says, and that nothing moved on it.
+// tellChecks): what the settlement says, that nothing moved on it, and no question to its reader.
 func toldBody(settled string) string {
-	return "Pull request #42: " + settled + ". Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code."
+	return "Pull request #42: " + settled + ". Nothing moved on it."
 }
 
 // roleToken is the Envoy role token of LEGION-208's role, the address a role message carries.
