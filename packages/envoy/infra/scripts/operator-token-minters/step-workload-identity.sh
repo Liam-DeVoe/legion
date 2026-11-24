@@ -44,7 +44,11 @@ read_other_cluster() {
     unknown "$cstep" "the API server refused the ServiceAccounts' list (it needs list on serviceaccounts, container.serviceAccounts.list on GKE): $(first_line "$WORK/serviceaccounts.err")"
     return
   fi
-  jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name] | rec' "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
+  if ! is_list "$WORK/serviceaccounts.json" "$WORK/serviceaccounts.err"; then
+    unknown "$cstep" "the API server's list of ServiceAccounts could not be read: $(first_line "$WORK/serviceaccounts.err")"
+    return
+  fi
+  jq -r "$JQ_REC"'.items[] | [.metadata.namespace, .metadata.name] | rec' "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
   while IFS="$US" read -r -u 3 ns name; do
     if system_namespace "$ns"; then

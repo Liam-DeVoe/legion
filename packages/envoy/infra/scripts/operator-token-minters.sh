@@ -127,9 +127,12 @@
 #                     of certificate signing requests by name, whose name the requester picks, joins
 #                     the certificate chain), and a refused list is UNKNOWN. A
 #                     review without the groups would miss every grant made to a group. Its witness
-#                     is a review for the group the built-in
-#                     cluster-admin binding names, system:masters, which must be allowed: an API
-#                     server whose answers cannot say yes proves nothing by saying no. Each
+#                     is a review for the group the built-in cluster-admin binding names,
+#                     system:masters, which must be in the answer and allowed: an API server whose
+#                     answers cannot say yes proves nothing by saying no. Every answer read with
+#                     `kubectl -o json` (the reviews, each list, a webhook's Service) is held to its
+#                     shape before it is read, so one sent empty, as `{}` or as an error page with
+#                     exit 0 is UNKNOWN, never a list of nothing. Each
 #                     --agent-namespace pattern that matches no namespace holding a ServiceAccount
 #                     is UNKNOWN, so a mistyped one cannot drop its agents in silence. Then who can
 #                     become a ServiceAccount with a finding is a finding naming the chain, followed

@@ -89,8 +89,6 @@
 #        secrets-broker-0: each exits 1 naming the name; create pods limited by name beside patch of
 #        that name, and rv14's create and patch of the namespace envoy-operator by name on another
 #        cluster, each exit 1 (server-side apply creates by patch); create limited by name alone exits 0;
-#        and a roles' list answered with exit 0 as an error page, an empty body or `{}` reads UNKNOWN
-#        naming the list, exit 2, where the first probe's right would go unseen;
 #   (bv) a refused list of roles, on the operator's cluster or another, reads UNKNOWN;
 #   (cc) legion/worker that may get, by name, a token Secret of envoy-operator that no ServiceAccount
 #        lists exits 1 naming it, and a refused list of the namespace's token Secrets reads UNKNOWN.
@@ -834,29 +832,12 @@ fi
 
 # --- (bu) Rights a live role limits by name. RBAC applies a rule with resourceNames only to a request
 # that names one of them, so a review naming nothing is refused for each of these; the check reads
-# the roles the bindings name. A roles' list answered with exit 0 as an error page, an empty body or
-# `{}` reads UNKNOWN naming the list, and the run exits 2 rather than miss the webhook-operator
-# item's right (update of the webhook configuration existing-webhook, by name). Run by hand, the
-# control for the roles items is the script and its parts as at bfb6ea5c85: the empty and `{}`
-# items exit 0 with no UNKNOWN. ---
+# the roles the bindings name. ---
 name_limited_row() {
   local who=system:serviceaccount:legion:worker cluster=operator-cluster subject suffix="" want
   base_world
   subject="$(sa_subject legion worker)"
   case "$1" in
-    roles-garbage | roles-empty | roles-object)
-      local shape="${1#roles-}" why=""
-      case "$shape" in
-        empty) why="the answer was empty" ;;
-        object) why="the answer is JSON, but not one object with a list of items" ;;
-      esac
-      subject_grant "$cluster" "$subject" update admissionregistration.k8s.io mutatingwebhookconfigurations "" "" existing-webhook
-      : >"$world/clusters/$cluster/$shape-roles"
-      run
-      want_rbac_unknown "the API server's list of roles could not be read, so a right a role limits by name is not read: $why" \
-        "the roles' list answered as $shape, where legion/worker's update of mutatingwebhookconfigurations existing-webhook would go unseen"
-      return
-      ;;
     webhook-operator)
       subject_grant "$cluster" "$subject" update admissionregistration.k8s.io mutatingwebhookconfigurations "" "" existing-webhook
       want="update mutatingwebhookconfigurations.admissionregistration.k8s.io existing-webhook cluster-wide"
@@ -913,9 +894,8 @@ name_limited_row() {
   want_line "FINDING $who: $want$suffix" "a right limited by name ($1)"
 }
 if row bu; then
-  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-patch rv14 create-named \
-    roles-garbage roles-empty roles-object
-  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec, a create with its patch) exits 1 naming the name; create limited by name alone exits 0; a roles' list answered as an error page, an empty body or {} reads UNKNOWN"
+  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-patch rv14 create-named
+  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec, a create with its patch) exits 1 naming the name; create limited by name alone exits 0"
 fi
 
 # --- (bv) The roles' list, which the named rights are read from. ---

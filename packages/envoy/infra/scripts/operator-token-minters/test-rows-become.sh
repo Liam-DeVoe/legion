@@ -51,21 +51,14 @@ fi
 # --- (cl) The by-name read of who can become a found ServiceAccount fails: a copy whose code-rbac.jq
 # breaks on a become right must read UNKNOWN, never clean. ---
 if row cl; then
-  copy="$temporary_dir/copy-broken-become"
   base_world
   subject_grant operator-cluster "$(sa_subject kube-system generic-garbage-collector)" create "" serviceaccounts token envoy-operator envoy-operator
-  rm -rf "$copy"
-  mkdir -p "$copy"
-  cp "$check" "$copy/operator-token-minters.sh"
-  cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
+  script="$(script_copy broken-become)"
   # A become right carries `targets`, which no other right the jq program is given does.
-  sed -i 's/^\(        \)(\$rights | map(\.key)) as \$plain$/\1if any($named_rights[]; has("targets")) then error("a read broken by the test") else . end\n\1| ($rights | map(.key)) as $plain/' \
-    "$copy/operator-token-minters/code-rbac.jq"
-  grep -q 'a read broken by the test' "$copy/operator-token-minters/code-rbac.jq" || fail "the test could not break the copy's code-rbac.jq"
-  mapfile -t args < <(full_args)
-  status=0
-  output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$copy/operator-token-minters.sh" "${args[@]}" 2>&1)" ||
-    status=$?
+  plant "$(dirname "$script")/operator-token-minters/code-rbac.jq" '        ($rights | map(.key)) as $plain' \
+    '        if any($named_rights[]; has("targets")) then error("a read broken by the test") else . end
+        | ($rights | map(.key)) as $plain'
+  run_script="$script" run
   want_status 2 "a by-name read of who can become a found ServiceAccount that fails"
   want_text "UNKNOWN live: RBAC on operator-cluster: the live roles could not be read for who can become a found ServiceAccount by a right limited by name: " \
     "a by-name read of who can become a found ServiceAccount that fails"

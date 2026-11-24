@@ -41,16 +41,21 @@ admission_power() {
   local kube="$1" step="$2" guarded id url policies allowlist sns sname why engines
   POWER_RIGHTS='[]'
   guarded="$(printf '%s\n' "${GUARDED[@]%%/*}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
+  # The cluster-scoped resources, so a webhook rule naming a resource that is namespaced in one group
+  # it names and cluster-scoped in another (a CRD of the same plural) is judged. kubectl prints what
+  # it read before an error, so a partial list is still used, and the error is UNKNOWN.
+  kubectl --kubeconfig "$kube" api-resources --namespaced=false -o name >"$WORK/cluster-resources" 2>"$WORK/cluster-resources.err" ||
+    unknown "$step" "the API server's discovery of cluster-scoped resources could not be read whole, so a webhook rule on a resource it leaves out is judged as that resource's namespaced name alone: $(first_line "$WORK/cluster-resources.err")"
   if ! kubectl --kubeconfig "$kube" get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json >"$WORK/webhooks.json" 2>"$WORK/webhooks.err"; then
     unknown "$step" "the API server refused the list of webhook configurations (it needs list on mutatingwebhookconfigurations and validatingwebhookconfigurations, container.mutatingWebhookConfigurations.list and container.validatingWebhookConfigurations.list on GKE), so no webhook's backend is reviewed: $(first_line "$WORK/webhooks.err")"
   elif ! is_list "$WORK/webhooks.json" "$WORK/webhooks.err" ||
     ! jq -c -L "$LIB" --argjson guarded "$guarded" --argjson table "$TABLE_JSON" --rawfile names "$WORK/api-resources" \
-      -f "$LIB/webhook-backends.jq" "$WORK/webhooks.json" >"$WORK/webhooks.out" 2>"$WORK/webhooks.err"; then
+      --rawfile cluster_names "$WORK/cluster-resources" -f "$LIB/webhook-backends.jq" "$WORK/webhooks.json" >"$WORK/webhooks.out" 2>"$WORK/webhooks.err"; then
     unknown "$step" "the API server's list of webhook configurations could not be read, so no webhook's backend is reviewed: $(first_line "$WORK/webhooks.err")"
   else
     POWER_RIGHTS="$(jq -c .rights "$WORK/webhooks.out")"
     while IFS=$'\t' read -r id url; do
-      unknown "$step" "the webhook $id can match a guarded namespace and calls $url, outside the cluster, whose holders this check cannot read"
+      unknown "$step" "the webhook $id can match a guarded namespace or a cluster-scoped object and calls $url, outside the cluster, whose holders this check cannot read"
     done < <(jq -r '.urls[] | [.id, .url] | @tsv' "$WORK/webhooks.out")
     # The Service each such webhook calls: an ExternalName, or one with no selector, whose endpoints
     # are whatever someone wrote, can route admission calls outside what this check reads.
@@ -63,9 +68,13 @@ admission_power() {
         unknown "$step" "the webhook $id calls the Service $sns/$sname, whose answer is not one JSON object ($(first_line "$WORK/service.err")), so where it sends admission calls is not read"
         continue
       fi
-      why="$(jq -r 'if .spec.type == "ExternalName" then "is of type ExternalName (\(.spec.externalName // "")), so admission calls leave the cluster"
+      # is_object passed, so jq fails here only on a Service whose .spec is not an object.
+      if ! why="$(jq -r 'if .spec.type == "ExternalName" then "is of type ExternalName (\(.spec.externalName // "")), so admission calls leave the cluster"
         elif ((.spec.selector // {}) | length) == 0 then "has no selector, so its endpoints can point anywhere, inside the cluster or out"
-        else "" end' "$WORK/service.json" 2>/dev/null)" || why="answered no JSON"
+        else "" end' "$WORK/service.json" 2>"$WORK/service.err")"; then
+        unknown "$step" "the webhook $id calls the Service $sns/$sname, whose spec could not be read ($(first_line "$WORK/service.err")), so where it sends admission calls is not read"
+        continue
+      fi
       [ -z "$why" ] || unknown "$step" "the webhook $id calls the Service $sns/$sname, which $why, whose holders this check cannot read"
     done 7< <(jq -r '.services | unique_by([.ns, .name])[] | [.id, .ns, .name] | @tsv' "$WORK/webhooks.out")
   fi

@@ -10,8 +10,10 @@ def own_groups: ["admissionregistration.k8s.io", "apiextensions.k8s.io", "apireg
   "discovery.k8s.io", "events.k8s.io", "flowcontrol.apiserver.k8s.io", "internal.apiserver.k8s.io",
   "metrics.k8s.io", "networking.k8s.io", "node.k8s.io", "rbac.authorization.k8s.io", "resource.k8s.io",
   "scheduling.k8s.io", "storage.k8s.io", "storagemigration.k8s.io"];
+# discovered($names): each line of $names, a discovery's resources a line (`kubectl api-resources -o
+# name`: `pods`, `deployments.apps`), as {resource, group}, the group empty for the core group.
+def discovered($names): [$names | split("\n")[] | select(length > 0) | {resource: (split(".")[0]), group: (split(".")[1:] | join("."))}];
 def custom_resources($names):
-  [$names | split("\n")[] | select(contains("."))
-   | {resource: (split(".")[0]), group: (split(".")[1:] | join("."))}
+  [discovered($names)[]
    | select(.group | contains("."))
    | select(.group as $g | own_groups | index($g) | not)];

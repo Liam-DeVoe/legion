@@ -267,13 +267,16 @@ if row z; then
   passed "(z) the committed report fixture equals a fresh --report of its world"
 fi
 
-# --- (al) A report is this run's or none. ---
+# --- (al) A report is this run's or none. A copy whose webhook-backends.jq prints nothing stops the
+# run mid-way (with_rights refuses the empty rights, as row (cx) shows); the old report is replaced
+# by the run's own, which holds its UNKNOWN run. ---
 if row al; then
   base_world
   report="$temporary_dir/old-report.json"
   echo '{"run_at": "2000-01-01T00:00:00Z", "findings": [], "unknown": []}' >"$report"
-  : >"$world/clusters/operator-cluster/garbage-serviceaccounts"
-  run --report "$report"
+  script="$(script_copy al)"
+  echo 'empty' >"$(dirname "$script")/operator-token-minters/webhook-backends.jq"
+  run_script="$script" run --report "$report"
   want_status 2 "a run that stops mid-way"
   want_text "UNKNOWN run: the run stopped before its end" "a run that stops mid-way"
   [ -s "$report" ] || fail "a run that stops mid-way left no report"
@@ -318,21 +321,15 @@ fi
 
 # --- (bc) A copy missing a part reads "UNKNOWN run" before any step runs. ---
 missing_part_row() {
-  local copy="$temporary_dir/copy-$1" args
+  local script report="$temporary_dir/bc-$1.json"
   base_world
-  rm -rf "$copy"
-  mkdir -p "$copy"
-  cp "$check" "$copy/operator-token-minters.sh"
-  cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
-  rm "$copy/operator-token-minters/$1"
-  mapfile -t args < <(full_args)
-  status=0
-  output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$copy/operator-token-minters.sh" \
-    "${args[@]}" --report "$copy/report.json" 2>&1)" || status=$?
+  script="$(script_copy "bc-$1")"
+  rm "$(dirname "$script")/operator-token-minters/$1"
+  run_script="$script" run --report "$report"
   want_status 2 "a copy without $1"
   want_text "UNKNOWN run: the parts $1 of " "a copy without $1"
-  jq -e --arg p "$1" '.findings == [] and any(.unknown[]; .step == "run" and (.reason | contains($p)))' "$copy/report.json" >/dev/null 2>&1 ||
-    fail "a copy without $1: the report does not hold the UNKNOWN run: $(cat "$copy/report.json" 2>&1)"
+  jq -e --arg p "$1" '.findings == [] and any(.unknown[]; .step == "run" and (.reason | contains($p)))' "$report" >/dev/null 2>&1 ||
+    fail "a copy without $1: the report does not hold the UNKNOWN run: $(cat "$report" 2>&1)"
 }
 if row bc; then
   each missing_part_row output.sh analysis.jq
@@ -537,25 +534,6 @@ if row cs; then
   [ "${accounts:-0}" -gt 150 ] || fail "the RBAC step reviewed ${accounts:-no} ServiceAccounts outside the system namespaces, not the world's 150 more"
   passed "(cs) a cluster whose principals and rights each pass a command line's argument is reviewed whole, and exits 0"
 fi
-
-# script_copy NAME: a copy of the script and its parts under the row's temporary directory, for a row
-# that breaks one part; prints the copy's script path.
-script_copy() {
-  local copy="$temporary_dir/copy-$1"
-  rm -rf "$copy"
-  mkdir -p "$copy"
-  cp "$check" "$copy/operator-token-minters.sh"
-  cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
-  printf '%s' "$copy/operator-token-minters.sh"
-}
-# plant FILE OLD NEW: FILE with its one OLD made NEW; fails the row when FILE does not hold OLD once,
-# so a plant that missed its line cannot pass as a control.
-plant() {
-  local text
-  text="$(<"$1")"
-  [ "$(grep -cF -- "$2" "$1")" -eq 1 ] || fail "the plant's line is not in $(basename "$1") once: $2"
-  printf '%s\n' "${text/"$2"/"$3"}" >"$1"
-}
 
 # --- (cv) A part that builds a step's rights and fails, or prints nothing. A copy of the script
 # whose custom-rights.jq or named-rights.jq is `empty` (it prints nothing and exits 0) or an error,

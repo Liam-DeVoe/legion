@@ -1,13 +1,14 @@
 # operator-token-minters/webhook-backends.jq: admission_power's webhooks (admission-backends.sh), read
 # from a cluster's list of mutating and validating webhook configurations (one List object, which
-# admission_power holds to is_list before this runs), with $guarded the guarded
-# namespaces, $table RIGHTS_TABLE's rows and $names the discovery's namespaced, creatable resources
-# (custom.jq). A webhook is judged when its namespaceSelector can match a guarded namespace, or when
-# a rule of it can match a cluster-scoped object, whatever its namespaceSelector says: the API server
-# applies no namespaceSelector to an object with no namespace, so such a webhook admits the
-# operator's cluster-scoped writes (a ClusterRoleBinding, the next apply) wherever it is backed. A
-# judged webhook that calls a Service gives, as rights (as rights_json writes them), every way to run
-# or enter a pod in the Service's namespace that a guarded namespace is asked (each namespaced row of
+# admission_power holds to is_list before this runs), with $guarded the guarded namespaces, $table
+# RIGHTS_TABLE's rows, $names the discovery's namespaced resources that take create (custom_rights
+# reads them with --verbs=create; custom.jq) and $cluster_names its cluster-scoped ones. A webhook is
+# judged when its namespaceSelector can match a guarded namespace, or when a rule of it can match a
+# cluster-scoped object, whatever its namespaceSelector says: the API server applies no
+# namespaceSelector to an object with no namespace, so such a webhook admits the operator's
+# cluster-scoped writes (a ClusterRoleBinding, the next apply) wherever it is backed. A judged
+# webhook that calls a Service gives, as rights (as rights_json writes them), every way to run or
+# enter a pod in the Service's namespace that a guarded namespace is asked (each namespaced row of
 # RIGHTS_TABLE:
 # pods and their exec, attach and ephemeral containers, every pod controller, jobs and cronjobs,
 # rolebindings, secrets; and create, update and patch of each custom resource), since a pod there
@@ -19,8 +20,9 @@
 # namespace's name: any other requirement can match, since a namespace's other labels can change,
 # and an objectSelector can match a pod made to fit it. A rule can match a cluster-scoped object
 # unless its scope is Namespaced: with scope Cluster it can, and with scope * (the default) it can
-# when a resource it names is `*`, or is in no group it names among the discovery's namespaced
-# resources ($names), so a resource the discovery does not list as namespaced counts as cluster-scoped.
+# when a resource it names is `*`, is cluster-scoped in a group it names ($cluster_names), or is
+# namespaced in none of them ($names). So a namespaced resource with no create verb, which $names
+# leaves out, counts as cluster-scoped: that judges more webhooks, never fewer.
 include "custom";
 def can_match($ns):
   (.namespaceSelector // {}) as $s
@@ -31,24 +33,27 @@ def can_match($ns):
       elif .operator == "NotIn" then all(.values[]; . != $ns)
       elif .operator == "Exists" then true
       else false end));
-# cluster_rule($namespaced): whether a webhook rule can match a cluster-scoped object, $namespaced
-# being the discovery's namespaced resources as {resource, group}.
-def cluster_rule($namespaced):
+# in_groups($groups): whether a discovered {resource, group} is in a group a rule names.
+def in_groups($groups): .group as $g | any($groups[]; . == "*" or . == $g);
+# cluster_rule($namespaced; $cluster): whether a webhook rule can match a cluster-scoped object, given
+# the discovery's namespaced and cluster-scoped resources as {resource, group}.
+def cluster_rule($namespaced; $cluster):
   (.scope // "*") as $scope
   | (.apiGroups // ["*"]) as $groups
   | if $scope == "Namespaced" then false
     elif $scope == "Cluster" then true
     else any((.resources // [])[] | split("/")[0];
       . as $r | $r == "*"
-        or ($namespaced | any(.[]; .resource == $r and (.group as $g | any($groups[]; . == "*" or . == $g))) | not))
+        or any($cluster[]; .resource == $r and in_groups($groups))
+        or (any($namespaced[]; .resource == $r and in_groups($groups)) | not))
     end;
-[$names | split("\n")[] | select(length > 0) | {resource: (split(".")[0]), group: (split(".")[1:] | join("."))}] as $namespaced
+discovered($names) as $namespaced | discovered($cluster_names) as $cluster
 | ([$table[] | select(.named | not) | {verb, group, resource, sub}]
  + [custom_resources($names)[] | ("create", "update", "patch") as $verb | {verb: $verb, group, resource, sub: ""}]
  + [(["", "services"], ["", "endpoints"], ["discovery.k8s.io", "endpointslices"], ["", "secrets"], ["", "configmaps"]) as [$g, $res]
     | ("create", "update", "patch") | {verb: ., group: $g, resource: $res, sub: ""}]) as $ways
 | [.items[] | (.kind // "") as $kind | .metadata.name as $config | .webhooks[]? | . as $w
-  | select(any(.rules[]?; cluster_rule($namespaced)) or any($guarded[]; . as $ns | $w | can_match($ns)))
+  | select(any(.rules[]?; cluster_rule($namespaced; $cluster)) or any($guarded[]; . as $ns | $w | can_match($ns)))
   | {id: "\($kind) \($config)/\(.name)", service: .clientConfig.service, url: .clientConfig.url}]
 | {urls: [.[] | select(.service == null) | {id, url: (.url // "no URL and no Service")}],
    services: [.[] | select(.service != null) | {id, ns: .service.namespace, name: .service.name}],

@@ -8,7 +8,8 @@
 # List, so a cluster is asked in one kubectl call. A review's answer is matched to its question by
 # the subject and the attributes the API server echoes in its spec. Writes a record of principal,
 # right label, allowed|refused|error and the evaluation error per review to $WORK/review.rec;
-# returns 1 with REVIEW_ERROR when the API server refused the call or did not answer every review.
+# returns 1 with REVIEW_ERROR when the API server refused the call, answered no List (is_list: an
+# empty body sent with exit 0 would leave no record at all), or did not answer every review.
 # PRINCIPALS and RIGHTS reach jq through files (--slurpfile), never its command line: a cluster's
 # principals and rights (3,183 and 508 on the operator's) are more than one argument may hold. Each
 # must be one JSON array (one_array), so an empty argument fails the reviews' build.
@@ -25,9 +26,10 @@ review() {
     REVIEW_ERROR="the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE): $(first_line "$WORK/review.err")"
     return 1
   fi
-  if ! jq -r --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" -L "$LIB" \
-    -f "$LIB/review-answer.jq" "$WORK/review.json" >"$WORK/review.rec" 2>"$WORK/review.err"; then
-    REVIEW_ERROR="the API server's answer to the reviews is not JSON: $(first_line "$WORK/review.err")"
+  if ! is_list "$WORK/review.json" "$WORK/review.err" ||
+    ! jq -r --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" -L "$LIB" \
+      -f "$LIB/review-answer.jq" "$WORK/review.json" >"$WORK/review.rec" 2>"$WORK/review.err"; then
+    REVIEW_ERROR="the API server's answer to the reviews could not be read: $(first_line "$WORK/review.err")"
     return 1
   fi
   local what answered asked
@@ -125,18 +127,19 @@ csr_chains() {
   done
   csr_reset
 }
-# judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must all be
-# allowed; every other allowed review is a finding on RESOURCE (the cluster), its right followed by
-# SUFFIX, granted where the API server's reason says, except a seed's, which only seeds FOUND_SAS,
-# and the certificate signing chain's parts, which csr_part gathers for csr_chains (the caller runs
-# it after live_named, whose named approvals join the chain). Returns 1 when the witness was
-# refused.
+# judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must be there
+# and all allowed; every other allowed review is a finding on RESOURCE (the cluster), its right
+# followed by SUFFIX, granted where the API server's reason says, except a seed's, which only seeds
+# FOUND_SAS, and the certificate signing chain's parts, which csr_part gathers for csr_chains (the
+# caller runs it after live_named, whose named approvals join the chain). Returns 1 when the witness
+# was refused, or was not in the answer at all.
 judge_reviews() {
-  local principal label verdict error reason witness_refused=false
+  local principal label verdict error reason witness_refused=false witness_seen=false
   FOUND_SAS=()
   csr_reset
   while IFS="$US" read -r -u 4 principal label verdict error reason; do
     if [ "$principal" = witness ]; then
+      witness_seen=true
       [ "$verdict" = allowed ] || witness_refused=true
       continue
     fi
@@ -149,6 +152,10 @@ judge_reviews() {
       error) unknown "$1" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
     esac
   done 4<"$WORK/review.rec"
+  if [ "$witness_seen" = false ]; then
+    unknown "$1" "the API server's answer to the reviews held no review of the witness, the cluster-admin binding's group system:masters, so a refusal from this API server proves nothing"
+    return 1
+  fi
   if [ "$witness_refused" = true ]; then
     unknown "$1" "the witness review, the cluster-admin binding's group system:masters, was not allowed, so a refusal from this API server proves nothing"
     return 1
@@ -542,10 +549,10 @@ settings_verdict() {
 # what it printed. Its callers run it as `named_rights || unknown`, which turns errexit off inside
 # it, so each pipeline here is checked by its own `||`.
 named_rights() {
-  local bindings='{"items": []}' file files=() built
+  local bindings='{"items": []}' file files=() built cannot="the rights a role limits by name could not be built, so none is reviewed"
   NAMED_RIGHTS='[]' NAMED_ERROR=""
   cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/reviewed.json" ||
-    { NAMED_ERROR="the rights a role limits by name could not be built, so none is reviewed: the reviewed principals could not be listed"; return 1; }
+    { NAMED_ERROR="$cannot: the reviewed principals could not be listed"; return 1; }
   [ "$BINDINGS_OK" != true ] || bindings="$(<"$WORK/bindings.json")"
   for file in "$WORK/gke-analysis.rec" ${1:+"$WORK/gke-analysis-$1.rec"}; do
     [ ! -s "$file" ] || files+=("$file")
@@ -553,16 +560,15 @@ named_rights() {
   if [ "${#files[@]}" -gt 0 ]; then
     awk -F"$US" '$1 == "row" || $1 == "chain" { print $2 }' "${files[@]}" |
       sed -n 's/^\(user\|serviceAccount\):\([^[]*\)$/\2/p' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/iam-users.json" ||
-      { NAMED_ERROR="the rights a role limits by name could not be built, so none is reviewed: the IAM holders could not be listed"; return 1; }
+      { NAMED_ERROR="$cannot: the IAM holders could not be listed"; return 1; }
   else
-    printf '[]' >"$WORK/iam-users.json" ||
-      { NAMED_ERROR="the rights a role limits by name could not be built, so none is reviewed: the IAM holders could not be written"; return 1; }
+    printf '[]' >"$WORK/iam-users.json" || { NAMED_ERROR="$cannot: the IAM holders could not be written"; return 1; }
   fi
   if built="$(jq -c -L "$LIB" --slurpfile reviewed "$WORK/reviewed.json" --slurpfile iam_users "$WORK/iam-users.json" \
     -f "$LIB/named-rights.jq" <<<"$bindings" 2>"$WORK/named-rights.err")" && is_rights "$built"; then
     NAMED_RIGHTS="$built"
   else
-    NAMED_ERROR="the rights a role limits by name could not be built, so none is reviewed: $(first_line "$WORK/named-rights.err")"
+    NAMED_ERROR="$cannot: $(first_line "$WORK/named-rights.err")"
     return 1
   fi
 }
@@ -571,11 +577,14 @@ named_rights() {
 # printed nothing leaves, is none, so a step never reads it as no rights.
 is_rights() { printf '%s' "$1" | jq -s -L "$LIB" 'include "rec"; one_array(.; "rights") | empty' >/dev/null 2>&1; }
 # is_list FILE ERR: whether FILE holds one JSON object whose items is an array, as kubectl get -o json
-# writes a list. jq reads an empty answer, which a proxy that drops a response's body sends with
-# exit 0, as no value: a program over it prints nothing and exits 0, so a read that checks only
-# jq's exit status takes it for an empty list. Every list the check reads with kubectl -o json is
-# held to this before any read of it. On failure ERR says why (jq's own error for an answer that is
-# not JSON), for the caller's UNKNOWN.
+# writes a list and kubectl create -o json answers a List of reviews. jq reads an empty answer, which
+# a proxy that drops a response's body sends with exit 0, as no value: a program over it prints
+# nothing and exits 0, so a read that checks only jq's exit status takes it for an empty list. Every
+# list the check reads with kubectl -o json (the ServiceAccounts, the bindings, the roles, the
+# webhook configurations, the CRDs, the workload allowlists, the admission policies and their
+# bindings) and the answer to the reviews is held to this before any read of it; a webhook's
+# Service is held to is_object. On failure ERR says why (jq's own error for an answer that is not
+# JSON), for the caller's UNKNOWN.
 is_list() {
   jq -e -s 'length == 1 and (.[0] | type) == "object" and (.[0].items | type) == "array"' "$1" >/dev/null 2>"$2" && return 0
   shape_error "$1" "$2" "one object with a list of items"
@@ -597,8 +606,9 @@ shape_error() {
 # where both hold one, RIGHTS's label stays. Both reach jq on its stdin, never its command line. It
 # refuses anything but two JSON arrays (is_rights), an empty argument included, printing why and
 # returning 1: a step assigns its result, so under errexit the run stops there, UNKNOWN, rather
-# than go on without the rights the argument owed. Every rights value a step joins goes through it;
-# a part that builds rights for an UNKNOWN of its own checks them with is_rights where it builds them.
+# than go on without the rights the argument owed. Every rights value a step joins goes through it.
+# custom_rights, admission_rights and named_rights check what they build with is_rights too, so a
+# failed build reads as their own UNKNOWN, naming those rights, rather than stopping the run.
 with_rights() {
   if ! is_rights "$1" || ! is_rights "$2"; then
     echo "with_rights takes two JSON arrays, and was given: $(printf '%.60s' "$1"), $(printf '%.60s' "$2")" >&2
