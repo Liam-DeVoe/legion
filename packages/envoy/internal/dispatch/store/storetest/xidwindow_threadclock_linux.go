@@ -267,14 +267,27 @@ func xidHoldThread() (release func(), held bool) {
 	if os.Getenv("PLANT") == "einval" {
 		local = 99
 	}
-	if _, _, errno := unix.Syscall(unix.SYS_SET_MEMPOLICY, local, 0, 0); errno != 0 {
-		os.Stderr.WriteString("PLANT: the hold's set_mempolicy answered " + errno.Error() + "\n")
-		return func() {}, false
+	// PLANT nosetpolicy (scratch): the hold reads the policy, sets none, and answers held.
+	if os.Getenv("PLANT") != "nosetpolicy" {
+		if _, _, errno := unix.Syscall(unix.SYS_SET_MEMPOLICY, local, 0, 0); errno != 0 {
+			os.Stderr.WriteString("PLANT: the hold's set_mempolicy answered " + errno.Error() + "\n")
+			return func() {}, false
+		}
 	}
 	return func() {
 		// PLANT norestore (scratch): the let-go always puts back the default.
 		if mode == xidMempolicyDefault || os.Getenv("PLANT") == "norestore" {
 			unix.Syscall(unix.SYS_SET_MEMPOLICY, xidMempolicyDefault, 0, 0)
+			return
+		}
+		switch os.Getenv("PLANT") {
+		// PLANT restorenothing (scratch): the let-go of a policy that is not the default makes no call.
+		case "restorenothing":
+			return
+		// PLANT restoreempty (scratch): the let-go puts back the mode with an empty node mask.
+		case "restoreempty":
+			var empty [16]uint64
+			unix.Syscall(unix.SYS_SET_MEMPOLICY, uintptr(mode), uintptr(unsafe.Pointer(&empty[0])), uintptr(len(empty)*64))
 			return
 		}
 		unix.Syscall(unix.SYS_SET_MEMPOLICY, uintptr(mode), uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64))
@@ -340,7 +353,8 @@ func xidHoldMemory() bool {
 			unix.Syscall(unix.SYS_MADVISE, start, end-start, unix.MADV_POPULATE_WRITE)
 		}
 		// PLANT memcall (scratch): the hold calls mbind whatever NUMA balancing does, and heeds it.
-		if balancing || os.Getenv("PLANT") == "memcall" {
+		// PLANT nombind (scratch): with NUMA balancing on, the hold makes no mbind and answers held.
+		if (balancing || os.Getenv("PLANT") == "memcall") && os.Getenv("PLANT") != "nombind" {
 			_, _, errno := unix.Syscall6(unix.SYS_MBIND, start, end-start, xidMempolicyLocal, 0, 0, 0)
 			if errno == unix.EPERM || errno == unix.ENOSYS {
 				held = false
