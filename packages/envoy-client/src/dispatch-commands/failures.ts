@@ -1,3 +1,4 @@
+import { mayHaveReachedServer } from "@legion/contracts/http-status";
 import { DispatchGatewayError, DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 
@@ -51,15 +52,17 @@ export function dispatchAnswered(error: unknown, status: number): error is Dispa
 
 /**
  * Whether a write that failed with `error` may have taken effect anyway. Only an answer sent
- * before the write could apply proves it did not: Dispatch's own refusal (a 4xx), or a gateway's
- * answer that never reached Dispatch (`mayHaveReachedDispatch`), which the client throws as such
- * only when no earlier attempt of the write may have reached Dispatch either. Dispatch's own 5xx
- * can come after it committed, and a timeout, a transport error or a `DispatchWriteUnsettledError`
- * (an earlier attempt may have reached Dispatch) says nothing either way.
+ * before the write could apply proves it did not: Dispatch's own refusal (a 4xx but a 408), or a
+ * gateway's answer that never reached Dispatch (`mayHaveReachedDispatch`), which the client throws
+ * as such only when no earlier attempt of the write may have reached Dispatch either. A status
+ * after which the request may have reached the server (`mayHaveReachedServer`: a 5xx, which
+ * Dispatch can send after it committed, or a 408), a timeout, a transport error or a
+ * `DispatchWriteUnsettledError` (an earlier attempt may have reached Dispatch) says nothing either
+ * way.
  */
 export function writeMayHaveLanded(error: unknown): boolean {
   if (error instanceof DispatchGatewayError) return error.mayHaveReachedDispatch;
-  return !(error instanceof DispatchServiceError) || error.status >= 500;
+  return !(error instanceof DispatchServiceError) || mayHaveReachedServer(error.status);
 }
 
 /**
