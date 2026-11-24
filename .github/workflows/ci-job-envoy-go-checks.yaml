@@ -210,10 +210,14 @@ jobs:
         run: bash scripts/project-secrets-check.test.sh
         working-directory: packages/envoy
       # approve-check.sh's session (scripts/approve/session.ts): the scan of k31's step (e) finds a
-      # logged binding's key as bare PEM and as PEM inside a JSON string, and on a box refuses,
-      # UNKNOWN and exit 3, a run that names no process of the session it could read.
+      # logged binding's key as bare PEM and as PEM inside a JSON string, finds a token of the
+      # broker's shape in each form a file, a URL or an environment writes it in, and is UNKNOWN,
+      # exit 3, when it compared nothing.
       - name: Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)
         run: bun test scripts/approve/
+        working-directory: packages/envoy
+      - name: Exit test for approve-check.sh (its steps library alone; no stack)
+        run: bash scripts/approve-check.test.sh
         working-directory: packages/envoy
       - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
         run: bash scripts/callout-check.test.sh

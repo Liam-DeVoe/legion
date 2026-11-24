@@ -70,6 +70,7 @@ FAILED=0
 UNKNOWN=0
 STACK_PID=""
 METADATA_PID=""
+# shellcheck disable=SC2329 # cleanup runs from the EXIT trap below, as every early stop and finish exit
 cleanup() {
   [ -z "$METADATA_PID" ] || kill "$METADATA_PID" 2>/dev/null || true
   if [ -n "$STACK_PID" ] && kill -0 "$STACK_PID" 2>/dev/null; then
@@ -80,14 +81,10 @@ cleanup() {
 trap cleanup EXIT
 echo "approve-check: work directory $WORK" >&2
 
-result() { # <step> <PASS|FAIL|UNKNOWN> <what it read>
-  printf 'approve-check: %s: %s %s\n' "$1" "$2" "$3"
-  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$WORK/results.tsv"
-  case "$2" in
-    FAIL) FAILED=1 ;;
-    UNKNOWN) UNKNOWN=1 ;;
-  esac
-}
+# result, stop_unknown and finish: how each step is recorded and how the run ends
+# (approve-check.test.sh drives them).
+# shellcheck source=lib/approve-check-steps.sh
+. "$SCRIPT_DIR/lib/approve-check-steps.sh"
 
 # --- The two control builds, from this tree with one patch each, through go build's -overlay so
 # the tree is never written. ---
@@ -120,8 +117,7 @@ start_stack() { # <name> <dev-stack.sh options>...
   local waited=0
   until grep -q '^dev-stack: ready\.$' "$STACK_DIR/stack.log" 2>/dev/null; do
     if ! kill -0 "$STACK_PID" 2>/dev/null || [ "$waited" -ge 1800 ]; then
-      result "$name stack" UNKNOWN "dev-stack.sh $* did not start; see $STACK_DIR/stack.log"
-      exit 3
+      stop_unknown "$name stack" "dev-stack.sh $* did not start; see $STACK_DIR/stack.log"
     fi
     sleep 0.5
     waited=$((waited + 1))
@@ -186,8 +182,7 @@ sign_in_box() {
     sleep 0.5
   done
   if [ -z "$code" ]; then
-    result "sign-in" UNKNOWN "agent-secrets login printed no code: $(tr '\n' ' ' <"$BOX/login.err")"
-    exit 3
+    stop_unknown "sign-in" "agent-secrets login printed no code: $(tr '\n' ' ' <"$BOX/login.err")"
   fi
   curl -sf -X POST "$DEV_STACK_ISSUER_URL/_dev/sign-in-as" -H 'Content-Type: application/json' \
     -d "$(jq -cn --arg p "$PERSON" '{sub: $p, email: $p, email_verified: true, hd: ($p | split("@")[1])}')" >/dev/null
@@ -195,8 +190,7 @@ sign_in_box() {
     -d "$(jq -cn --arg c "$code" '{user_code: $c}')" >/dev/null
   wait "$login" || true
   if ! grep -qF -- "$PERSON is signed in" "$BOX/login.out"; then
-    result "sign-in" UNKNOWN "$PERSON's agent-secrets login did not sign in: $(tr '\n' ' ' <"$BOX/login.err")"
-    exit 3
+    stop_unknown "sign-in" "$PERSON's agent-secrets login did not sign in: $(tr '\n' ' ' <"$BOX/login.err")"
   fi
   # The person's own sign-in to Dispatch, which a project's default assignee needs: the stack's
   # Dispatch serves no sign-in route under its https origin (dev sign-in takes a loopback origin
@@ -234,8 +228,7 @@ setup_issue() {
   local status=0 setup
   setup="$(session setup)" || status=$?
   if [ "$status" != 0 ]; then
-    result "setup" UNKNOWN "the session's setup exited $status: $(tail -n 3 "$STACK_DIR/session.err" | tr '\n' ' ')"
-    exit 3
+    stop_unknown "setup" "the session's setup exited $status: $(tail -n 3 "$STACK_DIR/session.err" | tr '\n' ' ')"
   fi
   echo "approve-check: $setup" >&2
 }
@@ -413,6 +406,4 @@ planted_control "1e control: planted tokens in token endpoint answers" "token en
 planted_control "1e control: planted tokens as NAME=value" "DISPATCH_APPROVE_TOKEN=<token> lines" 0 "$variables"
 stop_stack
 
-if [ "$FAILED" = 1 ]; then exit 1; fi
-if [ "$UNKNOWN" = 1 ]; then exit 3; fi
-echo "approve-check: every step passed; results in $WORK/results.tsv" >&2
+finish
