@@ -2,11 +2,13 @@
 
 // The live proof's driver of the roles of a deployment: the settings file defines checker, a role
 // of the type testing with a prompt file and a model, the owner of an issue gives Legion the plan
-// `implementer checker`, and the whole daemon runs the implementer, then the checker on the model
-// the settings give it, then the retro and the merge. scripts/e2e/roles.sh builds this driver with
-// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// `implementer checker`, and the whole daemon runs the implementer, then the checker, whose launch
+// and step record name the model the settings give it, then the retro and the merge.
+// scripts/e2e/roles.sh builds this driver with `-tags e2e` and owns the nats-server and the
+// PostgreSQL it runs against.
 //
-// Nothing of a step's path is stood in for. The settings are a legion.yaml the driver writes and
+// The daemon's path of a step is the real one, and the agent is played by the driver over its
+// pane's connection on the package's fake runtime. The settings are a legion.yaml the driver writes and
 // reads with config.Load, the loader the daemon's boot reads its file with, and the daemon boots on
 // the roles that load answers. Dispatch is the real server this checkout builds (startHandoffDispatch),
 // on a database of its own on LEGION_TEST_PG_DSN's server. The daemon is the whole daemon (run,

@@ -1116,9 +1116,9 @@ Legion names no provider, and no model but the `model` a role of `roles` names: 
 [configuration reference](/legion/legion/reference/config/):
 
 - `models.yml`, an Oh My Pi provider file whose API key is a command reading a mounted credential;
-- `overlay.yml`, an Oh My Pi settings overlay that sets each role's model where `legion.yaml`
-  names none (`modelRoles`), holds every session to the route's models, and disables every
-  provider the route does not use;
+- `overlay.yml`, an Oh My Pi settings overlay that sets the model of each of Oh My Pi's model roles
+  (`modelRoles`), holds every session to the route's models, and disables every provider the route
+  does not use;
 - `pod.yml`, the `runtime.kubernetes.pod` block that mounts both, and the credential, into every pod.
 
 To stand it up:
@@ -1150,11 +1150,12 @@ Nothing refuses a missing `default`: an Oh My Pi session whose role names no mod
 silently, on one of Oh My Pi's built-in models.
 Set every variable your route depends on in `pod.env`, which outranks a repository's own `.env`.
 
-To change a role's model later, where `legion.yaml` names none for it, edit its line under
-`modelRoles` in your `overlay.yml` and run `apply.sh` again.
+To change the model of one of Oh My Pi's model roles later, edit its line under `modelRoles` in your
+`overlay.yml` and run `apply.sh` again.
 Pods started after that use it; a running pod keeps its files until it is relaunched.
-A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under
-`modelRoles` applies to it.
+A role whose settings name no model runs on the `default` line.
+A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the
+`default` line.
 
 ## Check and start the daemon
 

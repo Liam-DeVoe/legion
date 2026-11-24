@@ -9041,9 +9041,9 @@ each issue's pod (every role of it alike) and the image probe's.
   A tool that still declares the ConfigMap acts at its own next apply:
   a forced one writes its copy back, and one without force fails on any key whose value differs and leaves the operator's copy;
   either way, stop it declaring the ConfigMap first.
-  To change a role's model, where `legion.yaml` names none for it, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
+  To change the model of one of Oh My Pi's model roles (`default`, `review`, `smol` and the rest), edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
-  A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under `modelRoles` applies to it.
+  A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the `default` line.
   The example overlay also turns `retry.modelFallback` on (a failed model call is retried on another model;
   which model is the repository's `retry.fallbackChains` to name):
   the probe pod reads the effective value under the operator's configuration (`omp config get retry.modelFallback`) onto its OK line's `model-fallback` mark (`unread` when it could not read it:
