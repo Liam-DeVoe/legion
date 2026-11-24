@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -92,6 +93,33 @@ func (r *idleRig) runRow(t *testing.T, kind, op string) {
 	}
 }
 
+// wakePair is what one resume of a role pairs with: the release it names (pod_resumes.release_id)
+// and the pause that holds it (pod_resumes.pause_id), each 0 for none.
+type wakePair struct{ release, pause int64 }
+
+// wakePairs is what each resume of role pairs with, for the rig's issue, in id order.
+func (r *idleRig) wakePairs(t *testing.T, role claim.Role) []wakePair {
+	t.Helper()
+	rows, err := r.pool.Query(context.Background(), `select release_id, coalesce(pause_id, 0) from pod_resumes
+		where issue = $1 and role = $2 order by id`, r.issue.Key, string(role))
+	if err != nil {
+		t.Fatalf("read the resumes of the %s: %v", role, err)
+	}
+	defer rows.Close()
+	var pairs []wakePair
+	for rows.Next() {
+		var pair wakePair
+		if err := rows.Scan(&pair.release, &pair.pause); err != nil {
+			t.Fatalf("read a resume of the %s: %v", role, err)
+		}
+		pairs = append(pairs, pair)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the resumes of the %s: %v", role, err)
+	}
+	return pairs
+}
+
 // The reviewer's comment 4672066589 on cybermonklabs/legion#4194 (R3 of dispatch://INFRA-3589,
 // the woken role's wake text is true). A cancel tells the wake's start of each role its release
 // stopped and no cancel resumes in the words of a release that did not finish, and leaves the
@@ -104,7 +132,10 @@ func (r *idleRig) runRow(t *testing.T, kind, op string) {
 // so the release is overtaken and cancelled. The pod never went away, so the start must say that
 // the release did not finish, with no word of a pod that went away. No cancel resumes a claim its
 // mark does not name, so that start is the implementer's one start, and it brings the role back
-// in the same pod.
+// in the same pod. An earlier release of the pod is recorded, so the wake's resume names that
+// release. This release took no pod, so the cancel keeps the resume and makes it name release 0.
+// Before the cancel, the test reads the start's words of a released pod and the resume's earlier
+// release, so each check after the cancel can fail.
 //
 // The second row is the control. An earlier release left the architect `released`, and this
 // release did not stop it: its claim is no claim this release suspended, and its resume is no
@@ -116,6 +147,13 @@ func TestACancelTellsTheWakeOfEachRoleItsReleaseStoppedInTheCancelsWords(t *test
 	t.Run("a role the release stopped and its mark does not record", func(t *testing.T) {
 		rig := newIdleRig(t)
 		ctx := context.Background()
+		// An earlier release of the issue's pod, recorded before this release: a wake taken while
+		// this release stands pairs with it (store.LatestPodRelease).
+		earlier, err := rig.st.RecordPodRelease(ctx, store.PodRelease{Project: "legion", Issue: rig.issue.Key, Generation: 1,
+			Roles: []string{string(claim.RoleImplementer)}, At: time.Now().UTC().Add(-2 * time.Hour)})
+		if err != nil {
+			t.Fatalf("record an earlier release of the issue's pod: %v", err)
+		}
 		refused := &releaseRecordRefused{outboxTrees: rig.st, err: errors.New("the record of the stopped claim did not commit")}
 		rig.runner.trees = refused
 		rig.w.releaseIdlePod(ctx, rig.issue.Key)
@@ -133,6 +171,18 @@ func TestACancelTellsTheWakeOfEachRoleItsReleaseStoppedInTheCancelsWords(t *test
 		}
 
 		released := rig.queueRoleMessageWake(t, claim.RoleImplementer)
+		// The controls of the checks after the cancel. The wake's start says that the pod was
+		// released and that the message came while the pod was gone, and its resume pairs with the
+		// earlier release.
+		if starts := rig.startsOf(t, claim.RoleImplementer); len(starts) != 1 || !strings.Contains(starts[0], "had been released") ||
+			!strings.Contains(starts[0], "while your pod was gone") {
+			t.Fatalf("the implementer's starts before the cancel = %q, want its wake's one start, whose task says that the pod had been released and that the message came while the pod was gone",
+				starts)
+		}
+		if pairs := rig.wakePairs(t, claim.RoleImplementer); !slices.Equal(pairs, []wakePair{{release: earlier}}) {
+			t.Fatalf("the implementer's resumes before the cancel = %+v, want its wake's one resume, paired with the earlier release %d and held by no pause",
+				pairs, earlier)
+		}
 		refused.err = nil
 		rig.runRow(t, "supervise", "release")
 		if rig.marked(t) {
@@ -145,6 +195,10 @@ func TestACancelTellsTheWakeOfEachRoleItsReleaseStoppedInTheCancelsWords(t *test
 			strings.Contains(starts[0], "had been released") || strings.Contains(starts[0], "while your pod was gone") {
 			t.Fatalf("the implementer's starts after the cancel = %q, want its wake's one start with the task %q: the release did not finish, and the pod never went away",
 				starts, want)
+		}
+		if pairs := rig.wakePairs(t, claim.RoleImplementer); !slices.Equal(pairs, []wakePair{{release: 0}}) {
+			t.Fatalf("the implementer's resumes after the cancel = %+v, want its wake's one resume, paired with release 0 and held by no pause: the release took no pod, and the wake's start still resumes the claim",
+				pairs)
 		}
 
 		resumes := len(rig.rt.CallsOf("Resume"))

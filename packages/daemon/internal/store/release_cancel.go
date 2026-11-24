@@ -91,10 +91,11 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // transaction of its own after the suspension (ReleaseSuspendedClaim), and that record can fail,
 // or the daemon can stop before it. A wake of such a role reads as a wake of a role outside the
 // set, which cancels the release (releaseOvertaken). No cancel resumes that claim, because the set
-// does not name it, so its wake's start is the role's one start, in the pod that stayed. A role
-// this release did not stop is not told again: one an earlier release left `released` and a wake
-// brought back while this release stood. That earlier release did take its pod, so the start's
-// words that its pod was released are true.
+// does not name it, so its wake's start is the role's one start, in the pod that stayed. The
+// cancel keeps that wake's resume and makes it pair with release 0, since no release took the pod
+// (pairUnrecordedWakesWithNoRelease). A role this release did not stop is not told again: one an
+// earlier release left `released` and a wake brought back while this release stood. That earlier
+// release did take its pod, so the start's words that its pod was released are true.
 //
 // Beside them it answers whether the release it ended was one that suspends no role
 // (ReleaseCancelled.SuspendsNoRole, IdleReleaseMark.SuspendsNoRole, issue_releases.kind): the
@@ -234,7 +235,9 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, w
 		// The roles this release stopped that no cancel resumes, whose wake's start is the role's
 		// one start: the roles of the set that another path took over, and the roles whose stop
 		// the mark does not record. Each is told in the words of a release that did not finish,
-		// before dropTakenOverWakes deletes the resume whose kind the retell reads.
+		// before dropTakenOverWakes deletes the resume whose kind the retell reads. The resume of
+		// a role whose stop the mark does not record stays, and it pairs with release 0 from here
+		// on, whether the project runs or is paused (pairUnrecordedWakesWithNoRelease).
 		unrecorded, err := unrecordedStops(ctx, tx, issue, first, last, suspended)
 		if err != nil {
 			return err
@@ -246,6 +249,9 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, w
 			}
 		}
 		if err := retellWakesOf(ctx, tx, project, issue, kept, wake, last, paused.TakenOverWakeTask); err != nil {
+			return err
+		}
+		if err := pairUnrecordedWakesWithNoRelease(ctx, tx, project, issue, unrecorded, wake); err != nil {
 			return err
 		}
 		if len(suspended) > 0 {
@@ -623,6 +629,31 @@ func dropTakenOverWakes(ctx context.Context, tx pgx.Tx, project, issue string, s
 	if _, err := tx.Exec(ctx, `delete from pod_resumes where project = $1 and issue = $2 and id > $3 and role = any($4)
 		and kind <> $5`, project, issue, wake, takenOver, pods.WakePause); err != nil {
 		return fmt.Errorf("delete the wakes taken while the release of %s stood of roles another path took over: %w", issue, err)
+	}
+	return nil
+}
+
+// pairUnrecordedWakesWithNoRelease makes each resume of one of unrecorded above wake, the mark's
+// wake_row, that no pause holds pair with release 0. unrecorded are the roles of this release's
+// stops that its mark does not record (unrecordedStops). A wake of such a role was taken while the
+// release stood, so its resume names the newest release recorded before the wake
+// (LatestPodRelease). This release took no pod, so the wake is no release's return. Left as it
+// is, the records would count a pod return for a release that did not take that pod. Unlike
+// dropTakenOverWakes, this keeps the resume. No cancel resumes such a claim, so the wake's start
+// is the role's one start, and that start resumes the claim in the pod that stayed. The stuck
+// warning and the role's first turn read the resume. Its kind, its times and its seen release
+// stay. A resume of release 0 that no pause holds is the resume of no release, as the first wake
+// of an issue that no release took is, and the stranded report leaves it out
+// (UnfinishedPodResumesTx). A held wake already pairs with release 0, and this leaves it as it
+// is. A cancel calls this whether the project runs or is paused (CancelIssueRelease).
+func pairUnrecordedWakesWithNoRelease(ctx context.Context, tx pgx.Tx, project, issue string, unrecorded []string, wake int64) error {
+	if len(unrecorded) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `update pod_resumes set release_id = 0
+		where project = $1 and issue = $2 and id > $3 and role = any($4) and pause_id is null`,
+		project, issue, wake, unrecorded); err != nil {
+		return fmt.Errorf("pair the wakes taken while the release of %s stood of roles its mark does not record with no release: %w", issue, err)
 	}
 	return nil
 }

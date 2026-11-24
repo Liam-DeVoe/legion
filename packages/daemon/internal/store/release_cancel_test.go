@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -289,5 +290,68 @@ func TestACancelAfterAWakeOfARoleTheReleaseRecordedStartsTheRoleOnceWithNoWake(t
 	}
 	if releaseMarked(t, st) {
 		t.Fatal("the cancel left its mark behind")
+	}
+}
+
+// The reviewer's comment 4672066589 on cybermonklabs/legion#4194, for the resume. The release's
+// stop suspends the implementer as `released`, and its record of that on the mark fails, so the
+// mark does not record the role (unrecordedStops). A wake of the implementer is taken while the
+// project runs and the release stands, after an earlier release of the pod, so its resume names
+// that earlier release. No cancel resumes the implementer, so the wake's start is its one start,
+// and the cancel keeps the resume. This release took no pod, so the cancel makes the resume name
+// release 0, whether the project runs or is paused. No pause holds it, and its kind and its seen
+// release stay.
+func TestACancelPairsTheKeptWakeOfARoleItsMarkDoesNotRecordWithNoRelease(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "the project runs", true: "the project is paused"}[paused], func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+			rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+			at := time.Now().UTC()
+			earlier, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+				Roles: []string{string(claim.RoleImplementer)}, At: at.Add(-2 * time.Hour)})
+			if err != nil {
+				t.Fatalf("record the earlier release: %v", err)
+			}
+			_, stop, _ := releaseTwoRolesThroughTheStore(t, st)
+			stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
+			// The implementer's stop suspended its claim and did not record the role on the mark,
+			// so its row stays queued.
+			releasedClaim(t, st, claim.RoleImplementer)
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeRoleMessage, at, 0); err != nil || !taken {
+				t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
+			}
+			queueWakeStart(t, st, claim.RoleImplementer, pods.WakeRoleMessage)
+			resume := func() (release, pause, seen int64, kind string) {
+				t.Helper()
+				if err := st.Pool().QueryRow(ctx, `select release_id, coalesce(pause_id, 0), seen_release, kind from pod_resumes
+					where project = 'legion' and issue = $1 and role = 'implementer'`, rootIssue).Scan(&release, &pause, &seen, &kind); err != nil {
+					t.Fatalf("read the implementer's resume: %v", err)
+				}
+				return release, pause, seen, kind
+			}
+			if release, held, _, _ := resume(); release != earlier || held != 0 {
+				t.Fatalf("the implementer's wake = release %d, pause %d; want release %d and no pause: the case's premise",
+					release, held, earlier)
+			}
+			var pause Pause
+			resumed := []claim.Role{claim.RoleArchitect}
+			if paused {
+				pause, _ = pauseLegion(t, st, at)
+				resumed = nil
+			}
+
+			cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+				ReleaseCancelPause{At: at.Add(time.Minute)})
+			if err != nil || cancelled.Pause != pause.ID || !slices.Equal(cancelled.Resumed, resumed) {
+				t.Fatalf("CancelIssueRelease = %+v, %v; want pause %d and %v resumed", cancelled, err, pause.ID, resumed)
+			}
+			if release, held, seen, kind := resume(); release != 0 || held != 0 || seen != earlier || kind != pods.WakeRoleMessage {
+				t.Errorf("the implementer's resume after the cancel = release %d, pause %d, seen release %d, kind %s; want release 0, no pause, seen release %d and kind %s: the release took no pod, and the wake's start still resumes the claim",
+					release, held, seen, kind, earlier, pods.WakeRoleMessage)
+			}
+		})
 	}
 }
