@@ -10,6 +10,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// assertOwnersSlotCredentials fails unless each of rows is a supervise slot_credential of issue's
+// owner, its own architect, in issue's tree at issue's generation.
+func assertOwnersSlotCredentials(t *testing.T, rows []record.SuperviseRequest, issue record.Issue) {
+	t.Helper()
+	owner := claim.Token(treeRoleToken(t, issue.Key, claim.RoleArchitect))
+	for _, row := range rows {
+		if row.Claim != owner || row.Role != claim.RoleArchitect || row.Tree != issue.Key || row.Generation != issue.Generation {
+			t.Fatalf("the slot_credential row %+v, want one of the owner %s, the architect, in the tree %s at generation %d", row, owner, issue.Key, issue.Generation)
+		}
+	}
+}
+
 // The end of a step its owner ran gives the owner's slot its own App back at once: on
 // `implementer:owner tester:owner`, the gate's opening, which ends no step, queues no supervise
 // slot_credential, and the owner's report of step 1 ends the owner's implementer step and queues
@@ -18,7 +30,6 @@ import (
 // record then answers acts as the owner's own App, and else nothing (the daemon's
 // slotCredential). Here that role is the tester, which acts as that App.
 func TestTheEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
-	owner := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -30,11 +41,7 @@ func TestTheEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 		if len(rows) != want {
 			t.Fatalf("%s's outbox holds the slot_credential rows %+v, want %d", root.Key, rows, want)
 		}
-		for _, row := range rows {
-			if row.Claim != owner || row.Role != claim.RoleArchitect || row.Tree != root.Key || row.Generation != root.Generation {
-				t.Fatalf("the slot_credential row %+v, want one of the owner %s, the architect, in the tree %s at generation %d", row, owner, root.Key, root.Generation)
-			}
-		}
+		assertOwnersSlotCredentials(t, rows, root)
 	}
 	written(t, 0)
 
@@ -120,7 +127,6 @@ func TestTheEndOfTheOwnersRetroGivesItsSlotItsOwnApp(t *testing.T) {
 			pool := migratedPool(t)
 			engine := returnEngine()
 			root := stepRoot(t, pool, phase.Admitted)
-			owner := claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect))
 			seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
 			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 			switch tc.steps[0] {
@@ -150,11 +156,7 @@ func TestTheEndOfTheOwnersRetroGivesItsSlotItsOwnApp(t *testing.T) {
 			if len(rows) != len(before)+tc.queued {
 				t.Fatalf("%s's outbox holds the slot_credential rows %+v after its retro ended, %+v before it, want %d more", root.Key, rows, before, tc.queued)
 			}
-			for _, row := range rows[len(before):] {
-				if row.Claim != owner || row.Role != claim.RoleArchitect || row.Tree != root.Key || row.Generation != root.Generation {
-					t.Fatalf("the slot_credential row %+v, want one of the owner %s, the architect, in the tree %s at generation %d", row, owner, root.Key, root.Generation)
-				}
-			}
+			assertOwnersSlotCredentials(t, rows[len(before):], root)
 		})
 	}
 }
