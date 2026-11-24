@@ -109,7 +109,8 @@ func NameAgents(earlier, steps []PlanStep, held ...KeyName) []PlanStep {
 func RoleName(role string) claim.Agent { return claim.Agent(role) }
 
 // UnnamedAgent is an agent of a version that NameAgents gave no name: the agent's first step, the
-// name it would have taken, and Holder, the key that holds that name ("" for an agent with no key).
+// name it would have taken, and Holder, the key that holds that name ("" where the agent of the
+// version that holds it has no key).
 type UnnamedAgent struct {
 	Step   PlanStep
 	Name   claim.Agent

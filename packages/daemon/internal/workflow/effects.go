@@ -472,7 +472,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
+	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true, walk: &w})
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
@@ -589,7 +589,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession})
+	return e.started(ctx, tx, issue, role, told(at), row.Entry, startMarks{resend: true, freshSession: freshSession, walk: &w})
 }
 
 // SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim
@@ -672,7 +672,7 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{resumeTask: true, stored: true})
+	return e.started(ctx, tx, issue, role, sent, entry, startMarks{resumeTask: true, stored: true, walk: &w})
 }
 
 // PromotedWorkerClaim is the claim StartPromotedWorker's start of role on issue reaches: the
@@ -736,6 +736,9 @@ type startMarks struct {
 	// (record.SuperviseRequest.RefusedPod), which the send of an owed entry queueRefusedStart makes
 	// sets. Every other door leaves it empty.
 	refusedPod string
+	// walk is the walk of the issue's run the caller read for this start, which leaveSession reads
+	// the step from rather than reading the plan again; nil where the caller read none.
+	walk *Walk
 	// reasserts says the start sends work the record already owes the role rather than carrying
 	// a fact new to the record, so it marks no movement of the issue (reassertion, startOrOwe). It
 	// rides on no request: started reads it to tell startOrOwe which movement the start is, and
@@ -781,7 +784,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if marks.reasserts {
 		move = reassertion
 	}
-	leave, err := e.leaveSession(ctx, tx, issue, role)
+	leave, err := e.leaveSession(ctx, tx, issue, role, marks.walk)
 	if err != nil {
 		return err
 	}
@@ -793,16 +796,20 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 
 // leaveSession is the session a start of role's worker leaves (record.PlanStep.LeaveSession): the
 // one the stored step the issue stands at names, where that step is role's, and "" for every
-// other start. Only the default steps of a new generation name one, for an agent that took a name a
-// key's agent held (defaultRows), so every start of that agent in the generation carries it, and
-// its claim leaves it where it still records it (supervise's revive).
-func (e *Engine) leaveSession(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (string, error) {
+// other start. Only the default steps of a run name one, for an agent that took a name a key's
+// agent held (leaveKeySessions), so every start of that agent in the generation carries it, and
+// its claim leaves it where it still records it (supervise's revive). It reads the step from w, the
+// walk its caller read, and reads the walk itself only where the caller read none.
+func (e *Engine) leaveSession(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, w *Walk) (string, error) {
 	if !recordsSteps(issue) {
 		return "", nil
 	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return "", err
+	if w == nil {
+		read, err := e.walk(ctx, tx, issue)
+		if err != nil {
+			return "", err
+		}
+		w = &read
 	}
 	place, ok := w.placeIn(record.StandsAt(issue))
 	if !ok {
@@ -997,11 +1004,10 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them moves
 // the row and a worker's in-flight completion is never refused for an entry it was never given.
 //
-// The number counts the entries handed on this role's row of the issue, numbered across the rows
-// that name the step's claim (the higher of the row's own entry plus one and one above the highest
-// entry of each row of the issue that names that claim), which is why it is raised here: this is
-// the one place a claim is handed work it was not on. It needs to be unique among the entries of
-// that claim and no more, since it is only ever compared with a value the daemon itself wrote,
+// The number is one above every entry of the issue's phases rows (the counter below), which is why
+// it is raised here: this is the one place a claim is handed work it was not on. It needs to be
+// above every entry its claim was handed before and no more, since it is only ever compared with a
+// value the daemon itself wrote,
 // never read from a request — a completion carries no identity at all
 // (api.HandoffCompleteRequest). Nothing else at hand counts them: the issue's generation is one
 // run's whole life, and the round counts only returns to implementing.

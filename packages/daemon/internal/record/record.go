@@ -696,9 +696,9 @@ type PhaseRow struct {
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
 	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
-	// tree brings back, and a root architect's start of work it was not on raise it, to the higher
-	// of the row's own entry plus one and one above the highest entry of each row of the issue that
-	// names the step's claim, and write the three fields below beside it, in their own transaction
+	// tree brings back, and a root architect's start of work it was not on raise it, to one
+	// above the highest entry of every phases row of the issue (workflow's enter), and
+	// write the three fields below beside it, in their own transaction
 	// (workflow's start, StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the
 	// finer of the two numbers a completion is held to: the issue's generation is the same for
 	// every entry of one run, where the entry is new at each one, which is what tells one testing

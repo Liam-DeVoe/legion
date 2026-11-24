@@ -9,8 +9,8 @@
 --
 -- plan_steps.leave_session is record.PlanStep.LeaveSession: the session the claim of the step's
 -- agent recorded when the step was written, where that agent takes a name a key's agent held in an
--- earlier generation, so its claim's session is that key's. Only the project's default steps of a
--- new generation write one (workflow's defaultRows); every start of the step's agent carries it
+-- earlier generation, so its claim's session is that key's. Only the project's default steps
+-- write one (workflow's leaveKeySessions); every start of the step's agent carries it
 -- (record.SuperviseRequest.LeaveSession), and the claim leaves it where it still records it. Every
 -- other row holds the empty string, and so does every row the table already holds.
 --
@@ -18,8 +18,8 @@
 -- issue: record.PutPlan writes one row for each step of a key (but the owner's), and
 -- record.NameAgents reserves each name for its key beside the plan_steps rows. The rows of a plan
 -- go when a later version gives the task again (PutPlan) or the first step of a run passes over
--- an earlier owner's plan (DeletePlan); no deletion of a plan touches this table. A row ends only
--- with the removal of the issue's own record, which no daemon makes: a stored claim keeps the
+-- an earlier owner's plan (DeletePlan); no deletion of a plan touches this table, and no code
+-- removes a row of it: a stored claim keeps the
 -- session it records across the issue's generations (supervise's launch resumes it), so a name a
 -- key held names that key's session for as long as the issue does. The table names no issues row,
 -- as the plan tables name none (20261117034837_issue_plans), because an owner can give a plan
