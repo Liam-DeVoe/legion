@@ -441,6 +441,8 @@ test("a press on no row that takes the focus out of the row at the centre keeps 
         LIST_TOP + ROW_HEIGHT - window.scrollY
       );
       expect(viewportTop(beside), `${beside} stands where it stood`).toBe(besideTop);
+      // The same press's `mouseup`: user-event has no form for a press split around a blur made
+      // between its `mousedown` and its `mouseup`, which is the case this row reads.
       fireEvent.mouseUp(pressed, { clientX: x, clientY: y });
       // The press is over: with the focus on no row and no pointer resting on one, the centre is
       // the reader's place again.
