@@ -69,8 +69,8 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 				asked := len(mergeForwardMessages(t, pool))
 				landsMergeForward(t, pool)
 
-				// The review comes before the landed (record.MergeForwardOrder): the one order of a
-				// merge forward's messages to one agent.
+				// The review comes before the landed: mergeForwardLanded addresses the review first,
+				// and addressMergeForward keeps the order it is given.
 				got := mergeForwardMessages(t, pool)[asked:]
 				want := []string{"merger landed"}
 				if tc.review {

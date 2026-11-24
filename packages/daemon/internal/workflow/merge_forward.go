@@ -52,8 +52,7 @@ import (
 // (mergedForwardRefusal). That holds for an ask of a new head and for the same head asked again
 // on a phase entry alike.
 //
-// The roles are addressed by the one order of a merge forward's messages to one agent
-// (addressMergeForward): each claim gets one message, the ask where it is both the agent asked and
+// Each claim gets one message (addressMergeForward): the ask where it is both the agent asked and
 // the worker held. A pull request that is not open, an issue in no phase of
 // record.MergeForwardPhases and a tree that lingers (record.TreeLingers, where every role is
 // suspended) are asked nothing.
@@ -120,9 +119,9 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 // pull) sends: the ask to the claim it reached (asked.Agent), as the role it was made as, built by
 // the one builder of it (record.MergeForward.Ask), where named says a task step does that work;
 // and, where held, away from the implementation step (asked.Own false), the hold to the worker of
-// the step the task stands at (record.MergeForwardWorker). The two are addressed by the one order
-// of a merge forward's messages to one agent (addressMergeForward): where the agent asked works the
-// step the issue stands at, it gets the ask alone, which covers the hold. mergeForward tells both;
+// the step the task stands at (record.MergeForwardWorker). Each claim gets one message
+// (addressMergeForward): where the agent asked works the step the issue stands at, it gets the ask
+// alone, which covers the hold. mergeForward tells both;
 // the ask again of the owner (askOwnerAgain) tells the ask alone, its hold sent with the first ask,
 // and covers the hold as the first ask did where the owner works the step the task stands at.
 func (e *Engine) tellAsk(ctx context.Context, tx pgx.Tx, issue record.Issue, asked record.MergeForward, pull int, named, held bool) error {
@@ -169,21 +168,18 @@ type mergeForwardSend struct {
 
 // addressMergeForward addresses the messages one event of a merge forward sends (sends), each as
 // every role message of the daemon is addressed (addressRoles), and gives each claim one message
-// for the event: of two messages whose recipients one claim holds, the one the one order of a
-// merge forward's messages puts first (record.MergeForwardOrder), which carries in Covers the step
-// of the one it stands in for (record.MergeForwardCovers), so the agent gets each thing it is asked
-// for, once. A pair the order names no cover for is sent whole. A message skip refuses for its claim
-// is not sent and is covered by none: the landed, which is never asked of the agent that pushed the
-// merge (mergeForwardLanded). It answers each message with its role, claim, step and Covers, in the
-// order of record.MergeForwardOrder, for its sender to fill with the merge forward's heads.
+// for the event: of two messages whose recipients one claim holds and of which one covers the
+// other (record.MergeForwardCovers), the claim gets the covering one alone, whichever of the two
+// sends names first, and it carries in Covers the step of the one it stands in for, so the agent
+// gets each thing it is asked for, once. A pair no cover joins is sent whole. A message skip
+// refuses for its claim is not sent and is covered by none: the landed, which is never asked of the
+// agent that pushed the merge (mergeForwardLanded). It answers each message with its role, claim,
+// step and Covers, in the order of sends, a covering message in the place of the first of its two,
+// for its sender to fill with the merge forward's heads.
 func (e *Engine) addressMergeForward(ctx context.Context, tx pgx.Tx, project string, sends []mergeForwardSend,
 	skip func(record.MergeForwardStep, claim.Token) bool) ([]record.MergeForwardMessage, error) {
-	ordered := slices.Clone(sends)
-	slices.SortStableFunc(ordered, func(a, b mergeForwardSend) int {
-		return record.MergeForwardOrder(a.step) - record.MergeForwardOrder(b.step)
-	})
 	var messages []record.MergeForwardMessage
-	for _, send := range ordered {
+	for _, send := range sends {
 		addressed, err := e.addressRoles(ctx, tx, project, []roleRecipient{send.to}, nil)
 		if err != nil {
 			return nil, err
@@ -195,13 +191,18 @@ func (e *Engine) addressMergeForward(ctx context.Context, tx pgx.Tx, project str
 		if skip != nil && skip(send.step, to.token) {
 			continue
 		}
-		if i := slices.IndexFunc(messages, func(m record.MergeForwardMessage) bool {
-			return m.Claim == to.token && record.MergeForwardCovers(m.Step, send.step)
-		}); i >= 0 {
+		message := record.MergeForwardMessage{Role: to.role, Claim: to.token, Step: send.step}
+		i := slices.IndexFunc(messages, func(m record.MergeForwardMessage) bool {
+			return m.Claim == to.token && (record.MergeForwardCovers(m.Step, send.step) || record.MergeForwardCovers(send.step, m.Step))
+		})
+		switch {
+		case i < 0:
+			messages = append(messages, message)
+		case record.MergeForwardCovers(messages[i].Step, send.step):
 			messages[i].Covers = send.step
-			continue
+		default:
+			message.Covers, messages[i] = messages[i].Step, message
 		}
-		messages = append(messages, record.MergeForwardMessage{Role: to.role, Claim: to.token, Step: send.step})
 	}
 	return messages, nil
 }
@@ -287,13 +288,12 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // merger told to wait for a reviewer's approval would wait for good, so nothing is asked and the
 // merger goes on at the new head.
 //
-// The two are addressed by the one order of a merge forward's messages to one agent
-// (addressMergeForward): the review covers the landed, so a reviewer that is also the worker of the
-// step the issue stands at, the owner or one keyed agent at both, gets the review alone, which also
-// tells it to go on with its step at the new head. The record keeps that the review was asked
-// (ReviewAsked) only where a review was queued, so the merger's task (task) and the landed the
-// merger is told in merging (record.MergeForwardMessage.Message), which read it, never wait for an
-// approval nobody was asked for.
+// The review covers the landed (record.MergeForwardCovers, addressMergeForward), so a reviewer that
+// is also the worker of the step the issue stands at, the owner or one keyed agent at both, gets the
+// review alone, which also tells it to go on with its step at the new head. The record keeps that
+// the review was asked (ReviewAsked) only where a review was queued, so the merger's task (task) and
+// the landed the merger is told in merging (record.MergeForwardMessage.Message), which read it,
+// never wait for an approval nobody was asked for.
 // The daemon records no decision outside reviewing, so that review is the roles' to hold to the
 // head they merge. The architect is told nothing: its checks-red notice already said the merge was
 // asked for. A tree that lingers (record.TreeLingers, where every role is suspended) records and
