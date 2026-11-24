@@ -31,18 +31,6 @@ func standAtOwnersStep(t *testing.T, pool *pgxpool.Pool, key string) {
 	runAtStep(t, pool, key, 1, 1, "implementer:owner", "reviewer")
 }
 
-// ownerStepsOf is every notice owner-step of issue the outbox holds, in order.
-func ownerStepsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.Notice {
-	t.Helper()
-	var told []record.Notice
-	for _, effect := range effects(t, pool) {
-		if notice, ok := effect.payload.(record.Notice); ok && effect.issue == issue && notice.Kind == record.OwnerStepNotice {
-			told = append(told, notice)
-		}
-	}
-	return told
-}
-
 // A tree admitted again tells the owner of a member that stands at a step the owner does that step
 // again, once: the promotion starts no worker of a place the owner works (startMidPhaseMembers), and
 // its own start of the member's step (workflow's StartStepRecord) starts it as every start of an
@@ -63,7 +51,7 @@ func TestATreeAdmittedAgainTellsTheOwnerItsStep(t *testing.T) {
 	if got := issue(t, pool, atStep); got.Phase != phase.Implementing || got.PlaceRole != claim.RoleArchitect {
 		t.Fatalf("%s after the promotion = %s with PlaceRole %q, want implementing with the architect", atStep, got.Phase, got.PlaceRole)
 	}
-	told := ownerStepsOf(t, pool, atStep)
+	told := gateNotices(t, pool, atStep, record.OwnerStepNotice)
 	if len(told) != 1 || told[0].Role != claim.RoleImplementer || told[0].Phase != phase.Implementing {
 		t.Fatalf("the promotion told %+v, want one owner-step of the implementer's step in implementing", told)
 	}
