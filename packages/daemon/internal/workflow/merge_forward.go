@@ -32,21 +32,22 @@ import (
 //
 // It asks once for each head: the record keeps the ask (record.PullRequest.MergeForward), and a
 // later confirmed read, or a move into another phase, at the head it names sends nothing, so the
-// role first asked of a head keeps that merge until it lands and two roles are never sent to merge
-// one base forward. The one exception is an ask made in implementing, which covers implementing
-// only: an implementer that completes at that head without the merge leaves the issue's next phase
-// to ask again, with its hold and its notice, where a step of the task still runs there before the
-// merge, and the move into merging to ask the merger where none does (mergeForwardOnEntry). Any
-// other ask of the implementer that has not landed stays the implementer's into each phase the
-// issue moves to, and the worker that starts there is held instead (mergeForwardOnEntry,
-// holdWorker).
+// role first asked of a head keeps that merge until it lands. The one exception is an ask made in
+// implementing, which covers implementing only: an implementer that completes at that head without
+// the merge leaves the issue's next phase to ask again, with its hold and its notice, where a step
+// of the task still runs there before the merge, and the move into merging to ask the merger where
+// none does (mergeForwardOnEntry). Any other ask of the implementer that has not landed stays the
+// implementer's into each phase the issue moves to, and the worker that starts there is held
+// instead (mergeForwardOnEntry, holdWorker).
 //
-// One merge of one head has one asked role at a time. So where the merger is asked for a head the
-// record holds an implementer's ask of that has not landed - the ask of implementing, which the
-// move into merging does not keep - the implementer is told once that the merge is no longer its
-// work (record.MergeForwardWithdrawn), and its ask, which the merger's replaces on the record, is
-// delivered no more (leftMergeForwardAt). A merge the implementer pushes after that is a new head,
-// which the merger's ask follows as any landing does (mergeForwardLanded).
+// So one merge of one head has one asked role at a time, and two roles are never asked to merge
+// one base forward onto one head. Where the merger is asked for a head the record holds an
+// implementer's ask of that has not landed - the ask of implementing, which the move into merging
+// does not keep - the merger's ask replaces it on the record, an ask row of the implementer's still
+// queued is delivered no more (leftMergeForwardAt), and the implementer, which may already hold
+// that ask, is told once that the merge is no longer its work (record.MergeForwardWithdrawn). A
+// merge the implementer pushes after that is a new head, which the merger's ask follows as any
+// landing does (mergeForwardLanded).
 //
 // The ask replaces the one the record holds, and keeps what that one kept of the merge forwards
 // that landed before it in the same stretch of work (record.MergeForward.Earlier), with that ask
