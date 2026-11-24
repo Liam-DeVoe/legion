@@ -91,11 +91,10 @@ func TestEdgeFrameVerdict(t *testing.T) {
 // "__proto__" key, in either spelling, whose fields the plugin's zod read takes as the envelope's
 // own, is withheld under prototype_key. A frame on an agent subject that encoding/json does not
 // read and that is no role message whose topic is a role lane or an agent subject, and a GitHub
-// envelope or payload encoding/json does not read, is withheld, as the edge withheld it when it
-// read frames with encoding/json, before #5192. The controls, each with one exact key, get the
-// verdict that read gave them. A row that names goTopic, goRole or goRepo first checks that
-// encoding/json, the edge's read before #5192, reads the frame that way, so no row passes on a
-// frame that does not split the readers as it says.
+// envelope or payload encoding/json does not read, is withheld, as the encoding/json read withheld
+// it. The controls, each with one exact key, get the verdict that read gave them. A row that names
+// goTopic, goRole or goRepo first checks that the encoding/json read takes the frame that way, so
+// no row passes on a frame that does not split the readers as it says.
 func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 	const session = "ses_v"
 	own := contracts.LegacyAgentSubject(session)
