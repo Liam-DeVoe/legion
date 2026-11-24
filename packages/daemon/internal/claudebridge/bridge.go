@@ -689,7 +689,7 @@ func blocksOf(message json.RawMessage) []contentBlock {
 // server, driven by Claude Code's own hooks, and the bridge is transport.
 //
 // Claude Code writes one assistant line for each content block of a response, and each line has
-// the response's id (testdata/background-turn.jsonl holds three responses in seven lines). So the
+// the response's id. testdata/background-turn.jsonl holds three responses in seven lines. So the
 // shim is told of each response once, at its first line. A line with no id is a response of its
 // own.
 func (b *bridge) assistant(message json.RawMessage, subagent bool) {

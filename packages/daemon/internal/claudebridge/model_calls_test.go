@@ -4,8 +4,8 @@ import (
 	"testing"
 )
 
-// framesThrough is each frame the bridge writes for a replayed stream, pane summaries and names of
-// models included, up to and with the nth frame of type last. The gate is open, so the replay
+// framesThrough is each frame the bridge writes for a replayed stream, up to and with the nth frame
+// of type last. Pane summaries and names of models are included. The gate is open, so the replay
 // writes its last line too.
 func framesThrough(r *rig, n int, last string) []map[string]any {
 	r.t.Helper()
@@ -128,4 +128,26 @@ func TestASubagentLineEndsNoResponse(t *testing.T) {
 	if answers := answersOf(frames); len(answers) != 0 {
 		t.Errorf("the message_end frames name %q, want none: a subagent's line is no answer of the agent's", answers)
 	}
+}
+
+// background-during-prompt.jsonl is a recording of Claude Code: one turn, with two responses in six
+// assistant lines. Claude Code ran the first tool call of the first response before it wrote that
+// response's last line. So a tool result comes between two lines of one response, which still ends
+// once.
+func TestAResponseThatAToolResultSplitsEndsOnce(t *testing.T) {
+	r := newRig(t, "-p", "--resume", sessionID)
+	r.prompt("p1", backgroundDuringPrompt)
+	if answers := answersOf(framesThrough(r, 1, "prompt_result")); len(answers) != 2 {
+		t.Errorf("%d message_end frames name a model, want 2, one for each response: %q", len(answers), answers)
+	}
+}
+
+// command-init-first.jsonl is made by hand from the recorded lines of command-block.jsonl, not
+// captured. The command's block is moved first, and its init names a stand-in model. Its paths and
+// the plugin's name are stand-ins too. A command's init names the model the launch runs on. So the
+// first init names the set model even when it is a command's, and the turn's init after it does not.
+func TestACommandsInitBeforeAnyTurnNamesTheSetModel(t *testing.T) {
+	r := newRig(t, "-p", "--resume", sessionID)
+	r.prompt("p1", "replay command-init-first.jsonl")
+	holdsSetModel(t, framesThrough(r, 1, "prompt_result"), "anthropic/claude-command-stand-in")
 }
