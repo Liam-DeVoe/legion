@@ -124,9 +124,9 @@ They override this skill, except:
 
 ## References
 
-- You write or edit the PR body or its `Thermo` line, or run the simplify pass: `skill://legion-worker/references/pr-body.md`.
+- The PR body, its `Thermo` line, the simplify pass: `skill://legion-worker/references/pr-body.md`.
 
-- You record a result against a check or read another phase's results; the evidence each phase owes, a red or missing CI check: `skill://legion-worker/references/results.md`.
+- A check's result, the evidence each phase owes, a red or missing CI check, no surface for the changed path: `skill://legion-worker/references/results.md`.
 
 - A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
 
