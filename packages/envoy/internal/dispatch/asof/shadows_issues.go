@@ -78,7 +78,8 @@ func issueClaimAt(issue, state, cut string) string {
 
 // issueActivityAt is aggregate, over e, of the events at the cut of the issue aliased i that are
 // not whole-issue events, as a scalar subquery. Its predicate names the type list of
-// events_issue_activity, so that the read reads that index alone.
+// events_issue_activity, so that the read reads that index alone; that index's predicate also
+// holds issue_key is not null, which e.issue_key = i.key implies.
 func issueActivityAt(aggregate, cut string) string {
 	return `(select ` + aggregate + ` from public.events e
 				where e.issue_key = i.key and e.type not in ` + issueStateList + ` and e.created_at <= ` + cut + `)`

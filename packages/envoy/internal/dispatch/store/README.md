@@ -88,7 +88,8 @@ Reads at a cut stay correct until then, and slower.
 
 - `20261120140001_events_issue_claim`, `(issue_key, seq desc) include (created_at)` over `asof.IssueClaimTypes`: the claim of an issue at the cut (the `issues` shadow).
 
-- `20261120140002_events_issue_activity`, `(issue_key, created_at) include (seq)` over each type but `asof.IssueStateTypes`: the `updated_at` and the `last_seq` of an issue at the cut (the `issues` shadow).
+- `20261120140002_events_issue_activity`, `(issue_key, created_at) include (seq)` over each type but `asof.IssueStateTypes`, of the events that name an issue: the `updated_at` and the `last_seq` of an issue at the cut (the `issues` shadow).
+  Its predicate also holds `issue_key is not null`, which the shadow's `e.issue_key = i.key` implies and a read with no condition on an issue's key does not, so a present read that names an event type but no issue cannot read the whole index (the migration's comment says how one did).
 
 - `20261120140003_events_comment_state`, `((payload->>'id'), id desc) include (created_at)` over `asof.CommentStateTypes`: the events of a comment at or before the cut and its first edit or delete after it (the `comments` shadow), and the creating event of an ask's reply (the `asks` and `ask_followers` shadows).
 

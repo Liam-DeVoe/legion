@@ -17,12 +17,21 @@
 -- it, sorting the issue's events, rather than through events_issue_state. On the copy it was
 -- 34 MB.
 --
--- The predicate must stay the shadow's word for word. The types are asof.IssueStateTypes
--- (internal/dispatch/asof/shadows_issues.go), in its order, named as `type not in`, and the
--- shadow writes its type list from them (issueActivityAt). When the two lists do not agree, the
--- answer stays correct, but the read does not use this index.
+-- The predicate is the shadow's type list and `issue_key is not null`. The types are
+-- asof.IssueStateTypes (internal/dispatch/asof/shadows_issues.go), in its order, named as
+-- `type not in`, and the shadow writes its type list from them (issueActivityAt). When the two
+-- lists do not agree, the answer stays correct, but the read does not use this index.
 -- asof.TestEachEventIndexNamesTheTypesItsShadowReads reads this file and compares the two lists,
 -- and asof.TestTheShadowsUseTheirIndexes reads the plan.
+--
+-- Why `issue_key is not null`. The planner may use a partial index only for a statement whose
+-- conditions imply the index's predicate, and a type list named as `type not in` is implied by
+-- almost every condition on type: a present read of the asks loader (refs, loadAskNodes, `type =
+-- 'ask.edited'` and the ask's id) read this whole index with no index condition when the
+-- predicate was the type list alone (refs.TestTheReferencesReadReadsOnlyTheIssuesOwnLinks). The
+-- shadow's `e.issue_key = i.key` implies `issue_key is not null`, since `=` is strict, and a read
+-- with no condition on an issue's key does not, so no such read can take this index. The events
+-- of no issue are also no part of any issue's activity.
 --
 -- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
 -- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
@@ -48,4 +57,4 @@
 -- hand.
 create index concurrently if not exists events_issue_activity
     on events (issue_key, created_at) include (seq)
-    where type not in ('issue.created', 'issue.updated', 'issue.closed');
+    where type not in ('issue.created', 'issue.updated', 'issue.closed') and issue_key is not null;
