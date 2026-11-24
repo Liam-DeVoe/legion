@@ -487,6 +487,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			}
 			result.lastID = max(result.lastID, event.event.ID)
 			result.sent++
+			result.sentIDs = append(result.sentIDs, event.event.ID)
 		}
 	}
 	releaseUnacknowledged := false
@@ -544,16 +545,19 @@ func connectionReplaced(changed <-chan struct{}) bool {
 
 // batchResult is what one batch (scanBatch) came to. sendable is how many of its events were due,
 // sent how many of them it sent at least one envelope of, from firstID to lastID, the first send no
-// earlier than started, and published how many it marked published. blocked is a batch after which
-// the scan stops: a row it could not read, an event any settle of it released - an owner's own as
-// its chains finish, or the batch's final one - or its record failed. fenced is a send of it
-// meeting the publisher hold's deadline, or its record finding the hold another's, and natsLost
-// a probe of its connection failing after its sends failed for the connection. excluded
-// is a read that left the owners the batches beside it held out (lanes.reserve): it may have read
-// past their events, so the scan reads again once every batch has given its owners back.
+// earlier than started, and published how many it marked published. sentIDs is the ids of those
+// sent events, in the order the batch read them, which the scan logs on the batch's sent batch
+// line and, for a batch that failed and so left them unpublished, on its failure line. blocked is
+// a batch after which the scan stops: a row it could not read, an event any settle of it released
+// - an owner's own as its chains finish, or the batch's final one - or its record failed. fenced is
+// a send of it meeting the publisher hold's deadline, or its record finding the hold another's,
+// and natsLost a probe of its connection failing after its sends failed for the connection.
+// excluded is a read that left the owners the batches beside it held out (lanes.reserve): it may
+// have read past their events, so the scan reads again once every batch has given its owners back.
 type batchResult struct {
 	sendable, sent, published int
 	firstID, lastID           int64
+	sentIDs                   []int64
 	started                   time.Time
 	blocked, fenced           bool
 	natsLost                  bool

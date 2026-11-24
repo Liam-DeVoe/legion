@@ -21,13 +21,13 @@
 // read is the horizon's own account of itself (Watch.String): how many stall warnings
 // (events.StallWarning) the horizon logged while the test waited, none included, and the newest of
 // them, which names the holder's kind, pid, database and query from the horizon's own diagnosis.
-// The one stall the wait refuses to wait out is a holder in the test's own database that has
-// itself stood OwnHoldBound, by the horizon's own warning: that is the defect class of
-// dispatch://INFRA-636 (a Dispatch write transaction left open across the horizon's proof), and
-// the wait fails on it at once, naming the warning. The bound is what keeps that rule from failing
-// on every other client of that database - the test's own fixtures, an operator's psql session -
-// whose ordinary short transaction holds the horizon exactly as a foreign one does and is no
-// defect.
+// When that holder is a client of the test's own database - the defect class of
+// dispatch://INFRA-636, a Dispatch write transaction left open across the horizon's proof, among
+// its causes - the account says so, naming the client and how long its transaction had stood
+// when it was named. The wait does not end on such a hold before the give-up: a hold in that
+// database can be anyone's ordinary transaction - the test's own fixtures, an operator's psql
+// session - stretched as long as a loaded machine stretches it, and any age the wait ended at
+// would be a bound of its own, which the shared wait has none of.
 package horizontest
 
 import (
@@ -51,50 +51,29 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-const (
-	// StallWarning is the stall threshold and the repeat a horizon the wait reads must warn at:
-	// its stallAfter and its warnEvery (events.Horizon.SetStallWarning, which api.Deps'
-	// HorizonStallAfter and HorizonWarnEvery set, and cmd/dispatch's
-	// DISPATCH_TEST_HORIZON_STALL_AFTER and DISPATCH_TEST_HORIZON_WARN_EVERY for a test process).
-	// At the production five and thirty seconds a hold would go unreported for five seconds and
-	// the newest warning could be half a minute old; at this one the horizon names its holder
-	// within a fraction of a second and again as the hold goes on, so the own-hold rule and the
-	// account of a wait that gave up read the holder as it stands.
-	StallWarning = 250 * time.Millisecond
-	// OwnHoldBound is how long a hold in the test's own database must have stood, by the
-	// horizon's own account, before the wait fails on it rather than waiting it out as it does
-	// any other hold. Without a bound the own-hold rule would fail on any transaction in that
-	// database, from any client: the horizon warns at StallWarning, so the first warning naming
-	// the database would end the wait almost at once.
-	//
-	// Sampling pg_stat_activity every 100 ms while cmd/dispatch's events_start test ran 10 times
-	// under the calibrated load (a rolling foreign hold, a new 25 s transaction every second in
-	// postgres, beside 8 busy loops at four times nproc), in a pod on 2026-11-10, nproc 2,
-	// PostgreSQL 18.6: 202 samples caught a transaction holding a transaction id in a
-	// dispatch_test_* database, across 27 distinct backends, every one of them carrying no
-	// application_name - which is what Dispatch's own pools look like and what a test's own
-	// storetest pool looks like too, so the samples do not say whose the transactions were. The
-	// worst age was 1.449 s. Three times that is 4.35 s, so the bound is 5 s, rounded up to a
-	// whole second. That sampling rate means a transaction shorter than 100 ms can be missed
-	// entirely, which does not matter for a worst case: a hold too short to be sampled is far
-	// below the one the bound is sized from.
-	OwnHoldBound = 5 * time.Second
-)
+// StallWarning is the stall threshold and the repeat a horizon the wait reads must warn at: its
+// stallAfter and its warnEvery (events.Horizon.SetStallWarning, which api.Deps' HorizonStallAfter
+// and HorizonWarnEvery set, and cmd/dispatch's DISPATCH_TEST_HORIZON_STALL_AFTER and
+// DISPATCH_TEST_HORIZON_WARN_EVERY for a test process). At the production five and thirty seconds
+// a hold would go unreported for five seconds and the newest warning could be half a minute old;
+// at this one the horizon names its holder within a fraction of a second and again as the hold
+// goes on, so the account of a wait that gave up reads the holder as it stands.
+const StallWarning = 250 * time.Millisecond
 
 // Warning is one stall warning, as the wait reads it.
 type Warning struct {
 	// PendingFor is the age of the oldest pending observation the warning reports. It is zero
-	// when the warning carries none, or none that reads as a duration, and the own-hold rule
-	// then takes the warning as the plain stall it also is.
+	// when the warning carries none, or none that reads as a duration, and the account then
+	// dates no hold by it (heldFor).
 	PendingFor time.Duration
 	// Database is the database of the holder the warning names, and Named whether it names one
 	// at all: warnStall's diagnosis_error arm and its "none open now" arm carry no database, and
 	// a warning naming none is not one naming the empty database.
 	Database string
 	Named    bool
-	// Client names the holder by its application_name and pid, for the own-hold failure: a
-	// transaction in the test's own database can be anyone's - Dispatch's own, an operator's
-	// psql session, another test's fixture - so the failure says which.
+	// Client names the holder by its application_name and pid, for the account of a hold in the
+	// test's own database (Watch.String): a transaction there can be anyone's - Dispatch's own,
+	// an operator's psql session, another test's fixture - so the account says which.
 	Client string
 	// At is when the warning was logged and HolderSince the named holder's xact_start, both
 	// read off the warning, so their difference is how long that holder had stood when it was
@@ -108,9 +87,9 @@ type Warning struct {
 // heldFor is how long the holder the warning names has held the horizon back, by the warning's
 // own account: the age of the oldest pending observation, but no more than the holder's own
 // transaction had stood when it was named. pending_for alone is the oldest observation's age,
-// which an earlier holder, released since, can have carried past OwnHoldBound while the
-// transaction named is a young one that arrived after it. A warning that dates neither its holder
-// nor itself holds for zero, which the own-hold rule reads as the plain stall it also is.
+// which an earlier holder, released since, can have carried far past the age of the transaction
+// now named, a young one that arrived after it. A warning that dates neither its holder nor itself
+// holds for zero.
 func (w Warning) heldFor() time.Duration {
 	if w.At.IsZero() || w.HolderSince.IsZero() {
 		return 0
@@ -431,10 +410,9 @@ func Wait[T any](t testing.TB, what string, arrived <-chan T, warnings func() []
 	return result
 }
 
-// Watch is what a wait on the horizon reads of it: the own-hold rule it fails on at once
-// (Failure), and the account a wait that gave up prints (String). Poll is the wait; a test that
-// reads again until an answer the horizon held back is whole (api's awaitHorizonRead) polls
-// through it with its read as the condition.
+// Watch is what a wait on the horizon reads of it: the account a wait that gave up prints
+// (String). Poll is the wait; a test that reads again until an answer the horizon held back is
+// whole (api's awaitHorizonRead) polls through it with its read as the condition.
 type Watch struct {
 	warnings    func() []Warning
 	ownDatabase string
@@ -454,40 +432,33 @@ func (w *Watch) since() []Warning {
 	return w.warnings()[w.before:]
 }
 
-// Failure says why the wait for what must end at once, or "" while the horizon's account lets it
-// go on: the newest stall warning since the watch began names a holder in the test's own database
-// that has held the horizon back at least OwnHoldBound (ownHold).
-func (w *Watch) Failure(what string) string {
-	since := w.since()
-	if len(since) == 0 {
-		return ""
-	}
-	newest := since[len(since)-1]
-	if !ownHold(newest, w.ownDatabase) {
-		return ""
-	}
-	return fmt.Sprintf("%s did not arrive, and the event horizon says a client of the test's own database %s (%s) has held it back for %v; its newest stall warning was %s",
-		what, w.ownDatabase, newest.Client, newest.heldFor(), newest.Text)
-}
-
 // String is the watch's account of the horizon, which a wait that gave up at the test binary's
 // deadline prints as its last read: how many stall warnings the horizon has logged since the watch
 // began, and the newest of them, which names the holder from the horizon's own diagnosis. A count
-// of none says the horizon never reported itself held while the test waited.
+// of none says the horizon never reported itself held while the test waited. When the newest
+// names a holder in the test's own database (ownDatabaseHold), the account says so, with the
+// client the warning names and how long its transaction had held the horizon back when it was
+// named (heldFor): a hold in that database is Dispatch's own defect (dispatch://INFRA-636) or some
+// other client's transaction there, and the client tells which.
 func (w *Watch) String() string {
 	since := w.since()
 	account := fmt.Sprintf("the event horizon logged %d stall warnings while the test waited", len(since))
-	if len(since) > 0 {
-		account += "; the newest: " + since[len(since)-1].Text
+	if len(since) == 0 {
+		return account
 	}
-	return account
+	newest := since[len(since)-1]
+	if ownDatabaseHold(newest, w.ownDatabase) {
+		account += fmt.Sprintf("; the newest names a client of the test's own database %s (%s) whose transaction had held it back for %v",
+			w.ownDatabase, newest.Client, newest.heldFor())
+	}
+	return account + "; the newest: " + newest.Text
 }
 
 // Poll asks condition until it holds, through the shared wait (testwait.Until) and with no bound
-// of its own: a hold of any length only delays it. It fails t at once, naming what, when the
-// horizon names an own hold (Failure), and when the wait gives up at the test binary's deadline its
-// last read is the watch's account of the horizon (String). On either failure, and on one the
-// condition makes itself, detail is printed after it when not nil.
+// of its own: a hold of any length, in any database, the test's own included, only delays it. When
+// the wait gives up at the test binary's deadline its last read is the watch's account of the
+// horizon (String), which names the holder; on that failure, and on one the condition makes
+// itself, detail is printed after it when not nil.
 func (w *Watch) Poll(t testing.TB, what string, detail func() string, condition func() bool) {
 	t.Helper()
 	held := false
@@ -498,20 +469,7 @@ func (w *Watch) Poll(t testing.TB, what string, detail func() string, condition 
 			t.Log(detail())
 		}
 	}()
-	testwait.Until(t, what, func() (*Watch, bool) {
-		if condition() {
-			return w, true
-		}
-		if failure := w.Failure(what); failure != "" {
-			// The condition may have come true since it was last asked; a run that has it is
-			// not failed for the order of two reads.
-			if condition() {
-				return w, true
-			}
-			t.Fatal(failure)
-		}
-		return w, false
-	})
+	testwait.Until(t, what, func() (*Watch, bool) { return w, condition() })
 	held = true
 }
 
@@ -524,26 +482,13 @@ func WaitInProcess[T any](t *testing.T, what string, arrived <-chan T, own *stor
 	return Wait(t, what, arrived, warnings, own.Pool.Config().ConnConfig.Database, nil)
 }
 
-// ownHold reports whether warning names the one stall a wait refuses to wait out: a holder in
-// ownDatabase that has itself held the horizon back at least OwnHoldBound, by the warning's own
-// account (heldFor). A hold that has stood the bound in the test's own database is the defect,
-// however long the test has waited: waiting it out would pass a test whose job is to fail on it
-// (dispatch://INFRA-636). A shorter one is some client's ordinary transaction, which the wait
-// waits out exactly as it does a foreign one.
-//
-// Three readings fall out of the rule, and all three are the safe ones. A warning whose diagnosis
-// failed names no database (horizon.go's diagnosis_error arm), and neither does one that found no
-// holder ("none open now"); since neither names the test's own database, neither is an own hold. A
-// warning that dates neither its holder nor itself holds for zero (heldFor), so it is the plain
-// stall it also is. The known limit is the other way about: the warning names only the oldest
-// holder at diagnosis time, so a foreign holder can mask one of Dispatch's own.
-//
-// The rule is judged on how long the holder named has held the horizon (heldFor), not on
-// pending_for alone, which is the age of the oldest pending observation: a foreign holder that has
-// since released can carry that past OwnHoldBound while the holder now named is a transaction of
-// the test's own database that began a moment ago.
-func ownHold(warning Warning, ownDatabase string) bool {
-	return warning.Named && warning.Database == ownDatabase && warning.heldFor() >= OwnHoldBound
+// ownDatabaseHold reports whether warning names a holder in ownDatabase, the database the horizon's
+// pool reads. A warning whose diagnosis failed names no database (horizon.go's diagnosis_error
+// arm), and neither does one that found no holder ("none open now"), so neither names the test's
+// own. The warning names only the oldest holder at diagnosis time, so a foreign holder can mask
+// one of Dispatch's own.
+func ownDatabaseHold(warning Warning, ownDatabase string) bool {
+	return warning.Named && warning.Database == ownDatabase
 }
 
 // FirstFrame is the one result ReadFirstFrame sends: the first frame but a heartbeat, with the
@@ -581,7 +526,7 @@ func ReadFirstFrame(conn *gws.Conn) <-chan FirstFrame {
 
 // AwaitPersisted proves horizon's H until the H some process persisted reaches newest, waiting as
 // PollInProcess does on a horizon set to warn at StallWarning here, and fails t when a proof fails
-// or the horizon names an own hold. own is the store whose database horizon's pool reads. A proof
+// or the shared wait gives up. own is the store whose database horizon's pool reads. A proof
 // waits on the horizon, so each runs on a goroutine of its own (proveOnce) and the wait asks after
 // it: the next proof begins once the one before has answered.
 func AwaitPersisted(t *testing.T, horizon *events.Horizon, newest int64, own *store.Store) {

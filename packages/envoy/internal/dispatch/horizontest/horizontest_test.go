@@ -80,9 +80,14 @@ func stallWarningHeadOf(pendingFor string) string {
 }
 
 // stallWarningAt is when the fixture warnings were logged. Their holder's transaction began
-// 2 OwnHoldBound before (stallWarningHolderOf), so a fixture's pending_for is what the own-hold rule
-// reads unless a row dates its holder otherwise (stallWarningLineHeldFor).
+// fixtureHolderAge before (stallWarningHolderOf), unless a row dates its holder otherwise
+// (stallWarningLineHeldFor).
 var stallWarningAt = time.Date(2026, 11, 10, 2, 14, 5, 113_000_000, time.UTC)
+
+// fixtureHolderAge is how long before a fixture warning its holder's transaction began, and the
+// pending_for most fixtures carry: the age of a hold the fixtures stage, read off the warning
+// alone, and no bound of any wait.
+const fixtureHolderAge = 10 * time.Second
 
 // stallWarningLine is a whole stall-warning line naming database as the holder's and pendingFor as
 // how long the oldest pending observation has waited, as warnStall's default arm logs one for a
@@ -106,7 +111,7 @@ func stallWarningHolder(application, database string) string {
 // the application_name beside it, so a row that needs a query of a shape no query Dispatch sends
 // has - one carrying a backquote - writes it here.
 func stallWarningHolderOf(application, database, query string) string {
-	return stallWarningHolderSince(application, database, query, stallWarningAt.Add(-2*OwnHoldBound))
+	return stallWarningHolderSince(application, database, query, stallWarningAt.Add(-fixtureHolderAge))
 }
 
 // stallWarningHolderSince writes those fields for a holder whose transaction began at since.
@@ -131,9 +136,9 @@ func stallWarningRecord(attrs ...any) slog.Record {
 
 // heldRecord is stallWarningRecord with the fields warnStall's default arm logs for a holder in
 // database, pendingFor being the oldest pending observation's age and the holder's transaction
-// having begun 2 OwnHoldBound before the record.
+// having begun fixtureHolderAge before the record.
 func heldRecord(pendingFor time.Duration, database string) slog.Record {
-	return heldRecordFor(pendingFor, 2*OwnHoldBound, database)
+	return heldRecordFor(pendingFor, fixtureHolderAge, database)
 }
 
 // heldRecordFor is heldRecord for a holder whose own transaction had stood held when it was named.
@@ -143,142 +148,141 @@ func heldRecordFor(pendingFor, held time.Duration, database string) slog.Record 
 		"application_name", "psql", "database", database, "query", "select 1")
 }
 
-// TestOwnHoldIsTheOneStallTheWaitRefusesToWaitOut drives the own-hold rule, with the boundary
-// either side where it has one, on warnings read both ways a test reads them: as a Dispatch
-// process's output line and as a record a horizon of the test's own process logged. It needs no
-// server, no Postgres and no network: the rule is a function of the warning alone. Every other
-// warning is a hold the wait waits out, for as long as the test binary's deadline lets it.
-//
-// Every duration is written in terms of OwnHoldBound rather than as seconds, so that a later
-// change of the bound moves the rows with it instead of leaving them to test a boundary that has
-// moved.
-func TestOwnHoldIsTheOneStallTheWaitRefusesToWaitOut(t *testing.T) {
+// TestTheAccountNamesAHolderInTheTestsOwnDatabase drives what the account of a wait that gave up
+// (Watch.String) says of the holder the newest warning names, on warnings read both ways a test
+// reads them: as a Dispatch process's output line and as a record a horizon of the test's own
+// process logged. A holder in the test's own database is named as one, with its client and how
+// long its own transaction had held the horizon back (heldFor), since a hold there can be the
+// defect of dispatch://INFRA-636 or any other client's transaction; every other warning is named
+// by its text alone. It needs no server, no Postgres and no network: the account is a function of
+// the warnings alone. held is checked on the lines, which date the warning and its holder
+// exactly; a record dates itself as it is made, so held is not checked there (-1).
+func TestTheAccountNamesAHolderInTheTestsOwnDatabase(t *testing.T) {
 	const ownDatabase = "dispatch_test_ab"
 	for _, row := range []struct {
 		name    string
 		warning Warning
-		want    bool
+		own     bool
+		held    time.Duration
 	}{
 		{
-			"a foreign holder, another service's transaction on the same Postgres instance, is waited out however long it has stood: it is no defect of Dispatch's",
-			FromLine(stallWarningLine("legion_daemon", 2*OwnHoldBound)),
-			false,
+			"a foreign holder, another service's transaction on the same Postgres instance, is named by its warning alone: it is no client of the test's own database",
+			FromLine(stallWarningLine("legion_daemon", 2*fixtureHolderAge)),
+			false, fixtureHolderAge,
 		},
 		{
 			"so is a foreign hold a horizon of the test's own process reports",
 			FromRecord(heldRecord(time.Minute, "postgres")),
-			false,
+			false, -1,
 		},
 		{
-			"a warning naming the test's own database whose holder has stood past the own-hold bound fails at once, so a hold holding up its live readers is never waited out (dispatch://INFRA-636)",
-			FromLine(stallWarningLine(ownDatabase, 2*OwnHoldBound)),
-			true,
+			"a warning naming the test's own database is named as a hold there, so a hold holding up its live readers is in the account of the wait it held up (dispatch://INFRA-636)",
+			FromLine(stallWarningLine(ownDatabase, 2*fixtureHolderAge)),
+			true, fixtureHolderAge,
 		},
 		{
-			"a warning naming the test's own database for a transaction that began a moment ago is no own hold, though pending_for is past the bound: a foreign holder released since carried the oldest observation's age there (the transaction named holds for its own age)",
-			FromLine(stallWarningLineHeldFor(ownDatabase, 2*OwnHoldBound, 100*time.Millisecond)),
-			false,
+			"a hold there is dated by its own transaction, though pending_for is older: a foreign holder released since carried the oldest observation's age there",
+			FromLine(stallWarningLineHeldFor(ownDatabase, 2*fixtureHolderAge, 100*time.Millisecond)),
+			true, 100 * time.Millisecond,
 		},
 		{
-			"the same race on a record of the test's own process is no own hold either",
-			FromRecord(heldRecordFor(2*OwnHoldBound, 100*time.Millisecond, ownDatabase)),
-			false,
-		},
-		{
-			"a transaction of the test's own database that has itself stood the bound is an own hold, whatever came before it",
-			FromLine(stallWarningLineHeldFor(ownDatabase, 2*OwnHoldBound, OwnHoldBound)),
-			true,
+			"and by pending_for where that is younger than the transaction",
+			FromLine(stallWarningLine(ownDatabase, time.Second)),
+			true, time.Second,
 		},
 		{
 			"so is one on a record of the test's own process",
-			FromRecord(heldRecordFor(2*OwnHoldBound, OwnHoldBound+time.Second, ownDatabase)),
-			true,
+			FromRecord(heldRecordFor(2*fixtureHolderAge, 100*time.Millisecond, ownDatabase)),
+			true, -1,
 		},
 		{
-			"a warning naming the test's own database that dates no holder (xact_start) holds for zero and is waited out",
-			FromLine(stallWarningHead(2*OwnHoldBound) + ` holder=backend pid=1188 state=active application_name=psql database=` + ownDatabase),
-			false,
-		},
-		{
-			"a warning naming the test's own database whose pending_for is under the own-hold bound is waited out like any other stall, so a client's second-and-a-half transaction in that database fails nothing",
-			FromLine(stallWarningLine(ownDatabase, OwnHoldBound-time.Millisecond)),
-			false,
-		},
-		{
-			"a warning naming the test's own database fails at the own-hold bound itself, which is where the rule starts to bite",
-			FromLine(stallWarningLine(ownDatabase, OwnHoldBound)),
-			true,
-		},
-		{
-			"an own-database record inside its bound is waited out",
-			FromRecord(heldRecord(OwnHoldBound-time.Millisecond, ownDatabase)),
-			false,
-		},
-		{
-			"an own-database record at its bound fails",
-			FromRecord(heldRecord(OwnHoldBound, ownDatabase)),
-			true,
+			"a warning naming the test's own database that dates no holder (xact_start) is named as a hold there that held for zero",
+			FromLine(stallWarningHead(2*fixtureHolderAge) + ` holder=backend pid=1188 state=active application_name=psql database=` + ownDatabase),
+			true, 0,
 		},
 		{
 			"a record naming another database whose name the own one prefixes is a foreign hold",
 			FromRecord(heldRecord(time.Minute, ownDatabase+"cd")),
-			false,
+			false, -1,
 		},
 		{
-			"a warning whose diagnosis failed names no database at all, so it is waited out",
-			FromLine(stallWarningHead(2*OwnHoldBound) + ` diagnosis_error="timeout: context deadline exceeded"`),
-			false,
+			"a warning whose diagnosis failed names no database at all, so it names no hold in the test's own",
+			FromLine(stallWarningHead(2*fixtureHolderAge) + ` diagnosis_error="timeout: context deadline exceeded"`),
+			false, 0,
 		},
 		{
-			"a warning that found no holder still open names no database either, and is waited out for the same reason",
-			FromLine(stallWarningHead(2*OwnHoldBound) + ` holder="none open now"`),
-			false,
+			"a warning that found no holder still open names no database either",
+			FromLine(stallWarningHead(2*fixtureHolderAge) + ` holder="none open now"`),
+			false, 0,
 		},
 		{
-			"a warning naming the test's own database that carries no pending_for field at all is waited out, because the rule is judged on an age and a warning carrying none cannot end the wait",
+			"a warning naming the test's own database that carries no pending_for field at all is named as a hold there that held for zero, the age it cannot read",
 			FromLine(stallWarningHeadNoPendingFor() + stallWarningHolder("psql", ownDatabase)),
-			false,
+			true, 0,
 		},
 		{
-			"a record whose pending_for is no duration is waited out for the same reason",
+			"a record whose pending_for is no duration holds for zero for the same reason",
 			FromRecord(stallWarningRecord("pending_for", "a minute", "database", ownDatabase)),
-			false,
+			true, 0,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := ownHold(row.warning, ownDatabase); got != row.want {
-				t.Errorf("ownHold(%+v, %q) = %t, want %t", row.warning, ownDatabase, got, row.want)
+			if got := ownDatabaseHold(row.warning, ownDatabase); got != row.own {
+				t.Errorf("ownDatabaseHold(%+v, %q) = %t, want %t", row.warning, ownDatabase, got, row.own)
+			}
+			if got := row.warning.heldFor(); row.held >= 0 && got != row.held {
+				t.Errorf("heldFor(%+v) = %v, want %v", row.warning, got, row.held)
+			}
+			var logged []Warning
+			watch := NewWatch(func() []Warning { return logged }, ownDatabase)
+			logged = append(logged, row.warning)
+			account := watch.String()
+			named := "a client of the test's own database " + ownDatabase
+			if strings.Contains(account, named) != row.own {
+				t.Errorf("the account %q names a hold in the test's own database: %t, want %t", account, !row.own, row.own)
+			}
+			if row.own {
+				for _, want := range []string{row.warning.Client, "held it back for " + row.warning.heldFor().String()} {
+					if !strings.Contains(account, want) {
+						t.Errorf("the account %q does not name %q", account, want)
+					}
+				}
+			}
+			if !strings.Contains(account, row.warning.Text) {
+				t.Errorf("the account %q does not carry the newest warning %q", account, row.warning.Text)
 			}
 		})
 	}
 }
 
-// TestAWatchFailsOnTheNewestWarningSinceItBegan: a warning logged before the watch began belongs
-// to a hold before the wait, perhaps one long over, so it fails nothing; the newest warning since
-// is the one the own-hold rule judges, and the failure names the holding client and the warning.
-func TestAWatchFailsOnTheNewestWarningSinceItBegan(t *testing.T) {
+// TestAWatchsAccountNamesTheNewestWarningSinceItBegan: a warning logged before the watch began
+// belongs to a hold before the wait, perhaps one long over, so the account names nothing of it;
+// the newest warning since is the one the account names, as a hold in the test's own database
+// with its client and its warning when it is one, and as its warning alone when it is not.
+func TestAWatchsAccountNamesTheNewestWarningSinceItBegan(t *testing.T) {
 	const ownDatabase = "dispatch_test_ab"
-	own := FromLine(stallWarningLine(ownDatabase, 2*OwnHoldBound))
-	foreign := FromLine(stallWarningLine("postgres", 2*OwnHoldBound))
+	own := FromLine(stallWarningLine(ownDatabase, 2*fixtureHolderAge))
+	foreign := FromLine(stallWarningLine("postgres", 2*fixtureHolderAge))
+	named := "a client of the test's own database " + ownDatabase
 	logged := []Warning{own}
 	watch := NewWatch(func() []Warning { return logged }, ownDatabase)
-	if failure := watch.Failure("the frame"); failure != "" {
-		t.Fatalf("a watch whose only warning came before it began failed: %s", failure)
+	if account := watch.String(); strings.Contains(account, named) || strings.Contains(account, own.Text) {
+		t.Fatalf("the account of a watch whose only warning came before it began names that warning: %s", account)
 	}
 	logged = append(logged, foreign)
-	if failure := watch.Failure("the frame"); failure != "" {
-		t.Fatalf("a watch whose newest warning names a foreign holder failed: %s", failure)
+	if account := watch.String(); strings.Contains(account, named) {
+		t.Fatalf("the account of a watch whose newest warning names a foreign holder names a hold in the test's own database: %s", account)
 	}
 	logged = append(logged, own)
-	failure := watch.Failure("the frame")
-	for _, want := range []string{"the frame did not arrive", ownDatabase, own.Client, own.Text} {
-		if !strings.Contains(failure, want) {
-			t.Errorf("the own-hold failure %q does not name %q", failure, want)
+	account := watch.String()
+	for _, want := range []string{named, own.Client, own.Text} {
+		if !strings.Contains(account, want) {
+			t.Errorf("the account %q of an own hold does not name %q", account, want)
 		}
 	}
 	logged = append(logged, foreign)
-	if failure := watch.Failure("the frame"); failure != "" {
-		t.Fatalf("a watch whose newest warning names a foreign holder again failed on the own hold before it: %s", failure)
+	if account := watch.String(); strings.Contains(account, named) {
+		t.Fatalf("the account of a watch whose newest warning names a foreign holder again names the own hold before it: %s", account)
 	}
 }
 
@@ -287,8 +291,8 @@ func TestAWatchFailsOnTheNewestWarningSinceItBegan(t *testing.T) {
 // the holder from the horizon's own diagnosis, or a count of none when the horizon never said it
 // was held.
 func TestAWatchsAccountIsWhatTheHorizonSaid(t *testing.T) {
-	before := FromLine(stallWarningLine("legion_daemon", OwnHoldBound))
-	newest := FromLine(stallWarningLine("postgres", 2*OwnHoldBound))
+	before := FromLine(stallWarningLine("legion_daemon", fixtureHolderAge))
+	newest := FromLine(stallWarningLine("postgres", 2*fixtureHolderAge))
 	for _, row := range []struct {
 		name   string
 		logged []Warning
@@ -326,9 +330,9 @@ func TestAWatchsAccountIsWhatTheHorizonSaid(t *testing.T) {
 // at the shared wait's pace pass on the bubble's clock and cost no time: its first ask reads the
 // once-warned horizon's warning, and every ask after it reads the horizon's silence. The result is
 // sent only once the bubble has idled silenceSpan past the watch's start (testwait.Idle), so Wait
-// asks the watch (Watch.Failure) at every pace through that much silence, timed from the watch's
-// start and from the warning it read. A silence bound shorter than silenceSpan in Wait, Poll or
-// Failure fails the row by name: main's 3 s Base and Extension among them, which main's poll loop
+// asks its condition and reads the watch at every pace through that much silence, timed from the
+// watch's start and from the warning it read. A silence bound shorter than silenceSpan in Wait or
+// Poll fails the row by name: main's 3 s Base and Extension among them, which main's poll loop
 // judged at every ask (verdictOf) and a merge of main could bring back into Poll. A Wait that never
 // returned the result fails by name too: the bubble's t names what was left of the row's deadline
 // as the bubble began, past the bubble's start, so Wait gives up the shared wait's margin before
@@ -339,10 +343,10 @@ func TestAWatchsAccountIsWhatTheHorizonSaid(t *testing.T) {
 // however the row ends: a Wait that failed would otherwise leave it asleep in the bubble once the
 // test goroutine had ended, which synctest.Test ends in a panic rather than in the row's failure.
 func TestSilenceEndsNoWaitOnTheHorizon(t *testing.T) {
-	// silenceSpan is how long the horizon says nothing before the result is sent: OwnHoldBound,
-	// the own-hold rule's bound and the longest span this package holds, past main's Base and
-	// Extension.
-	const silenceSpan = OwnHoldBound
+	// silenceSpan is how long the horizon says nothing before the result is sent: past main's
+	// Base and Extension (3 s each, verdictOf), the silence bounds a merge of main could bring
+	// back. It is the span of the absence this row proves (testwait.Idle), not a wait's bound.
+	const silenceSpan = fixtureHolderAge
 	for _, row := range []struct {
 		name   string
 		logged []Warning
@@ -385,8 +389,8 @@ func saying(logged []Warning) func() []Warning {
 }
 
 // TestFromLineMatchesTheWholeDatabaseField holds the trap a field read exists to avoid: a prefix
-// match would read a foreign hold as the test's own and fail the wait at once on a database the
-// test does not own.
+// match would read a foreign hold as the test's own, and the account of a wait that gave up would
+// name a client of a database the test does not own as its own.
 func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
 	const ownDatabase = "dispatch_test_ab"
 	for _, row := range []struct {
@@ -397,23 +401,23 @@ func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
 	}{
 		{
 			"a warning naming a longer database that opens with this one's name is not read as naming this one",
-			stallWarningLine(ownDatabase+"cd", OwnHoldBound), ownDatabase, false,
+			stallWarningLine(ownDatabase+"cd", fixtureHolderAge), ownDatabase, false,
 		},
 		{
 			"a warning naming exactly this database is read as naming it",
-			stallWarningLine(ownDatabase, OwnHoldBound), ownDatabase, true,
+			stallWarningLine(ownDatabase, fixtureHolderAge), ownDatabase, true,
 		},
 		{
 			"a line carrying no database= field at all names nothing",
-			stallWarningHead(OwnHoldBound) + ` holder="none open now"`, ownDatabase, false,
+			stallWarningHead(fixtureHolderAge) + ` holder="none open now"`, ownDatabase, false,
 		},
 		{
 			"a database= field at the line's end, with no space after it, is still read whole",
-			stallWarningHead(OwnHoldBound) + " database=" + ownDatabase, ownDatabase, true,
+			stallWarningHead(fixtureHolderAge) + " database=" + ownDatabase, ownDatabase, true,
 		},
 		{
 			"a line carrying no database= field at all is not read as naming the empty database, which a field read that could not tell a missing field from an empty one would have it do",
-			stallWarningHead(OwnHoldBound) + ` holder="none open now"`, "", false,
+			stallWarningHead(fixtureHolderAge) + ` holder="none open now"`, "", false,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -425,9 +429,10 @@ func TestFromLineMatchesTheWholeDatabaseField(t *testing.T) {
 	}
 }
 
-// TestFieldTakesAQuotedValueWhole holds the other traps of the field read both the own-hold rule
-// and the own-hold failure's client naming go through. slog quotes a value holding a space, and a
-// read that stopped at the first space would cut it. The field that meets one is
+// TestFieldTakesAQuotedValueWhole holds the other traps of the field read that the account's
+// naming of a hold in the test's own database, and of its client, goes through. slog quotes a
+// value holding a space, and a read that stopped at the first space would cut it. The field that
+// meets one is
 // application_name, because the client sets it - pgAdmin names its connections "pgAdmin 4 -
 // <connection>" - and it is what a Warning's Client names the holding client by. That the client
 // sets it is the second trap: the name it chooses can hold the text of another field, so the read
@@ -455,8 +460,8 @@ func TestFieldTakesAQuotedValueWhole(t *testing.T) {
 		namesOwn    bool   // whether the line is read as naming the test's own database
 	}{
 		{
-			name:        "a quoted application_name holding a space is read whole, so the own-hold failure names the client as it named itself rather than cutting it at its first space",
-			warning:     stallWarningHead(OwnHoldBound) + stallWarningHolder(`"pgAdmin 4 - dispatch"`, ownDatabase),
+			name:        "a quoted application_name holding a space is read whole, so the account of an own hold names the client as it named itself rather than cutting it at its first space",
+			warning:     stallWarningHead(fixtureHolderAge) + stallWarningHolder(`"pgAdmin 4 - dispatch"`, ownDatabase),
 			key:         "application_name",
 			value:       "pgAdmin 4 - dispatch",
 			found:       true,
@@ -464,8 +469,8 @@ func TestFieldTakesAQuotedValueWhole(t *testing.T) {
 			namesOwn:    true,
 		},
 		{
-			name:        "a client chooses its own application_name, so a line whose application_name holds the text database=<the test's own database> is read as the hold in another database that its own database= field says it is: a field read that searched the line as text answered that text instead, and had the wait fail on a foreign hold as its own",
-			warning:     stallWarningHead(OwnHoldBound) + stallWarningHolder(`"database=`+ownDatabase+` backfill"`, foreignDatabase),
+			name:        "a client chooses its own application_name, so a line whose application_name holds the text database=<the test's own database> is read as the hold in another database that its own database= field says it is: a field read that searched the line as text answered that text instead, and had the account name a foreign hold as the test's own",
+			warning:     stallWarningHead(fixtureHolderAge) + stallWarningHolder(`"database=`+ownDatabase+` backfill"`, foreignDatabase),
 			key:         "database",
 			value:       foreignDatabase,
 			found:       true,
@@ -474,7 +479,7 @@ func TestFieldTakesAQuotedValueWhole(t *testing.T) {
 		},
 		{
 			name:        "a key that is the tail of a longer key is not that key: a line carrying application_name and no name= field of its own carries no name= field at all",
-			warning:     stallWarningHead(OwnHoldBound) + stallWarningHolder(`"pgAdmin 4 - dispatch"`, ownDatabase),
+			warning:     stallWarningHead(fixtureHolderAge) + stallWarningHolder(`"pgAdmin 4 - dispatch"`, ownDatabase),
 			key:         "name",
 			value:       "",
 			found:       false,
@@ -483,7 +488,7 @@ func TestFieldTakesAQuotedValueWhole(t *testing.T) {
 		},
 		{
 			name:        "a value a third party chose can open a Go raw string literal: an application_name opening with a backquote is read as the token slog wrote, because a read that took every literal strconv.QuotedPrefix takes ran that value on to the closing backquote in the holder's query and read the line's database out of the query's text, which had a foreign hold read as the test's own",
-			warning:     stallWarningHead(OwnHoldBound) + stallWarningHolderOf(backquotedName, foreignDatabase, queryClosingTheBackquote),
+			warning:     stallWarningHead(fixtureHolderAge) + stallWarningHolderOf(backquotedName, foreignDatabase, queryClosingTheBackquote),
 			key:         "database",
 			value:       foreignDatabase,
 			found:       true,

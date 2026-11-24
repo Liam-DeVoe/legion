@@ -636,8 +636,11 @@ type scanEnd struct {
 // as a stopping process's batch does. It returns why it stopped, once every batch it started
 // has returned, each fenced by the hold's deadline itself. A wake it took and did not use is
 // given back (signal), so the scan serve starts next sees it. Every batch that sent anything is
-// logged as a sent batch with this process's instance, the span of event ids it sent, how many
-// events it sent at least one envelope of (sent) and how many it marked published (published).
+// logged as a sent batch with this process's instance, the span of event ids it sent and those
+// ids themselves (event_ids), how many events it sent at least one envelope of (sent) and how many
+// it marked published (published); a batch that returned an error is logged as the scan's
+// failure, with the ids of the events it sent (event_ids), which that failure leaves unpublished
+// for the next read to send again.
 func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 	deps := o.deps
 	deps.lanes = newLanes(o.signal)
@@ -689,14 +692,15 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 			batch := ran.batch
 			if batch.sent > 0 {
 				slog.Info("dispatch outbox: sent batch", "instance", o.instance,
-					"sent", batch.sent, "published", batch.published, "first_id", batch.firstID, "last_id", batch.lastID, "started", batch.started)
+					"sent", batch.sent, "published", batch.published, "first_id", batch.firstID, "last_id", batch.lastID,
+					"event_ids", batch.sentIDs, "started", batch.started)
 			}
 			switch {
 			case ran.err != nil:
 				// A batch this scan ended, or the process's stop ended, reports that end and not
 				// a failure of its own.
 				if batches.Err() == nil {
-					slog.Error("dispatch outbox: scan", "instance", o.instance, "error", ran.err)
+					slog.Error("dispatch outbox: scan", "instance", o.instance, "event_ids", batch.sentIDs, "error", ran.err)
 					end.failed = true
 				}
 				stop = true
