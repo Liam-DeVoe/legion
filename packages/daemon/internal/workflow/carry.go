@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -24,7 +25,8 @@ import (
 
 // reviewVerdict applies the verdict past review (intake.ReviewVerdict, which the review-verdict
 // route queues): the approve or changes, at the head the pull request moved to while the issue
-// stands past its review (record.InSlotlessPhase), of the agent of a review step of the issue's task,
+// stands past its review (pastReview: a review step of its task has passed, by the walk), of the
+// agent of a review step of the issue's task,
 // as the step's record names it (reviewSteps): the reviewer, or the architect that ran the owner's
 // acceptance. It records that step's verdict at that head (recordVerdict), whose write of
 // legion-verdict the fact's commit asks for (askMergeState), and the reviewer's is also the round's
@@ -33,10 +35,12 @@ import (
 //
 // Every judgement of the call is made here, under the fact's lock, each refusal recording nothing:
 // a claim the record names the agent of no review step of the issue's task
-// (VERDICT_CALLER_FORBIDDEN), an issue no longer past its review (VERDICT_NOT_PAST_REVIEW), a
-// lingering tree (TREE_LINGERING), and a head the pull request has moved off
-// (VERDICT_HEAD_NOT_CURRENT). The agent of the step the issue stands in counts, the owner's
-// acceptance in accepting: it runs that step, and its verdict there is a verdict of that step.
+// (VERDICT_CALLER_FORBIDDEN), an issue no longer past its review or a caller whose own step has
+// not passed (VERDICT_NOT_PAST_REVIEW), a lingering tree (TREE_LINGERING), and a head the pull
+// request has moved off (VERDICT_HEAD_NOT_CURRENT). The agent of the step the issue stands in
+// counts too, the owner's acceptance in accepting: it runs that step, and its verdict there is a
+// verdict of that step. The reviewer's own step never counts while it runs: its verdict there is
+// its completion's.
 func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.ReviewVerdict) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -56,9 +60,9 @@ func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.Revie
 			"review_verdict is the verdict of the agent of a review step of %s's task, as its step record names it, and %s; this call is claim %s's. An architect that ran a child's acceptance names that child as issue; nothing was recorded",
 			issue.Key, agentsOf(steps), fact.Claim)}}, nil
 	}
-	if !record.InSlotlessPhase(*issue) {
+	if !pastReview(w, *issue, steps) || !step.passed(w, *issue) && (step.at == phase.Reviewing || record.StandsAt(*issue) != step.at) {
 		return refused("VERDICT_NOT_PAST_REVIEW", fmt.Sprintf(
-			"%s stands in %s: review_verdict is the verdict of a review step's agent on a head that moved past review, in accepting, retro or merging; nothing was recorded",
+			"%s stands in %s: review_verdict is the verdict of a review step's agent on a head that moved after that step passed; nothing was recorded",
 			issue.Key, record.StandsAt(*issue))), nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
@@ -106,13 +110,16 @@ func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.Revie
 
 // askVerdict asks the agent of each review step of issue's task that has passed for its verdict at
 // pr's head, which a push moved there from from while issue stands past its review (spec R5, "The
-// verdict past review"): every push in accepting, retro or merging, a retro commit and an
+// verdict past review"): every push once a review step has passed, a retro commit and an
 // implementer's correction among them, leaves a head with no legion-verdict, which cannot merge
-// until the review steps' verdicts there are written. A merge forward's landing asks in
+// until the review steps' verdicts there are written. Past review is a review step of the task that
+// has passed, by the walk (askReviewSteps asks each such step and no other): on the default steps
+// that is accepting, retro or merging, and on a task whose review step comes before its tester it
+// is testing too. A merge forward's landing asks in
 // mergeForwardLanded, so this is every other move (askReviewSteps). A tree that lingers, where
 // every role is suspended, asks nothing.
 func (e *Engine) askVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, from string) error {
-	if !record.InSlotlessPhase(issue) || from == "" || from == pr.HeadSHA {
+	if from == "" || from == pr.HeadSHA {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
@@ -189,8 +196,8 @@ func (e *Engine) askReviewSteps(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // VerdictAskStands reads in tx whether agent is still owed its ask of a verdict past review on
 // issue key (askReviewSteps): the issue is in the workflow, its tree does not linger, the pull
-// request the record holds for it is open, the issue stands past its review (record.InSlotlessPhase),
-// and agent is the agent the record names of a review step of the issue's task that has passed,
+// request the record holds for it is open, and agent is the agent the record names of a review step
+// of the issue's task that has passed (past review, by the walk),
 // the reviewer's aside, whose last verdict on the pull request names no head or another head than
 // the pull request's current one (storedVerdictSince). It also returns the issue the record holds,
 // nil where it holds none. The reviewer is left out because its ask is the merge-forward review,
@@ -207,7 +214,7 @@ func (e *Engine) askReviewSteps(ctx context.Context, tx pgx.Tx, issue record.Iss
 // reviewSteps), and builds no engine.
 func VerdictAskStands(ctx context.Context, records record.Store, tx pgx.Tx, key string, agent claim.Token) (*record.Issue, bool, error) {
 	issue, err := records.Issue(ctx, tx, key)
-	if err != nil || issue == nil || agent == "" || !record.InWorkflow(*issue) || !record.InSlotlessPhase(*issue) {
+	if err != nil || issue == nil || agent == "" || !record.InWorkflow(*issue) {
 		return issue, false, err
 	}
 	if lingers, err := record.TreeLingers(ctx, records, tx, issue.Tree); err != nil || lingers {
@@ -317,4 +324,11 @@ func (e *Engine) owedVerdict(ctx context.Context, tx pgx.Tx, issue string, pr *r
 		otherwise = pr.MergeForward.Head
 	}
 	return verdictSince(reviewer, pr.HeadSHA, otherwise), nil
+}
+
+// pastReview says whether issue stands past its review: a review step of its task has passed, by
+// the walk (reviewStep.passed). On the default steps, where the review steps come last, that is
+// accepting, retro or merging; on a task whose reviewer step comes before its tester, testing too.
+func pastReview(w Walk, issue record.Issue, steps []reviewStep) bool {
+	return slices.ContainsFunc(steps, func(step reviewStep) bool { return step.passed(w, issue) })
 }

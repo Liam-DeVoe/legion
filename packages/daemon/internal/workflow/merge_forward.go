@@ -221,8 +221,8 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // The worker of the phase the issue stands in, when the landed reaches it - the tester, the
 // reviewer or the merger (record.MergeForwardReaches) - is told the old head and the new one and
 // to read what the merge changed before it goes on (record.MergeForwardLanded). An issue past its
-// review (record.InSlotlessPhase) stands on verdicts at an older head, so the agent of each review step
-// of its task that has passed is asked to read what changed since its step's last verdict, the
+// review (a review step of its task has passed, by the walk) stands on verdicts at an older head,
+// so the agent of each review step of its task that has passed is asked to read what changed since its step's last verdict, the
 // merge among it, and send its verdict at the new head (askReviewSteps: the reviewer by
 // record.MergeForwardReview, the architect that ran the owner's acceptance by a role message),
 // which the daemon records as that step's verdict there and writes legion-verdict from
@@ -256,12 +256,9 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 			}
 		}
 	}
-	review := false
-	if record.InSlotlessPhase(issue) {
-		var err error
-		if review, err = e.askReviewSteps(ctx, tx, issue, pr, asked.Head, asked.Base, asked.Why); err != nil {
-			return true, err
-		}
+	review, err := e.askReviewSteps(ctx, tx, issue, pr, asked.Head, asked.Base, asked.Why)
+	if err != nil {
+		return true, err
 	}
 	landed := *asked
 	landed.Landed, landed.ReviewAsked = pr.HeadSHA, review
@@ -301,7 +298,23 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key stri
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return issue, pr, leftMergeForwardAt(*issue, lingers, pr, role, step, head, landed), nil
+	if why := leftMergeForwardAt(*issue, lingers, pr, role, step, head, landed); why != "" || step != record.MergeForwardReview {
+		return issue, pr, why, nil
+	}
+	// The review is delivered only while the reviewer's step has passed, by the walk: past it the
+	// reviewer is asked for its verdict at the new head, and the verdict call is taken there alone.
+	w, err := readWalk(ctx, store, tx, *issue)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	steps, err := reviewSteps(ctx, store, tx, *issue, w)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if !slices.ContainsFunc(steps, func(s reviewStep) bool { return s.at == phase.Reviewing && s.passed(w, *issue) }) {
+		return issue, pr, fmt.Sprintf("the issue stands in %s, not past its review: its task's reviewer step has not passed", record.StandsAt(*issue)), nil
+	}
+	return issue, pr, "", nil
 }
 
 // leftMergeForwardAt says why a merge-forward message of step to role about head is no longer to
@@ -314,9 +327,9 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key stri
 //
 // The review asks the round's recorded reviewer for its verdict at landed, the head a merge
 // forward's landing or any other push left past review (mergeForwardLanded, askVerdict), so it is
-// delivered while the issue stands past its review (record.InSlotlessPhase) and the pull request stands
-// at landed: the verdict call is taken only there (the review-verdict route), and a later push
-// asks again. The ask, the hold and the landed are the merge forward's own: the record holds a
+// delivered while the pull request stands at landed and, which MergeForwardAt reads by the walk,
+// the reviewer's step has passed: the verdict call is taken only there (the review-verdict route),
+// and a later push asks again. The ask, the hold and the landed are the merge forward's own: the record holds a
 // merge forward of head (record.PullRequest.MergeForward) that, for an ask or a hold, has not
 // landed. The workflow drops the ask on a move into implementing and when the issue leaves the
 // workflow (clearMergeForward), and a merge forward of another head is a newer ask, which has its
@@ -338,8 +351,6 @@ func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest
 		return "the record holds no pull request for the issue"
 	case pr.State != record.PullRequestOpen:
 		return fmt.Sprintf("the pull request is %s", pr.State)
-	case step == record.MergeForwardReview && !record.InSlotlessPhase(issue):
-		return fmt.Sprintf("the issue stands in %s, not past its review", record.StandsAt(issue))
 	case step == record.MergeForwardReview && pr.HeadSHA != landed:
 		return fmt.Sprintf("the pull request's head moved on to %s", pr.HeadSHA)
 	case step == record.MergeForwardReview:
