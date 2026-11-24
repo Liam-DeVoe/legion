@@ -394,21 +394,26 @@ test("every Go-written fixture parses to a value equal to the file", () => {
   }
 });
 
-// The roles whose start waits for the issue's pod (`api.Issue.StartWaitsForPod`): a plugin parses
-// the state through `legionIssue`, which strips a key it does not name, so a mirror without the
-// line would drop the list in silence, and the gate above names the key the day a golden holds it.
-test("a served issue keeps the roles whose start waits for its pod", () => {
+// Each start that waits for the issue's pod, by its role and the token of the claim it starts
+// (`api.Issue.StartWaitsForPod`, contract 245): a plugin parses the state through `legionIssue`,
+// which strips a key it does not name, so a mirror without the line, or without a key of an
+// entry, would drop it in silence. Two claims of one issue can hold one role, so the role's own
+// start and a second agent's start of the role are two entries, told apart by their tokens.
+test("a served issue keeps each start that waits for its pod, by its role and its claim", () => {
   const state = fixture("state.json") as { issues: Record<string, Record<string, unknown>> };
   const atStep = state.issues["LEGION-240"];
   if (atStep?.phase !== "step") {
     throw new Error("state fixture lacks LEGION-240 at step");
   }
-  atStep.startWaitsForPod = ["checker"];
+  const starts = [
+    { role: "checker", token: "legion-legion-legion-240-checker" },
+    { role: "implementer", token: "legion-legion-legion-240-implementer" },
+    { role: "implementer", token: "legion-legion-legion-240-implementer-2" },
+  ];
+  atStep.startWaitsForPod = starts;
 
   expect(droppedFromState(state)).toBeUndefined();
-  expect(LegionStateResponse.parse(state).issues["LEGION-240"]?.startWaitsForPod).toEqual([
-    "checker",
-  ]);
+  expect(LegionStateResponse.parse(state).issues["LEGION-240"]?.startWaitsForPod).toEqual(starts);
 });
 
 // The other direction of that gate, and the hole a merge opened in it: the case above walks the
@@ -970,13 +975,16 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 
 // Contract 221: a step of a role of the deployment runs as the phase `step`, and the issue names
 // the role that works it, `stepRole`, at `step` and while a hold keeps it out of that step. An
-// issue whose pod was built before that role names it in `startWaitsForPod` and holds no claim of
-// it; a held issue keeps the failed claim of that role as its worker.
+// issue whose pod was built before that role names the start of it in `startWaitsForPod`, by the
+// role and the token of the claim it starts (contract 245), and holds no claim of it; a held issue
+// keeps the failed claim of that role as its worker.
 test("the state golden carries an issue at step and the role of the deployment that works it", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   const atStep = state.issues["LEGION-240"];
   expect([atStep?.phase, atStep?.stepRole]).toEqual(["step", "checker"]);
-  expect(atStep?.startWaitsForPod).toEqual(["checker"]);
+  expect(atStep?.startWaitsForPod).toEqual([
+    { role: "checker", token: "legion-legion-legion-240-checker" },
+  ]);
   expect(Object.keys(atStep?.workers ?? {})).toEqual([]);
   const held = state.issues["LEGION-241"];
   expect([held?.phase, held?.heldFrom, held?.stepRole]).toEqual(["held", "step", "checker"]);
@@ -2768,13 +2776,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Four bands stand
   // above 199: the repositories block's, the roles of a deployment's (contract 221), which serves
   // the state golden's issues at step and its claims of a role of the deployment as a caller below
-  // 221 reads them (`belowDeploymentRoles`), and contract 222's, which serves each claim nothing
-  // will wake and each claim view without its `token`, and each issue without its `otherClaims`
-  // (`withoutStrandedTokens`, `withoutClaimTokens`). So the narrowing changes this one block and,
-  // beside it, only what those two bands change.
+  // 221 reads them (`belowDeploymentRoles`), contract 222's, which serves each claim nothing will
+  // wake and each claim view without its `token`, and each issue without its `otherClaims`
+  // (`withoutStrandedTokens`, `withoutClaimTokens`), and contract 245's, which serves each issue's
+  // `startWaitsForPod` as the roles of its starts (`withoutStartWaitTokens`), a list the band of 221
+  // already leaves off. So the narrowing changes this one block and, beside it, only what the bands
+  // of 221 and 222 change.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));

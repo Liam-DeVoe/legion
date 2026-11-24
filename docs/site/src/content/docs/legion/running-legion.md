@@ -1582,7 +1582,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   `architect` and `workers` (one claim per role, the worker on its step; each claim's `state`, and
   on the implementer `backwardMoves`, one count for each kind of move back the issue has made,
   keyed `<from>-<to>`, left out where it has made none), `otherClaims` (each other claim of the
-  issue, such as a second agent of one role, with the role it holds), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
+  issue, such as a second agent of one role, with the role it holds), `startWaitsForPod` (each
+  start that waits for the issue's pod, which lacks the slot of the start's claim or the role of
+  its step: the `role` and the `token` of the claim it starts; a daemon below contract 245 lists
+  the roles alone), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`

@@ -925,9 +925,15 @@ const legionIssue = z.object({
    * from an issue no experiment holds an answer for, and from every issue of the body the route
    * serves a caller before 141, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
-  /** The roles whose start waits for the issue's pod, which runs no process of theirs yet
-   * (`api.Issue.StartWaitsForPod`): absent for an issue no start waits on. */
-  startWaitsForPod: z.array(nonEmptyString).optional(),
+  /** `api.Issue.StartWaitsForPod`: each start that waits for the issue's pod, which runs no
+   * process of the start's claim yet, by the role of its step and the token of the claim it
+   * starts (contract 245). Two claims of one issue can hold one role (`record.WorkerClaim`), so
+   * the role alone would name a second agent of the role, such as `implementer-2`, as the role's
+   * own agent. Absent for an issue no start waits on. No plugin code reads an entry
+   * (`LEGION_ANSWER_READS`), so both keys are optional. */
+  startWaitsForPod: z
+    .array(z.object({ role: stepRole.optional(), token: nonEmptyString.optional() }))
+    .optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
