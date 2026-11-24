@@ -138,6 +138,24 @@ async function gone(pid: number): Promise<boolean> {
   }
   return false;
 }
+// untilEnded resolves once PID has ended, a zombie counting as ended, reading its state every 50 ms
+// as gone does, until the row's waits end (rowWaitsEnd), and reads once more then; past that it
+// rejects naming the pid, WHAT it is, and the state it last read. gone's fixed 5 s is no bound on
+// a loaded node, where the file's rule (rowBoundMs) has a row's own waits decide.
+async function untilEnded(pid: number, what: string): Promise<void> {
+  const end = rowWaitsEnd();
+  let last = "";
+  for (;;) {
+    last = state(pid);
+    if (["gone", "Z", "X"].includes(last)) return;
+    const now = performance.now();
+    if (now >= end) break;
+    await Bun.sleep(Math.min(50, end - now));
+  }
+  throw new Error(
+    `${what} (pid ${pid}) had not ended by the end of the row's waits (${(rowBoundMs - rowTeardownMs) / 1000} s after the row began): its state read ${last}`
+  );
+}
 // untilExecDone resolves once PID has finished its exec of PROGRAM as far as a walk of the marks
 // reads it: its exe link (/proc/<pid>/exe) names PROGRAM and its /proc/<pid>/environ reads
 // non-empty. Inside an exec Linux gives the process its new memory, and the exe link with it,
@@ -1050,7 +1068,7 @@ echo "pids $foreign $own"`;
     const starter = spawn(["python3", "-I", unreadablePy, join(work, "foreign.ready"), "orphan"], {
       cwd: dir,
     });
-    expect(await gone(starter)).toBe(true);
+    await untilEnded(starter, "the foreign orphan's parent");
     writeFileSync(join(work, "go"), "");
     const [out, err] = await Promise.all([
       new Response(shell.stdout).text(),
