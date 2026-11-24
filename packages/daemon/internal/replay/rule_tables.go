@@ -86,9 +86,21 @@ func (ruleTables) ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.
 			facts.Ready[key] = struct{}{}
 		}
 	}
+	// A read of the line that writes nothing (the start state's view, admit.Admission.View, in a
+	// read-only transaction) keeps nothing and reads what the passes and the start state kept.
+	keeps := false
+	if readsFirstSlots(rule) || readsGaveUp(rule) {
+		var readOnly string
+		if err := tx.QueryRow(ctx, `select current_setting('transaction_read_only')`).Scan(&readOnly); err != nil {
+			return fmt.Errorf("read whether the pass may write: %w", err)
+		}
+		keeps = readOnly != "on"
+	}
 	if readsFirstSlots(rule) {
-		if err := keepFirstSlots(ctx, tx); err != nil {
-			return err
+		if keeps {
+			if err := keepFirstSlots(ctx, tx); err != nil {
+				return err
+			}
 		}
 		first, err := readFirstSlots(ctx, tx, issues)
 		if err != nil {
@@ -97,8 +109,10 @@ func (ruleTables) ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.
 		facts.FirstSlots = first
 	}
 	if readsArrivals(rule) {
-		if err := keepArrivals(ctx, tx, issues); err != nil {
-			return err
+		if keeps {
+			if err := keepArrivals(ctx, tx, issues); err != nil {
+				return err
+			}
 		}
 		arrived, err := readGenerationTimes(ctx, tx, "replay_arrivals", "arrived_at", issues)
 		if err != nil {
@@ -107,8 +121,10 @@ func (ruleTables) ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.
 		facts.Arrivals = arrived
 	}
 	if readsGaveUp(rule) {
-		if err := keepGaveUp(ctx, tx, rule, issues); err != nil {
-			return err
+		if keeps {
+			if err := keepGaveUp(ctx, tx, rule, issues); err != nil {
+				return err
+			}
 		}
 		gave, err := readGenerationTimes(ctx, tx, "replay_gave_up", "gave_up_at", issues)
 		if err != nil {
