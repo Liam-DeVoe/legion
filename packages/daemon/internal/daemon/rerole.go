@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -17,7 +18,8 @@ import (
 // prepareClaimForStep makes machine's claim, token, ready for the step that the start of a phase
 // entry (payload, phaseEntry) is for, before the start brings the claim back. The steps of one key
 // are one claim, and its next step may be of another role than the claim holds, or of another
-// agent than the one whose session it holds (payload.Agent, supervise.Claim.SessionAgent). Either
+// agent than the one whose session it holds (agent, the start's agent, startAgent, and
+// supervise.Claim.SessionAgent). Either
 // way the process the claim may still run was started for the step before it, so the start asks
 // that process to suspend, as the daemon and keeping its session, and is a wait (wait.ErrWaiting)
 // on the row's backoff while the claim still runs: a claim in a turn holds the suspension for the
@@ -42,13 +44,13 @@ import (
 // the judgment it passed when it was asked, and the row waits; its next run carries a standing of
 // its own, judged again by the re-role. So a move back in between costs the claim that one
 // suspension, and the move back's own start resumes it on its session in the role it holds.
-func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Machine, row record.OutboxRow, issue record.Issue, token claim.Token, payload record.SuperviseRequest) error {
+func (r *outbox) prepareClaimForStep(ctx context.Context, machine *supervise.Machine, row record.OutboxRow, issue record.Issue, token claim.Token, payload record.SuperviseRequest, agent stepplan.AgentID) error {
 	if !phaseEntry(payload) {
 		return nil
 	}
 	held := machine.Claim()
 	rerole := held.Role != payload.Role
-	if !rerole && !held.SessionOfAnotherAgent(payload.Agent) {
+	if !rerole && !held.SessionOfAnotherAgent(agent) {
 		return nil
 	}
 	if rerole {

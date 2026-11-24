@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -2617,6 +2618,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// later entry can commit between that read and that lock; a later act judges nothing
 		// (supervise.Standing).
 		step := r.stepStanding(ctx, row, payload)
+		// The agent this start is a run of (startAgent), one value for every act of the start that
+		// reads it: the one that makes the claim ready for the step, the record of the agent on a
+		// running claim, and the decision that brings the claim back.
+		var held supervise.Claim
+		if found {
+			held = machine.Claim()
+		}
+		agent, err := r.startAgent(ctx, issue.Key, token, payload.Agent, held)
+		if err != nil {
+			return err
+		}
 		// The start of a step's entry whose claim holds another role, or whose claim's session is
 		// another agent's, makes the claim ready for that step first (prepareClaimForStep): the
 		// steps of one key are one claim, and its next step may be of another role or another
@@ -2625,34 +2637,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// lock, and the row finishes without acting, since the start of the step the issue stands
 		// in now makes the claim ready for that one.
 		if found {
-			if err := r.prepareClaimForStep(step, machine, row, issue, token, payload); errors.Is(err, supervise.ErrStepLeft) {
+			if err := r.prepareClaimForStep(step, machine, row, issue, token, payload, agent); errors.Is(err, supervise.ErrStepLeft) {
 				r.log.Info("outbox start serves a step its issue left before its claim was made ready for it; finished without acting", "row", row.ID,
-					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "agent", payload.Agent)
+					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "agent", agent)
 				return nil
 			} else if err != nil {
 				return err
 			}
 		}
-		// The agent this start is a run of. A start that names none and makes its claim is one
-		// the release before the record of a claim's agent queued, or one no step names: the
-		// claim it makes records the agent the steps give its name (store.ClaimAgentFromSteps),
-		// the rule the migration that added the record filled every claim of that release by, so
-		// a later start of another agent leaves its session. The row itself is not written, so
-		// it reads as that release wrote it.
-		agent := payload.Agent
 		if !found {
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
-			}
-			if agent == "" {
-				err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-					var err error
-					agent, err = store.ClaimAgentFromSteps(ctx, tx, issue.Key, token)
-					return err
-				})
-				if err != nil {
-					return fmt.Errorf("read the agent the steps give claim %s: %w", token, err)
-				}
 			}
 			machine, _, err = r.supervisor.Create(ctx, supervise.Claim{
 				Token: token, Project: r.project, Tree: issue.Tree, Issue: issue.Key, Role: payload.Role, State: supervise.StateQueued,
@@ -2746,9 +2741,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// to judge it, and a move or a later entry that committed since the fences above leaves the
 		// claim recording no agent, and the start finishes here without acting: its task would be
 		// refused at its delivery in any case.
-		if err := machine.TakeSessionFor(step, payload.Agent); errors.Is(err, supervise.ErrStepLeft) {
+		if err := machine.TakeSessionFor(step, agent); errors.Is(err, supervise.ErrStepLeft) {
 			r.log.Info("outbox start serves a step its issue left before the running claim took its agent; finished without acting", "row", row.ID,
-				"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "agent", payload.Agent)
+				"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "agent", agent)
 			return nil
 		} else if err != nil {
 			return fmt.Errorf("record the agent of the session of claim %s: %w", token, err)
@@ -3081,6 +3076,25 @@ func (r *outbox) claimsOfIssue(issue string) []*supervise.Machine {
 		return strings.Compare(string(a.View().Claim.Token), string(b.View().Claim.Token))
 	})
 	return machines
+}
+
+// startAgent is the agent a start of the claim token of issue is a run of, the one value of it the
+// start reads (supervise.StartWork.Agent and the acts before it): the agent the start names
+// (record.SuperviseRequest.Agent); and, for a start that names none of a claim that records none
+// (supervise.Claim.SessionAgent) and has run nothing (supervise.Claim.Launched), the agent the
+// steps give the claim's name (store.ClaimAgentFromSteps), the rule the migration that added the
+// record filled every claim of the release before by. A start that names none is one that release
+// queued, or one no step names. held is the claim as the start finds it, the zero claim where the
+// start is about to make it. The steps are asked whichever try of the start made the claim: a try
+// that made it and failed before it was brought back leaves it so, and the retry finds it made,
+// recording no agent. A claim that has run a process holds a session whose agent the steps do not
+// show, so the start's own agent goes to it (supervise.Machine.TakeSessionFor), as that release
+// gave it the session. The row itself is not written, so it reads as that release wrote it.
+func (r *outbox) startAgent(ctx context.Context, issue string, token claim.Token, named stepplan.AgentID, held supervise.Claim) (stepplan.AgentID, error) {
+	if named != "" || held.SessionAgent != "" || held.Launched() {
+		return named, nil
+	}
+	return store.ClaimAgentFromSteps(ctx, r.pool, issue, token)
 }
 
 // childArchitectFirstStart says whether payload is the plain start of issue's own architect that a
