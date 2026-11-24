@@ -1268,10 +1268,11 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	// own row says (record.ProductionCheck.Role, the role it opened under), never the setting as it
 	// stands now, so a check opened before the project changed its `production_check` still ends its
 	// look on its own role's failure. A failure after the look ended, with none open, counts the same
-	// and keeps the wake that look's end named (failedBetweenLooks). Unlike an ordinary pending
-	// report, nobody remains to report the look or wait for the next wake, so the architect is told
-	// now, in either case, with the cause, how the last process ended, and when the next look retries
-	// the claim and how (checkRoleFailedReason). An issue in the workflow (one reopened inside its
+	// and names the next look the same backoff out, from the failure, where no later wake stands
+	// (failedBetweenLooks). Unlike an ordinary pending report, nobody remains to report the look or
+	// wait for the next wake, so the architect is told now, in either case, with the cause, how the
+	// last process ended, and when the next look retries the claim and how
+	// (checkRoleFailedReason). An issue in the workflow (one reopened inside its
 	// linger with a look still open at the reopen) takes the live-phase path below instead, where
 	// the failure holds the phase and is told; its stale look ends at the look's own bound
 	// (check_look), which endLookPending keeps for the run.

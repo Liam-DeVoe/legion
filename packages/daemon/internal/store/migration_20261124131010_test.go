@@ -18,9 +18,11 @@ const failedLooksRelease = "the release that backs a production check off a chec
 // claim failed, at its default, 0, on every check the table holds, and the release before's
 // insert, which names none of it, still lands at 0, while its upsert of a check this release
 // counted leaves the count as it stands. Its way back, the last paragraph of the migration's
-// header (migrations.WayBack), drops the column and deletes the migration's version row, so the
-// roll-forward's Migrate applies the file again and adds the column again at 0. The negative
-// control is the store before the migration, whose table holds no such column.
+// header (migrations.WayBack), takes `wakeAt` off every queued check_wake row, which this release
+// writes and the release before refuses (DisallowUnknownFields), and leaves every other key and
+// every other kind's row as it stands; it drops the column and deletes the migration's version
+// row, so the roll-forward's Migrate applies the file again and adds the column again at 0. The
+// negative control is the store before the migration, whose table holds no such column.
 func TestTheFailedLooksComeAtZeroAndTheirWayBackLetsThemComeAgain(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -70,10 +72,29 @@ func TestTheFailedLooksComeAtZeroAndTheirWayBackLetsThemComeAgain(t *testing.T) 
 		t.Fatal("a negative count of failed looks was stored, want the column's check to refuse it")
 	}
 
+	queue := func(kind, payload string) {
+		t.Helper()
+		if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ($1, 'LEGION-208', $2::jsonb, 0, now(), '')`, kind, payload); err != nil {
+			t.Fatalf("queue a %s row: %v", kind, err)
+		}
+	}
+	queue("check_wake", `{"look": 2, "openedAt": "2026-11-24T06:37:06Z", "wakeAt": "2026-11-24T12:47:06Z", "reason": "moved"}`)
+	queue("check_wake", `{"look": 1, "reason": "an earlier release's"}`)
+	queue("check_look", `{"look": 2, "wakeAt": "kept"}`)
+
 	exec(wayBackOf(t, failedLooksVersion, failedLooksRelease))
 	const version = `select count(*)::text from schema_version where version = 20261124131010`
 	if got := append(rowsAsText(t, store, column), rowsAsText(t, store, version)...); !reflect.DeepEqual(got, []string{"0", "0"}) {
 		t.Fatalf("after the way back the column and the version row = %v, want neither", got)
+	}
+	const queued = `select kind || ' ' || payload::text from outbox where kind in ('check_wake', 'check_look') order by id`
+	if got, want := rowsAsText(t, store, queued), []string{
+		`check_wake {"look": 2, "reason": "moved", "openedAt": "2026-11-24T06:37:06Z"}`,
+		`check_wake {"look": 1, "reason": "an earlier release's"}`,
+		`check_look {"look": 2, "wakeAt": "kept"}`,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the queued rows after the way back = %q, want %q: wakeAt off each check_wake row, every other key and row kept", got, want)
 	}
 	upsert("LEGION-209", 2)
 	if _, err := store.Migrate(ctx); err != nil {
