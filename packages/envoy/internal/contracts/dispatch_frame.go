@@ -1,12 +1,11 @@
 package contracts
 
 // dispatch_frame.go reads a Dispatch envelope's payload by the shapes a host reads it by
-// (dispatchPayloadKind in packages/contracts/src/dispatch-api-targeted.ts): the JSON Schema
-// packages/contracts/scripts/gen-go.ts emits from those zod schemas
-// (schemas/dispatch-frame.schema.json, carried here as dispatchFrameSchemaJSON), checked by a reader
-// of the JSON Schema keywords that file uses. A keyword it does not know stops the program at its
-// start, so a schema change the reader cannot follow fails every test rather than passing a payload
-// it did not check.
+// (readDispatchPayload in packages/contracts/src/dispatch-api-targeted.ts): the JSON Schema
+// packages/contracts/scripts/gen-go-dispatch-frame.ts renders from those zod schemas (carried here
+// as dispatchFrameSchemaJSON), checked by a reader of the JSON Schema keywords that schema uses. A
+// keyword it does not know stops the program at its start, so a schema change the reader cannot
+// follow fails every test rather than passing a payload it did not check.
 
 import (
 	"bytes"
@@ -16,7 +15,6 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
-	"unicode/utf16"
 )
 
 // jsonShape is one JSON Schema node of the Dispatch frame schema.
@@ -33,11 +31,6 @@ type jsonShape struct {
 	minimum          *float64
 	maximum          *float64
 	exclusiveMinimum *float64
-	exclusiveMaximum *float64
-	minLength        *int
-	maxLength        *int
-	minItems         *int
-	maxItems         *int
 }
 
 // dispatchShapes is the schema's $defs: event, messageDelivery, commentDelivery, messagePayload and
@@ -75,11 +68,6 @@ func readShape(raw json.RawMessage) (*jsonShape, error) {
 	shape := &jsonShape{}
 	number := func(raw json.RawMessage) (*float64, error) {
 		var value float64
-		err := json.Unmarshal(raw, &value)
-		return &value, err
-	}
-	count := func(raw json.RawMessage) (*int, error) {
-		var value int
 		err := json.Unmarshal(raw, &value)
 		return &value, err
 	}
@@ -129,10 +117,6 @@ func readShape(raw json.RawMessage) (*jsonShape, error) {
 			}
 		case "enum":
 			err = json.Unmarshal(value, &shape.enum)
-		case "const":
-			var one any
-			err = json.Unmarshal(value, &one)
-			shape.enum = []any{one}
 		case "pattern":
 			var expression string
 			if err = json.Unmarshal(value, &expression); err == nil {
@@ -144,16 +128,6 @@ func readShape(raw json.RawMessage) (*jsonShape, error) {
 			shape.maximum, err = number(value)
 		case "exclusiveMinimum":
 			shape.exclusiveMinimum, err = number(value)
-		case "exclusiveMaximum":
-			shape.exclusiveMaximum, err = number(value)
-		case "minLength":
-			shape.minLength, err = count(value)
-		case "maxLength":
-			shape.maxLength, err = count(value)
-		case "minItems":
-			shape.minItems, err = count(value)
-		case "maxItems":
-			shape.maxItems, err = count(value)
 		default:
 			return nil, fmt.Errorf("the keyword %q, which this reader does not check", keyword)
 		}
@@ -180,23 +154,17 @@ func (shape *jsonShape) holds(value any) bool {
 	}
 	switch typed := value.(type) {
 	case string:
-		length := len(utf16.Encode([]rune(typed)))
-		if (shape.minLength != nil && length < *shape.minLength) || (shape.maxLength != nil && length > *shape.maxLength) ||
-			(shape.pattern != nil && !shape.pattern.MatchString(typed)) {
+		if shape.pattern != nil && !shape.pattern.MatchString(typed) {
 			return false
 		}
 	case json.Number:
 		number, err := strconv.ParseFloat(typed.String(), 64)
 		if err != nil || math.IsInf(number, 0) ||
 			(shape.minimum != nil && number < *shape.minimum) || (shape.maximum != nil && number > *shape.maximum) ||
-			(shape.exclusiveMinimum != nil && number <= *shape.exclusiveMinimum) ||
-			(shape.exclusiveMaximum != nil && number >= *shape.exclusiveMaximum) {
+			(shape.exclusiveMinimum != nil && number <= *shape.exclusiveMinimum) {
 			return false
 		}
 	case []any:
-		if (shape.minItems != nil && len(typed) < *shape.minItems) || (shape.maxItems != nil && len(typed) > *shape.maxItems) {
-			return false
-		}
 		if shape.items != nil {
 			for _, item := range typed {
 				if !shape.items.holds(item) {
@@ -267,7 +235,7 @@ func jsonEqual(value, allowed any) bool {
 }
 
 // DispatchPayloadIsEvent reports whether payload, a Dispatch envelope's payload, is one a host reads
-// as an event and shows (dispatchPayloadKind's "event"): a targeted frame, `{event, delivery}`,
+// as an event and shows (readDispatchPayload's kind "event"): a targeted frame, `{event, delivery}`,
 // whose event header holds, whose delivery line is a comment's or a message's, and whose payload is
 // a complete comment for a comment.created event with a comment's line or a complete message for a
 // message.created event with a message's - DispatchTargetedFrameSchema's refinement, which JSON

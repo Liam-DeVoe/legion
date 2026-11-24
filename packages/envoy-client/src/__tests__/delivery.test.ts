@@ -1665,8 +1665,8 @@ describe("renderInbound dispatch events", () => {
   });
 
   test("shows none of a dispatch payload it reads no event of, and says the payload was unrecognised", () => {
-    // The edge listener passes a Dispatch frame by the event it parses with the same shapes
-    // (dispatchPayloadKind), so text around an event no reader judged is no card's to show:
+    // The edge listener passes a Dispatch frame only by the event readDispatchPayload reads, the
+    // reader this plugin calls, so text around an event no reader judged is no card's to show:
     // another project's event nested beside the token's own project is the case it closes.
     const nested = {
       event: {

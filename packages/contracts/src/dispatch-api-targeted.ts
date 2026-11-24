@@ -72,8 +72,8 @@ export function isCommentTargetedDelivery(
  * delivery line, and a payload complete for the event's kind - a message.created event with a
  * message's delivery line, or a comment.created event with a comment's. The refinement picks the
  * payload schema by the event's type and the delivery line's kind; JSON Schema cannot say that,
- * so the edge listener's Go reader of this shape (envoy internal/contracts, ParseDispatchFrame)
- * makes the same choice by hand over the shapes `schemas/dispatch-frame.schema.json` carries.
+ * so the edge listener's Go reader of this shape (envoy internal/contracts, DispatchPayloadIsEvent)
+ * makes the same choice by hand over the shapes gen-go renders from these schemas.
  */
 export const DispatchTargetedFrameSchema = z
   .object({
@@ -129,19 +129,38 @@ export const RecoverableDispatchDeliveryFailureSchema = z
   );
 
 /**
- * What a host makes of a Dispatch envelope's payload, `value` being it after JSON.parse: an
- * `event` it shows (a targeted frame DispatchTargetedFrameSchema reads, or an event
- * DispatchEventSchema reads), a `recovered` targeted frame it refuses by name
- * (RecoverableDispatchDeliveryFailureSchema), or `raw`, a payload it reads as neither. The edge
- * listener passes a Dispatch frame only when its payload is an `event` here (ParseDispatchFrame).
+ * What a host makes of a Dispatch envelope's payload, `value` being it after JSON.parse: an `event`
+ * it shows, with its delivery line when it is a targeted frame (DispatchTargetedFrameSchema), or an
+ * outbox event (DispatchEventSchema); a `recovered` targeted frame it refuses by name
+ * (RecoverableDispatchDeliveryFailureSchema); or `raw`, a payload it reads as neither, `targeted`
+ * when it holds a `delivery` key. The plugin's renderInbound reads every Dispatch payload through
+ * this one function, and the edge listener passes a Dispatch frame only when its payload is an
+ * `event` here (DispatchPayloadIsEvent, held to this function by
+ * fixtures/dispatch-frame-verdicts.json).
  */
-export type DispatchPayloadKind = "event" | "recovered" | "raw";
+export type DispatchPayloadReading =
+  | {
+      readonly kind: "event";
+      readonly event: z.infer<typeof DispatchEventSchema>;
+      readonly delivery?: z.infer<typeof DispatchTargetedDeliverySchema>;
+    }
+  | {
+      readonly kind: "recovered";
+      readonly failure: z.infer<typeof RecoverableDispatchDeliveryFailureSchema>;
+    }
+  | { readonly kind: "raw"; readonly targeted: boolean };
 
-export function dispatchPayloadKind(value: unknown): DispatchPayloadKind {
+export function readDispatchPayload(value: unknown): DispatchPayloadReading {
+  // A targeted frame requires `delivery`, so only a payload carrying the key can be one.
   if (typeof value === "object" && value !== null && "delivery" in value) {
-    if (DispatchTargetedFrameSchema.safeParse(value).success) return "event";
-    if (RecoverableDispatchDeliveryFailureSchema.safeParse(value).success) return "recovered";
-    return "raw";
+    const targeted = DispatchTargetedFrameSchema.safeParse(value);
+    if (targeted.success) {
+      return { kind: "event", event: targeted.data.event, delivery: targeted.data.delivery };
+    }
+    const recovered = RecoverableDispatchDeliveryFailureSchema.safeParse(value);
+    if (recovered.success) return { kind: "recovered", failure: recovered.data };
+    return { kind: "raw", targeted: true };
   }
-  return DispatchEventSchema.safeParse(value).success ? "event" : "raw";
+  const parsed = DispatchEventSchema.safeParse(value);
+  return parsed.success ? { kind: "event", event: parsed.data } : { kind: "raw", targeted: false };
 }

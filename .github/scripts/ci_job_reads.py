@@ -851,6 +851,11 @@ RULES = {
     f"{ENVOY}/cmd/listener/api_test.go": reads(
         (f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:176,421,465"),
         (f"{FIX}/envoy-session-no-interests.json", "cmd/listener/api_test.go:4605")),
+    f"{ENVOY}/cmd/listener/edge_dispatch_property_test.go": reads(
+        (f"{FIX}/dispatch-frame-property.json",
+         "cmd/listener/edge_dispatch_property_test.go:138 os.ReadFile (dispatchPropertyFixture :23, "
+         "../../../contracts/fixtures): the generated frames the edge passes and withholds must be "
+         "the ones the fixture records for the plugin's side of the property")),
     f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
         (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:17"),
         (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:18")),
@@ -994,6 +999,10 @@ RULES = {
          "testlimits.ServerConnections plus Postgres's default superuser reserve")),
     f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
         (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
+    f"{ENVOY}/internal/contracts/dispatch_frame_test.go": reads(
+        (f"{FIX}/dispatch-frame-verdicts.json",
+         "internal/contracts/dispatch_frame_test.go:18 os.ReadFile (../../../contracts/fixtures): "
+         "DispatchPayloadIsEvent must agree with readDispatchPayload's verdict on every payload")),
     f"{ENVOY}/natsgrant/session_fixture_test.go": reads(
         (f"{FIX}/session-grant.json", "natsgrant/session_fixture_test.go:63,69 readJSON and os.ReadFile (sessionFixturePath :24, ../../contracts/fixtures): the fixture must be natsgrant.Session of its placeholder id, as the encoder writes it")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
@@ -3236,9 +3245,10 @@ GATES = [
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:370 (the new URL at :366-369)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/block-pointer-values.json", "packages/contracts/src/dispatch-block-ref.test.ts:129-133 reads pmdoc's own JSON copy of the block pointer table by relative path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:146-150 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
-        (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:63 reads it for the envelope aliases, :81 reads every file of generated (:20-26, this one :7), and gen-go.ts's outputs list holds it (--check compares the committed file)"),
-        (f"{ENVOY}/listenerwire/envelope_generated.go", "packages/contracts/scripts/gen-go.test.ts:53 reads it for the envelope, :81 reads every file of generated (:20-26, this one :8), and gen-go.ts's outputs list holds it (the envelope's Go mirror, generated from schemas/envelope.schema.json)"),
-        (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:81 reads every file of generated (:20-26, this one :13-16) and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
+        (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:69 reads it for the envelope aliases, :87 reads every file of generated (:25-32, this one :7), and gen-go.ts's outputs list holds it (--check compares the committed file)"),
+        (f"{ENVOY}/listenerwire/envelope_generated.go", "packages/contracts/scripts/gen-go.test.ts:59 reads it for the envelope, :87 reads every file of generated (:25-32, this one :8), and gen-go.ts's outputs list holds it (the envelope's Go mirror, generated from schemas/envelope.schema.json)"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:87 reads every file of generated (:25-32, this one :13-16) and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
+        (f"{ENVOY}/internal/contracts/dispatch_frame_generated.go", "packages/contracts/scripts/gen-go.test.ts:87 reads every file of generated (:25-32, this one :19) and gen-go.ts's outputs list (the Dispatch frame schema DispatchPayloadIsEvent checks, rendered by gen-go-dispatch-frame.ts)"),
         (TEST_FIXTURES_SRC, "packages/contracts/src/*.test.ts import @legion/test-fixtures"),
     ) + bun_job("contracts")),
 
@@ -3276,6 +3286,7 @@ GATES = [
         (f"{FIX}/ask-reply-recipients.json", "packages/envoy-client/src/__tests__/ask-reply-recipients.test.ts:61 renders the copies packages/envoy's TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
         (f"{FIX}/session-grant.json", "packages/envoy-client/test/nats-server.ts:4 imports it (sessionGrantConfig), which src/__tests__/session-reply-grant.test.ts runs"),
+        (f"{FIX}/dispatch-frame-property.json", "packages/envoy-client/src/__tests__/dispatch-frame-property.test.ts:26 readFileSync: renders the generated frames packages/envoy's TestEdgeFrameVerdictOnGeneratedDispatchFrames records"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:23-30 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:2244 reads skills/<skill>/SKILL.md for every skill a notice cites"),
         ("packages/*/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts:298-302 reads every package's AGENTS.md, so a line there that tells an agent to hand an ask on fails that test"),
@@ -3585,7 +3596,11 @@ GATES = [
     ], reads=reads(
         (f"{ENVOY}/**", f"{at('envoy-go-build', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included"),
         ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-build', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
-        ("packages/contracts/schemas/**", "packages/contracts/scripts/gen-go.ts's envelopeFile and blockSchemaFile read schemas/"),
+        ("packages/contracts/scripts/gen-go-tools.ts", "packages/contracts/scripts/gen-go.ts:127 imports renderDispatchTools, whose output --check compares"),
+        ("packages/contracts/scripts/gen-go-dispatch-frame.ts", "packages/contracts/scripts/gen-go.ts:122-126 imports the Dispatch frame renderers, whose outputs --check compares"),
+        ("packages/contracts/scripts/dispatch-frame-corpus.ts", "packages/contracts/scripts/gen-go-dispatch-frame.ts:10 imports dispatchFrameCorpus, the payloads whose verdicts --check compares with fixtures/dispatch-frame-verdicts.json"),
+        (f"{FIX}/dispatch-frame-verdicts.json", "packages/contracts/scripts/gen-go.ts:1354 is an output --check reads to compare with its render"),
+        ("packages/contracts/schemas/**", "packages/contracts/scripts/gen-go.ts's envelopeFile and blockSchemaFile read schemas/, and --check reads schemas/dispatch-frame.schema.json to compare"),
         # The pinned step above compares the emitter's bytes with this file, so an edit of it alone
         # must start this job: the Run stands for what the command compiles, never for what it reads.
         ("packages/contracts/schemas/dispatch-openapi.json",

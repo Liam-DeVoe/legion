@@ -1,42 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { dispatchPayloadKind } from "@legion/contracts";
+import { readDispatchPayload } from "@legion/contracts";
 import { renderInbound } from "../delivery";
 import { parseFrameJSON } from "../frame-json";
-import {
-  DISPATCH_PROPERTY_FRAMES,
-  dispatchFramesDigest,
-  generatedDispatchFrames,
-} from "./dispatch-frame-generator";
 
-// The plugin's side of #5192's property: of the generated Dispatch frames
-// (dispatch-frame-generator.ts), the edge listener passes for a token of PRIV the ones
-// packages/contracts/fixtures/dispatch-frame-property.json records
-// (TestEdgeFrameVerdictOnGeneratedDispatchFrames writes them from the edge's own verdicts), and
-// none of those may reach the session as a card that shows another project's event.
+// The plugin's side of #5192's property: the generated Dispatch frames the edge listener passes on
+// a session's own agent subject for a token of PRIV, which TestEdgeFrameVerdictOnGeneratedDispatchFrames
+// (packages/envoy/cmd/listener/edge_dispatch_property_test.go, the one generator) records in
+// packages/contracts/fixtures/dispatch-frame-property.json with its own verdicts, must not reach the
+// session as a card that shows another project's event.
 //
-// The card is read as INFRA-764's review read it (Job legion-review5192-fz5wn): the frame
-// rendered by renderInbound on the session's own agent subject, the card showing PUB when it holds
-// "PUB" or "pub-1". The plugin before #5192 showed the whole payload of a Dispatch frame it read
-// no event of (parseDispatchFrame's raw value, read by its own keys, parseFrameJSON); it now shows
-// none of it, so the oracle adds that value back for such a frame, read the same way, and judges
-// each frame as that plugin would have shown it. The edge's rule is then held to the bar alone,
-// without the plugin's change behind it: the frames it passes show PUB in no card even to the
-// earlier plugin.
+// The card is the frame rendered by renderInbound on the session's own agent subject; it shows
+// another project's event when it holds "PUB" or "pub-1". This plugin shows nothing of a Dispatch
+// payload readDispatchPayload reads no event of; a plugin before #5192 showed that payload whole,
+// so the oracle adds it back for such a frame, read as the plugin reads it (parseFrameJSON), and
+// holds the edge's rule alone, without the plugin's change behind it.
 //
-// The oracle can fail: over the frames #5192's head 297f438ae2 passed (passed_at_297f438ae2, the
-// same Go test run at that commit), it finds cards that show PUB, every one a payload the plugin
-// read no event of - the 1,254 INFRA-764's review counted with #5199's reader, which leaves a
-// "__proto__" key out, and 1,329 with the reader before it. The test asserts that there is at
-// least one and prints how many, not either number, which moves with the plugin's code.
+// The oracle can fail: over the first frames the edge withholds, which the fixture records too, it
+// finds cards that show PUB, and a fixed frame - the token's project beside another project's
+// nested event - shows PUB in its card.
 
-type PropertyFixture = {
-  readonly seed: readonly [number, number];
-  readonly frames: number;
-  readonly sha256: string;
-  readonly passed: readonly number[];
-  readonly passed_at_297f438ae2: readonly number[];
-};
+type PropertyFixture = { readonly passed: readonly string[]; readonly withheld: readonly string[] };
 
 const fixture = JSON.parse(
   readFileSync(
@@ -48,7 +32,7 @@ const fixture = JSON.parse(
 const session = "ses_v";
 const own = `notifications.agent.${session}`;
 
-/** The payload value the plugin before #5192 showed whole for a frame it read no event of, or
+/** The payload value a plugin before #5192 showed whole for a frame it read no event of, or
  *  undefined for a frame whose payload it read as an event. */
 function rawShownPayload(frame: string): unknown {
   const envelope = JSON.parse(frame) as { readonly payload?: unknown };
@@ -59,10 +43,10 @@ function rawShownPayload(frame: string): unknown {
   } catch {
     return envelope.payload;
   }
-  return dispatchPayloadKind(value) === "event" ? undefined : value;
+  return readDispatchPayload(value).kind === "event" ? undefined : value;
 }
 
-/** Whether the earlier plugin's card of frame shows another project's event. */
+/** Whether that earlier plugin's card of frame shows another project's event. */
 function cardShowsPub(frame: string): boolean {
   let content: string;
   try {
@@ -76,27 +60,13 @@ function cardShowsPub(frame: string): boolean {
 }
 
 describe("the Dispatch frames the edge passes", () => {
-  const frames = generatedDispatchFrames();
-
-  test("are the frames the edge's side judged", () => {
-    expect(fixture.seed).toEqual([5192, 11]);
-    expect(frames.length).toBe(DISPATCH_PROPERTY_FRAMES);
-    expect(fixture.frames).toBe(DISPATCH_PROPERTY_FRAMES);
-    expect(dispatchFramesDigest(frames)).toBe(fixture.sha256);
-  });
-
-  test("control: over the frames 297f438ae2 passed, the oracle finds cards that show PUB", () => {
-    const showing = fixture.passed_at_297f438ae2.filter((index) =>
-      cardShowsPub(frames[index] as string)
-    );
+  test("control: over the frames the edge withholds, the oracle finds cards that show PUB", () => {
+    const showing = fixture.withheld.filter(cardShowsPub);
     console.log(
-      `dispatch-frame property: 297f438ae2 passed ${fixture.passed_at_297f438ae2.length} frames, ${showing.length} of whose cards show PUB`
+      `dispatch-frame property: of ${fixture.withheld.length} frames the edge withholds, ${showing.length} cards show PUB`
     );
     expect(showing.length).toBeGreaterThan(0);
-    expect(showing.every((index) => rawShownPayload(frames[index] as string) !== undefined)).toBe(
-      true
-    );
-  }, 120_000);
+  });
 
   test("control: the token's project beside another project's nested event shows PUB in the card", () => {
     // The edge's side withholds this frame (TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject,
@@ -118,11 +88,11 @@ describe("the Dispatch frames the edge passes", () => {
   });
 
   test("show another project's event in no card", () => {
-    const showing = fixture.passed.filter((index) => cardShowsPub(frames[index] as string));
+    const showing = fixture.passed.filter(cardShowsPub);
     console.log(
       `dispatch-frame property: the edge passes ${fixture.passed.length} frames, ${showing.length} of whose cards show PUB`
     );
     expect(fixture.passed.length).toBeGreaterThan(0);
-    expect(showing.map((index) => frames[index])).toEqual([]);
+    expect(showing).toEqual([]);
   }, 120_000);
 });

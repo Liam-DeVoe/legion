@@ -12,10 +12,8 @@ import {
   DISPATCH_DOCUMENT_TOPIC_PREFIX,
   DISPATCH_TOPIC_PREFIX,
   type InboundDispatchEvent as DispatchEvent,
-  DispatchEventSchema,
   DispatchTargetedCommentPayloadSchema,
   DispatchTargetedDeliverySchema,
-  DispatchTargetedFrameSchema,
   DispatchTargetedMessagePayloadSchema,
   dedupeKeyNamesItsEvent,
   EnvelopeSchema,
@@ -26,7 +24,7 @@ import {
   legacyAgentSubject,
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
-  RecoverableDispatchDeliveryFailureSchema,
+  readDispatchPayload,
   type SessionAnswerRelation,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
   topicForms,
@@ -914,11 +912,10 @@ function dispatchReplyRef(
   return dispatchChildRef(dispatchDocumentRef(document.project, document.slug), kind, inReplyTo);
 }
 
-// A Dispatch bus frame's JSON payload either matches the wire contract documented
-// above (`event`) or it doesn't — invalid JSON, or a JSON value that disagrees with
-// `DispatchEventSchema` — in which case the raw parsed value (object or string) is
-// kept (`raw`) so no data is dropped and nothing renders as a hand-built text
-// template.
+// A Dispatch bus frame's JSON payload, as readDispatchPayload (packages/contracts) reads it: an
+// event the card shows, or no event - invalid JSON, a JSON value no event schema reads, or a
+// targeted frame refused by name (`rejectedDelivery`) - of which the card shows only that the
+// payload was unrecognised and none of its text.
 type DispatchFrame =
   | {
       readonly event: DispatchEvent;
@@ -927,7 +924,6 @@ type DispatchFrame =
       readonly delivery: unknown;
     }
   | {
-      readonly raw: unknown;
       readonly rejectedDelivery?: DispatchDelivery;
       readonly malformedDelivery?: true;
     };
@@ -945,41 +941,41 @@ function withWholeBody(event: DispatchEvent, body: string | undefined): Dispatch
   return { ...event, payload: { ...carried, body } };
 }
 
-/** The frame one Dispatch envelope's payload carries. `wholeBody` is the body of the item the
- *  event named as cut, read from the server since (`renderInbound`'s `cutItem`); the event then
- *  reads as though it had carried that body whole. */
+/** The frame one Dispatch envelope's payload carries, read by readDispatchPayload, the reader the
+ *  edge listener's verdict is held to. `wholeBody` is the body of the item the event named as
+ *  cut, read from the server since (`renderInbound`'s `cutItem`); the event then reads as though
+ *  it had carried that body whole. */
 function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFrame {
   let value: unknown;
   try {
     value = parseFrameJSON(rawPayload);
   } catch {
-    return { raw: rawPayload };
+    return {};
   }
-
-  // A targeted frame requires `delivery`, so only a frame carrying the key can be one.
-  if (isObject(value) && "delivery" in value) {
-    const targeted = DispatchTargetedFrameSchema.safeParse(value);
-    if (targeted.success) {
-      // `notify` and `quiet` are fields of the event the frame wraps, which is where the
-      // outbox marshals them, and the schema drops both as unknown keys.
-      const wireFrame = value as {
-        readonly event: DispatchEvent & { readonly notify?: unknown; readonly quiet?: unknown };
+  const reading = readDispatchPayload(value);
+  switch (reading.kind) {
+    case "event": {
+      // `notify` and `quiet` are fields of the event, where the outbox marshals them (a targeted
+      // frame's event, or the payload itself), and the schemas drop both as unknown keys.
+      const wireEvent = (
+        reading.delivery === undefined ? value : (value as { readonly event: unknown }).event
+      ) as {
+        readonly notify?: unknown;
+        readonly quiet?: unknown;
       };
       return {
-        event: withWholeBody(targeted.data.event, wholeBody),
-        notify: wireFrame.event.notify,
-        quiet: wireFrame.event.quiet,
-        delivery: targeted.data.delivery,
+        event: withWholeBody(reading.event, wholeBody),
+        notify: wireEvent.notify,
+        quiet: wireEvent.quiet,
+        delivery: reading.delivery,
       };
     }
-    const recoverable = RecoverableDispatchDeliveryFailureSchema.safeParse(value);
-    if (recoverable.success) {
-      const delivery = recoverable.data.delivery;
+    case "recovered": {
+      const { delivery, event } = reading.failure;
       const commentDelivery = isCommentTargetedDelivery(delivery);
       const resource = commentDelivery ? "comment" : "message";
-      const id = commentDelivery ? delivery.comment_id : recoverable.data.event.payload.id;
+      const id = commentDelivery ? delivery.comment_id : event.payload.id;
       return {
-        raw: value,
         rejectedDelivery: {
           resource,
           id,
@@ -987,27 +983,15 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
           mode: delivery.mode,
           replyPath: dispatchReplyPath(resource, id),
           replyFields: commentDelivery ? { target: delivery.target } : {},
-          issueKey: recoverable.data.event.issue_key,
-          body: recoverable.data.event.payload.body ?? "",
+          issueKey: event.issue_key,
+          body: event.payload.body ?? "",
         },
         malformedDelivery: true,
       };
     }
-    return { raw: value, malformedDelivery: true };
+    case "raw":
+      return reading.targeted ? { malformedDelivery: true } : {};
   }
-
-  const parsed = DispatchEventSchema.safeParse(value);
-  if (!parsed.success) return { raw: value };
-  const wireEvent = value as DispatchEvent & {
-    readonly notify?: unknown;
-    readonly quiet?: unknown;
-  };
-  return {
-    event: withWholeBody(parsed.data, wholeBody),
-    notify: wireEvent.notify,
-    quiet: wireEvent.quiet,
-    delivery: undefined,
-  };
 }
 export function inboundTimestamp(milliseconds: number | undefined): string {
   if (milliseconds === undefined) return "unknown";
@@ -1249,10 +1233,10 @@ export function renderInbound(
           if (edit.success) trailer = humanEditDiffBlock(edit.data.diff, edit.data.diff_truncated);
         }
       } else {
-        // A payload neither event schema reads is shown as nothing but the note that it was
-        // unrecognised: its raw text is what no reader judged - the edge listener passes a
-        // Dispatch frame by the event it parses, as this does (dispatchPayloadKind), so the
-        // text around an event it cannot read is no event of a project it judged.
+        // A payload readDispatchPayload reads no event of is shown as nothing but the note that
+        // it was unrecognised: the edge listener passes a Dispatch frame only by the event that
+        // same reader shows, so text around an event it cannot read is no event of a project
+        // either judged.
         dispatchIssue = "payload";
         rejectedDelivery = frame.rejectedDelivery;
         malformedDelivery = frame.malformedDelivery === true;

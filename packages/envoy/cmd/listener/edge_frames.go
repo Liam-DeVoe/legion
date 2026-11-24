@@ -44,7 +44,7 @@ const withheldAmbiguousKey = "ambiguous_key"
 const withheldPrototypeKey = "prototype_key"
 
 // withheldDispatchProjectUnread is the reason envoy_edge_github_withheld_total counts a Dispatch
-// frame under that the edge cannot place in a project (dispatchFrameProject): no payload, a payload
+// frame under that the edge cannot place in a project (dispatchFrameEvent): no payload, a payload
 // the session's plugin reads as no event (contracts.DispatchPayloadIsEvent), an event that names
 // no project and no issue and is no person's message in the session's own conversation
 // (dispatchDirectMessage), or two projects that disagree. The frame cannot be shown to be of a
@@ -114,7 +114,7 @@ func frameAnswerUnknownVerdict() frameVerdict {
 // key's fields as the envelope's own (errPrototypeFrameKey). A Dispatch frame (source "dispatch")
 // is withheld, on every branch and before its subject or topic is judged, unless its payload is an
 // event the session's plugin shows (contracts.DispatchPayloadIsEvent) of a project the token lists
-// (dispatchFrameWithheld, dispatchFrameProject), or a person's message in the session's own
+// (dispatchFrameWithheld, dispatchFrameEvent), or a person's message in the session's own
 // conversation on its own agent subject (dispatchDirectMessage); one the edge cannot place in a
 // project is withheld under dispatch_project_unread.
 //
@@ -313,9 +313,10 @@ func exactFrameField(data []byte, key string) (string, bool, error) {
 
 // exactFramePayload is the JSON document a frame's payload holds: the string under its exact
 // top-level "payload" key (exactFrameField), and false for a frame that names none or whose
-// payload is no JSON encoding/json reads (json.Valid: text JSON.parse refuses too, which the
-// plugin shows raw, or a document nested deeper than 10,000). A GitHub event's and a Dispatch
-// event's payloads are each such a document (eventRepository, dispatchFrameProject).
+// payload is no JSON encoding/json reads (json.Valid: text JSON.parse refuses too, which the plugin
+// shows raw for a GitHub event and only as unrecognised for a Dispatch one, or a document nested
+// deeper than 10,000). A GitHub event's and a Dispatch event's payloads are each such a document
+// (eventRepository, dispatchFrameEvent).
 func exactFramePayload(data []byte) (json.RawMessage, bool, error) {
 	payload, named, err := exactFrameField(data, "payload")
 	if err != nil || !named {
@@ -331,15 +332,16 @@ func exactFramePayload(data []byte) (json.RawMessage, bool, error) {
 // dispatchFrameWithheld is the edge's verdict on a Dispatch frame (an envelope whose exact "source"
 // key holds "dispatch", as the plugin tells one, packages/envoy-client/src/delivery.ts) and true
 // when it withholds it: under withheldProjectNotHeld when the project of the event it carries
-// (dispatchFrameProject) is not one of projects, under withheldDispatchProjectUnread when the event
-// names none the edge can read and is no message to the session on its own agent subject
-// (dispatchDirectMessage), and under ambiguous_key or prototype_key when the source, the payload or
-// a field of the event is a key readers disagree on. It answers false for any other frame, for a
-// Dispatch frame of one of projects, and for such a direct message, each of which the rest of the
-// rule then judges; the verdict beside false is a drop, so a caller that ignores the bool withholds
-// the frame. Every edge token is an outside token, restricted to the projects it lists, and
-// edgeFrameVerdict runs at the edge alone (sessionRelays.edgeWithholds, relaySocket.forward), so a
-// listener that is no edge one hands a Dispatch frame on as before.
+// (dispatchFrameEvent, dispatchEventProject) is not one of projects, under
+// withheldDispatchProjectUnread when the edge cannot place the event in a project and it is no
+// person's message to the session on its own agent subject (dispatchDirectMessage), and under
+// ambiguous_key or prototype_key when the source, the payload or a field of the event is a key
+// readers disagree on. It answers false for any other frame, for a Dispatch frame of one of
+// projects, and for such a direct message, each of which the rest of the rule then judges; the
+// verdict beside false is a drop, so a caller that ignores the bool withholds the frame. Every edge
+// token is an outside token, restricted to the projects it lists, and edgeFrameVerdict runs at the
+// edge alone (sessionRelays.edgeWithholds, relaySocket.forward), so a listener that is no edge one
+// hands a Dispatch frame on as before.
 func dispatchFrameWithheld(data []byte, sessionID string, projects []string, subject string) (frameVerdict, bool) {
 	source, _, err := exactFrameField(data, "source")
 	if err != nil {
@@ -348,75 +350,82 @@ func dispatchFrameWithheld(data []byte, sessionID string, projects []string, sub
 	if source != "dispatch" {
 		return frameDrops(withheldProjectNotHeld), false
 	}
-	project, direct, err := dispatchFrameProject(data, sessionID)
+	event, delivery, err := dispatchFrameEvent(data)
+	if err != nil {
+		return frameKeyWithheld(err), true
+	}
+	project, named := dispatchEventProject(event)
+	switch {
+	case project != "" && slices.Contains(projects, project):
+		return frameDrops(withheldProjectNotHeld), false
+	case project != "":
+		return frameDrops(withheldProjectNotHeld), true
+	case named || delivery == nil:
+		return frameDrops(withheldDispatchProjectUnread), true
+	}
+	direct, err := dispatchDirectMessage(event, delivery, sessionID)
 	switch {
 	case err != nil:
 		return frameKeyWithheld(err), true
-	case project == "" && direct && ownFrameAgentSubject(sessionID, projects, subject):
+	case direct && ownFrameAgentSubject(sessionID, projects, subject):
 		return frameDrops(withheldProjectNotHeld), false
-	case project == "":
-		return frameDrops(withheldDispatchProjectUnread), true
-	case !slices.Contains(projects, project):
-		return frameDrops(withheldProjectNotHeld), true
 	}
-	return frameDrops(withheldProjectNotHeld), false
+	return frameDrops(withheldDispatchProjectUnread), true
 }
 
-// dispatchFrameProject is the project of the Dispatch event the frame data carries in its payload,
-// and whether that event, naming none, is a direct message to sessionID (dispatchDirectMessage). It
-// judges the event the session's plugin shows, and only a payload the plugin shows as an event: one
-// that contracts.DispatchPayloadIsEvent reads by the shapes the plugin reads it by
-// (dispatchPayloadKind in packages/contracts, from which gen-go.ts emits the schema that function
-// checks). A payload the plugin shows no event of - no JSON, or no event's or targeted frame's
-// shape - answers "": the plugin showed such a payload raw, so a reader of its top-level fields
-// judged text the plugin showed around an event of another project. A payload with a "delivery" key
-// is a targeted frame (a mention or a targeted message the API sends), whose event is its "event"
-// field and which holds those two keys and no other, so nothing beside the event disagrees with
-// it; any other payload is the event itself (an outbox copy on an owner topic, a route, a follow or
-// a role forward). The project is the event's "project", or, where that is empty, the project its
-// "issue_key" names (contracts.IssueProject): Dispatch's mention and targeted-message frames carry
-// an issue's event with an empty project. Both named must agree. It answers "" too for an event
-// that names neither, an issue key that is none, or a project and an issue key that disagree. A key
-// of the payload or the event that readers disagree on is errAmbiguousFrameKey or
-// errPrototypeFrameKey (exactJSONObject).
-func dispatchFrameProject(data []byte, sessionID string) (project string, direct bool, err error) {
+// dispatchFrameEvent is the event a Dispatch frame's payload carries, as the session's plugin
+// shows it, and, for a targeted payload, its delivery line; a nil event for a payload the plugin
+// shows no event of. The plugin reads the payload with readDispatchPayload (packages/contracts),
+// and contracts.DispatchPayloadIsEvent reads it by the shapes gen-go renders from that function's
+// schemas, so the edge judges a payload only when the plugin would show it as an event; one it
+// shows as no event - no JSON, or no event's or targeted frame's shape - the plugin shows only as
+// unrecognised. A payload with a "delivery" key is a targeted frame (a mention or a targeted
+// message the API sends), whose event is its "event" field and which holds those two keys and no
+// other, so nothing beside the event can disagree with it; any other payload is the event itself
+// (an outbox copy on an owner topic, a route, a follow or a role forward). A key of the payload or
+// the event that readers disagree on is errAmbiguousFrameKey or errPrototypeFrameKey
+// (exactJSONObject).
+func dispatchFrameEvent(data []byte) (event map[string]json.RawMessage, delivery json.RawMessage, err error) {
 	payload, named, err := exactFramePayload(data)
 	if err != nil || !named {
-		return "", false, err
+		return nil, nil, err
 	}
 	frame, err := exactJSONObject(payload)
 	if err != nil || frame == nil {
-		return "", false, err
+		return nil, nil, err
 	}
-	event, delivery := frame, json.RawMessage(nil)
+	event = frame
 	if raw, targeted := frame["delivery"]; targeted {
 		if len(frame) != 2 || frame["event"] == nil {
-			return "", false, nil
+			return nil, nil, nil
 		}
 		if event, err = exactJSONObject(frame["event"]); err != nil || event == nil {
-			return "", false, err
+			return nil, nil, err
 		}
 		delivery = raw
 	}
 	if !contracts.DispatchPayloadIsEvent(payload) {
-		return "", false, nil
+		return nil, nil, nil
 	}
+	return event, delivery, nil
+}
+
+// dispatchEventProject is the project of event, a Dispatch event dispatchFrameEvent read: its
+// "project", or, where that is empty, the project its "issue_key" names (contracts.IssueProject),
+// since Dispatch's mention and targeted-message frames carry an issue's event with an empty
+// project; both named must agree. It answers "" for an event it cannot place in one project (an
+// issue key that is none, or a project and an issue key that disagree), and named false for an
+// event that names neither field.
+func dispatchEventProject(event map[string]json.RawMessage) (project string, named bool) {
 	project, issueKey := jsonText(event["project"]), jsonText(event["issue_key"])
-	if issueKey != "" {
-		issueProject, ok := contracts.IssueProject(issueKey)
-		if !ok || (project != "" && project != issueProject) {
-			return "", false, nil
-		}
-		return issueProject, false, nil
+	if issueKey == "" {
+		return project, project != ""
 	}
-	if project != "" {
-		return project, false, nil
+	issueProject, ok := contracts.IssueProject(issueKey)
+	if !ok || (project != "" && project != issueProject) {
+		return "", true
 	}
-	if delivery == nil {
-		return "", false, nil
-	}
-	direct, err = dispatchDirectMessage(event, delivery, sessionID)
-	return "", direct, err
+	return issueProject, true
 }
 
 // directMessageEventKeys and directMessageKeys are the keys a direct message's delivery frame may
@@ -433,23 +442,25 @@ var (
 )
 
 // dispatchDirectMessage reports whether event, the event of a targeted Dispatch payload whose
-// delivery is delivery, is a direct message to sessionID that names no project: a person's
-// message in the session's own conversation (POST /api/v1/agents/{session_id}/messages, the
-// dashboard's conversation send, a broadcast's copy to the session), which belongs to no issue.
-// Such a message is the session's own, as a send to it is, and the edge passes it on the session's
-// own agent subject by the agent-subject rule. Dispatch's targeted frame of a message names its
-// recipient in the message's "target" ("session:<id>"); its delivery line holds the attempt and
-// the mode alone. The outbox publishes no issue-less event (its batch skips an event with no
-// owner), and a message's delivery receipt is never sent to a session, so this payload is the
-// API's delivery frame alone (message_delivery.go). It holds the message and nothing else (the
-// keys directMessageEventKeys and directMessageKeys name); an event naming an issue, a document or
-// a project, a message aimed at another session or in another session's thread, or an event of any
-// other type - a comment's mention on a document, which names no project either - is none, and is
-// withheld as a frame the edge cannot place in a project.
+// delivery is delivery and that names no project and no issue (dispatchEventProject), is a direct
+// message to sessionID: a person's message in the session's own conversation (POST
+// /api/v1/agents/{session_id}/messages, the dashboard's conversation send, a broadcast's copy to
+// the session), which belongs to no issue. Such a message is the session's own, as a send to it
+// is, and the edge passes it on the session's own agent subject. Dispatch's targeted frame of a
+// message names its recipient in the message's "target" ("session:<id>"); its delivery line holds
+// the attempt and the mode alone. The outbox publishes no issue-less event (its batch skips an
+// event with no owner), and a message's delivery receipt is never sent to a session, so this
+// payload is the API's delivery frame alone (message_delivery.go). It holds the message and
+// nothing else (the keys directMessageEventKeys and directMessageKeys name); an event naming a
+// document, a message aimed at another session or in another session's thread, or an event of any
+// other type is none, and is withheld as a frame the edge cannot place in a project. A comment
+// mention names its project on every send since #4683 (lockEventOwner stamps the first send's
+// event, and the re-sends read it back), so it never reaches here; one whose event names no project
+// is a comment.created event, which this refuses.
 func dispatchDirectMessage(event map[string]json.RawMessage, delivery json.RawMessage, sessionID string) (bool, error) {
 	target := "session:" + sessionID
 	if !jsonKeysAmong(event, directMessageEventKeys...) || jsonText(event["type"]) != "message.created" ||
-		!jsonNullOr(event["issue_key"], "") || !jsonNullOr(event["artifact_id"], "") || !jsonAbsentOrText(event["project"], "") {
+		jsonText(event["artifact_id"]) != "" {
 		return false, nil
 	}
 	steps, err := exactJSONObject(delivery)
@@ -461,7 +472,7 @@ func dispatchDirectMessage(event map[string]json.RawMessage, delivery json.RawMe
 		return false, err
 	}
 	thread := jsonText(message["thread_target"])
-	return jsonKeysAmong(message, directMessageKeys...) && jsonNullOr(message["issue_key"], "") &&
+	return jsonKeysAmong(message, directMessageKeys...) && jsonText(message["issue_key"]) == "" &&
 		jsonText(message["target"]) == target && (thread == "" || thread == target), nil
 }
 
@@ -527,20 +538,6 @@ func jsonKeysAmong(fields map[string]json.RawMessage, keys ...string) bool {
 		}
 	}
 	return true
-}
-
-// jsonNullOr reports whether raw is absent, null, or the string text.
-func jsonNullOr(raw json.RawMessage, text string) bool {
-	return raw == nil || string(raw) == "null" || jsonAbsentOrText(raw, text)
-}
-
-// jsonAbsentOrText reports whether raw is absent or the JSON string text.
-func jsonAbsentOrText(raw json.RawMessage, text string) bool {
-	if raw == nil {
-		return true
-	}
-	var got string
-	return json.Unmarshal(raw, &got) == nil && got == text
 }
 
 // exactJSONString is the string value of the top-level field key of the JSON object doc, read by

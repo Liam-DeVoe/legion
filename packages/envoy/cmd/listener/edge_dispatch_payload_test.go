@@ -132,7 +132,7 @@ func withPayload(t *testing.T, frame []byte, payload string) []byte {
 }
 
 // TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject holds the edge's frame rule to the
-// project of the Dispatch event a frame carries (dispatchFrameWithheld, dispatchFrameProject).
+// project of the Dispatch event a frame carries (dispatchFrameWithheld, dispatchFrameEvent).
 // Dispatch sends an issue's event to a session by the session's name - the owner route, the
 // claimant, a primary document's author, an author route, a follower, the previous claimant, a
 // mention (the API's send, and the outbox's copy to a session whose mention failed), a targeted
@@ -236,7 +236,7 @@ func TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject(t *testing.T) 
 		row{"a Dispatch payload with a __proto__ key", ownWith(strings.Replace(privEvent, `"project":"PRIV"`, `"project":"PRIV","__proto__":{"project":"PUB"}`, 1)), frameDrops(withheldPrototypeKey)},
 		row{"a frame with a Source key beside source", []byte(`{"source":"agent","Source":"dispatch","topic":"` + own + `"}`), frameDrops(withheldAmbiguousKey)},
 		// What the edge reads must be what the plugin shows: a payload the plugin shows no event
-		// of (dispatchPayloadKind) is withheld, so no field the edge reads beside or around the
+		// of (readDispatchPayload) is withheld, so no field the edge reads beside or around the
 		// event decides a frame the plugin shows otherwise.
 		row{"the token's project beside another project's nested event, which the plugin reads as no event",
 			ownWith(`{"event":` + pubEvent + `,"project":"PRIV","issue_key":"PRIV-1"}`), unread},

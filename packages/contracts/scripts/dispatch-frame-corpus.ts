@@ -1,4 +1,4 @@
-// The payloads fixtures/dispatch-frame-verdicts.json records a verdict for (dispatchPayloadKind):
+// The payloads fixtures/dispatch-frame-verdicts.json records a verdict for (readDispatchPayload):
 // four payloads a host reads as events - a targeted message, a targeted comment mention, an
 // outbox event and a person's message on no issue - and every one-step change of them: each
 // field at depth one and two removed, set to null, to a number, to a fraction, to a string, to

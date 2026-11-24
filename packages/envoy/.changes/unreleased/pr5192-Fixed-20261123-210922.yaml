@@ -2,13 +2,14 @@ kind: Fixed
 body: |-
   An edge listener now passes a Dispatch frame (an envelope whose `source` is `dispatch`) only
   when its payload is an event the session's plugin shows, of a project the session's token lists
-  (`dispatchFrameWithheld`, `dispatchFrameProject`). Before, Dispatch could send another
+  (`dispatchFrameWithheld`, `dispatchFrameEvent`). Before, Dispatch could send another
   project's event to an outside session by the session's name - an owner route, a claim, a
   document's or an author's route, a follow, the previous claimant, a mention, a targeted message,
   a role forward - on its own agent subject or its role's lane, under a topic that names no
-  project, and the edge passed it. The payload must have the shape the plugin parses an event by
-  (`contracts.DispatchPayloadIsEvent`, which checks the JSON Schema `bun run gen:go` emits from the
-  plugin's zod schemas), and a targeted frame must hold `event` and `delivery` alone, so no field
+  project, and the edge passed it. The payload must have the shape the plugin's
+  `readDispatchPayload` reads an event by (`contracts.DispatchPayloadIsEvent`, which checks the
+  JSON Schema `bun run gen:go` renders from that function's zod schemas), and a targeted frame
+  must hold `event` and `delivery` alone, so no field
   beside the event decides it. The project is the event's `project`, or the project its
   `issue_key` names where Dispatch leaves that empty, as it does for a mention's and a targeted
   message's event; both named must agree. A person's message to the session in its own

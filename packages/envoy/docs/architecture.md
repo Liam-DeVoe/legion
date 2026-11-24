@@ -635,10 +635,12 @@ message by the same read, inside a rule of its own. Before it reads the role, it
 that names `topic` or `role` under more than one key or under a key that differs from the name
 only in case (`ambiguous_key`), so a later `"TOPIC"` or `"ROLE"` key withholds the frame there
 rather than leaving its role as it is, a frame with a top-level `__proto__` key, and a Dispatch
-frame whose payload is no event of a project the token lists. It then judges a role message by
-its role only when its topic is a role lane or an agent subject in the old form or in the new form
-under one of the token's projects (`roleFrameVerdict`, `roleMarkOnAgentSubject`); a role-marked
-frame with any other topic, or none, it judges by its topic, as a frame with no role mark.
+frame whose payload is no event of a project the token lists, unless it is a person's message to
+the session in its own conversation on its own agent subject (`dispatchDirectMessage`). It then
+judges a role message by its role only when its topic is a role lane or an agent subject in the old
+form or in the new form under one of the token's projects (`roleFrameVerdict`,
+`roleMarkOnAgentSubject`); a role-marked frame with any other topic, or none, it judges by its
+topic, as a frame with no role mark.
 
 The session relay delivers a role message to a session only while the role's claim names that
 session. It reads the claim from the role bucket for each frame that is a role message; when the

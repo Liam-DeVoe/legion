@@ -7,10 +7,11 @@ import (
 )
 
 // TestDispatchPayloadIsEventAgreesWithTheHostsReading holds DispatchPayloadIsEvent to
-// dispatchPayloadKind, the host's reading of a Dispatch payload in packages/contracts: for every
-// payload of packages/contracts/fixtures/dispatch-frame-verdicts.json, which gen-go.ts writes from
-// that function over dispatchFrameCorpus (the four payloads a host reads as events and every
-// one-step change of them), the payload is an event here exactly when the host reads it as one. A
+// readDispatchPayload, the host's reading of a Dispatch payload in packages/contracts, which the
+// plugin's renderInbound calls: for every payload of
+// packages/contracts/fixtures/dispatch-frame-verdicts.json, which gen-go writes from that function
+// over dispatchFrameCorpus (the four payloads a host reads as events and every one-step change of
+// them), the payload is an event here exactly when the host reads it as one. A
 // change of the zod shapes that `bun run gen:go` was not run for fails the fixture's check there,
 // and a change of either reader that splits them fails here.
 func TestDispatchPayloadIsEventAgreesWithTheHostsReading(t *testing.T) {
