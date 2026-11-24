@@ -1609,19 +1609,19 @@ func (s *supervision) replacementDue(issue, round string, ended *roundEnd) func(
 		if err != nil {
 			return fmt.Errorf("%w: the claims of %s cannot be read: %w", errReplacementNotDue, issue, err)
 		}
-		told, group := s.liveGroup(claimsOf(claims, issue))
-		clock, err := s.clockUnderTurn(ctx, issue, group)
+		told, live := s.liveGroup(claimsOf(claims, issue))
+		clock, err := s.clockUnderTurn(ctx, issue, live)
 		if err != nil {
 			return fmt.Errorf("%w: the holds of a project's pause on the pod of %s cannot be read: %w", errReplacementNotDue, issue, err)
 		}
-		if held := heldByOperator(group, round, clock); len(held) > 0 {
+		if held := heldByOperator(live, round, clock); len(held) > 0 {
 			return fmt.Errorf("%w: an operator's suspension holds %s", errReplacementNotDue, strings.Join(namesOf(held), ", "))
 		}
 		if clock.held() {
 			return fmt.Errorf("%w: a project's pause holds the pod of %s", errReplacementNotDue, issue)
 		}
 		*ended = readRoundEnd(told, round, clock)
-		unanswered, working, background := readRoundEnd(group, round, clock).holding()
+		unanswered, working, background := readRoundEnd(live, round, clock).holding()
 		if len(unanswered) > 0 {
 			return fmt.Errorf("%w: %s has not answered it, or its machine was deciding something", errReplacementNotDue, strings.Join(namesOf(unanswered), ", "))
 		}
@@ -1862,12 +1862,12 @@ func (s *supervision) issueReplacementDue(issue, round string, ended *roundEnd) 
 		if err != nil {
 			return fmt.Errorf("%w: the claims of %s cannot be read: %w", errReplacementNotDue, issue, err)
 		}
-		told, group := s.liveGroup(claimsOf(claims, issue))
-		clock, err := s.clockUnderTurn(ctx, issue, group)
+		told, live := s.liveGroup(claimsOf(claims, issue))
+		clock, err := s.clockUnderTurn(ctx, issue, live)
 		if err != nil {
 			return fmt.Errorf("%w: the holds of a project's pause on the pod of %s cannot be read: %w", errReplacementNotDue, issue, err)
 		}
-		if err := s.issuePodKept(group, round, clock); err != nil {
+		if err := s.issuePodKept(live, round, clock); err != nil {
 			return err
 		}
 		*ended = readRoundEnd(told, round, clock)
