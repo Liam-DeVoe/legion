@@ -6881,6 +6881,196 @@ for form in field part field-other part-other; do
     esac
 done
 
+# 217. A part in words holding a colon is read by the readings of a prefixed name (6), which
+# can hold it and never fail it (the architect's ruling on review 6031558230, the class of case
+# 212: no refusal runs before a reading that can hold the part). Form 2 reads such a part by 6,
+# else by 8, else not at all, but resolve_symbol failed it wherever the reading of 6 that
+# applied did not hold it, so at ef564aae `deploy: the replica count`, cited in a directory that
+# holds deploy.py, failed through the module reading, while the same part where no deploy.py
+# stands is not checked; `deploy.py: the replica count` failed naming the file; and
+# `cluster: the replica count` failed naming the component cluster. The case commits
+# notes/deploy.py, a function whose text writes ` replicas`, and notes/values.md, which holds
+# ` the replica count` and neither file writes cluster, and writes the row f-our-1 as citing
+# notes with each of those three symbols, then with 'deploy: replicas', which the module
+# deploy.py holds, running --citations over each (symbol_plant): each must pass
+# citation-our-code; the first three must be listed as not checked, by the line
+# `not checked: f-our-1 cites the part "..."`, and the last must not be. At ef564aae the first
+# three failed citation-our-code.
+for form in module file namespace held; do
+    case "$form" in
+    module) symbol='deploy: the replica count' listed=1 ;;
+    file) symbol='deploy.py: the replica count' listed=1 ;;
+    namespace) symbol='cluster: the replica count' listed=1 ;;
+    held) symbol='deploy: replicas' listed=0 ;;
+    esac
+    case "$listed" in
+    1) words_case="a symbol part in words '$symbol', cited in notes, whose reading of a prefixed name does not hold it, is listed as not checked and fails nothing" ;;
+    *) words_case="a symbol part in words '$symbol', cited in notes, which the module notes/deploy.py holds, passes citation-our-code and is not listed as not checked" ;;
+    esac
+    dir="$(symbol_plant "symbol-words-prefixed-$form" notes "$symbol" notes/deploy.py $'def scale(replicas):\n    return replicas\n' notes/values.md $'# the replica count is three\n')" &&
+        ! grep -rqw cluster "$dir/repo/notes" && ! grep -qF 'the replica count' "$dir/repo/notes/deploy.py" &&
+        grep -qF ' the replica count' "$dir/repo/notes/values.md" && grep -qF ' replicas' "$dir/repo/notes/deploy.py" || {
+        printf 'FAIL the symbol %s cited in notes could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case_read "$words_case" "$out" || continue
+    times="$(grep -cxF "  not checked: f-our-1 cites the part \"$symbol\"" "$out/text")"
+    if printf '%s' "$RUN_FAILED" | grep -qx citation-our-code; then
+        case_failed "$words_case" "$(grep '^FAIL citation-our-code' "$out/text" | head -1)"
+    elif [ "$times" != "$listed" ]; then
+        case_failed "$words_case" "its run lists the part as not checked $times times, not $listed"
+    else
+        case_passed "$words_case"
+    fi
+done
+
+# 218. A cited path is read as its characters stand, and a glob's characters but `*` too, by
+# every reading of the citation's files (found while the class of review 6031558230 was fixed:
+# paths_at and paths_below agree with git on what a cited path names). resolve_symbol handed git
+# the paths of the file field as pathspecs, which git reads with `?` and `[` as wildcards, and
+# a glob by git's glob magic, which reads `?`, `[` and `\` so too, so at ef564aae, with
+# notes/a[bc].md beside notes/ab.md, a name only ab.md holds passed in a citation of
+# notes/a[bc].md, as it did in one of notes/a?.md, and a name only a[bc].md holds failed in a
+# citation of the glob notes/a[bc]*.md, while one only ab.md holds passed there. The case
+# commits notes/a[bc].md, notes/a?.md and notes/a[bc]1.md, each holding ALPHA_X, and
+# notes/ab.md and notes/ab1.md, each holding BETA_Y, and writes the row f-our-1 as citing
+# notes/a[bc].md with the symbol 'ALPHA_X', then 'BETA_Y', then notes/a?.md with 'BETA_Y', then
+# notes/a[bc]*.md with 'ALPHA_X', then 'BETA_Y', running --citations over each (symbol_plant):
+# the two citing ALPHA_X must pass citation-our-code; each citing BETA_Y must fail it, naming
+# the part and the cited path. At ef564aae every form but the first did the opposite.
+for form in plain plain-other question-other glob glob-other; do
+    case "$form" in
+    plain) cited='notes/a[bc].md' symbol='ALPHA_X' ;;
+    plain-other) cited='notes/a[bc].md' symbol='BETA_Y' detail='notes/a\[bc\]\.md' ;;
+    question-other) cited='notes/a?.md' symbol='BETA_Y' detail='notes/a\?\.md' ;;
+    glob) cited='notes/a[bc]*.md' symbol='ALPHA_X' ;;
+    glob-other) cited='notes/a[bc]*.md' symbol='BETA_Y' detail='notes/a\[bc\]\*\.md' ;;
+    esac
+    dir="$(symbol_plant "symbol-path-literal-$form" "$cited" "$symbol" 'notes/a[bc].md' $'ALPHA_X = 1\n' 'notes/a?.md' $'ALPHA_X = 1\n' \
+        'notes/a[bc]1.md' $'ALPHA_X = 1\n' notes/ab.md $'BETA_Y = 2\n' notes/ab1.md $'BETA_Y = 2\n')" &&
+        [ "$(git -C "$dir/repo" ls-tree -r --name-only HEAD -- notes | wc -l)" = 5 ] &&
+        [ "$(grep -rl BETA_Y "$dir/repo/notes" | wc -l)" = 2 ] || {
+        printf 'FAIL the citation of %s with the symbol %s could not be planted in the fixture row f-our-1\n' "$cited" "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    *-other)
+        case_result "a symbol part BETA_Y cited in $cited, a name only notes/ab.md and notes/ab1.md hold, fails --citations, naming the part and the path" \
+            "citation-our-code: f-our-1 cites the symbol BETA_Y, which $detail does not hold" "$out"
+        ;;
+    *) honest_result "a symbol part ALPHA_X cited in $cited, a name the file of that name holds, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 219. A glob names in git what paths_at reads it to name: each `*`, or run of `*`, within one
+# path element, and every path below a directory it names (found while the class of review
+# 6031558230 was fixed). paths_at reads `notes/*` as every path below notes, a directory among
+# them, and `notes/**/x.md` as notes/<one element>/x.md, while git's glob magic matched no file
+# below a directory `notes/*` names and read `**/` as any number of directories, so at
+# ef564aae, with notes/a/x.md holding ALPHA_X, notes/a/b/x.md holding BETA_Y and other/y.md
+# holding DELTA_Z, ALPHA_X failed in a citation of notes/*, though paths_at found that citation
+# by notes/a/x.md, and BETA_Y passed in one of notes/**/x.md, which paths_at reads as never
+# naming notes/a/b/x.md, as the live row t-cp-drop-scripts's protocols/*/skills/*/scripts/
+# searched no file of the directories it names. The case commits those three files and writes
+# the row f-our-1 as citing notes/* with the symbol 'ALPHA_X', then 'DELTA_Z', then
+# notes/**/x.md with 'ALPHA_X', then 'BETA_Y', running --citations over each (symbol_plant):
+# each citing ALPHA_X must pass citation-our-code; the other two must fail it, naming the part
+# and the cited glob. At ef564aae the first failed and the last passed.
+for form in directory directory-other star star-other; do
+    case "$form" in
+    directory) cited='notes/*' symbol='ALPHA_X' ;;
+    directory-other) cited='notes/*' symbol='DELTA_Z' detail='notes/\*' ;;
+    star) cited='notes/**/x.md' symbol='ALPHA_X' ;;
+    star-other) cited='notes/**/x.md' symbol='BETA_Y' detail='notes/\*\*/x\.md' ;;
+    esac
+    dir="$(symbol_plant "symbol-glob-depth-$form" "$cited" "$symbol" notes/a/x.md $'ALPHA_X = 1\n' notes/a/b/x.md $'BETA_Y = 2\n' other/y.md $'DELTA_Z = 3\n')" &&
+        [ "$(git -C "$dir/repo" ls-tree --name-only HEAD notes/)" = notes/a ] || {
+        printf 'FAIL the citation of %s with the symbol %s could not be planted in the fixture row f-our-1\n' "$cited" "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    *-other)
+        case_result "a symbol part $symbol cited in $cited, a name only a path the glob does not name holds, fails --citations, naming the part and the glob" \
+            "citation-our-code: f-our-1 cites the symbol $symbol, which $detail does not hold" "$out"
+        ;;
+    *) honest_result "a symbol part ALPHA_X cited in $cited, a name notes/a/x.md holds, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 220. A glob holding no `/` names its paths at any depth, by every reading of the citation's
+# files (found while the class of review 6031558230 was fixed). paths_at reads `*.cfg` as every
+# path whose last elements match it, at any depth, as the live row r-23's `*.py` names every
+# Python file of mas-lab, while git's glob magic and paths_below read it from the root alone,
+# so at ef564aae, with notes/deep/x.cfg holding ALPHA_X and no .cfg file at the root, a
+# citation of *.cfg passed paths_at, and then ALPHA_X failed in it, and so did `x.cfg`, a
+# file's name at or below the cited glob (5c). The case commits notes/deep/x.cfg and
+# notes/deep/y.txt, which holds DELTA_Z, and writes the row f-our-1 as citing *.cfg with the
+# symbol 'ALPHA_X', then 'x.cfg', then 'DELTA_Z', running --citations over each (symbol_plant):
+# the first two must pass citation-our-code; the last must fail it, naming the part and the
+# glob. At ef564aae the first two failed.
+for form in text name other; do
+    case "$form" in
+    text) symbol='ALPHA_X' ;;
+    name) symbol='x.cfg' ;;
+    other) symbol='DELTA_Z' ;;
+    esac
+    dir="$(symbol_plant "symbol-glob-anywhere-$form" '*.cfg' "$symbol" notes/deep/x.cfg $'ALPHA_X = 1\n' notes/deep/y.txt $'DELTA_Z = 3\n')" &&
+        [ "$(git -C "$dir/repo" ls-tree -r --name-only HEAD | grep -c '\.cfg$')" = 1 ] &&
+        ! grep -rqF 'x.cfg' "$dir/repo/notes" || {
+        printf 'FAIL the citation of *.cfg with the symbol %s could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    other)
+        case_result "a symbol part DELTA_Z cited in *.cfg, a name only notes/deep/y.txt holds, fails --citations, naming the part and the glob" \
+            "citation-our-code: f-our-1 cites the symbol DELTA_Z, which \\*\\.cfg does not hold" "$out"
+        ;;
+    *) honest_result "a symbol part $symbol cited in *.cfg, which names notes/deep/x.cfg, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 221. A path part below a cited glob holding no `/` is read at any depth, as the glob itself is
+# (the architect's ruling on the open point of case 220: the rule above paths_at holds in every
+# reading of a cited path). Form 7 reads a path part below each directory or glob the citation
+# names by paths_at over the glob and the part joined, `pkg*/sub/x.py`, which holds a `/` and so
+# was read from the root alone, while the glob `pkg*` names its paths at any depth. So at
+# ef564aae and after case 220, with a/pkg1/sub/x.py and a/pkg1/sub/tools/run.sh committed,
+# `sub/tools`, cited in pkg*, failed, though a/pkg1 is a path the glob names and sub/tools stands
+# below it; `sub/x.py` failed there too at ef564aae, and after case 220 held only by its file's
+# name (5c). The case commits a/pkg1/sub/x.py and a/pkg1/sub/tools/run.sh, then, in another
+# fixture, a/pkg1/other.py alone, and writes the row f-our-1 as citing the file field 'pkg*'
+# with the symbol 'sub/x.py', then 'sub/tools', over each tree, running --citations over each
+# (symbol_plant): over the first tree both must pass citation-our-code; over the second both
+# must fail it, naming the part and pkg*. At ef564aae the two over the first tree failed.
+for form in name directory name-other directory-other; do
+    case "$form" in
+    name | name-other) symbol='sub/x.py' ;;
+    directory | directory-other) symbol='sub/tools' ;;
+    esac
+    case "$form" in
+    *-other) tree=(a/pkg1/other.py $'OTHER = 1\n') ;;
+    *) tree=(a/pkg1/sub/x.py $'X = 1\n' a/pkg1/sub/tools/run.sh $'echo run\n') ;;
+    esac
+    dir="$(symbol_plant "symbol-path-below-glob-$form" 'pkg*' "$symbol" "${tree[@]}")" &&
+        [ "$(git -C "$dir/repo" ls-tree -r --name-only HEAD | grep -cE '(^|/)pkg')" = "$((${#tree[@]} / 2))" ] &&
+        ! grep -rqF "$symbol" "$dir/repo/a" || {
+        printf 'FAIL the citation of pkg* with the symbol %s could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    *-other)
+        case_result "a path part $symbol cited in pkg*, over a tree whose only path the glob names is a/pkg1/other.py, fails --citations, naming the part and the glob" \
+            "citation-our-code: f-our-1 cites the symbol $(printf '%s' "$symbol" | sed 's/[.]/\\./g'), which pkg\\* does not hold" "$out"
+        ;;
+    *) honest_result "a path part $symbol cited in pkg*, which stands below a/pkg1, a path the glob names, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

@@ -5865,16 +5865,72 @@ shape_order() {
 
 # ---------------------------------------------------------------- --citations
 
-# paths_at <repo root> <commit> <pathspec>
+# What a cited path names, by one rule that paths_at, paths_below and every search of a
+# cited file's text (here_grep) read: a path stands for itself, every character of it as it
+# is written, and names that path and every path below it where it is a directory; a glob, a
+# path holding `*`, names each path whose elements match it, each `*`, or run of `*`, any run
+# of characters within one path element and every other character itself, and every path
+# below a directory it names, from the root where it holds a `/` and at any depth where it
+# holds none, as `*.py` names every Python file of the tree. A path below a cited path, as
+# form 7 of the symbol grammar reads a part below each directory or glob the citation names,
+# is read where that cited path is read, so below a glob holding no `/`, at any depth. So
+# `notes/a[bc].md` names that file and never notes/ab.md (case 218), `notes/*` names
+# notes/deep/x.md and `notes/**/x.md` names notes/a/x.md and never notes/a/b/x.md (case 219),
+# `*.cfg` names notes/deep/x.cfg (case 220), and `sub/tools` below `pkg*` names
+# a/pkg1/sub/tools/run.sh (case 221).
+
+# cited_regex <path> [<below>]; prints the extended regular expression of the paths a cited
+# path names, by the rule above, which a path the commit tracks matches whole; given <below>,
+# a path written below the cited path, of the paths <below> names under it, <below> read as
+# the cited path's own characters are and the cited path alone deciding where they are read
+# from.
+cited_regex() {
+    local regex
+    regex="$(printf '%s' "$1${2+/$2}" | sed 's/[^a-zA-Z0-9_/*-]/\\&/g; s/[*]/[^\/]*/g')"
+    case "$1" in
+    */*) printf '^%s(/|$)' "$regex" ;;
+    *'*'*) printf '(^|/)%s(/|$)' "$regex" ;;
+    *) printf '^%s(/|$)' "$regex" ;;
+    esac
+}
+
+# here_grep <root> <commit> <-P or -E> <pattern> <path>...; returns 0 when a line of the paths
+# at the commit matches <pattern>, read by git grep with that option, and 1 when none does.
+# Each path is handed to git as a pathspec that names what the rule above names: a path by
+# git's literal magic, :(literal)<path>, so its `?`, `[` and `\` are themselves, and a glob,
+# written :(glob)<glob> as resolve_symbol holds one, by git's glob magic, its `?`, `[` and `\`
+# quoted by a `\` and each run of `*` one `*`, which git reads within one path element, once
+# as it stands and once with `/**` after it, the paths below a directory it names, each after
+# `**/` where the glob holds no `/`, at any depth.
+here_grep() {
+    local root="$1" commit="$2" how="$3" pattern="$4" path glob specs=()
+    shift 4
+    for path in "$@"; do
+        case "$path" in
+        ':(glob)'*)
+            glob="$(printf '%s' "${path#':(glob)'}" | sed 's/[[?\]/\\&/g; s/[*][*]*/*/g')"
+            case "$glob" in
+            */*) specs+=(":(glob)$glob" ":(glob)$glob/**") ;;
+            *) specs+=(":(glob)**/$glob" ":(glob)**/$glob/**") ;;
+            esac
+            ;;
+        *) specs+=(":(literal)$path") ;;
+        esac
+    done
+    git -C "$root" grep -q"${how#-}" -- "$pattern" "$commit" -- "${specs[@]}" 2>/dev/null
+}
+
+# paths_at <repo root> <commit> <pathspec> [<below>]
 #
 # The paths a citation names, at one commit. A citation writes a path, a directory, a
 # glob such as `*.py`, or several of those separated by a comma or by the word "and".
 # Each is read here, so a citation of a set of files resolves when the commit holds at
-# least one path of every part it names. A glob's `*` is any run of characters within one
-# path element, and every other character of a glob or a path stands for itself, as
-# paths_below reads one: `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216).
+# least one path of every part it names, each read by the rule above (cited_regex): so
+# `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216). Given <below>, a path a
+# symbol part writes, it reads that path below each of them instead, by the same rule.
 paths_at() {
-    local root="$1" commit="$2" spec="$3" part regex names
+    local root="$1" commit="$2" spec="$3" part names below=()
+    [ "$#" -lt 4 ] || below=("${4%/}")
     names="$(git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null)"
     [ -n "$names" ] || return 1
     while IFS= read -r part; do
@@ -5887,18 +5943,7 @@ paths_at() {
         case "$part" in
         *' '*) continue ;;
         esac
-        case "$part" in
-        *'*'*)
-            regex="$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/*-]/\\&/g; s/[*]/[^\/]*/g')"
-            case "$part" in
-            */*) printf '%s\n' "$names" | grep -qE "^$regex(/|$)" || return 1 ;;
-            *) printf '%s\n' "$names" | grep -qE "(^|/)$regex(/|$)" || return 1 ;;
-            esac
-            ;;
-        *)
-            printf '%s\n' "$names" | grep -qE "^$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/-]/\\&/g')(/|$)" || return 1
-            ;;
-        esac
+        printf '%s\n' "$names" | grep -qE "$(cited_regex "$part" "${below[@]}")" || return 1
     done < <(printf '%s\n' "$spec" | sed 's/ and /\n/g; s/,/\n/g')
     # A citation whose every part is written in words, such as "20 pyproject.toml files
     # under backend/", names a set a reader reads rather than a path, and the gate holds
@@ -5971,20 +6016,19 @@ symbol_file() {
     printf '%s' "$name"
 }
 
-# paths_below <repo root> <commit> <path>...; prints each path the commit tracks that is one of
-# the paths a citation names, as resolve_symbol holds them, or stands below one, a glob, written
-# :(glob)<glob>, read as paths_at reads one, its `*` within one path element, so that a file's
-# name is looked for where the citation points and nowhere else in the tree. It prints nothing
-# and returns 1 when no path does.
+# paths_below <repo root> <commit> <path>...; prints each path the commit tracks that one of
+# the paths a citation names, as resolve_symbol holds them, a glob written :(glob)<glob>,
+# names by the rule above paths_at (cited_regex), the path itself or one below it, so that a
+# file's name is looked for where the citation points and nowhere else in the tree. It prints
+# nothing and returns 1 when no path does.
 paths_below() {
     local root="$1" commit="$2" path regex=""
     shift 2
     for path in "$@"; do
-        path="${path#':(glob)'}"
-        regex="$regex${regex:+|}$(printf '%s' "$path" | sed 's/[^a-zA-Z0-9_/*-]/\\&/g; s/[*]/[^\/]*/g')"
+        regex="$regex${regex:+|}($(cited_regex "${path#':(glob)'}"))"
     done
     [ -n "$regex" ] || return 1
-    git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null | grep -E "^($regex)(/|$)"
+    git -C "$root" ls-tree -r --name-only "$commit" 2>/dev/null | grep -E "$regex"
 }
 
 # module_file <repo root> <commit> <prefix> <path>...; reads a symbol part's prefix as a
@@ -6118,24 +6162,34 @@ module_below() {
     return 1
 }
 
-# module_held <family> <id> <part> <run> <file> <names> <root> <commit>; holds to the file a
-# part's prefix names as the module <run> (module_file) each name after the run, <names>, its
-# dotted components in turn, the prefix's components after the run and then the local part,
-# as `Engine` and `match` after `engine` in `engine.Engine.match`: each stands in the file as
-# a whole token (token_held). It returns 0 when each does; else it fails <family>, naming the
-# row, the part, the file, the module and the first name the file does not hold, an empty
-# name among them, and returns 1.
-module_held() {
-    local family="$1" id="$2" part="$3" run="$4" path="$5" rest="$6" root="$7" commit="$8" name
+# module_names_held <file> <names> <root> <commit>; returns 0 when the file holds each name of
+# <names>, its dotted components in turn, as a whole token (token_held), and otherwise prints
+# the first it does not hold, an empty name among them, and returns 1.
+module_names_held() {
+    local path="$1" rest="$2" root="$3" commit="$4" name
     while :; do
         name="${rest%%.*}"
         if [ -z "$name" ] || ! token_held "$root" "$commit" "$name" "$path"; then
-            fail "$family" "$id cites the symbol $part, whose prefix names the file $path as the module $run, and $path does not hold the name '$name' after it as a word at $commit"
+            printf '%s' "$name"
             return 1
         fi
         [[ "$rest" == *.* ]] || return 0
         rest="${rest#*.}"
     done
+}
+
+# module_held <family> <id> <part> <run> <file> <names> <root> <commit>; holds to the file a
+# part's prefix names as the module <run> (module_file) each name after the run, <names>, its
+# dotted components in turn, the prefix's components after the run and then the local part,
+# as `Engine` and `match` after `engine` in `engine.Engine.match`: each stands in the file as
+# a whole token (module_names_held). It returns 0 when each does; else it fails <family>,
+# naming the row, the part, the file, the module and the first name the file does not hold,
+# an empty name among them, and returns 1.
+module_held() {
+    local family="$1" id="$2" part="$3" run="$4" path="$5" rest="$6" root="$7" commit="$8" name
+    name="$(module_names_held "$path" "$rest" "$root" "$commit")" && return 0
+    fail "$family" "$id cites the symbol $part, whose prefix names the file $path as the module $run, and $path does not hold the name '$name' after it as a word at $commit"
+    return 1
 }
 
 # whole_token <token>; prints the Perl-compatible regular expression that finds <token> as a
@@ -6155,11 +6209,12 @@ whole_token() {
 }
 
 # token_held <root> <commit> <token> <path>...; returns 0 when the paths at the commit hold
-# <token> as a whole token (whole_token), read by git grep -P, and 1 when they do not.
+# <token> as a whole token (whole_token), read by git grep -P over the paths as here_grep
+# hands them to git, and 1 when they do not.
 token_held() {
     local root="$1" commit="$2" token="$3"
     shift 3
-    git -C "$root" grep -qP -- "$(whole_token "$token")" "$commit" -- "$@" 2>/dev/null
+    here_grep "$root" "$commit" -P "$(whole_token "$token")" "$@"
 }
 
 # GLOB_CHAR is what a `?` of a glob of names stands for (glob_text), and a `*` any run of it,
@@ -6219,29 +6274,38 @@ head_line() {
     printf '%s' "^[ \\t]*\\[$(glob_text "$inside")\\][ \\t]*(?:[#;].*)?\\r?\$"
 }
 
-# prefix_held <family> <id> <part> <separator> <here name> <root> <commit> <path>...; holds
-# to the paths a part that resolved only by its local part, the text after its last
-# <separator>, a colon or a dot, as `Engine.match` resolves on `match`. The part's prefix,
-# the text before that separator, is split into its components, each a word of letters,
-# digits, `_` and `-`, so that `.`, `[]`, `:`, `;`, a space, a quote or a bracket parts two
-# of them, and each component stands in the paths at the commit as a whole token
-# (token_held): `Engine` stands in `class Engine`, and `Engin` does not. It returns 0 when
-# each does, a prefix of no component among them; else it fails <family>, naming the row,
-# the part and the first component the paths do not hold, and returns 1.
-prefix_held() {
-    local family="$1" id="$2" part="$3" separator="$4" here_name="$5" root="$6" commit="$7"
-    local prefix rest component word='[A-Za-z0-9_-]+'
-    shift 7
-    prefix="${part%"$separator"*}"
-    rest="$prefix"
+# prefix_components_held <prefix> <root> <commit> <path>...; splits a qualified name's prefix
+# into its components, each a word of letters, digits, `_` and `-`, so that `.`, `[]`, `:`,
+# `;`, a space, a quote or a bracket parts two of them, and returns 0 when each stands in the
+# paths at the commit as a whole token (token_held), a prefix of no component among them:
+# `Engine` stands in `class Engine`, and `Engin` does not. Otherwise it prints the first
+# component the paths do not hold and returns 1.
+prefix_components_held() {
+    local rest="$1" root="$2" commit="$3" component word='[A-Za-z0-9_-]+'
+    shift 3
     while [[ "$rest" =~ $word ]]; do
         component="${BASH_REMATCH[0]}"
         rest="${rest#*"$component"}"
         token_held "$root" "$commit" "$component" "$@" && continue
-        fail "$family" "$id cites the symbol $part, which $here_name holds only by its local part '${part##*"$separator"}', and the component '$component' of its prefix '$prefix' does not stand in it as a word at $commit: each component of the prefix of a qualified name stands in its file"
+        printf '%s' "$component"
         return 1
     done
     return 0
+}
+
+# prefix_held <family> <id> <part> <separator> <here name> <root> <commit> <path>...; holds
+# to the paths a part that resolved only by its local part, the text after its last
+# <separator>, a colon or a dot, as `Engine.match` resolves on `match`: each component of the
+# part's prefix, the text before that separator, stands in them (prefix_components_held). It
+# returns 0 when each does; else it fails <family>, naming the row, the part and the first
+# component the paths do not hold, and returns 1.
+prefix_held() {
+    local family="$1" id="$2" part="$3" separator="$4" here_name="$5" root="$6" commit="$7" prefix component
+    shift 7
+    prefix="${part%"$separator"*}"
+    component="$(prefix_components_held "$prefix" "$root" "$commit" "$@")" && return 0
+    fail "$family" "$id cites the symbol $part, which $here_name holds only by its local part '${part##*"$separator"}', and the component '$component' of its prefix '$prefix' does not stand in it as a word at $commit: each component of the prefix of a qualified name stands in its file"
+    return 1
 }
 
 # SYMBOL_LINE_FORM is form 1 of the symbol grammar (below), a line or a line range alone,
@@ -6303,7 +6367,10 @@ symbol_refused() {
 # read with the space around it taken off, and an empty part skipped. Each part is read
 # against here: the paths the citation's file field names, until a part names a file, which
 # is here for that part and every part after it, as citations.py continues a bare line range
-# from the nearest file before it. Text here holds is text a file of here holds as a whole
+# from the nearest file before it. A path of the file field names what the rule above
+# paths_at says it names, its characters themselves and a glob's `*` within one path element,
+# and every reading of a path, here_grep's search of the text among them, reads that same set
+# (cases 216, 218, 219, 220). Text here holds is text a file of here holds as a whole
 # token (whole_token, token_held): its first character, where it is a letter, a digit or `_`,
 # follows none of those, and its last, where it is one, is followed by none, so
 # `TesterVerdictRequire` does not stand in `TesterVerdictRequired`. A file beside the paths
@@ -6331,12 +6398,15 @@ symbol_refused() {
 #     no line of a file and is a figure of the prose: it is not read.
 #  2. A part in words, any part holding a space: `the title line`,
 #     `kind: Deployment|StatefulSet|Job` (case 193). It holds as text here holds; else,
-#     holding a colon, by the readings of a prefixed name (6); else, holding `|`, `*`, `?` or
-#     `\`, as a pattern by the rules of 8, which its text decides: a table head where it
-#     begins with `[` and ends with `]`, else an extended regular expression or a glob; else
-#     it names a part of the file a reader judges, and it is not checked, as is
-#     `[project] dependencies = []`, which holds none of those four. A path inside it, as in
-#     `skills/x/SKILL.md lines 22-23`, is not read as a path.
+#     holding a colon, by the readings of a prefixed name (6), which can hold it and never
+#     fail it: where the reading of 6 that applies does not hold it, the part is read on, here
+#     as it was, as when none applies, so `deploy: the replica count`, cited in a directory
+#     that holds deploy.py, is read on and not checked, as it is where no deploy.py stands
+#     (case 217); else, holding `|`, `*`, `?` or `\`, as a pattern by the rules of 8, which its
+#     text decides: a table head where it begins with `[` and ends with `]`, else an extended
+#     regular expression or a glob; else it names a part of the file a reader judges, and it
+#     is not checked, as is `[project] dependencies = []`, which holds none of those four. A
+#     path inside it, as in `skills/x/SKILL.md lines 22-23`, is not read as a path.
 #  3. A quoted string, in double quotes, single quotes or backquotes, holding no space:
 #     `'strict'` (case 194). It holds as text here holds, its quotes among it, or the part
 #     fails.
@@ -6399,15 +6469,18 @@ symbol_refused() {
 #       colon, stands in it (cases 188, 197);
 #     - `Namespace:Symbol`, as the Turtle term `mas:sessionId`: any other prefix holds as in
 #       5d (case 197);
-#     else the part fails.
+#     else the part fails. Each failure here is a prefixed name's; a part in words that 6
+#     reads is read on (2).
 #  7. A path, holding `/`, of letters, digits, `_`, `.`, `-`, `@`, `+`, `~` and `*`:
 #     `protocols/accord`, `skills/`, `src/mas/library/*` (cases 198, 202). It is read in turn
 #     as a file beside the paths, which becomes here; as text here holds; as a file's name, as
 #     in 5c; and as a path, a directory or a glob the commit holds (paths_at), from the root or
-#     below a directory or a glob the citation names, a glob's `*` any run of characters
-#     within one path element and every other character itself, as paths_at reads a file
-#     field too, so `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216), and never
-#     as a pattern over text; else the part fails.
+#     below a directory or a glob the citation names, by the rule above paths_at, a glob's `*`
+#     any run of characters within one path element and every other character itself, so
+#     `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216), and the part read below a
+#     cited glob where that glob is read, at any depth for one holding no `/`, so `sub/tools`
+#     cited in `pkg*` holds where a/pkg1/sub/tools/run.sh stands (case 221); and never as a
+#     pattern over text; else the part fails.
 #  8. A pattern: a table head, a part in neither 1 nor 2 that begins with `[` and ends with
 #     `]`, and any other part holding `|`, `*`, `?` or `\`. Its text alone decides how it is
 #     read, by three rules:
@@ -6481,8 +6554,8 @@ resolve_symbol() {
         fpart="${fpart%%:*}"
         fpart="${fpart%/}"
         case "$fpart" in '' | *' '*) continue ;; esac
-        # A glob reaches across directories here, as the citation writes it, so git is
-        # told to read it as one.
+        # A glob is held as :(glob)<glob>, so that a reading of a file beside the paths passes
+        # over it and here_grep and paths_below read it as the glob it is (cited_regex).
         case "$fpart" in *'*'*) fpart=":(glob)$fpart" ;; esac
         pathspec+=("$fpart")
     done < <(printf '%s\n' "$file" | sed 's/ and /\n/g; s/,/\n/g')
@@ -6551,7 +6624,7 @@ resolve_symbol() {
         fi
         # 8, a table head: a line of here that is that head (head_line), and no other reading.
         if [ "$form" = head ]; then
-            git -C "$root" grep -qP -- "$(head_line "$part")" "$commit" -- "${here[@]}" 2>/dev/null && continue
+            here_grep "$root" "$commit" -P "$(head_line "$part")" "${here[@]}" && continue
             fail "$family" "$id cites the symbol $part, which $here_name does not hold as a table head, a line that is that head, at $commit"
             return 1
         fi
@@ -6591,34 +6664,48 @@ resolve_symbol() {
         esac
         # 6, and 2 where it holds a colon: a prefixed name, read as `file:Symbol`, as
         # `module:attr` and as `Namespace:Symbol`, in that order, the last never for a part
-        # that starts with a digit (digit).
+        # that starts with a digit (digit). The first that applies decides: it holds the part,
+        # or it fails a prefixed name. A part in words it does not hold goes on to 8, here as it
+        # was, as when none applies, since 6's readings can hold such a part and never fail it.
         case "$form" in
         prefixed | words)
             case "$part" in
             *:*)
                 if path="$(symbol_file "$root" "$commit" "${part%:*}" "${pathspec[@]}")"; then
-                    here=("$path") here_name="$path"
-                    token_held "$root" "$commit" "${part##*:}" "$path" && continue
-                    fail "$family" "$id cites the symbol $part, whose prefix names the file $path, and $path does not hold its local part '${part##*:}' as a word at $commit"
-                    return 1
-                fi
-                if reference="$(module_file "$root" "$commit" "${part%:*}" "${pathspec[@]}")"; then
+                    if token_held "$root" "$commit" "${part##*:}" "$path"; then
+                        here=("$path") here_name="$path"
+                        continue
+                    fi
+                    if [ "$form" = prefixed ]; then
+                        fail "$family" "$id cites the symbol $part, whose prefix names the file $path, and $path does not hold its local part '${part##*:}' as a word at $commit"
+                        return 1
+                    fi
+                elif reference="$(module_file "$root" "$commit" "${part%:*}" "${pathspec[@]}")"; then
                     run="${reference%%$'\t'*}" path="${reference#*$'\t'}"
-                    here=("$path") here_name="$path"
                     rest="${part%:*}" rest="${rest#"$run"}" rest="${rest#.}"
-                    module_held "$family" "$id" "$part" "$run" "$path" "${rest:+$rest.}${part##*:}" "$root" "$commit" || return 1
-                    continue
-                fi
-                if [ -z "$digit" ] && token_held "$root" "$commit" "${part##*:}" "${here[@]}"; then
-                    prefix_held "$family" "$id" "$part" : "$here_name" "$root" "$commit" "${here[@]}" || return 1
-                    continue
+                    if [ "$form" = prefixed ]; then
+                        here=("$path") here_name="$path"
+                        module_held "$family" "$id" "$part" "$run" "$path" "${rest:+$rest.}${part##*:}" "$root" "$commit" || return 1
+                        continue
+                    fi
+                    if module_names_held "$path" "${rest:+$rest.}${part##*:}" "$root" "$commit" >/dev/null; then
+                        here=("$path") here_name="$path"
+                        continue
+                    fi
+                elif [ -z "$digit" ] && token_held "$root" "$commit" "${part##*:}" "${here[@]}"; then
+                    if [ "$form" = prefixed ]; then
+                        prefix_held "$family" "$id" "$part" : "$here_name" "$root" "$commit" "${here[@]}" || return 1
+                        continue
+                    fi
+                    prefix_components_held "${part%:*}" "$root" "$commit" "${here[@]}" >/dev/null && continue
                 fi
                 ;;
             esac
             ;;
         esac
         # 7: a path, a directory or a glob the commit holds, read from the root or below a
-        # directory or a glob the citation names, and never as text.
+        # directory or a glob the citation names, where that directory or glob is read (the
+        # rule above paths_at), and never as text.
         case "$form" in
         path)
             paths_at "$root" "$commit" "$part" && continue
@@ -6628,7 +6715,7 @@ resolve_symbol() {
                 ':(glob)'*) path="${path#':(glob)'}" ;;
                 *) [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = tree ] || continue ;;
                 esac
-                paths_at "$root" "$commit" "$path/$part" && held=0 && break
+                paths_at "$root" "$commit" "$path" "$part" && held=0 && break
             done
             [ "$held" -eq 0 ] && continue
             ;;
@@ -6643,13 +6730,13 @@ resolve_symbol() {
             if [[ "$part" == *['|*?\']* ]]; then
                 case "$part" in
                 '['*']')
-                    git -C "$root" grep -qP -- "$(head_line "$part")" "$commit" -- "${here[@]}" 2>/dev/null && continue
+                    here_grep "$root" "$commit" -P "$(head_line "$part")" "${here[@]}" && continue
                     ;;
                 *['|([\']*)
-                    git -C "$root" grep -qE -- "$part" "$commit" -- "${here[@]}" 2>/dev/null && continue
+                    here_grep "$root" "$commit" -E "$part" "${here[@]}" && continue
                     ;;
                 *)
-                    git -C "$root" grep -qP -- "$(glob_token "$part")" "$commit" -- "${here[@]}" 2>/dev/null && continue
+                    here_grep "$root" "$commit" -P "$(glob_token "$part")" "${here[@]}" && continue
                     ;;
                 esac
             fi
