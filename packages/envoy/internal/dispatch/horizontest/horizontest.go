@@ -507,17 +507,20 @@ func newInProcessWatch(t *testing.T, ownDatabase string, probe Querier) *InProce
 }
 
 // Failure says why the wait for what must end now, or "" while it goes on. At the drain it fails,
-// naming the newest holder a read found and what the last read failed with. Before Base, within
-// Poll of the last read, or within Extension of the newest holder a read found, it goes on without
-// a read. Otherwise it reads the holder, and fails only on a holder of the test's own database past
-// OwnHoldBound.
+// naming the newest holder a read found, how long before the failure that read was and how long
+// that holder had held its transaction id when it was read (so a holder read once, long ago, does
+// not read as one that held the horizon back all along), and what the last read failed with.
+// Before Base, within Poll of the last read, or within Extension of the newest holder a read
+// found, it goes on without a read. Otherwise it reads the holder, and fails only on a holder of
+// the test's own database past OwnHoldBound.
 func (w *InProcessWatch) Failure(what string) string {
 	now := time.Now()
 	elapsed := now.Sub(w.began).Round(time.Millisecond)
 	if !w.drain.IsZero() && !now.Before(w.drain) {
 		newest := "none: no read since the wait began found a transaction holding a transaction id"
 		if !w.heldAt.IsZero() {
-			newest = w.held.Text
+			newest = fmt.Sprintf("read %v before this failure, when that holder had held its transaction id for %v: %s",
+				now.Sub(w.heldAt).Round(time.Millisecond), w.held.PendingFor.Round(time.Millisecond), w.held.Text)
 		}
 		failure := fmt.Sprintf("%s did not arrive in the %v the run had left; the newest holder the wait read on the instance was %s",
 			what, elapsed, newest)

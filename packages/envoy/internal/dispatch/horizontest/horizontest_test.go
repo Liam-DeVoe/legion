@@ -335,9 +335,16 @@ func TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere(t *testing.T) {
 	t.Run("the drain", func(t *testing.T) {
 		held := inProcess(t, heldBy{database: "other_service", since: time.Minute}, true)
 		held.Failure(what)
+		// The read that found the holder was an hour before the drain: the failure says so, and
+		// gives the holder's own age at that read, not the hour.
+		held.heldAt = held.heldAt.Add(-time.Hour)
 		held.drain = time.Now().Add(-time.Millisecond)
-		if failure := held.Failure(what); !strings.HasPrefix(failure, what+" did not arrive in the ") || !strings.Contains(failure, "database=other_service") {
+		failure := held.Failure(what)
+		if !strings.HasPrefix(failure, what+" did not arrive in the ") || !strings.Contains(failure, "database=other_service") {
 			t.Errorf("past the drain after a read found a foreign holder: Failure = %q, want the drain's failure naming %q and that holder", failure, what)
+		}
+		if !strings.Contains(failure, "was read 1h0m0") || !strings.Contains(failure, "held its transaction id for 1m0s") {
+			t.Errorf("past the drain an hour after the read that found a holder of a minute: Failure = %q, want it to say the read was an hour before and the holder had stood a minute", failure)
 		}
 		unread := inProcess(t, refused, true)
 		unread.Failure(what)
