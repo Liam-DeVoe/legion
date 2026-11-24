@@ -18,8 +18,9 @@ body: |-
   From the release's start the daemon starts nothing of the project. The daemon's next boot ends
   the release and starts each claim the release stopped, once, on the session it had, in the
   cluster the daemon's configuration then names, and charges it no launch failure and no death.
-  Those starts reach each new issue pod's start gate as starts no request raised, so the role
-  working the issue's phase loads its session first.
+  Those starts reach each new issue pod's start gate as starts no request raised: the first starts
+  at once, and of those that wait behind its load the role working the issue's phase loads its
+  session first.
   A pod that holds a claim an operator suspended, or whose ask to its roles could not be written
   before the bound or reached no session of them by it, is left with its disk, and the claims that
   ran there stay held for an operator.

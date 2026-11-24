@@ -2733,8 +2733,8 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // The rule resumes a claim the project release stopped at the daemon's next boot (workflow's
 // startReleaseStopped), which starts every role of the pods the release deleted at once, as a
 // roles container's restart does. So no request raised that start, and the pod's start gate puts
-// the role working the issue's phase first (revive's requested, podQueue.next). An operator's
-// resume of such a claim (resume) stays a request.
+// the role working the issue's phase first among the starts that wait behind a load (revive's
+// requested, podQueue.next). An operator's resume of such a claim (resume) stays a request.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	rule := ev.(RequestRuleResume).Reason
 	if !m.claim.RuleMayResume() {

@@ -3395,8 +3395,8 @@ package api
 // open heads between 2026-11-23T16:08:36Z and 16:09:51Z found 220 declared only by this change's
 // pull request and #5014, which is stacked on it and carries this entry, so this entry kept 220.
 // From this entry answers.go's SupportedContracts names `api.assignmentPlanContract`, after
-// `OwnerPlanContract`. Read the base's own number and every
-// open pull request again at the next merge rather than from this line.)
+// `OwnerPlanContract`. Read the base's own number and every open pull request again at the next
+// merge rather than from this line.)
 //
 // 221: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `merged`, `sessions`, `timeoutMs`), with

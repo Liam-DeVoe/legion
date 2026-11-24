@@ -318,8 +318,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// which states that contract in its header as every plugin from shapedAnswersContract on
 	// does, is served at the recorded contract at or below it (recordedContractAtOrBelow),
 	// assignmentPlanContract, so it stands below that row alone and the log holds that row's line
-	// and nothing else. This subtest does not catch a strip applied beside the loop, because it reads
-	// both its expectation and its answer from stateNarrowings; the subtests below, which name
+	// and nothing else. This subtest does not catch a strip applied beside the loop, because it
+	// reads both its expectation and its answer from stateNarrowings; the subtests below, which name
 	// their lines as literals, are what catch that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
 		state := populatedState(t)
