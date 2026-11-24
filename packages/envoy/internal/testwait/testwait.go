@@ -44,7 +44,8 @@
 // wait in TestMain, which has no t: it takes its deadline from the -timeout flag and the process's
 // start, and returns an error where the others fail the test. InHelper and ReceiveInHelper are
 // InMain and Receive for a helper whose callers hand it no t, such as clocktest's fake, and name
-// that helper where InMain names TestMain.
+// that helper where InMain names TestMain. A wait inside a testing/synctest bubble takes Bubbled's
+// t, since the bubble's own t refuses to name a deadline.
 //
 // A condition runs on the test goroutine, so a condition that reads a report which makes its fact
 // impossible (a process that exited, a daemon whose run returned) calls t.Fatalf itself and ends
@@ -55,10 +56,12 @@
 // A wait proves that something happened. That something did not happen needs a proof of its own,
 // taken from the first of these that reaches the code: read the state that would make it happen;
 // under testing/synctest, where the code does no real network I/O, call synctest.Wait and then
-// read (IdleAnHour, where a timer of the code's own may let it act late); or wait for the effect
-// of a later action (send a marker after the thing, wait for the marker's effect, then read). Only
-// when none of the three reaches the code does a test hold a span, through Span or Quiet, whose
-// why says which of them does not reach it and why. They refuse an empty why.
+// read, or, where a timer of the code's own may let it act late, call Idle with a span past that
+// timer and then read; or wait for the effect of a later action (send a marker after the thing,
+// wait for the marker's effect, then read). Only when none of the three reaches the code does a
+// test hold a span, through Span or Quiet, whose why says which of them does not reach it and why.
+// Idle's why names the timer its span outlasts. Idle, Span and Quiet refuse an empty why, and
+// none of them holds a span of its own: the caller passes it.
 package testwait
 
 import (
@@ -268,7 +271,7 @@ func Context(t testing.TB) context.Context {
 // would end past the margin ends there and fails, as a wait does.
 func Span(t testing.TB, d time.Duration, why string) {
 	t.Helper()
-	requireWhy(t, "Span", why)
+	requireWhy(t, "Span", why, whyNoProofReaches)
 	expired, stop := expiry(t)
 	defer stop()
 	span := time.NewTimer(d)
@@ -287,7 +290,7 @@ func Span(t testing.TB, d time.Duration, why string) {
 // a wait does.
 func Quiet[T any](t testing.TB, what string, ch <-chan T, d time.Duration, why string) {
 	t.Helper()
-	requireWhy(t, "Quiet", why)
+	requireWhy(t, "Quiet", why, whyNoProofReaches)
 	expired, stop := expiry(t)
 	defer stop()
 	span := time.NewTimer(d)
@@ -342,11 +345,15 @@ func ReceiveInHelper[T any](helper, what string, ch <-chan T) (T, error) {
 	return value, nil
 }
 
-// requireWhy fails t when why says nothing: a span with no reason is a sleep.
-func requireWhy(t testing.TB, function, why string) {
+// whyNoProofReaches is what Span's and Quiet's why says.
+const whyNoProofReaches = "which of the test's state, synctest.Wait and a later action's effect does not reach the code, and why"
+
+// requireWhy fails t when why says nothing: a span with no reason is a sleep. says is what
+// function's why must say, for the failure to name.
+func requireWhy(t testing.TB, function, why, says string) {
 	t.Helper()
 	if strings.TrimSpace(why) == "" {
-		t.Fatalf("testwait: %s: %s needs a why: which of the test's state, synctest.Wait and a later action's effect does not reach the code, and why", t.Name(), function)
+		t.Fatalf("testwait: %s: %s needs a why: %s", t.Name(), function, says)
 	}
 }
 

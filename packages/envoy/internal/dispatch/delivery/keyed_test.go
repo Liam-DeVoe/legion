@@ -87,8 +87,12 @@ func TestAKeyedRunnerRunsOneKeyInOrderAndKeysAtOnce(t *testing.T) {
 			t.Fatalf("start while a1 is held = %+v, want b3 (a2 waits behind a1)", item)
 		}
 		// awaitStart waited for every goroutine to block, so anything else that started is there,
-		// and an hour on (testwait.IdleAnHour) so is anything a timer of its own let start later.
-		testwait.IdleAnHour()
+		// and intakeMessageTimeout on (testwait.Idle) so is anything a timer of its own up to a
+		// handler's own bound let start later.
+		testwait.Idle(t, intakeMessageTimeout, "keyedRunner arms no timer, and an intake's handler, which it runs, is "+
+			"bounded by the intake's message timeout, intakeMessageTimeout unless a test sets another: a runner that "+
+			"started a key's next item at a bound of its own shorter than that would run it beside a handler still inside "+
+			"its bound")
 		select {
 		case item := <-recorder.start:
 			t.Fatalf("%+v started while a1 was still in its handler", item)

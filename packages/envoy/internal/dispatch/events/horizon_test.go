@@ -315,12 +315,14 @@ func TestHorizonRunsOneStallDiagnosisAtATime(t *testing.T) {
 			now = now.Add(horizonWarnEvery)
 			observe(fmt.Sprintf("at step %d, while a diagnosis is in flight,", step))
 		}
-		// The read is an hour on the bubble's clock after every goroutine has blocked
-		// (testwait.IdleAnHour), which costs nothing: a second diagnosis that a timer of its own
-		// starts late has started by then. The bubble's only other timer is the first diagnosis's
-		// bound (horizonDiagnosisTimeout), which the scripted holder does not watch, so the first
-		// diagnosis is still in flight.
-		testwait.IdleAnHour()
+		// The read is horizonDiagnosisTimeout on the bubble's clock after every goroutine has
+		// blocked (testwait.Idle), which costs nothing. The bubble's only timer of the Horizon's is
+		// the first diagnosis's bound (horizonDiagnosisTimeout), armed before Idle began, so it has
+		// fired by the read, and a second diagnosis that its firing starts has started by then. The
+		// scripted holder does not watch that bound, so the first diagnosis is still in flight.
+		testwait.Idle(t, horizonDiagnosisTimeout, "the first diagnosis's bound, horizonDiagnosisTimeout, is the one timer "+
+			"the Horizon holds in the bubble, armed before this span began: a second diagnosis that a timer of the "+
+			"Horizon's own starts while the first is in flight has started by the read")
 		select {
 		case <-entered:
 			t.Fatalf("a second stall diagnosis started while the first was in flight; %d have run", diagnoses.Load())

@@ -256,6 +256,51 @@ func TestSpanAndQuietRefuseAnEmptyWhy(t *testing.T) {
 	}
 }
 
+// Idle refuses a span with no reason, as Span and Quiet do: one is a sleep on a bubble's clock. The
+// refusal comes before Idle's synctest.Wait, so it fails the test outside a bubble too.
+func TestIdleRefusesAnEmptyWhy(t *testing.T) {
+	for _, why := range []string{"", " \t\n"} {
+		failure := failureOf(t, func(tb testing.TB) { Idle(tb, time.Hour, why) })
+		if want := "testwait: " + t.Name() + ": Idle needs a why"; !strings.HasPrefix(failure, want) {
+			t.Fatalf("Idle with the why %q failed with %q, want a failure that begins %q", why, failure, want)
+		}
+	}
+}
+
+// Idle returns once its span has passed on the bubble's clock and every other goroutine of the
+// bubble has blocked again: what a timer due at the very end of the span woke has run by then, and
+// a timer due past the span has not fired.
+func TestIdleHoldsItsSpanAndWaitsForWhatItsEndWoke(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const span = time.Minute
+		atTheEnd, pastTheEnd := make(chan struct{}), make(chan struct{})
+		go func() {
+			time.Sleep(span)
+			close(atTheEnd)
+		}()
+		go func() {
+			time.Sleep(span + time.Nanosecond)
+			close(pastTheEnd)
+		}()
+		began := time.Now()
+		Idle(t, span, "the test of Idle itself: its span is what it proves")
+		if held := time.Since(began); held != span {
+			t.Errorf("Idle held the bubble's clock for %v, want its span of %v", held, span)
+		}
+		select {
+		case <-atTheEnd:
+		default:
+			t.Error("a goroutine woken at the end of Idle's span had not run when Idle returned")
+		}
+		select {
+		case <-pastTheEnd:
+			t.Error("a timer due past Idle's span fired before Idle returned")
+		default:
+		}
+		<-pastTheEnd
+	})
+}
+
 // Quiet fails naming what yielded and the value, and a close counts as yielding.
 func TestQuietFailsWhenItsChannelYields(t *testing.T) {
 	sent := make(chan string, 1)
@@ -481,7 +526,7 @@ func TestReceiveGivesUpAtTheMarginChild(t *testing.T) {
 // its give-up fails the subtest, as main's send 100 ms on the real clock failed a span under that.
 // The sender also ends with the bubble's test (t.Context), so a Receive that gave up leaves no
 // goroutine asleep in the bubble, which synctest.Test would end in a panic rather than in the
-// subtest's failure. Receive reads the deadline of the test that started the bubble (bubbled). It
+// subtest's failure. Receive reads the deadline of the test that started the bubble (Bubbled). It
 // runs only when the parent re-executes this binary.
 func TestNoDeadlineChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
@@ -535,7 +580,7 @@ func TestNoDeadlineChild(t *testing.T) {
 				case <-t.Context().Done():
 				}
 			}()
-			if got := Receive(bubbled{T: t, outer: outer}, "a value sent an hour after the wait began", sent); got != "the value sent an hour after the wait began" {
+			if got := Receive(Bubbled(t, outer), "a value sent an hour after the wait began", sent); got != "the value sent an hour after the wait began" {
 				t.Errorf("under -timeout 0 Receive returned %q, want the value sent an hour after it began to wait", got)
 			}
 		})
@@ -544,17 +589,6 @@ func TestNoDeadlineChild(t *testing.T) {
 
 // noDeadline is a testing.TB with no Deadline method, as a benchmark's is.
 type noDeadline struct{ testing.TB }
-
-// bubbled is the *testing.T synctest.Test hands its function, whose Deadline panics there (a
-// deadline on the real clock means nothing on the bubble's fake one), with the Deadline of outer,
-// the test that started the bubble. TestNoDeadlineChild runs under -timeout 0, where that names
-// no deadline, so the bubble's clock decides nothing.
-type bubbled struct {
-	*testing.T
-	outer *testing.T
-}
-
-func (b bubbled) Deadline() (time.Time, bool) { return b.outer.Deadline() }
 
 // failing is a testing.TB whose Fatalf keeps its text and ends the goroutine, as testing's does,
 // so a test reads a failure the function under test raised without failing itself.

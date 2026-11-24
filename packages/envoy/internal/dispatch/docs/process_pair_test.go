@@ -2,7 +2,6 @@ package docs
 
 import (
 	"context"
-	"math"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -58,7 +57,10 @@ func newProcessPairOn(t *testing.T, taskAClock clock.Clock) processPair {
 // answerWait is the wait every process of a test's pair gives the other's answers
 // (roomQueries.wait) in place of production's roomQueryWait: what is left of the shared wait's
 // own, read at each ask, so every ask's wait ends where testwait gives up, 30 s before the test
-// binary's deadline, however late in the test the ask comes, and never under no deadline.
+// binary's deadline, however late in the test the ask comes. Under no deadline (-timeout 0) it is
+// a quarter of querySettleDelay, the longest duration there is: no run outlasts it, and the
+// query's timers it arms stand short of the half of querySettleDelay by which queryArms tells them
+// from the settlement timers, where a wait of the longest duration would stand beside those.
 // roomQueryWait is a latency budget, and on a loaded machine an answer can take longer than that
 // to cross Postgres twice, which failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with no
 // answer at all (dispatch://INFRA-3904); a wait of a length the test picked would fail the same
@@ -71,7 +73,7 @@ func answerWait(t *testing.T) func() time.Duration {
 		if bounded {
 			return max(time.Until(end), time.Nanosecond)
 		}
-		return time.Duration(math.MaxInt64)
+		return querySettleDelay / 4
 	}
 }
 

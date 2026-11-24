@@ -284,8 +284,8 @@ func TestTheBackgroundWaitWaitsForARunningKeyedHandler(t *testing.T) {
 // backgroundWork's wait returns only once nothing runs, however work starts and ends around it:
 // work that starts while it waits, which a sync.WaitGroup forbids, is waited for too. The work is
 // in-process alone, so the bubble's synctest.Wait says when the waiter has gone as far as it can,
-// and an hour on the bubble's clock after it (testwait.IdleAnHour) says it holds past any bound of
-// its own.
+// and keyedHandlerLimit on the bubble's clock after it (testwait.Idle) says no bound of its own
+// shorter than a keyed handler's detached run may last lets it return.
 func TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
@@ -299,7 +299,9 @@ func TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits(t *testing.T) {
 		}()
 		work.start()
 		work.done()
-		testwait.IdleAnHour()
+		testwait.Idle(t, keyedHandlerLimit, "backgroundWork arms no timer, and among the work it waits for is a keyed "+
+			"handler's run past its client, which keyedHandlerLimit ends: a wait that gave up at a bound of its own "+
+			"shorter than that would return under a run still inside its limit, and shutdown would close the pool under it")
 		select {
 		case <-waited:
 			t.Fatal("the wait returned with work still running")

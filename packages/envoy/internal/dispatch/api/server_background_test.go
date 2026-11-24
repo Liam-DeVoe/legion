@@ -33,9 +33,12 @@ func TestTheBackgroundWaitHoldsForWorkARequestLeftRunning(t *testing.T) {
 			defer close(waited)
 			served.waitBackground()
 		}()
-		// An hour on the bubble's clock (testwait.IdleAnHour): a wait that a bound of its own lets
-		// return while the worker runs has returned by the read.
-		testwait.IdleAnHour()
+		// keyedHandlerLimit on the bubble's clock (testwait.Idle): a wait that a bound of its own up
+		// to that limit lets return while the worker runs has returned by the read.
+		testwait.Idle(t, keyedHandlerLimit, "the background wait arms no timer while it waits for detached work, and "+
+			"among that work is a keyed handler's run past its client, which keyedHandlerLimit ends: a wait that gave up "+
+			"at a bound of its own shorter than that would return under a run still inside its limit, and shutdown would "+
+			"close the pool under it")
 		select {
 		case <-waited:
 			t.Fatal("the background wait returned while a detached worker was still running")

@@ -54,7 +54,8 @@ func newQueryProcesses(t *testing.T) (processPair, *clocktest.Fake) {
 
 // querySettleDelay is the settle delay of newQueryProcesses's services: the longest duration there
 // is, so a settlement timer stands centuries off on the clock, and no row moves the clock to it.
-// A query's own waits end by the test binary's deadline at the latest (answerWait).
+// A query's own waits end by the test binary's deadline at the latest, and under no deadline a
+// quarter of this delay off (answerWait), short of the half that queryArms reads them by.
 const querySettleDelay = time.Duration(1<<63 - 1)
 
 // queryArms is what the room queries hold armed on clock, newQueryProcesses's: every deadline on
@@ -599,15 +600,23 @@ func TestAPublishedWritesLossIsJudgedAtTheStoredHeadAfterTheOtherProcessFlushes(
 	// What the fake holds armed here can still hold task B's answer to the write's join flush: its
 	// flush timeout and its send's bound (roomQueries.query, send), each armed before that answer
 	// left task B and let go only as its goroutine returns, which can be after task A read the
-	// answer and committed. Neither is armed again, and the publish asks no other query first, so
-	// the wait is for a deadline this reading does not hold (armedBeyond), which no arm let go of
-	// ever makes, in whatever order those two go and the publish's two come: task A's wait for the
-	// publish's answers and task B's flush timeout. Each of those is answerWait from the fake's
-	// moment, which never moves here, and answerWait is what is left of the shared wait: read after
-	// this reading, it is shorter than every one read before it, and it equals a send's
-	// roomSyncSendTimeout only when read 2 s before the shared wait gives up. A write that returns
-	// before either is armed published without waiting for task B's flush.
-	before := queryArms(clock)
+	// answer and committed. Neither is armed again. The publish arms three, in this order: its loss
+	// check's bound (recordPublishedLoss, publishedLossTimeout), before it asks task B anything; then
+	// task A's wait for the publish's answers; then task B's flush timeout. The first is armed at
+	// the fake's moment plus publishedLossTimeout (Fake.WithTimeout), and the fake never moves here,
+	// so the starting reading holds that deadline before it is armed: armed as it stands, it could
+	// let the wait go while the publish has yet to ask for task B's flush. So the wait is for a
+	// deadline this reading does not hold (armedBeyond), which no arm let go of ever makes, in
+	// whatever order the join's two go and the publish's three come: task A's wait or task B's
+	// flush timeout. Each of those is answerWait from the fake's moment, and answerWait is what is
+	// left of the shared wait: read after this reading, it is shorter than every one read before
+	// it, and it equals a send's roomSyncSendTimeout only when read 2 s before the shared wait gives
+	// up, or publishedLossTimeout only when read 10 s before, when the loss check's bound is armed
+	// beside it and the reading's one such deadline matches only one of the two. Under no deadline
+	// answerWait is one span, so the join's flush timeout, if this reading holds it, stands at the
+	// publish's two deadlines, and matches only one of them. A write that returns before either is
+	// armed published without waiting for task B's flush.
+	before := append(queryArms(clock), clock.Now().Add(publishedLossTimeout))
 	letGo()
 	testwait.Until(t, fmt.Sprintf("the publish's wait for task B's flush (a room query's timer armed on the fake clock beyond the %v read at the commit)", before), func() (queryArmsReading, bool) {
 		select {

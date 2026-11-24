@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -825,11 +826,13 @@ func TestTheFlightCounterWaitsForEveryFlightAndThenRefusesMore(t *testing.T) {
 			close(stopped)
 		}()
 		// stop is blocked on the outstanding flight, which is the state the counter holds: every
-		// goroutine of this test is then blocked, which testwait.IdleAnHour waits for, and a stop
-		// that returned early would have closed stopped before it. The read is an hour on the
-		// bubble's clock later, which costs nothing: a stop that a timer of its own lets return
-		// has returned by then.
-		testwait.IdleAnHour()
+		// goroutine of this test is then blocked, which testwait.Idle waits for, and a stop that
+		// returned early would have closed stopped before it. The read is syncTimeout on the
+		// bubble's clock later, which costs nothing: a stop that a timer of its own up to a
+		// flight's own bound lets return has returned by then.
+		testwait.Idle(t, syncTimeout, "syncCount arms no timer, and each flight stop waits for runs on a context that "+
+			"syncTimeout ends: a stop that gave up at a bound of its own shorter than that would return under a flight "+
+			"still inside its bound, and Close would let it write into a closing pool")
 		select {
 		case <-stopped:
 			t.Fatal("stop returned while a flight was still outstanding")
@@ -2021,10 +2024,7 @@ func TestTheLegacySourceResyncsThroughTheUnchangedHeadShortcut(t *testing.T) {
 	before := componentRows(t, database)
 	// The moment of the database's own clock the stamp is judged against: the sync stamps the
 	// row from that clock, so a stamp at or after this one is the sync's own.
-	var beforeSync time.Time
-	if err := database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&beforeSync); err != nil {
-		t.Fatalf("read the database's clock before the sync: %v", err)
-	}
+	beforeSync := testdb.ClockTimestamp(t, database.Pool)
 
 	source, err := importer.Sync(ctx, "CORE", archRepo)
 	if err != nil {

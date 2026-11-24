@@ -5,7 +5,19 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/testwait"
+)
+
+// reservationHeld is the span a read that must wait is read after (testwait.Idle), and
+// reservationHeldWhy is why: callBudget arms no timer, and the reservation a read waits behind is
+// held across the other read's GitHub calls.
+const (
+	reservationHeld    = maxAttributionCalls * githubapp.RequestTimeout
+	reservationHeldWhy = "callBudget arms no timer, and the read a reserve waits behind holds its reservation across " +
+		"up to maxAttributionCalls GitHub calls, each of whose attempts githubapp.RequestTimeout bounds, so for " +
+		"maxAttributionCalls times that bound when each call answers at its first attempt's deadline: a reserve that " +
+		"gave up at a bound of its own shorter than that would give up while that read is still inside its calls"
 )
 
 // TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent: a read that does not fit while another
@@ -13,8 +25,8 @@ import (
 // not fit once nothing is in flight gives up at once rather than waiting forever. The budget does
 // no I/O, so the test runs in a synctest bubble: synctest.Wait returns once every read has
 // answered or blocks in reserve, and what has answered is then read from its channel. A read that
-// must wait is read an hour on the bubble's clock later (testwait.IdleAnHour), past any bound of
-// its own.
+// must wait is read reservationHeld on the bubble's clock later (testwait.Idle), past any bound of
+// its own up to that span.
 func TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		budget := newCallBudget(10)
@@ -23,7 +35,7 @@ func TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent(t *testing.T) {
 		}
 		second := make(chan bool, 1)
 		go func() { second <- budget.reserve(6) }()
-		testwait.IdleAnHour()
+		testwait.Idle(t, reservationHeld, reservationHeldWhy)
 		select {
 		case got := <-second:
 			t.Fatalf("the second reservation answered %v while the first held 6 of 10; want it to wait", got)
@@ -90,8 +102,8 @@ func TestConcurrentReadsNeverOverspendACallBudget(t *testing.T) {
 
 		// The first three to ask fit (18 of 20). Nothing settles until the gate opens, so every
 		// other read is waiting on a reservation and none may answer: once every read has
-		// answered or blocks, exactly three answers are there, and none more an hour on
-		// (testwait.IdleAnHour).
+		// answered or blocks, exactly three answers are there, and none more reservationHeld on
+		// (testwait.Idle).
 		synctest.Wait()
 		held := allowance / cost
 		for i := range held {
@@ -104,7 +116,7 @@ func TestConcurrentReadsNeverOverspendACallBudget(t *testing.T) {
 				t.Fatalf("only %d of %d reservations answered before any settled", i, held)
 			}
 		}
-		testwait.IdleAnHour()
+		testwait.Idle(t, reservationHeld, reservationHeldWhy)
 		select {
 		case granted := <-answered:
 			t.Fatalf("a reservation answered %v while %d reads held %d of %d calls; want it to wait", granted, held, held*cost, allowance)

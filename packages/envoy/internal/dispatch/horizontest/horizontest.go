@@ -417,7 +417,7 @@ func (h keepWarnings) WithGroup(name string) slog.Handler {
 // websocket connection state is corrupt" - so a reader the caller hands in sets no read deadline
 // and reads on a goroutine of its own (ReadFirstFrame), and the caller reads the connection again
 // only once this has returned.
-func Wait[T any](t *testing.T, what string, arrived <-chan T, warnings func() []Warning, ownDatabase string, detail func() string) T {
+func Wait[T any](t testing.TB, what string, arrived <-chan T, warnings func() []Warning, ownDatabase string, detail func() string) T {
 	t.Helper()
 	var result T
 	NewWatch(warnings, ownDatabase).Poll(t, what, detail, func() bool {
@@ -488,7 +488,7 @@ func (w *Watch) String() string {
 // horizon names an own hold (Failure), and when the wait gives up at the test binary's deadline its
 // last read is the watch's account of the horizon (String). On either failure, and on one the
 // condition makes itself, detail is printed after it when not nil.
-func (w *Watch) Poll(t *testing.T, what string, detail func() string, condition func() bool) {
+func (w *Watch) Poll(t testing.TB, what string, detail func() string, condition func() bool) {
 	t.Helper()
 	held := false
 	// A failure ends the test goroutine (runtime.Goexit) inside the wait, which runs this before

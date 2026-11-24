@@ -546,11 +546,13 @@ func sendWaitInBackground(stream *liveSubscriptionStream, ctx context.Context) <
 }
 
 // requireNoReturn fails when SendWait, with no room in the queue, has returned once every goroutine
-// of the test's synctest bubble is blocked an hour on: SendWait's goroutine is then waiting for
-// room for good (testwait.IdleAnHour).
+// of the test's synctest bubble is blocked liveSocketWriteWait on (testwait.Idle): SendWait's
+// goroutine is then waiting for room, past any bound of its own up to the socket's write wait.
 func requireNoReturn(t *testing.T, returned <-chan error) {
 	t.Helper()
-	testwait.IdleAnHour()
+	testwait.Idle(t, liveSocketWriteWait, "SendWait arms no timer, and a page that reads nothing holds its queue full "+
+		"until the socket's writer gives up a write liveSocketWriteWait in and ends the socket: a SendWait that gave up "+
+		"at a bound of its own shorter than that would end a slow page's subscription while its socket still lives")
 	select {
 	case err := <-returned:
 		t.Fatalf("SendWait returned %v with no room in the queue", err)
