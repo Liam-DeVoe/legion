@@ -1121,6 +1121,131 @@ func TestPodUpdateBoundLineIsNotWrittenForAnAnswerReadWhileItsMachineDecides(t *
 	}
 }
 
+// podUpdateWalkWaitsLine is the line the walk logs where the sweep's snapshot reads every worker
+// as answered and its own fresh read, masked, finds one that has not (completePodUpdate).
+const podUpdateWalkWaitsLine = "supervise: every worker of this update round had answered in the sweep's snapshot, and the fresh read finds one unanswered; the replacement waits for the next sweep or for the round's bound"
+
+// podUpdateRereadWaitsLine is the line the replacement logs where its own read again finds a
+// worker that has not answered (replacePodForRound).
+const podUpdateRereadWaitsLine = "supervise: a worker of this update round has not answered now the sweep has reached its replacement, and the round's bound has not come; nothing was replaced and the round stays open"
+
+// answeredBeforeTheBound is a rig whose round both workers have answered, before its bound, with
+// every machine deciding nothing.
+func answeredBeforeTheBound(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
+	t.Helper()
+	rig := newPodUpdateRig(t, append([]podUpdateRole{readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester)}, roles...)...)
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.signal(claim.RoleTester, "a1b2c3d")
+	rig.settleAll()
+	return rig
+}
+
+// Before the bound, the walk's decision to replace the pod reads a role whose machine is deciding
+// as one that has not answered (masked): the decision may be a turn starting that the view does
+// not show yet. Both roles have answered, and the tester's machine is held in a decision through
+// one sweep. The walk itself waits, and says so; the replacement's read again is never reached;
+// once the hold ends, a later sweep replaces the pod. Given the answers as given, the walk would
+// hand the replacement on, and only the replacement's own read would stop it.
+func TestPodUpdateWalkWaitsWhileAnAnsweredRolesMachineDecides(t *testing.T) {
+	t.Parallel()
+	rig := answeredBeforeTheBound(t)
+	release := rig.holdInDecision(claim.RoleTester)
+	rig.tick()
+	release()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times while the tester's machine was deciding, want none", len(calls))
+	}
+	if lines := loggedLines(t, rig.logs.String(), podUpdateWalkWaitsLine); len(lines) != 1 {
+		t.Fatalf("the walk logged its wait %d times, want once: the walk must read the deciding tester as not having answered", len(lines))
+	}
+	if lines := loggedLines(t, rig.logs.String(), podUpdateRereadWaitsLine); len(lines) != 0 {
+		t.Fatalf("the replacement's read again logged %+v, want nothing: the walk hands no replacement on", lines)
+	}
+	rig.awaitReplacement(1, "once the tester's machine has decided")
+}
+
+// The replacement's last word, under the pod's launch turn, reads a role whose machine is deciding
+// as one that has not answered (masked), as the walk does. Both roles have answered and the walk
+// hands the replacement on; the tester's machine goes into a decision while the replacement waits
+// for the pod's launch turn (fake's HoldReplacePod). The last word refuses, and nothing is
+// replaced; once the hold ends, a later sweep replaces the pod.
+func TestPodUpdateLastWordRefusesWhileAnAnsweredRolesMachineDecides(t *testing.T) {
+	t.Parallel()
+	rig := answeredBeforeTheBound(t)
+	var release func()
+	rig.rt.HoldReplacePod(func() {
+		rig.rt.HoldReplacePod(nil)
+		release = rig.holdInDecision(claim.RoleTester)
+	})
+	rig.tick()
+	if release == nil {
+		t.Fatal("the sweep did not reach the replacement: the walk did not hand it on")
+	}
+	release()
+	if refused, made := len(rig.rt.CallsOf("ReplacePodNotDue")), len(rig.replacements()); refused != 1 || made != 0 {
+		t.Fatalf("the last word refused %d and the runtime replaced %d, want 1 and 0: the deciding tester has not answered for a deletion", refused, made)
+	}
+	rig.awaitReplacement(1, "once the tester's machine has decided")
+}
+
+// Past the bound, the read of the workspace before the replacement weighs the answers as given: it
+// stops nothing in the pod. Both workers answered; a third role the daemon suspended has not, so
+// the round passed over it and the read is owed. The tester's machine is held in a decision
+// through the sweep at the bound. The read is made, and the line beside it says that no bound
+// made the end. Read masked, the read would be dropped as one the bound stepped over.
+func TestPodUpdateReadsTheWorkspaceOverAnAnswerReadWhileItsMachineDecides(t *testing.T) {
+	t.Parallel()
+	rig := answeredBeforeTheBound(t, suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon))
+	rig.clockAt(podUpdateBound)
+	release := rig.holdInDecision(claim.RoleTester)
+	rig.tick()
+	release()
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 {
+		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
+	}
+	if lines[0]["atTheBound"] != false || lines[0]["workspaceRead"] != "found no work" {
+		t.Fatalf("the replacement's line is %+v, want atTheBound=false and a read that found no work: every role the round asks had answered", lines[0])
+	}
+}
+
+// An ask of a round reaches a role's agent only while its claim holds no answer of that round,
+// read under the claim's own lock where the ask is published (supervise's
+// Machine.PublishUpdateAsk). The sweep reads the claims before the ask is published, so a role
+// that answers in between is told nothing. A role asked first and answering after is told once.
+func TestPodUpdateAskReachesNoRoleThatAnsweredBeforeItsPublish(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		answerFirst bool
+		want        int
+	}{
+		{name: "the answer, then the ask", answerFirst: true, want: 0},
+		{name: "the ask, then the answer", answerFirst: false, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+			rig.drifts(podUpdateDrift)
+			rig.tick()
+			row := rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+			if tc.answerFirst {
+				rig.signal(claim.RoleImplementer, "a1b2c3d")
+			}
+			rig.runAsk(row)
+			if !tc.answerFirst {
+				rig.signal(claim.RoleImplementer, "a1b2c3d")
+			}
+			if n := rig.deliveredTo(claim.RoleImplementer); n != tc.want {
+				t.Fatalf("the implementer's topic was delivered %d asks of the round, want %d", n, tc.want)
+			}
+		})
+	}
+}
+
 // A claim whose agent has not said it is ready holds no live session on its role's topic, so the
 // round does not ask it, and does not mark it asked: an operator's suspension holds it here. Once
 // the operator resumes it and its agent is ready in the round's pod, the next sweep asks it, and

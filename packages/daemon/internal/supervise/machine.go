@@ -2029,6 +2029,11 @@ const (
 	// suspended claim (internal/daemon's askRound asks a claim only once its agent is ready), so
 	// the row was enqueued before the suspension.
 	UpdateAskSuspended
+	// UpdateAskAnswered is an ask of a round the claim has already answered (UpdateSignalledAt):
+	// nothing is published and nothing is marked. The sweep reads the claims before the ask is
+	// published, so a role that answers in between was read as unanswered; under the claim's own
+	// lock its answer is read as it stands, and the agent is not asked what it has done.
+	UpdateAskAnswered
 )
 
 // PublishUpdateAsk publishes one ask of the claim's update round through publish, and marks the
@@ -2100,6 +2105,8 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
 	case m.claim.UpdateTaskedAt != nil:
 		return UpdateAskAlreadyDelivered, nil
+	case m.claim.UpdateSignalledAt != nil:
+		return UpdateAskAnswered, nil
 	case m.claim.PassedOverByRound():
 		return UpdateAskSuspended, nil
 	}
