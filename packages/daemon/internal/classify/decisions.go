@@ -1,7 +1,6 @@
 package classify
 
 import (
-	"slices"
 	"sort"
 	"time"
 
@@ -1700,7 +1699,7 @@ func MergeHold(configured []record.DesignStep, gates map[record.DesignStep]recor
 	handedOverWithoutGate := record.CarriedIn(issue) && !issue.CarriedGate
 	if holdsGate && !handedOverWithoutGate && !gateEverOpened(gates) {
 		step, gate, closed := FirstClosedStep(configured, gates)
-		if !closed || !slices.Contains(TreeSteps(configured, gates), step) {
+		if !closed || len(TreeSteps(configured, gates)) == 0 {
 			return "", record.DesignGate{}, false
 		}
 		return step, gate, true
