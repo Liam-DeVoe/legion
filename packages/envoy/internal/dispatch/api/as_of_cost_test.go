@@ -136,35 +136,47 @@ func (c *asOfCostTracer) take() (int, time.Duration) {
 }
 
 // asOfCostRow is one row of the printed table: what the row times, at which cut, how many times it
-// was sent, the first run's time and the median of the runs, how many statements the last run
-// sent and the longest of them, and the bound the median is held to. stopped is a read that the
-// cap stopped. A row the copy cannot time holds why in note.
+// was sent, the first run's time, the median of the runs and the fastest and the slowest of them,
+// how many statements the last run sent and the longest of them, the bound the median is held
+// to, and the status each run answered, in the order of the runs. stopped is a read that the cap
+// stopped. A row the copy cannot time holds why in note.
 type asOfCostRow struct {
-	statement, cut string
-	runs           int
-	first, median  time.Duration
-	statements     int
-	longest        time.Duration
-	bound          time.Duration
-	stopped        bool
-	note           string
+	statement, cut                  string
+	runs                            int
+	first, median, fastest, slowest time.Duration
+	statements                      int
+	longest                         time.Duration
+	bound                           time.Duration
+	answers                         []int
+	stopped                         bool
+	note                            string
 }
 
-// asOfCostRig sends the timed reads to the server, as asOfCostReader.
+// asOfCostRig sends the timed reads to the server, as asOfCostReader. A rig that records refusals
+// keeps a run answered other than 200 in its row and sends the next run: a search whose meaning
+// statement the server ends at searchMeaningStatementBound answers 500, and that answer and its
+// time are what such a row measures. Any other rig stops the test at that run.
 type asOfCostRig struct {
-	handler http.Handler
-	tracer  *asOfCostTracer
+	handler         http.Handler
+	tracer          *asOfCostTracer
+	recordsRefusals bool
 }
 
-// time sends target up to asOfCostRuns times, each run for asOfCostCap at most, and answers its
-// row. A run over the bound, or stopped at the cap, is the last. A read at a cut must be answered
-// 200 with the cut in Dispatch-As-Of, and a present read 200, or the test stops: a time of a
-// refusal is no time of the read.
+// time sends target up to asOfCostRuns times (timeRuns).
 func (r *asOfCostRig) time(t *testing.T, statement, cut, target string, bound time.Duration) asOfCostRow {
 	t.Helper()
-	runs := make([]time.Duration, 0, asOfCostRuns)
+	return r.timeRuns(t, statement, cut, target, bound, asOfCostRuns)
+}
+
+// timeRuns sends target up to most times, each run for asOfCostCap at most, and answers its row.
+// A run over the bound, or stopped at the cap, is the last. A read at a cut answered 200 must
+// carry the cut in Dispatch-As-Of, or the test stops. A run answered other than 200 stops the test
+// too, a time of a refusal being no time of the read, unless the rig records refusals.
+func (r *asOfCostRig) timeRuns(t *testing.T, statement, cut, target string, bound time.Duration, most int) asOfCostRow {
+	t.Helper()
+	runs := make([]time.Duration, 0, most)
 	row := asOfCostRow{statement: statement, cut: cut, bound: bound}
-	for len(runs) < asOfCostRuns {
+	for len(runs) < most {
 		r.tracer.take()
 		ctx, cancel := context.WithTimeout(context.WithValue(t.Context(), asOfCostRead{}, true), asOfCostCap)
 		request := httptest.NewRequest(http.MethodGet, target, nil).WithContext(ctx)
@@ -176,15 +188,19 @@ func (r *asOfCostRig) time(t *testing.T, statement, cut, target string, bound ti
 		expired := ctx.Err() != nil
 		cancel()
 		runs = append(runs, elapsed)
+		row.answers = append(row.answers, response.Code)
 		row.statements, row.longest = r.tracer.take()
 		if response.Code != http.StatusOK && expired {
 			row.stopped = true
 			break
 		}
-		if response.Code != http.StatusOK {
+		switch {
+		case response.Code != http.StatusOK && !r.recordsRefusals:
 			t.Fatalf("%s at %s: GET %s answered %d: %.600s", statement, cut, target, response.Code, response.Body.String())
-		}
-		if cut != "present" && response.Header().Get(contracts.DispatchAsOfHeader) == "" {
+		case response.Code != http.StatusOK:
+			t.Logf("%s at %s: run %d of GET %s answered %d: %.600s", statement, cut, len(runs), target, response.Code,
+				response.Body.String())
+		case cut != "present" && response.Header().Get(contracts.DispatchAsOfHeader) == "":
 			t.Fatalf("%s at %s: GET %s answered with no %s header, so it did not answer as of the cut",
 				statement, cut, target, contracts.DispatchAsOfHeader)
 		}
@@ -195,7 +211,7 @@ func (r *asOfCostRig) time(t *testing.T, statement, cut, target string, bound ti
 	row.runs = len(runs)
 	row.first = runs[0]
 	slices.Sort(runs)
-	row.median = runs[len(runs)/2]
+	row.fastest, row.median, row.slowest = runs[0], runs[len(runs)/2], runs[len(runs)-1]
 	return row
 }
 
@@ -243,11 +259,11 @@ func asOfCostTargetsAt(t *testing.T, database *store.Store, cut asof.Cut) asOfCo
 // 12:00Z, 2026-11-10 00:00Z and the copy's newest event), with each read at the present for
 // comparison. It prints one table: what each row reads, its cut, how many runs it
 // sent, the first run's time and the median of the runs (the whole request, the server's Go
-// included), how many statements the request sent and the longest of them, and the plan's bound
-// the median is held to. A read is sent three times, or once when its first run is over its
-// bound, and a run is stopped at asOfCostCap. The test fails no bound: what a copy answers in
-// depends on the machine, and the pull request records the figures. It is gated
-// on DISPATCH_ASOF_CORPUS_URL, so CI never runs it.
+// included), how many statements the request sent and the longest of them, the plan's bound the
+// median is held to, and the status the runs answered. A read is sent three times, or once when
+// its first run is over its bound, and a run is stopped at asOfCostCap. The test fails no bound:
+// what a copy answers in depends on the machine, and the pull request records the figures. It is
+// gated on DISPATCH_ASOF_CORPUS_URL, so CI never runs it.
 //
 // The database DISPATCH_ASOF_CORPUS_URL names is a new database of the test server (createdb, so
 // that it holds the extensions the migrations need), and it holds the copy as the table
@@ -451,10 +467,10 @@ func deriveAsOfCorpus(t *testing.T, database *store.Store) bool {
 func asOfCostTable(rows []asOfCostRow) string {
 	var table strings.Builder
 	writer := tabwriter.NewWriter(&table, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "statement\tcut\truns\tfirst ms\tmedian ms\tstatements\tlongest statement ms\tbound ms\twithin")
+	fmt.Fprintln(writer, "statement\tcut\truns\tfirst ms\tmedian ms\tstatements\tlongest statement ms\tbound ms\twithin\tanswered")
 	for _, row := range rows {
 		if row.note != "" {
-			fmt.Fprintf(writer, "%s\t%s\t0\t-\t-\t-\t-\t-\t%s\n", row.statement, row.cut, row.note)
+			fmt.Fprintf(writer, "%s\t%s\t0\t-\t-\t-\t-\t-\t%s\t-\n", row.statement, row.cut, row.note)
 			continue
 		}
 		bound, within := "-", "-"
@@ -470,18 +486,31 @@ func asOfCostTable(rows []asOfCostRow) string {
 			first, median = ">"+first, "-"
 			within = fmt.Sprintf("OVER: stopped at the cap of %v, its statement cancelled", asOfCostCap)
 		}
-		fmt.Fprintf(writer, "%s\t%s\t%d\t%s\t%s\t%d\t%d\t%s\t%s\n", row.statement, row.cut, row.runs, first, median,
-			row.statements, row.longest.Milliseconds(), bound, within)
+		fmt.Fprintf(writer, "%s\t%s\t%d\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n", row.statement, row.cut, row.runs, first, median,
+			row.statements, row.longest.Milliseconds(), bound, within, asOfCostAnswers(row.answers))
 	}
 	_ = writer.Flush()
 	return table.String()
+}
+
+// asOfCostAnswers is the statuses the runs of a row answered: the one status when every run
+// answered it, else each run's in the order of the runs.
+func asOfCostAnswers(answers []int) string {
+	statuses := make([]string, len(answers))
+	for index, answer := range answers {
+		statuses[index] = strconv.Itoa(answer)
+	}
+	if len(statuses) > 0 && !slices.ContainsFunc(statuses, func(status string) bool { return status != statuses[0] }) {
+		return statuses[0]
+	}
+	return strings.Join(statuses, ", ")
 }
 
 // asOfCorpusSizes is the size of events with its indexes, of each index of events, and of the
 // keyword table with its indexes.
 func asOfCorpusSizes(t *testing.T, database *store.Store) string {
 	t.Helper()
-	rows, err := database.Pool.Query(t.Context(), `
+	return asOfSizes(t, database, `
 		select 'events, its indexes and its TOAST (pg_total_relation_size)', pg_total_relation_size('public.events'), 0
 		union all
 		select 'events heap (pg_relation_size)', pg_relation_size('public.events'), 1
@@ -492,8 +521,15 @@ func asOfCorpusSizes(t *testing.T, database *store.Store) string {
 		union all
 		select 'search_text_versions, its indexes and its TOAST (pg_total_relation_size)', pg_total_relation_size('public.search_text_versions'), 3
 		order by 3, 1`)
+}
+
+// asOfSizes is the sizes that query reads, as aligned lines of a name and its size in MB: each row
+// of query is a name, a size in bytes and an order, by which query sorts its rows.
+func asOfSizes(t *testing.T, database *store.Store, query string) string {
+	t.Helper()
+	rows, err := database.Pool.Query(t.Context(), query)
 	if err != nil {
-		t.Fatalf("read the copy's sizes: %v", err)
+		t.Fatalf("read the corpus's sizes: %v", err)
 	}
 	defer rows.Close()
 	var sizes strings.Builder
@@ -503,12 +539,12 @@ func asOfCorpusSizes(t *testing.T, database *store.Store) string {
 		var bytes int64
 		var order int
 		if err := rows.Scan(&name, &bytes, &order); err != nil {
-			t.Fatalf("scan the copy's sizes: %v", err)
+			t.Fatalf("scan the corpus's sizes: %v", err)
 		}
 		fmt.Fprintf(writer, "%s\t%.1f MB\n", name, float64(bytes)/(1<<20))
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read the copy's sizes: %v", err)
+		t.Fatalf("read the corpus's sizes: %v", err)
 	}
 	_ = writer.Flush()
 	return sizes.String()
