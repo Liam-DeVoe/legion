@@ -526,52 +526,6 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
   ]);
 });
 
-// Contract 221: a role of the deployment works the phase `step`, which no role's phase names, so
-// where the record names no `placeRole` the record check reads the issue's `stepRole`: the checker
-// is reminded while its own step runs, and not while the step of another role of the deployment
-// runs.
-test("a role of the deployment is reminded at step while the issue's stepRole is its own and no placeRole is named", async () => {
-  const checker = {
-    ...implementer,
-    role: "checker",
-    claimToken: "legion-legion-legion-208-checker",
-  };
-  for (const [stepRole, reminds] of [
-    ["checker", true],
-    ["linter", false],
-  ] as const) {
-    const debugged: string[] = [];
-    // Only the fields the record check reads, cast as `claimFailed` above is.
-    const record = {
-      phase: "step",
-      stepRole,
-      workers: { [stepRole]: { claim: { state: "working" } } },
-    } as unknown as LegionIssue;
-    const reminder = createPhaseReminder({
-      sendReminder: () => {},
-      armTimer: () => {},
-      saveEntry: () => {},
-      claim: () => checker,
-      readRecord: async () => record,
-      publisher: () => undefined,
-      project: "legion",
-      limits: DEFAULT_STALL_LIMITS,
-      log: { debug: (message) => debugged.push(message), warn: () => {} },
-    });
-    reminder.apply({ kind: "assignment" });
-    const continuation = await reminder.settle(said("Checked."));
-    if (reminds) {
-      expect(continuation, `stepRole ${stepRole}`).toBeString();
-      expect(debugged).toEqual([]);
-    } else {
-      expect(continuation, `stepRole ${stepRole}`).toBeUndefined();
-      expect(debugged).toEqual([
-        "legion: this role no longer works this phase; no reminder is sent",
-      ]);
-    }
-  }
-});
-
 /** An issue record of only the fields the record check reads, cast as `claimFailed` is: no
  * worker's claim is failed in it. */
 const issueAt = (fields: { phase: string; stepRole?: string; placeRole?: string }) =>
@@ -628,12 +582,14 @@ test("a claim of the step's role is not reminded at a step placeRole gives the o
 });
 
 // A daemon below contract 227 serves no `placeRole`: the record check reads the phase, and
-// `stepRole` at `step`, as it did before that contract.
+// `stepRole` at `step`, as it did before that contract: a role of the deployment (contract 221) is
+// reminded at `step` while the step is its own, and not while another role's step runs.
 test("an issue with no placeRole is read by its phase, and by its stepRole at step", async () => {
   expect(await remindedAt("acceptance", issueAt({ phase: "accepting" }))).toBe(false);
   expect(await remindedAt("implementer", issueAt({ phase: "retro" }))).toBe(true);
   expect(await remindedAt("coder", issueAt({ phase: "retro" }))).toBe(false);
   expect(await remindedAt("checker", issueAt({ phase: "step", stepRole: "checker" }))).toBe(true);
+  expect(await remindedAt("checker", issueAt({ phase: "step", stepRole: "linter" }))).toBe(false);
 });
 
 // Contract 222: two claims of one issue can hold one role — the agent implementer's claim on the
