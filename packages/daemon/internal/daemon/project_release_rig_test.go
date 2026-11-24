@@ -227,7 +227,7 @@ func (r *idleWakeRig) releaseAsks(key string, role claim.Role) []idleRigMessage 
 // disk. Each claim the release stopped is stored suspended by `project_release`, for the next boot
 // to start, and the record names each pod and each such claim with its session.
 func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{
 		"unpushed": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1, WorkingCopyChanged: true}, AnswerRelease: true},
 	}, "clean", "unpushed", "unread", "held")
@@ -346,7 +346,7 @@ func TestProjectReleaseTakesEachPodOfTheProject(t *testing.T) {
 // with its result, the same result its own GET answers. A later GET, after the daemon's restart
 // on the same database, says a boot ended it, and so does the state.
 func TestProjectReleaseShowsInTheStateWithItsResult(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	// A role that does not answer holds its pod to the bound, which is what keeps the release
 	// running while the state is read.
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{"waiting": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 2}}}, "waiting")
@@ -445,7 +445,7 @@ func (r *idleWakeRig) assertLeftForOperator(release api.ProjectReleaseResponse, 
 // controller's pod, deletes the pod once the stop is stored, and names the controller's claim
 // stored suspended by `project_release`, which the next boot starts.
 func TestProjectReleaseWaitsForTheControllersTurnToTheBound(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleRigWith).
+	t.Parallel()
 	rig := newIdleRigWith(t, idleRigOptions{
 		configure:      func(cfg *config.Config) { cfg.ControllerLaunch = config.ControllerLaunchDaemon },
 		controllerPlan: &idleRigPlan{StayInTurn: true},
@@ -542,7 +542,7 @@ func (r *idleWakeRig) refuseReleaseStops(token claim.Token) {
 // role still running in a pod that is gone. The release reads the row, so it leaves the pod with
 // its disk, its line naming how the store holds the claim, and holds the claim for an operator.
 func TestProjectReleaseLeavesAPodWhoseStopTheStoreDidNotTake(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	rig := newIdleWakeRig(t, nil, "refused")
 	refused := rig.issue("refused")
 	rig.refuseReleaseStops(rig.token(refused))
@@ -591,7 +591,7 @@ func heldPodInUpdateRound(t *testing.T) (rig *idleWakeRig, held idleRigIssue, im
 // heldByOperator), and a round left on its claims would replace it once the operator resumes them.
 // Each claim of the pod stays held by an operator, so no boot starts it.
 func TestProjectReleaseTakesALeftPodsClaimsOutOfTheirUpdateRound(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (heldPodInUpdateRound).
+	t.Parallel()
 	rig, held, implementer, planner := heldPodInUpdateRound(t)
 
 	rig.startRelease("10s")
@@ -618,7 +618,7 @@ func TestProjectReleaseTakesALeftPodsClaimsOutOfTheirUpdateRound(t *testing.T) {
 // the operator who recovers the pod knows that a round still stands on it before resuming its
 // claims; the store here refuses the write that would end the planner's round.
 func TestProjectReleaseNamesARoundItCouldNotEnd(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (heldPodInUpdateRound).
+	t.Parallel()
 	rig, held, implementer, planner := heldPodInUpdateRound(t)
 	rig.refuseWrites("idle_rig_refuse_round_end", "before update on claims",
 		`new.token = '`+string(planner)+`' and old.update_round <> '' and new.update_round = ''`,
@@ -659,7 +659,7 @@ func (a *issueSandboxAPI) putSandbox(name string, labels map[string]string) {
 // process runs is deleted unread, a repository cache is deleted, and a Sandbox of a kind the
 // release does not know is left, so the command does not exit 0 while it stands.
 func TestProjectReleaseTakesTheSandboxesItsFirstListDidNotHold(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	// A role that does not answer holds its pod to the bound, so the release lists the project
 	// again only after the Sandboxes below landed.
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{"waiting": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}}}, "waiting")
@@ -708,7 +708,7 @@ func TestProjectReleaseTakesTheSandboxesItsFirstListDidNotHold(t *testing.T) {
 // role process ran at the last read, as deleted_read_refused: deleted_unread is a pod no read
 // ever reached.
 func TestProjectReleaseKeepsTheCountOfAPodWhoseRoleEndedBeforeItsLastRead(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{
 		"ended": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 2, WorkingCopyChanged: true}},
 	}, "ended")
@@ -748,7 +748,7 @@ func (r *idleWakeRig) refuseAsks() {
 // be written and why, names no asked role and keeps the read's count, and the pod's claim is held
 // for an operator, which the next boot does not start.
 func TestProjectReleaseLeavesAPodWhoseAskItCouldNotWrite(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{"unasked": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}}}, "unasked")
 	unasked := rig.issue("unasked")
 	rig.refuseAsks()
@@ -837,7 +837,7 @@ func (r *idleWakeRig) writesCaught(name string) int64 {
 // and the pod is deleted after that answer, before the bound, its line naming its role asked and
 // answered and giving no reason.
 func TestProjectReleaseWritesAgainAnAskItCouldNotWrite(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{
 		"asked": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true},
 	}, "asked")
@@ -872,7 +872,7 @@ func TestProjectReleaseWritesAgainAnAskItCouldNotWrite(t *testing.T) {
 // had an ask written at the bound by then, and keeps the read's count, and the pod's claim is held
 // for an operator, which the next boot does not start.
 func TestProjectReleaseLeavesAPodWhoseAskLandedAtTheBound(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{"late": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}}}, "late")
 	late := rig.issue("late")
 	rig.refuseAsksBeforeTheBound()
@@ -905,7 +905,7 @@ const releaseAskWaitsLine = "outbox update ask of the running project release wa
 // the topic is the seed's, set before the daemon's boot starts the role process, which reads it
 // as it starts.
 func TestProjectReleaseAsksARoleWhoseSessionTakesItsTopicLate(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	plan := idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true}
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{"slow": plan}, "slow")
 	slow := rig.issue("slow")
@@ -939,7 +939,7 @@ func TestProjectReleaseAsksARoleWhoseSessionTakesItsTopicLate(t *testing.T) {
 // disk. The pod's line gives that reason, names no asked role and keeps the read's count, and the
 // pod's claim is held for an operator, which the next boot does not start.
 func TestProjectReleaseLeavesAPodWhoseAskReachedNoSession(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{
 		"unheld": {TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true},
 	}, "unheld")

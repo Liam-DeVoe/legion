@@ -14,7 +14,7 @@ import (
 // implementer's ask names the issue's branch to push to. Both roles run in one pod with unpushed
 // work, so the release asks both of them in one ask.
 func TestProjectReleaseAsksEachRoleOfAPodWithItsOwnText(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleRigWith).
+	t.Parallel()
 	plan := idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true}
 	rig := newIdleRigWith(t, idleRigOptions{},
 		idleRigSeed{name: "pair", roles: []claim.Role{claim.RoleImplementer, claim.RoleReviewer}, plan: &plan})

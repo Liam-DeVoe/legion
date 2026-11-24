@@ -124,7 +124,7 @@ var stoppedByAPause = string(supervise.StateSuspended) + ":" + string(supervise.
 // after the resume while a pod the pause stopped is still held, naming that pod alone once every
 // other pod's role was resumed; and once the last held pod's role is resumed the release runs.
 func TestAReleaseIsRefusedWhileItsProjectIsPaused(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleRigWith).
+	t.Parallel()
 	const check = "E17"
 	turn := &idleRigPlan{TakeTurn: true}
 	implementer := []claim.Role{claim.RoleImplementer}
@@ -264,7 +264,7 @@ func TestAReleaseIsRefusedWhileItsProjectIsPaused(t *testing.T) {
 // store.ProjectRelease.Runs), not the next boot: the daemon is not restarted between the two
 // pauses, and the release's mark still holds every start when the second is taken.
 func TestAPauseIsRefusedWhileAReleaseRuns(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleRigWith).
+	t.Parallel()
 	const check = "E18"
 	implementer := []claim.Role{claim.RoleImplementer}
 	rig := newIdleRigWith(t, idleRigOptions{wallClock: true, configure: pauseReleaseConfiguration},
@@ -354,7 +354,7 @@ func TestAPauseIsRefusedWhileAReleaseRuns(t *testing.T) {
 // PROJECT_PAUSED, whose sentence says that nothing was recorded, stopped or deleted, after it
 // stopped and deleted, and no second release is recorded.
 func TestAFinishedReleaseIsAnsweredWhileItsProjectIsPaused(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleRigWith).
+	t.Parallel()
 	const check = "R13 after the release"
 	rig := newIdleRigWith(t, idleRigOptions{wallClock: true, configure: pauseReleaseConfiguration},
 		idleRigSeed{name: "alpha", roles: []claim.Role{claim.RoleImplementer}, plan: &idleRigPlan{TakeTurn: true}})

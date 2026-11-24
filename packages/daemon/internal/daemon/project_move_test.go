@@ -1523,7 +1523,7 @@ func (m *projectMove) handDeletion(t *testing.T) {
 // the daemon still aimed at the second cluster, where a claim then starts in the cluster the
 // release emptied; and a copy of the boot that starts a stopped claim on a new session.
 func TestAProjectMovesBackToTheFirstCluster(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleRigWith); it binds the same ports again at each restart (newIdleRigWith).
+	// Not parallel: it binds the same ports again at each restart (newIdleRigWith).
 	rig := newIdleRigWith(t, idleRigOptions{holdStream: true, wallClock: true, secondCluster: true, aimSecond: true, configure: moveConfiguration},
 		idleRigSeed{name: "tree", roles: []claim.Role{claim.RoleImplementer, claim.RoleArchitect}},
 		idleRigSeed{name: "worker", roles: []claim.Role{claim.RoleImplementer}},
