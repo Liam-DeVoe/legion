@@ -550,11 +550,18 @@ type RunningStep struct {
 	Held  bool
 }
 
-// OwnerAct says whether s is the act of a task's sub-owner, at the task's parts or its report
-// (PlaceParts, PlaceReported), and not a step: the one test of it for every reader of the running
-// steps.
+// SubOwnerActs says whether a task standing at p is at the act of its sub-owner, which is no step:
+// its parts or its report (PlaceParts, PlaceReported). It is the one test of that act: a running
+// step's (RunningStep.OwnerAct), the reading of a row of the running steps (stepOfRow) and the
+// phase the workflow derives for a place each ask it.
+func (p TaskPlace) SubOwnerActs() bool {
+	return p.Kind == PlaceParts || p.Kind == PlaceReported
+}
+
+// OwnerAct says whether s is the act of a task's sub-owner and not a step: its place is one where
+// the sub-owner acts (TaskPlace.SubOwnerActs).
 func (s RunningStep) OwnerAct() bool {
-	return s.Place.Kind == PlaceParts || s.Place.Kind == PlaceReported
+	return s.Place.SubOwnerActs()
 }
 
 // RunningOf is the running steps of issue (Issue.Running) from the read of its run's plan rows
@@ -592,14 +599,15 @@ func RunningOf(issue Issue, planned bool, rows []pods.RunningRow) []RunningStep 
 // read it.
 func stepOfRow(row pods.RunningRow, held bool) RunningStep {
 	step := RunningStep{Task: row.Task, Place: TaskPlace{Kind: row.Kind, Position: row.Position}, Held: row.Held || held}
+	if step.Place.SubOwnerActs() {
+		step.Phase, step.Role, step.Agent = phase.Planning, claim.RoleSubOwner, SubOwnerAgent(row.Task)
+		return step
+	}
 	switch row.Kind {
 	case PlaceRetro:
 		step.Phase = phase.Retro
 	case PlaceMerge:
 		step.Phase = phase.Merging
-	case PlaceParts, PlaceReported:
-		step.Phase, step.Role, step.Agent = phase.Planning, claim.RoleSubOwner, SubOwnerAgent(row.Task)
-		return step
 	default:
 		step.Phase = plan.RunsAs(row.Role)
 	}
@@ -613,18 +621,42 @@ func stepOfRow(row pods.RunningRow, held bool) RunningStep {
 	return step
 }
 
-// todaysPlace is the place of p on today's line, phase.Order, as the walk of a run with no plan
-// rows reads it: each phase before the retro a step at its place from 1, the retro and the merge
-// their own, and no act for a phase off the line (admitted).
-func todaysPlace(p phase.Phase) TaskPlace {
-	switch p {
-	case phase.Retro:
-		return TaskPlace{Kind: PlaceRetro}
-	case phase.Merging:
-		return TaskPlace{Kind: PlaceMerge}
+// LinePlaces is the place of each phase of line, the line of a task's walk, in its order: the one
+// map of a position of a line to a place. The workflow's walk reads it once for its line and builds
+// each table on it, and a run with no plan rows reads today's line through it (TodaysPlaces). The
+// planning that a task with a sub-owner's line starts with (subOwned) is its parts, at place 0,
+// which is no step; the retro and the merge are at place 0; and each other phase is a step, at its
+// place from 1 among the task's steps alone.
+func LinePlaces(line []phase.Phase, subOwned bool) []TaskPlace {
+	places := make([]TaskPlace, len(line))
+	step := 0
+	for at, p := range line {
+		switch {
+		case at == 0 && subOwned:
+			places[at] = TaskPlace{Kind: PlaceParts}
+		case p == phase.Retro:
+			places[at] = TaskPlace{Kind: PlaceRetro}
+		case p == phase.Merging:
+			places[at] = TaskPlace{Kind: PlaceMerge}
+		default:
+			step++
+			places[at] = TaskPlace{Kind: PlaceStep, Position: step}
+		}
 	}
+	return places
+}
+
+// TodaysPlaces is the place of each phase of today's line, phase.Order, which has no sub-owner
+// (LinePlaces): each phase before the retro a step at its place from 1, then the retro and the
+// merge, where the release before put them. It is read only, as phase.Order is: the walk of a run
+// with no plan rows and its table read it, and so does todaysPlace.
+var TodaysPlaces = LinePlaces(phase.Order, false)
+
+// todaysPlace is the place of p on today's line (TodaysPlaces), as the walk of a run with no plan
+// rows reads it, and no act for a phase off the line (admitted).
+func todaysPlace(p phase.Phase) TaskPlace {
 	if at := slices.Index(phase.Order, p); at >= 0 {
-		return TaskPlace{Kind: PlaceStep, Position: at + 1}
+		return TodaysPlaces[at]
 	}
 	return TaskPlace{}
 }

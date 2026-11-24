@@ -16,10 +16,10 @@ import (
 var issuePhaseLine = plan.Line([]plan.Step{{Role: "planner"}, {Role: "implementer"}, {Role: "tester"}, {Role: "reviewer"},
 	{Role: "acceptance", Key: "owner"}}, true)
 
-// standsAt is a stored walk of task id on issuePhaseLine, in state at place, held for reason where
-// it is held.
+// standsAt is a stored walk of task id on issuePhaseLine, at its places, in state at place, held
+// for reason where it is held.
 func standsAt(id string, state record.TaskState, place record.TaskPlace, reason record.HoldReason) Walk {
-	return Walk{Stored: true, Task: id, Line: issuePhaseLine, State: state, Place: place, HoldReason: reason}
+	return Walk{Stored: true, Task: id, Line: issuePhaseLine, Places: record.LinePlaces(issuePhaseLine, false), State: state, Place: place, HoldReason: reason}
 }
 
 // stepAtPlace is the place of step n.
@@ -71,7 +71,7 @@ func TestTheIssueStandsAtTheFirstPhaseOfItsRunningTasks(t *testing.T) {
 			[]Walk{standsAt("a", record.TaskWaiting, noAct, ""), standsAt("b", record.TaskWaiting, noAct, "")},
 			phase.Admitted, nil},
 		{"a at a step of the deployment's role and b testing",
-			[]Walk{{Stored: true, Task: "a", Line: stepLine, State: record.TaskRunning, Place: stepAtPlace(1)},
+			[]Walk{{Stored: true, Task: "a", Line: stepLine, Places: record.LinePlaces(stepLine, false), State: record.TaskRunning, Place: stepAtPlace(1)},
 				standsAt("b", record.TaskRunning, stepAtPlace(3), "")},
 			phase.Step, nil},
 	} {

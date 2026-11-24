@@ -18,15 +18,15 @@ import (
 // Walk is the line of phases one task of an issue's run walks, and where that task stands on it. A
 // run with plan rows (record.Store.Plan at the issue's generation) walks the line of each of its
 // tasks' steps (plan.Line): each step runs as the phase of its role, then Legion's own retro and
-// merge where the task's work merges by itself (Merges). A task with a sub-owner (OwnerRole) has
-// no steps: its line starts with planning, the phase of its sub-owner's act at its parts (lineOf).
-// A run with none, which is every issue that ran before plan rows existed, walks today's line,
-// phase.Order, as the steps of the task default (todaysSteps), with Stored false, and its table is
-// Table, row for row. Every behaviour that differs from today reads Stored and nothing else; the
-// steps of both are read the same way (placeOnWalk).
+// merge where the task's work merges by itself (Merges). A task with a sub-owner has no steps: its
+// line starts with planning, the phase of its sub-owner's act at its parts (lineOf). A run with
+// none, which is every issue that ran before plan rows existed, walks today's line, phase.Order,
+// as the steps of the task default (todaysSteps), with Stored false, and its table is Table, row
+// for row. Every behaviour that differs from today reads Stored and nothing else; the steps of both
+// are read the same way (placeOnWalk).
 //
-// Line and Steps are read only: an unstored walk's Line is phase.Order itself, and its Steps are
-// todaysSteps itself.
+// Line, Places and Steps are read only: an unstored walk's Line is phase.Order itself, its Places
+// record.TodaysPlaces and its Steps todaysSteps itself.
 type Walk struct {
 	// Stored says whether the run has plan rows.
 	Stored bool
@@ -45,17 +45,17 @@ type Walk struct {
 	// plan node carries (planNode); nil where it needs none or the run has no plan rows.
 	Needs []string
 	// Line is the phases the task walks: one for each step, then retro and merging where the task
-	// merges.
+	// merges; a task with a sub-owner's starts with planning.
 	Line []phase.Phase
+	// Places is the place of each phase of Line, in its order (record.LinePlaces): the one reading
+	// of where a position of the line stands, which every reader of the line's places reads
+	// (PlaceOf, startPlace, backwardPlace, issuePhaseOf, phaseAt and the walk's table).
+	Places []record.TaskPlace
 	// Merges says whether the task's work merges by itself under the plan in force
 	// (record.StoredPlan.Merging: its block says merges, or it is a task of the top level that no
 	// task needs), so its line ends with Legion's retro and merge; any other task is done at its
 	// last step. It is true for a run with no plan rows and for a plan of one task.
 	Merges bool
-	// OwnerRole is the role the task's block names as `owner` (record.PlanTask.OwnerRole): the
-	// task's sub-owner, an agent of that role, does its work at its parts, so the task has no steps
-	// (plan.StepsOf). "" for a task of steps and where the run has no plan rows.
-	OwnerRole string
 	// State and Place are where the task stands (record.PlanTask); zero where the run has no
 	// plan rows, whose place is the issue's phase alone.
 	State record.TaskState
@@ -92,9 +92,10 @@ type Walk struct {
 var todaysSteps = planSteps(plan.Deployment{Roles: plan.BuiltinRoles()}, "", 0, defaultTask, config.Project{}.RunsByDefault())
 
 // todaysWalk is the walk of a run with no plan rows: the task default walking todaysSteps on
-// today's line, phase.Order, which merges, with Stored false.
+// today's line, phase.Order, at today's places (record.TodaysPlaces), which merges, with Stored
+// false.
 func todaysWalk() Walk {
-	return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order, Merges: true}
+	return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order, Places: record.TodaysPlaces, Merges: true}
 }
 
 // walks is the walk of each task of issue's run, in task id order (record.StoredPlan.Tasks), read
@@ -121,22 +122,24 @@ func walksOf(key string, stored *record.StoredPlan) []Walk {
 }
 
 // walkOfTask is the walk of task, a task of stored, the plan of the issue keyed key, whose tasks
-// whose work merges by itself are merging (record.StoredPlan.Merging).
+// whose work merges by itself are merging (record.StoredPlan.Merging). Its line and the places of
+// that line are read here once.
 func walkOfTask(key string, stored *record.StoredPlan, task record.PlanTask, merging []string) Walk {
-	steps, merges := stored.Steps[task.Task], slices.Contains(merging, task.Task)
+	steps, merges, subOwned := stored.Steps[task.Task], slices.Contains(merging, task.Task), task.OwnerRole != ""
+	line := lineOf(subOwned, steps, merges)
 	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
-		Line: lineOf(task.OwnerRole, steps, merges), Merges: merges, OwnerRole: task.OwnerRole, State: task.State, Place: task.Place,
+		Line: line, Places: record.LinePlaces(line, subOwned), Merges: merges, State: task.State, Place: task.Place,
 		StoppedReason: task.StoppedReason, HoldReason: task.HoldReason, Wait: task.StepWait, WaitSince: task.StepWaitSince,
 		StartReason: task.StartReason, Version: stored.Version}
 }
 
 // lineOf is the line of a task whose steps are steps, as its walk reads it: the phase each step
-// runs as, then Legion's own retro and merge where merges says the task merges (plan.Line). A task
-// with a sub-owner (ownerRole) has no steps, and its line starts with planning, which no plan
-// names: the phase of its sub-owner's act at its parts (linePlace).
-func lineOf(ownerRole string, steps []record.PlanStep, merges bool) []phase.Phase {
+// runs as, then Legion's own retro and merge where merges says the task merges (plan.Line). The
+// line of a task with a sub-owner (subOwned, its block names `owner`) starts with planning, which
+// no plan names: the phase of its sub-owner's act at its parts (record.LinePlaces).
+func lineOf(subOwned bool, steps []record.PlanStep, merges bool) []phase.Phase {
 	line := plan.Line(namedSteps(steps), merges)
-	if ownerRole == "" {
+	if !subOwned {
 		return line
 	}
 	return slices.Insert(line, 0, phase.Planning)
@@ -153,46 +156,26 @@ func namedSteps(steps []record.PlanStep) []plan.Step {
 	return named
 }
 
-// PlaceOf is the first place of w's line that runs as p (linePlace): the step of the line that
-// runs as p, at its place from 1, the retro or the merge at place 0, or the parts of a task with a
-// sub-owner for its planning, where its sub-owner acts. A phase the line does not hold has no
-// place. Two steps that run as step are two places, so a reader of where the task stands reads
-// placeIn, and PlaceOf serves a phase that stands once in its line.
+// PlaceOf is the place of the first position of w's line that runs as p (Places): a step at its
+// place from 1, the retro or the merge at place 0, or the parts of a task with a sub-owner for its
+// planning, where its sub-owner acts. A phase the line does not hold has no place. Two steps that
+// run as step are two places, so a reader of where the task stands reads placeIn, and PlaceOf
+// serves a phase that stands once in its line.
 func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
-	switch p {
-	case phase.Retro, phase.Merging:
-		if !slices.Contains(w.Line, p) {
-			return record.TaskPlace{}, false
-		}
-		if p == phase.Retro {
-			return record.TaskPlace{Kind: record.PlaceRetro}, true
-		}
-		return record.TaskPlace{Kind: record.PlaceMerge}, true
-	}
-	if at := slices.Index(w.steps(), p); at >= 0 {
-		return w.linePlace(at), true
+	if at := slices.Index(w.Line, p); at >= 0 {
+		return w.Places[at], true
 	}
 	return record.TaskPlace{}, false
 }
 
 // startPlace is the place a start of w's task moves it to, and the phase it stands in there: the
-// place of the first phase of its line (linePlace), which is its first step, or the parts of a
-// task with a sub-owner. ok is false for a line that holds no phase before its retro.
+// place of the first position of its line (Places), which is its first step, or the parts of a task
+// with a sub-owner. ok is false for a line that holds no phase before its retro.
 func (w Walk) startPlace() (phase.Phase, record.TaskPlace, bool) {
 	if len(w.steps()) == 0 {
 		return "", record.TaskPlace{}, false
 	}
-	return w.Line[0], w.linePlace(0), true
-}
-
-// linePlace is where w's task stands at position at of its line: placeAt's place, but the parts of
-// a task with a sub-owner at its planning, which is no step. It is the one map of a position of a
-// walk's line to a place, which PlaceOf, startPlace, backwardPlace and the table read.
-func (w Walk) linePlace(at int) record.TaskPlace {
-	if w.OwnerRole != "" && w.Line[at] == phase.Planning {
-		return record.TaskPlace{Kind: record.PlaceParts}
-	}
-	return placeAt(w.Line, at)
+	return w.Line[0], w.Places[0], true
 }
 
 // AgentAt is the name of the agent that does the work of place on w (record.PlanStep.AgentName), the
@@ -266,27 +249,28 @@ func (w Walk) MovesBack(row Row) bool {
 
 // issuePhaseOf is the phase w's task derives at place in state, which an issue of that one task
 // stands in: done for a task that is done or left the workflow before it was done
-// (record.TaskLeft), whatever its place, which is the phase of an issue out of the workflow; the
-// phase of the step at place, retro or merging at the task's retro or merge; planning at the parts
-// and at the report of a task with a sub-owner, whose sub-owner plans there; and admitted for a
-// task at no act, which has not started. A task stopped or held keeps its place, and the hold
-// overlays this phase (record.Hold.From, taskStanding). A step place the line does not hold
-// derives no phase, and the line of a task with a sub-owner holds none. The phase of an issue of
-// several tasks is issuePhaseOfTasks's, over each.
+// (record.TaskLeft), whatever its place, which is the phase of an issue out of the workflow; retro
+// or merging at the task's retro or merge; planning where its sub-owner acts, at its parts and its
+// report (record.TaskPlace.SubOwnerActs); the phase of the position of the line whose place is a
+// step place (Places); and admitted for a task at no act, which has not started. A task stopped or
+// held keeps its place, and the hold overlays this phase (record.Hold.From, taskStanding). A step
+// place the line does not give derives no phase. The phase of an issue of several tasks is
+// issuePhaseOfTasks's, over each.
 func issuePhaseOf(w Walk, place record.TaskPlace, state record.TaskState) phase.Phase {
 	if state == record.TaskDone || state == record.TaskLeft {
 		return phase.Done
+	}
+	if place.SubOwnerActs() {
+		return phase.Planning
 	}
 	switch place.Kind {
 	case record.PlaceRetro:
 		return phase.Retro
 	case record.PlaceMerge:
 		return phase.Merging
-	case record.PlaceParts, record.PlaceReported:
-		return phase.Planning
 	case record.PlaceStep:
-		if steps := w.steps(); w.OwnerRole == "" && place.Position >= 1 && place.Position <= len(steps) {
-			return steps[place.Position-1]
+		if at := slices.Index(w.Places, place); at >= 0 {
+			return w.Line[at]
 		}
 		return ""
 	}
@@ -704,12 +688,11 @@ func (w Walk) placeOfRole(role claim.Role) (record.TaskPlace, bool) {
 
 // backwardPlace is the place a move back of w's task to the phase to reaches, ok false where none
 // serves it: for a walk with no plan rows the place of to on today's line, whose phases each stand
-// once (PlaceOf); for a stored walk the one place before w.Place whose step, retro or merge runs
-// as to, or the parts of a task with a sub-owner for planning (linePlace). Where no earlier place
-// runs as to, or more than one does (two steps that run as step), no backward row serves the move.
-// Where to is step and two or more places before w.Place run as step, its third answer is the two
-// of them nearest w.Place, the lower first, which the move's refusal names (backwardRefusal); it is
-// nil in every other case.
+// once (PlaceOf); for a stored walk the one place before w.Place of a position of the line that
+// runs as to (Places). Where no earlier place runs as to, or more than one does (two steps that run
+// as step), no backward row serves the move. Where to is step and two or more places before w.Place
+// run as step, its third answer is the two of them nearest w.Place, the lower first, which the
+// move's refusal names (backwardRefusal); it is nil in every other case.
 func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.TaskPlace) {
 	if !w.Stored {
 		place, ok := w.PlaceOf(to)
@@ -717,7 +700,7 @@ func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.Ta
 	}
 	var found []record.TaskPlace
 	for at, p := range w.Line {
-		if place := w.linePlace(at); p == to && placeRank(place) < placeRank(w.Place) {
+		if place := w.Places[at]; p == to && placeRank(place) < placeRank(w.Place) {
 			found = append(found, place)
 		}
 	}
@@ -730,28 +713,13 @@ func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.Ta
 	return record.TaskPlace{}, false, nil
 }
 
-// table is the table of w's line: Table for a run with no plan rows, which is TableOf(phase.Order)
-// built once, and the table of the task's line with its places otherwise (StoredTableOf), in which
-// the planning of a task with a sub-owner is its parts (linePlace), so the gate's opening puts the
-// task there and a move back to planning returns it there.
+// table is the table of w's line: Table for a run with no plan rows, which is the table of today's
+// line at today's places built once, and the table of the task's line at its places otherwise
+// (StoredTableOf over Places), so the gate's opening puts a task with a sub-owner at its parts and
+// a move back to planning returns it there.
 func (w Walk) table() []Row {
 	if !w.Stored {
 		return Table
 	}
-	rows := StoredTableOf(w.Line)
-	if w.OwnerRole == "" {
-		return rows
-	}
-	// The line of a task with a sub-owner starts with its planning (lineOf), which placeAt puts at
-	// step 1 and linePlace at the parts.
-	step, parts := placeAt(w.Line, 0), w.linePlace(0)
-	for i := range rows {
-		if rows[i].FromPlace == step {
-			rows[i].FromPlace = parts
-		}
-		if rows[i].ToPlace == step {
-			rows[i].ToPlace = parts
-		}
-	}
-	return rows
+	return StoredTableOf(w.Line, w.Places)
 }

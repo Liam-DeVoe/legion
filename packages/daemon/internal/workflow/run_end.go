@@ -617,11 +617,12 @@ func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, me
 }
 
 // phaseAt is the phase whose step runs at place on w, the walk of the run: of its line (Walk.Line,
-// phase.Order for a run with no plan rows), the phase of the position whose step (placeOnWalk) is
-// at place, so of two steps that run as step, each its own.
+// phase.Order for a run with no plan rows), the phase of the position whose step (placeOnWalk), at
+// that position's place (Walk.Places), is at place, so of two steps that run as step, each its own.
+// No step runs at the parts of a task with a sub-owner, so none is found there.
 func phaseAt(w Walk, place record.StepPlace) (phase.Phase, bool) {
 	for at, p := range w.Line {
-		if step, _, _, ok := placeOnWalk(w, placeNamed(placeAt(w.Line, at), p)); ok && step == place {
+		if step, _, _, ok := placeOnWalk(w, placeNamed(w.Places[at], p)); ok && step == place {
 			return p, true
 		}
 	}
