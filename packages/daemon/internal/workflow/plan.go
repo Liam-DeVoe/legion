@@ -302,9 +302,10 @@ func describeVersion(version record.PlanVersion) string {
 // giversOf names every giver of version (record.PlanVersion.Givers), the last to give it first:
 // one by its claim, two joined by "and", more by commas and a last "and".
 func giversOf(version record.PlanVersion) string {
-	givers := make([]string, 0, len(version.Givers()))
-	for _, giver := range version.Givers() {
-		givers = append(givers, string(giver))
+	all := version.Givers()
+	givers := make([]string, len(all))
+	for i, giver := range all {
+		givers[i] = string(giver)
 	}
 	if len(givers) < 2 {
 		return strings.Join(givers, "")

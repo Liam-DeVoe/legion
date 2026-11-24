@@ -82,7 +82,7 @@ func (v PlanVersion) Givers() []claim.Token {
 	if v.GivenBy == "" {
 		return v.EarlierGivers
 	}
-	return append([]claim.Token{v.GivenBy}, v.EarlierGivers...)
+	return slices.Concat([]claim.Token{v.GivenBy}, v.EarlierGivers)
 }
 
 // GivenByOwner says whether a giver of version (PlanVersion.Givers) is an architect of issue's tree

@@ -53,11 +53,12 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 // does: a give by an owner makes it a giver of the version, so the version is that owner's while it
 // owns the issue (record.GivenByOwner), whatever becomes of the other givers.
 func (e *Engine) addGiver(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, held record.PlanVersion) error {
-	if slices.Contains(held.Givers(), fact.GivenBy) {
+	givers := held.Givers()
+	if slices.Contains(givers, fact.GivenBy) {
 		return nil
 	}
 	e.logOnCommit(ctx, "workflow: an owner's plan is given again by another owner", "issue", fact.Issue, "generation", fact.Generation,
-		"version", fact.Plan.Version, "document", fact.Plan.ArtifactID, "given_by", fact.GivenBy, "givers", held.Givers())
+		"version", fact.Plan.Version, "document", fact.Plan.ArtifactID, "given_by", fact.GivenBy, "givers", givers)
 	return e.store.AddPlanGiver(ctx, tx, fact.Issue, fact.Generation, fact.Plan.Version, fact.GivenBy, e.now())
 }
 
