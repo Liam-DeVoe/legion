@@ -9,9 +9,9 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { borderDefault } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CHANGED_BLOCK_CLASS } from "../doc/change-marks";
-import { liveTextQueryOptions } from "../doc/ProofDocument";
+import { liveTextQueryOptions, ownerAsksQueryOptions } from "../doc/ProofDocument";
 import { scrollElementToTop } from "../doc/scroll-block";
-import { liveAskOf, type ServedAsk, servedAskOf } from "../doc/typed-block-drawing";
+import { type ServedAsk, servedAskOfBlock } from "../doc/typed-block-drawing";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { AskCard } from "./AskCard";
@@ -205,21 +205,28 @@ function ApprovalBody({
   // what the live text answers for the block in its asks. A version this build writes keeps an
   // answered block's state, and who answered it and when, but not the words or the options
   // chosen: the server holds those on the ask alone, so the block's card reads them from here.
+  // Both reads wait for the version and start only where it holds an ask block, by the test the
+  // server makes of a text before it reads its asks (docs.TextWithAsks): `VersionView` reads the
+  // server's read only for an ask block of that version.
   const issueKey = artifact?.issue_key ?? null;
+  const readsAsks =
+    settled &&
+    artifact !== undefined &&
+    isText(versionQuery.data) &&
+    versionQuery.data.markdown.includes("ask{");
   const asksQuery = useQuery({
-    enabled: settled && artifact !== undefined,
-    queryFn: () =>
-      issueKey === null ? api.listArtifactAsks(artifactId) : api.listIssueAsks(issueKey),
-    queryKey: issueKey === null ? ["artifact", artifactId, "asks"] : ["asks", issueKey],
+    ...ownerAsksQueryOptions(artifactId, issueKey),
+    enabled: readsAsks,
   });
-  const liveTextQuery = useQuery({ ...liveTextQueryOptions(artifactId), enabled: settled });
+  const liveTextQuery = useQuery({ ...liveTextQueryOptions(artifactId), enabled: readsAsks });
   const servedAsk = (blockId: string): ServedAsk | undefined =>
-    servedAskOf(
+    servedAskOfBlock(
       asksQuery.data ?? [],
+      liveTextQuery.data,
       artifactId,
       blockId,
       issueKey === null ? artifact?.project : undefined
-    ) ?? liveAskOf(liveTextQuery.data, blockId);
+    );
   /** The request the column has read a version for, which is what the start of the column is
    *  written for: the one scroller outlives the row, so a second request on a document opens
    *  where the first one was left unless the column is sent back. The write waits for the

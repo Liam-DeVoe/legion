@@ -287,11 +287,13 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	// A write the document service refused under the document owner's lock because the document
 	// is retired (docs.RetiredDocumentError): a write api did not test the row for itself - a
 	// comment's mark, an ask block, a named version, a rebuild - is refused as an edit or an upload
-	// of the retired document is (retiredDocumentRefusal): 409 DOCUMENT_RETIRED, or 409
-	// DECISIONS_ARE_NODES for an issue's decisions document, not 500.
+	// of the retired document is (retiredDocumentRefusal): 409 DOCUMENT_RETIRED, naming the latest
+	// version the document service read, or 409 DECISIONS_ARE_NODES for an issue's decisions
+	// document, not 500.
 	var retired *docs.RetiredDocumentError
 	if errors.As(err, &retired) {
-		s.writeHandlerError(w, retiredDocumentRefusal(model.Artifact{ID: retired.ID, IssueKey: retired.IssueKey, Name: retired.Name, Slug: retired.Slug}, retired.Name, retired.LatestVersion))
+		artifact := model.Artifact{ID: retired.ID, IssueKey: retired.IssueKey, Name: retired.Name, Slug: retired.Slug}
+		s.writeHandlerError(w, retiredDocumentRefusal(artifact, retired.Name, func() (int, error) { return retired.LatestVersion, nil }))
 		return
 	}
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -35,7 +35,7 @@ var ErrDocumentRetired = errors.New("docs: the document is retired already")
 // (joinLiveWrite), a version (NamedVersion, SnapshotVersion) or a rebuild (RebuildDocument), each
 // refused by retiredWriteRefusal. It holds the document's id, name and slug, and the issue it
 // belongs to (nil for a project document), read off the owner the write locked, and the number of
-// its latest saved version (SavedVersionNumber). api answers it as it answers a write it refuses
+// its latest saved version (savedVersionNumber). api answers it as it answers a write it refuses
 // itself: 409 DOCUMENT_RETIRED naming the document and the address of that version, or 409
 // DECISIONS_ARE_NODES for an issue's decisions document (retiredDocumentRefusal). It is
 // ErrDocumentRetired.
@@ -61,7 +61,7 @@ func retiredWriteRefusal(ctx context.Context, tx pgx.Tx, artifactID string, owne
 	if !owner.Retired {
 		return nil
 	}
-	latest, err := SavedVersionNumber(ctx, tx, artifactID)
+	latest, err := savedVersionNumber(ctx, tx, artifactID)
 	if err != nil {
 		return err
 	}

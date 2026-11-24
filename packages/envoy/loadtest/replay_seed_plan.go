@@ -460,9 +460,8 @@ var answeredAtAttr = regexp.MustCompile(`answered_at="[^"]*"`)
 
 // maskAnsweredAt blanks every typed ask block's answered_at attribute, which the seed cannot set
 // through the API (the answer's time is the seed's own).
-func maskAnsweredAt(markdown string) (string, bool) {
-	masked := answeredAtAttr.ReplaceAllString(markdown, `answered_at=""`)
-	return masked, masked != markdown
+func maskAnsweredAt(markdown string) string {
+	return answeredAtAttr.ReplaceAllString(markdown, `answered_at=""`)
 }
 
 // expectedOpenAnchored is, per logged document id, the open anchored items steps 3 and 4 leave on

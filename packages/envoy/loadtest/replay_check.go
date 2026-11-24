@@ -203,8 +203,9 @@ type sizeAnchorCheck struct {
 // stored quote lies, once, inside the span of the text at At its rule chose. An answer version's
 // expected change counts its answers' answered_at as the seed's answer wrote it: Dispatch writes
 // the time of the answer with its trailing zeros trimmed, so its length is not production's (the
-// same attribute the text comparison masks). A resolve version needs no such count: a resolve
-// writes only state="resolved" into its block, no time.
+// text comparison leaves out every server-owned attribute of an ask block, this one among them:
+// servedText). A resolve version needs no such count: a resolve writes only state="resolved" into
+// its block, no time.
 func checkSizesAndAnchors(ctx context.Context, conn *pgx.Conn, b *replayBundle, plans []seedIssuePlan, ids map[[2]string]string) (sizeAnchorCheck, error) {
 	r := sizeAnchorCheck{Rules: map[string]int{}}
 	recorded, err := readReplayAnchors(ctx, conn)
@@ -461,7 +462,7 @@ func checkSeed(ctx context.Context, conn *pgx.Conn, b *replayBundle, plans []see
 				diff(p.Key, a.Name, "text", textDigest(want), textDigest(got))
 				same = false
 			}
-			stepped := steppedBlockAsks(is, a.ID)
+			stepped := steppedBlockAsks(is, a)
 			if len(stepped) == 0 {
 				continue
 			}
@@ -510,15 +511,15 @@ func checkSeed(ctx context.Context, conn *pgx.Conn, b *replayBundle, plans []see
 	return r, nil
 }
 
-// steppedBlockAsks are the asks of is whose typed ask block is in the logged document doc and
-// which production answered or resolved: the asks whose blocks the seed's history answers and
-// resolves (blockSteps).
-func steppedBlockAsks(is *replayIssue, doc string) []*replayAsk {
+// steppedBlockAsks are the asks of is whose typed ask block is in the logged document a and which
+// production answered or resolved, in the order of is: the asks of the steps of a's history
+// (blockSteps), each once.
+func steppedBlockAsks(is *replayIssue, a *replayArtifact) []*replayAsk {
+	steps, _ := blockSteps(is, a)
 	var stepped []*replayAsk
-	for i := range is.Asks {
-		ask := &is.Asks[i]
-		if ask.BlockID != nil && ask.BlockArtifactID != nil && *ask.BlockArtifactID == doc &&
-			(ask.State == "answered" || ask.State == "resolved") {
+	for _, st := range steps {
+		// An ask's answer and its resolve are two steps in a row.
+		if ask := &is.Asks[st.Ask]; len(stepped) == 0 || stepped[len(stepped)-1] != ask {
 			stepped = append(stepped, ask)
 		}
 	}
@@ -600,15 +601,11 @@ func servedAnswers(ctx context.Context, conn *pgx.Conn, local string) (map[strin
 	var text *string
 	var selected []byte
 	_, err = pgx.ForEachRow(rows, []any{&block, &state, &user, &selected, &text}, func() error {
-		answer := servedAnswer{state: state, user: user}
+		answer := servedAnswer{state: state, user: user, text: text}
 		if len(selected) > 0 {
 			if err := json.Unmarshal(selected, &answer.selected); err != nil {
 				return fmt.Errorf("read the selection of block %s of document %s: %w", block, local, err)
 			}
-		}
-		if text != nil {
-			words := *text
-			answer.text = &words
 		}
 		out[block] = answer
 		return nil
@@ -681,8 +678,7 @@ func replayChecksum(ctx context.Context, conn *pgx.Conn) (replaySum, error) {
 	}
 	if _, err := pgx.ForEachRow(rows, []any{&key, &name, &slug, &number, &md, &sha}, func() error {
 		// A typed ask block's answered_at is the time the seed answered it, so it is masked.
-		masked, _ := maskAnsweredAt(md)
-		md5Fields(h, "version", key, name, slug, fmt.Sprint(number), masked, sha)
+		md5Fields(h, "version", key, name, slug, fmt.Sprint(number), maskAnsweredAt(md), sha)
 		return nil
 	}); err != nil {
 		return s, err

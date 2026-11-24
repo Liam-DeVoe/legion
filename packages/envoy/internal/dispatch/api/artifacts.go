@@ -2653,26 +2653,29 @@ func decisionsAreNodes(target artifactTarget, name string) error {
 // write gives, is a decisions document's - is refused as a new document of that name is
 // (decisionsAreNodes), since DOCUMENT_RETIRED's advice to write a document of another name would
 // lead its caller to decisions-2.md; any other is DOCUMENT_RETIRED (documentRetiredRefusal),
-// which names the address of latest, the number of the document's latest saved version.
-func retiredDocumentRefusal(artifact model.Artifact, name string, latest int) error {
+// which names the address of the document's latest saved version. latest reads that version's
+// number, and is called only for DOCUMENT_RETIRED.
+func retiredDocumentRefusal(artifact model.Artifact, name string, latest func() (int, error)) error {
 	target := artifactTarget{IssueKey: artifact.IssueKey}
 	for _, held := range []string{name, artifact.Slug} {
 		if refusal := decisionsAreNodes(target, held); refusal != nil {
 			return refusal
 		}
 	}
-	return documentRetiredRefusal(artifact, latest)
+	number, err := latest()
+	if err != nil {
+		return err
+	}
+	return documentRetiredRefusal(artifact, number)
 }
 
 // readRetiredDocumentRefusal is retiredDocumentRefusal for artifact, a document its row reads
 // retired, named name by a write of new text, with the number of its latest saved version read in
-// q (docs.SavedVersionNumber).
+// q (settledVersionNumber).
 func readRetiredDocumentRefusal(ctx context.Context, q queryer, artifact model.Artifact, name string) error {
-	latest, err := docs.SavedVersionNumber(ctx, q, artifact.ID)
-	if err != nil {
-		return err
-	}
-	return retiredDocumentRefusal(artifact, name, latest)
+	return retiredDocumentRefusal(artifact, name, func() (int, error) {
+		return settledVersionNumber(ctx, q, artifact.ID)
+	})
 }
 
 // refuseRetiredUnderOwnerLock is retiredDocumentRefusal's answer for artifact, named name by a

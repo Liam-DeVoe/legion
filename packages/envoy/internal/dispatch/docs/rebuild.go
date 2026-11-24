@@ -124,7 +124,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		loadedHead = loaded.Version
 	}
 	if validationErr == nil {
-		latest, err := SavedVersionNumber(ctx, tx, artifactID)
+		latest, err := savedVersionNumber(ctx, tx, artifactID)
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
@@ -329,7 +329,7 @@ const (
 // another has dropped. The one ErrDocumentLive refusal it does not build is "already being
 // rebuilt" (RebuildDocument), which says only that a rebuild is running and offers no repair.
 func liveRebuildRefusal(ctx context.Context, tx pgx.Tx, artifactID, cause, next string) error {
-	latest, err := SavedVersionNumber(ctx, tx, artifactID)
+	latest, err := savedVersionNumber(ctx, tx, artifactID)
 	if err != nil {
 		return err
 	}
@@ -337,12 +337,12 @@ func liveRebuildRefusal(ctx context.Context, tx pgx.Tx, artifactID, cause, next 
 		ErrDocumentLive, artifactID, cause, latest, next)
 }
 
-// SavedVersionNumber is the number of artifactID's latest saved version, read in q: the version a
+// savedVersionNumber is the number of artifactID's latest saved version, read in q: the version a
 // refused rebuild names, since a rebuild discards every edit made after it, and the one a refused
 // write into a retired document names (RetiredDocumentError). A retired document takes no new
 // version, so its number stays the latest, and the version's own address
 // (GET /api/v1/artifacts/{id}/versions/{number}) answers a read of it.
-func SavedVersionNumber(ctx context.Context, q Queryer, artifactID string) (int, error) {
+func savedVersionNumber(ctx context.Context, q Queryer, artifactID string) (int, error) {
 	var number int
 	if err := q.QueryRow(ctx, `
 		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1

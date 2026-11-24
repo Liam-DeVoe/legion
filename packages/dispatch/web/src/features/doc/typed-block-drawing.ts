@@ -1,4 +1,8 @@
-import { parseBlockPointerValue, typedBlockIdAttribute } from "@legion/contracts";
+import {
+  CONTAINER_MARKER_PATTERN,
+  parseBlockPointerValue,
+  typedBlockIdAttribute,
+} from "@legion/contracts";
 import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 
 import type { Ask, AskOption, AskUrgency, BlockTypeSchema, TextAsk } from "../../api/types";
@@ -354,18 +358,15 @@ const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
 };
 
 /** The start of a markdown line that opens the ask block `blockId`, as a regular expression's
- *  source: the container markers the block is written after, the directive's colons, and the
- *  block's id as the renderer writes it (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id
- *  the shortcut cannot hold), ended by a space or the closing brace. The markers are the ones the
- *  CLI skips (`withoutContainerMarkers` in packages/envoy-client's `text-asks.ts`), so both read an
- *  opener by one rule: indentation, quote markers (`>`), list markers (`-`, `*`, `+`, or a number
- *  and `.` or `)`, each followed by a space or a tab) and footnote labels (`[^label]:` with a label
- *  that is not blank), each with the spaces and tabs after it. The renderer writes the first block
- *  of a list item or of a footnote's definition on the marker's or the label's line. */
+ *  source: indentation and the container markers the block is written after, the directive's
+ *  colons, and the block's id as the renderer writes it (`typedBlockIdAttribute`: `#<id>`, or
+ *  `id="…"` for an id the shortcut cannot hold), ended by a space or the closing brace. The
+ *  markers are `CONTAINER_MARKER_PATTERN`'s, each with the spaces and tabs after it, the ones the
+ *  CLI skips (`withoutContainerMarkers` in packages/envoy-client's `text-asks.ts`), so both read
+ *  an opener by one rule. */
 function askOpenerSource(blockId: string): string {
   const id = typedBlockIdAttribute(blockId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const marker = "(?:>|[-*+][ \\t]|\\d+[.)][ \\t]|\\[\\^(?!\\s*\\])[^\\]\\n]*\\]:)";
-  return `^[ \\t]*(?:${marker}[ \\t]*)*:{3,}ask\\{${id}[ }]`;
+  return `^[ \\t]*(?:${CONTAINER_MARKER_PATTERN}[ \\t]*)*:{3,}ask\\{${id}[ }]`;
 }
 
 /**
@@ -439,6 +440,24 @@ export function liveAskOf(
       state: entry.state,
     },
   };
+}
+
+/**
+ * The server's read of the ask the block `blockId` of the document `artifactId` shows, as the
+ * document page and the Inbox's reading pane both read it: its row among `asks`, the asks of the
+ * document's owner (`servedAskOf`), else what `text`, the document's live text, answers for the
+ * block (`liveAskOf`), which is the one read of a copy's source on a project document: the
+ * document's own asks hold no row of another document's. `project` is the owner's project where
+ * it is a project.
+ */
+export function servedAskOfBlock(
+  asks: readonly Ask[],
+  text: { readonly markdown: string; readonly asks?: readonly TextAsk[] | null } | undefined,
+  artifactId: string,
+  blockId: string,
+  project?: string
+): ServedAsk | undefined {
+  return servedAskOf(asks, artifactId, blockId, project) ?? liveAskOf(text, blockId);
 }
 
 /**

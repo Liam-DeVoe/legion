@@ -859,10 +859,11 @@ func (s *replaySeeder) history(ctx context.Context, key string, docs map[string]
 			if err != nil {
 				return err
 			}
-			var later []askStep
+			stepsLater := false
 			for v, steps := range p.AskAt {
-				if v > n {
-					later = append(later, steps...)
+				if v > n && len(steps) > 0 {
+					stepsLater = true
+					break
 				}
 			}
 			// The restored version is compared with the text at At as the text route serves both
@@ -872,7 +873,7 @@ func (s *replaySeeder) history(ctx context.Context, key string, docs map[string]
 			if servedText(got) != servedText(d.text) {
 				return fmt.Errorf("history %s: the restored version %d has %d bytes and differs from the text at At (%d bytes) outside its ask blocks' server-owned attributes", d.a.ID, n, len(got), len(d.text))
 			}
-			if len(later) > 0 {
+			if stepsLater {
 				// Its size rests on the later answers' and resolves' changes matching
 				// production's; the check compares them.
 				continue
