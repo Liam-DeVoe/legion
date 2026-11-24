@@ -123,7 +123,7 @@ func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t
 	issue := issueRecord(t, pool, "LEGION-208")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleReviewer)), reviewer)
+		return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, reviewClaim, reviewer)
 	})
 	if delivered := deliveredTask(t, pool, "the owed entry after the upgrade"); delivered != want {
 		t.Fatalf("the owed entry after the upgrade is delivered as %q, want %q word for word: it ends with the daemon's two sentences", delivered, want)

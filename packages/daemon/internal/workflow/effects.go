@@ -369,12 +369,12 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 // again (record.PhaseRow.Completed), a merger sent back has no summary until its next one, and no
 // round inherits an earlier decision. The architect reports no handoff, so it has none to clear:
 // its phases row holds only the entry it was handed work on (EnterArchitect), which no move
-// between phases clears.
-func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
+// between phases clears. w is the walk of issue's run as the caller holds it (phaseRowOn).
+func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue, role)
+	row, err := e.phaseRowOn(ctx, tx, issue, w, role)
 	if err != nil {
 		return err
 	}
@@ -586,7 +586,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	row, err := e.phaseRow(ctx, tx, issue, role)
+	row, err := e.phaseRowOn(ctx, tx, issue, w, role)
 	if err != nil {
 		return err
 	}
@@ -787,18 +787,15 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		RoundNamed: marks.stored && NamesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
 }
 
-// startClaim is the claim a start of role on issue is queued for, read on w, issue's walk: the
-// agent of the step issue stands in (stepToken), which the step's entry writes on the role's
-// phases row (enter), and role's own token where the walk holds no place for where issue stands.
-// An issue whose key names no claims (recordsSteps) has none.
+// startClaim is the claim a start of role on issue is queued for, read on w, issue's walk
+// (walkToken): the agent of the step issue stands in (stepToken), which the step's entry writes on
+// the role's phases row (enter), and role's own token where the walk holds no place for where issue
+// stands. An issue whose key names no claims (recordsSteps) has none.
 func (e *Engine) startClaim(issue record.Issue, w Walk, role claim.Role) (claim.Token, error) {
 	if !recordsSteps(issue) {
 		return "", nil
 	}
-	if place, ok := w.placeIn(record.StandsAt(issue)); ok {
-		return e.stepToken(issue, w, place, role)
-	}
-	return stepClaim(issue, issue.Key, role)
+	return e.walkToken(issue, w, record.StandsAt(issue), role)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
@@ -1078,12 +1075,10 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	worker := role != claim.RoleArchitect
 	at := record.StandsAt(issue)
 	var agent claim.Token
-	if worker && recordsSteps(issue) {
+	if worker {
 		if agent, err = e.startClaim(issue, *w, role); err != nil {
 			return entered{}, err
 		}
-	}
-	if worker {
 		if place, _, _, ok := placeOnWalk(*w, standingIn(at)); w.Stored && ok {
 			var moves bool
 			if row, moves = stepRunRow(rows, row, role, w.Task, place.Place, agent); moves {

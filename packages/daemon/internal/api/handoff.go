@@ -345,7 +345,10 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// work the step is refused first, HANDOFF_NOT_THE_STEPS_WORKER (intake.StepsWorkerFence), as
 	// the workflow refuses it before its own fence: the fence would refuse it HANDOFF_STALE_ENTRY,
 	// whose words promise the claim the task of the entry the phase is on, and that task goes to the
-	// step's agent alone. A role that does not work the issue's phase meets the fence's
+	// step's agent alone. A completion of an entry its own claim served, on a step of the role the
+	// task has since left for another agent's step, is not refused there: the fence answers it
+	// first, HANDOFF_NOT_CURRENT_PHASE naming that agent (intake.AnotherAgentsStep), as the
+	// workflow does. A role that does not work the issue's phase meets the fence's
 	// HANDOFF_NOT_CURRENT_PHASE here, which promises nothing, and the workflow judges the rest of
 	// its completion, the report of a run the task has left, in its own order (pastCompletion).
 	run := position.run(grant.Role, entry, works)

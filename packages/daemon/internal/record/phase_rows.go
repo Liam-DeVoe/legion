@@ -74,12 +74,22 @@ func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
 // it beside the claim of the row the task stands at, so a turn of another agent of the role is told
 // apart from a turn of the same agent's other run (intake.EntryFence).
 func ServedClaim(rows []PhaseRow, role claim.Role, entry int64) claim.Token {
-	for _, row := range rows {
-		if entry > 0 && row.Role == role && row.Entry == entry {
-			return row.Claim
+	row, _ := rowOnEntry(rows, role, entry)
+	return row.Claim
+}
+
+// rowOnEntry is role's row among rows that stands on entry, and whether one does: none for entry
+// 0, and at most one otherwise, since no two rows of a role stand on one entry (workflow's enter).
+// The run a completion serving entry reports is read through it (ServedClaim, CompletionRow).
+func rowOnEntry(rows []PhaseRow, role claim.Role, entry int64) (PhaseRow, bool) {
+	if entry > 0 {
+		for _, row := range rows {
+			if row.Role == role && row.Entry == entry {
+				return row, true
+			}
 		}
 	}
-	return ""
+	return PhaseRow{}, false
 }
 
 // earlierStepRow is the one lookup of what an earlier step of a role read on a task: the row of
@@ -256,10 +266,8 @@ func CompletionRow(rows []PhaseRow, role claim.Role, entry int64, works bool, ta
 	if works {
 		return PhaseRowAt(rows, role, task, at, steps)
 	}
-	for _, row := range rows {
-		if entry > 0 && row.Role == role && row.Entry == entry {
-			return row
-		}
+	if row, ok := rowOnEntry(rows, role, entry); ok {
+		return row
 	}
 	if now := PhaseRowOf(rows, role); now.Role == role {
 		return now
@@ -270,9 +278,8 @@ func CompletionRow(rows []PhaseRow, role claim.Role, entry int64, works bool, ta
 // RolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on a
 // task whose steps are steps: role's place nearest at (NearestPlace) among its steps, the retro,
 // the implementer's (phase.RoleFor), and the merge, the merger's; from 1 for a step, 0 for the
-// retro, the merge and a role the task gives no place. It is also the place a completion's key
-// names where the role stands at two steps and its row is of no step (StandsTwice; api's
-// completion route).
+// retro, the merge and a role the task gives no place. It is also the place of a row of no step
+// (RunPlace).
 func RolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
 	var places []TaskPlace
 	for _, step := range steps {
@@ -288,6 +295,18 @@ func RolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
 	}
 	place, _ := NearestPlace(places, at)
 	return place.Position
+}
+
+// RunPlace is the place of the step whose run row holds, on a task whose steps are steps standing
+// at at: the step row ran (PhaseRow.StepPlace), and for a row of no step, one a new generation
+// cleared or the release before wrote, which is its role's one row, its role's place nearest at
+// (RolePlace). The completion route keys a completion of a role at two steps by it (StandsTwice;
+// api's completion route), and the workflow reads the run a report is of by it (Walk.runPlace).
+func RunPlace(row PhaseRow, at TaskPlace, steps []PlanStep) int {
+	if row.StepTask == "" {
+		return RolePlace(row.Role, at, steps)
+	}
+	return row.StepPlace
 }
 
 // StandsTwice says whether steps name role at two places or more: a role that stands at two steps

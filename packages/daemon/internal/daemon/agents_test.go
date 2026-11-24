@@ -672,7 +672,6 @@ func TestAnIssueThatRanBeforeTheStepKeyKeepsItsRows(t *testing.T) {
 	launched := len(launchSpecsOf(r.rt, implementer.token))
 	r.work(claim.RoleImplementer, "implement", implementCompletion, phase.Testing)
 	r.relaunchedAs(implementer, launched, claim.RoleTester)
-	launched++
 	implementer.takeTask()
 	r.finish(implementer, "test", testCompletion, phase.Reviewing)
 	r.worker(claim.RoleReviewer)

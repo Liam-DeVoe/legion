@@ -1074,14 +1074,10 @@ func returnToOf(issue record.Issue, w Walk, fact intake.HandoffComplete, reporte
 // before into the new one, whether or not the promotion raised the entry since. A row a start ran
 // stands on 1 or above, so a completion of entry 0 writes none. Otherwise it writes nothing: the
 // commit stays where it stood, and the next run reads more. A step of another type writes none,
-// and nor does a completion naming no commit.
-func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, fact intake.HandoffComplete) error {
+// and nor does a completion naming no commit. w is the walk of the issue's run, as handoff read it.
+func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, w Walk, row record.PhaseRow, fact intake.HandoffComplete) error {
 	if fact.Commit == "" || row.EntryTask == "" || fact.Entry != row.Entry {
 		return nil
-	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
 	}
 	step, ok := w.planStepAt(w.Place)
 	if !w.Stored || !ok || claim.Role(step.Role) != fact.Role || step.Type != plan.TypeReview {
@@ -1290,7 +1286,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		// goes back to the step its returnTo names, or to the one its plan reads (returnTarget). A
 		// step of the type review keeps the commit its completion read first, before the move
 		// raises any entry (recordStepReview).
-		if err := e.recordStepReview(ctx, tx, *issue, row, fact); err != nil {
+		if err := e.recordStepReview(ctx, tx, w, row, fact); err != nil {
 			return intake.Result{}, err
 		}
 		switch fact.Verdict {
@@ -2748,7 +2744,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the %s's backward move to %s", fact.Requester, fact.To)), nil
 	}
-	row, err := e.phaseRow(ctx, tx, *issue, fact.Requester)
+	row, err := e.phaseRowOn(ctx, tx, *issue, w, fact.Requester)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2972,7 +2968,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if w.Stored && row.To != phase.Done {
 		starting = w.RoleAt(row.ToPlace)
 	}
-	if err := e.clearHandoff(ctx, tx, issue, starting); err != nil {
+	if err := e.clearHandoff(ctx, tx, issue, w, starting); err != nil {
 		return err
 	}
 	// The move out of admitted is where the run's work starts, and so where the plan it carries
@@ -3495,11 +3491,17 @@ func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue
 // it (record.PhaseRowAt). An issue with no plan rows reads the role's one row. issue is the record
 // as the caller read it in tx, so the row is read with one read of the rows and one of the walk.
 func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, error) {
-	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return record.PhaseRow{}, err
 	}
-	w, err := e.walk(ctx, tx, issue)
+	return e.phaseRowOn(ctx, tx, issue, w, role)
+}
+
+// phaseRowOn is phaseRow on w, the walk of issue's run as the caller holds it in tx, so a caller
+// that read the walk reads it once.
+func (e *Engine) phaseRowOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role) (record.PhaseRow, error) {
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
 		return record.PhaseRow{}, err
 	}
