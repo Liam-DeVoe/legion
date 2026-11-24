@@ -35,7 +35,7 @@ func TestAWaitingRetryIsNakedAfterItsDelayAtInfo(t *testing.T) {
 			delivery := &wakeDelivery{data: envelopeJSON(t, "wake-"+tc.level, "envoy",
 				`{"kind":"agent_message","session":"session-1","at":`+at+`}`)}
 
-			if consumeMessage(context.Background(), delivery, wakeSpec(logs), nil, pool, []Handler{handler}, &issueNames{}, newDroppedSettlements()) {
+			if consumeWake(t, delivery, wakeSpec(logs), pool, handler) {
 				t.Fatal("consumeMessage = true, want false: a naked delivery is not handled")
 			}
 			acks, delays, others := delivery.answers()
@@ -58,6 +58,32 @@ func TestAWaitingRetryIsNakedAfterItsDelayAtInfo(t *testing.T) {
 			}
 			if total := len(levels["INFO"]) + len(levels["WARN"]) + len(levels["ERROR"]); total != 1 {
 				t.Fatalf("log = %s, want the one %s line and no other", logs.String(), tc.level)
+			}
+		})
+	}
+}
+
+// A waiting retry is no failure, so its delay does not grow with the delivery count: at the
+// seventh delivery it is still its own 30 s, and the fact is applied again as soon as the wait it
+// names is over. The control is the same retry that does not wait, whose delay at that delivery is
+// the doubled nak delay, 64 s, which is longer than its 30 s.
+func TestAWaitingRetryWaitsItsOwnDelayAtEveryDelivery(t *testing.T) {
+	spec, err := normalizedSpec(wakeSpec(&lockedBuffer{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		waiting bool
+		want    time.Duration
+	}{
+		{name: "a waiting retry", waiting: true, want: 30 * time.Second},
+		{name: "control: a retry that does not wait", waiting: false, want: 64 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			retry := &RetryLater{After: 30 * time.Second, Waiting: tc.waiting, Err: errors.New("the wake finds its claim in a release")}
+			if got := retryDelay(7, spec, retry); got != tc.want {
+				t.Fatalf("retryDelay at delivery 7 = %s, want %s", got, tc.want)
 			}
 		})
 	}

@@ -1,14 +1,14 @@
 // The extension's consumer-delivery rows on the card a frame becomes: a late BTW, the notice of a
-// frame the session was never shown, a BTW whose side turn runs on, a card Escape cleared, the
-// time a card reached the session, and a body an event carried only in part. The relay's own rows
-// are in `consumer-delivery.test.ts`, which says why the three files are apart. Each has the
-// `describe` "consumer delivery", and they boot one session (`../test/consumer-delivery-session`)
-// on one harness (`../test/extension-harness`).
+// frame the session was never shown, a BTW whose side turn runs on, a card Escape cleared, a
+// payload the card shows as its text, the time a card reached the session, and a body an event
+// carried only in part. The relay's own rows are in `consumer-delivery.test.ts`, which says why
+// the three files are apart. Each has the `describe` "consumer delivery", and they boot one
+// session (`../test/consumer-delivery-session`) on one harness (`../test/extension-harness`).
 import { describe, expect, test } from "bun:test";
 import { legacyDispatchIssueSubject } from "@legion/contracts";
 import { logger } from "@oh-my-pi/pi-utils";
 import { REPLAY_DELIVERED_ENTRY } from "../src/missed-messages";
-import { bootConsumer, peer, SESSION } from "../test/consumer-delivery-session";
+import { AGENT, bootConsumer, peer, SESSION } from "../test/consumer-delivery-session";
 import {
   ledgerSeam,
   response,
@@ -236,6 +236,49 @@ describe("consumer delivery", () => {
     expect(session.replies(inbox)).toEqual(["received", "done"]);
     await session.tick();
     expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
+  });
+
+  // A peer's message whose JSON payload is nested past the depth the card's TOON encoder reaches
+  // made the shared renderer throw in `deliver`, so every copy of the frame failed and went back
+  // to the stream. The card shows such a payload as the text its sender sent, the frame is taken,
+  // and the extension says so once, naming the message.
+  test("a message whose payload is nested 9,999 deep is shown as its text, taken, and logged once with its id", async () => {
+    const warnings: { readonly message: string; readonly context?: unknown }[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
+    });
+    const session = await bootConsumer("consumer-deep-payload");
+    try {
+      const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
+      const inbox = session.relay(
+        1,
+        JSON.stringify({ event_id: "evt-deep", source: "agent", topic: AGENT, payload: nested })
+      );
+      // The answer that settles the frame: `done` once it is taken, `nak` once it failed.
+      await until(
+        () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak"),
+        "the frame's settling answer",
+        30_000
+      );
+
+      expect(session.replies(inbox)).toEqual(["received", "done"]);
+      // TOON quotes the text as JSON quotes a string, so the card holds the sender's text whole.
+      expect(session.cards("evt-deep").map((card) => card.content)).toEqual([
+        expect.stringContaining(`\n  message: ${JSON.stringify(nested)}`),
+      ]);
+      expect(warnings.filter(({ message }) => message.includes("shown as its text"))).toEqual([
+        {
+          message: "envoy: a message's payload is shown as its text; the card could not lay it out",
+          context: {
+            event_id: "evt-deep",
+            error: "its layout is larger than the 1048576 bytes a card holds",
+          },
+        },
+      ]);
+    } finally {
+      stopSink();
+      await session.stop();
+    }
   });
 
   // A session behind on its inbox read a card stamped five hours earlier, took the stamp for the
@@ -581,6 +624,55 @@ describe("consumer delivery", () => {
       expect(card).toContain(
         `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
       );
+    });
+
+    // The comment changed after its event was written. The card re-reads it, so it prints the
+    // comment as it stands: the deleted line every read prints in place of the body a delete
+    // cleared, or the words an edit wrote with the edited mark beside them. The part the event
+    // carried is in neither, nor the note that the body was cut.
+    test("is prompted with the deleted line for a comment deleted since", async () => {
+      const card = await cardForCutComment("cut-comment-deleted", (path) =>
+        path === `/api/v1/comments/${CUT_COMMENT}`
+          ? response({
+              comment: {
+                id: CUT_COMMENT,
+                issue_key: "INFRA-370",
+                body: "",
+                deleted_at: "2026-11-03T00:00:00Z",
+                deleted_by: { kind: "user", id: "alice" },
+              },
+              replies: [],
+            })
+          : undefined
+      );
+
+      expect(card).toContain(
+        `body: ${JSON.stringify("Deleted by user alice at 2026-11-03T00:00:00Z")}`
+      );
+      expect(card).not.toContain(CARRIED);
+      expect(card).not.toContain("first part only");
+    });
+
+    test("is prompted with the words an edit wrote and the edited mark for a comment edited since", async () => {
+      const card = await cardForCutComment("cut-comment-edited", (path) =>
+        path === `/api/v1/comments/${CUT_COMMENT}`
+          ? response({
+              comment: {
+                id: CUT_COMMENT,
+                issue_key: "INFRA-370",
+                body: "The paragraph as edited.\n\nAnd a second one.",
+                edited_at: "2026-11-03T00:00:00Z",
+              },
+              replies: [],
+            })
+          : undefined
+      );
+
+      expect(card).toContain(
+        `body: ${JSON.stringify("The paragraph as edited.\n\nAnd a second one. · edited 2026-11-03T00:00:00Z")}`
+      );
+      expect(card).not.toContain(CARRIED);
+      expect(card).not.toContain("first part only");
     });
   });
 });

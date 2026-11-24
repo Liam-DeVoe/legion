@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // wakeDelivery is one delivery of the wake durable, standing in for JetStream's message:
@@ -33,6 +36,10 @@ func (d *wakeDelivery) Metadata() (*jetstream.MsgMetadata, error) {
 	return &jetstream.MsgMetadata{Consumer: "legion-go-INFRA-wake", NumDelivered: 1,
 		Sequence: jetstream.SequencePair{Stream: 1, Consumer: 1}, Timestamp: time.Now()}, nil
 }
+
+// Headers are the delivery's NATS headers, which a failure's record keeps: a wake report carries
+// none.
+func (d *wakeDelivery) Headers() nats.Header { return nil }
 
 // InProgress is the keeper's signal (keepInProgress), which runs beside the handler and is no
 // answer to the delivery.
@@ -79,6 +86,20 @@ func wakeSpec(logs *lockedBuffer) ConsumerSpec {
 		Logger: slog.New(slog.NewTextHandler(logs, nil))}
 }
 
+// consumeWake runs consumeMessage on delivery as consumeConsumer does for the wake durable of
+// spec: spec normalized as OpenConsumers normalizes it, the delivery's metadata parsed once and
+// handed on with it, over pool, with handlers.
+func consumeWake(t *testing.T, delivery *wakeDelivery, spec ConsumerSpec, pool store.TxPool, handlers ...Handler) bool {
+	t.Helper()
+	spec, err := normalizedSpec(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, _ := delivery.Metadata()
+	run := consumerRun{spec: spec, pool: pool, names: &issueNames{}, remade: &remadeFailures{}, dropped: newDroppedSettlements()}
+	return consumeMessage(context.Background(), delivery, metadata, run, handlers)
+}
+
 // R6: a daemon reads every report on the wake subject, and a role report of another project is
 // no fact. The consumer acknowledges it with no transaction, so it runs no handler and leaves no
 // processed_events row. The control is a role report of INFRA's own role, consumed the same way:
@@ -110,7 +131,7 @@ func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
 			return Result{}, nil
 		})
 		delivery := &wakeDelivery{data: envelopeJSON(t, id, "envoy", payload)}
-		if !consumeMessage(context.Background(), delivery, wakeSpec(&lockedBuffer{}), nil, pool, []Handler{handler}, &issueNames{}, newDroppedSettlements()) {
+		if !consumeWake(t, delivery, wakeSpec(&lockedBuffer{}), pool, handler) {
 			t.Fatal("consumeMessage = false, want the report handled")
 		}
 		acks, delays, others := delivery.answers()

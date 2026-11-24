@@ -30,7 +30,7 @@ const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** The session the rows boot, its agent subject, its relay subject, and the stream's id. */
 export const SESSION = "ses_delivery";
-const AGENT = `notifications.agent.${SESSION}`;
+export const AGENT = `notifications.agent.${SESSION}`;
 export const RELAY = `notifications.envoy.deliver.${SESSION}`;
 export const STREAM = "stream-1";
 
