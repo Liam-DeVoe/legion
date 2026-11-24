@@ -6604,6 +6604,102 @@ for form in honest commented longer inline; do
     esac
 done
 
+# 210. A module below a directory the citation names is a Python file, a .py file or a .pyi
+# stub, and never a file of another extension whose stem the run names (review 6031558230,
+# its thread at check.sh's module_below). module_below took the first file below the
+# directory whose name without its last extension was the run's last component, so at
+# ef564aae, with lib/core/schema.json beside lib/core/schema.py, `core.schema.load` was read
+# in schema.json, which git ls-tree lists first, and failed though schema.py declares load,
+# and `core.schema.notes` passed on schema.json's text. The case commits lib/core/schema.py,
+# a function load, lib/core/schema.json, a key notes, and lib/core/stub.pyi, the stub of a
+# function check, their text writing none of lib, core, schema and stub as a word, and writes
+# the row f-our-1 as citing the directory lib with the symbol 'core.schema.load,
+# core.stub.check', then 'core.schema.notes', then, over lib/core/schema.json alone, a key
+# load, 'core.schema.load', running --citations over each (symbol_plant): the first must pass
+# citation-our-code; the second, read in schema.py, which does not hold notes, must fail it,
+# naming notes and schema.py; and the third, whose run names no Python file, is read as a
+# qualified name and must fail it, naming the component core. At ef564aae the first failed,
+# naming load and schema.json, and the other two passed.
+for form in honest json-name json-only; do
+    case "$form" in
+    honest | json-name)
+        module_files=(lib/core/schema.py $'def load(row):\n    return row\n' lib/core/schema.json '{"notes": 1}'
+            lib/core/stub.pyi $'def check(row: int) -> int: ...\n')
+        ;;
+    json-only) module_files=(lib/core/schema.json '{"load": 1}') ;;
+    esac
+    case "$form" in
+    honest) symbol='core.schema.load, core.stub.check' ;;
+    json-name) symbol='core.schema.notes' ;;
+    json-only) symbol='core.schema.load' ;;
+    esac
+    dir="$(symbol_plant "symbol-module-extension-$form" lib "$symbol" "${module_files[@]}")" &&
+        ! grep -rqwE 'lib|core|schema|stub' "$dir/repo/lib" || {
+        printf 'FAIL the symbol %s and the files below lib could not be planted in the fixture row f-our-1\n' "$symbol"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    json-name)
+        case_result "a dotted name core.schema.notes, cited in lib, where only lib/core/schema.json beside lib/core/schema.py holds notes, is read in schema.py and fails --citations, naming notes" \
+            "citation-our-code: f-our-1 cites the symbol core\\.schema\\.notes, whose prefix names the file lib/core/schema\\.py as the module core\\.schema, and lib/core/schema\\.py does not hold the name 'notes'" "$out"
+        ;;
+    json-only)
+        case_result "a dotted name core.schema.load, cited in lib, where lib/core/schema.json is the only file of that stem, names no module and fails --citations, naming the component core" \
+            "citation-our-code: f-our-1 cites the symbol core\\.schema\\.load, which lib holds only by its local part 'load', and the component 'core' of its prefix 'core\\.schema'" "$out"
+        ;;
+    honest) honest_result "dotted names $symbol, cited in lib, read in lib/core/schema.py beside lib/core/schema.json and in the stub lib/core/stub.pyi, pass citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 211. A file the citation names is a module only when it is a Python file, a .py file or a
+# .pyi stub, and a .py comes before a .pyi of its name (review 6031558230, the class of case
+# 210: a reader that picks a file by its stem holds the extension its form names).
+# module_names read any file's name without its last extension as a module, so at ef564aae
+# `schema.load`, cited in pkg/schema.json, a file holding only {"load": 1}, read schema.json
+# as the module schema and passed citation-our-code on the key load, though nothing in the
+# file is schema; and with pkg/schema.pyi named before pkg/schema.py, `schema.notes` was read
+# in the stub, which Python's import does not take, and passed on a name schema.py does not
+# hold. The case writes the row f-our-1 as citing pkg/schema.json holding {"load": 1} with the
+# symbol 'schema.load', then pkg/schema.json holding {"schema": {"load": 1}} with the same
+# symbol, then pkg/schema.py, a function load, with the same symbol, then 'pkg/schema.pyi,
+# pkg/schema.py', the stub declaring load and notes and the module load alone, with
+# 'schema.notes', running --citations over each (symbol_plant): the first, read as a
+# qualified name, must fail citation-our-code, naming the component schema; the second and
+# the third must pass it; and the fourth, read in schema.py, must fail it, naming notes. At
+# ef564aae the first and the fourth passed.
+for form in json json-namespace module stub-first; do
+    case "$form" in
+    json) cited='pkg/schema.json' symbol='schema.load' module_files=(pkg/schema.json '{"load": 1}') ;;
+    json-namespace) cited='pkg/schema.json' symbol='schema.load' module_files=(pkg/schema.json '{"schema": {"load": 1}}') ;;
+    module) cited='pkg/schema.py' symbol='schema.load' module_files=(pkg/schema.py $'def load(row):\n    return row\n') ;;
+    stub-first)
+        cited='pkg/schema.pyi, pkg/schema.py' symbol='schema.notes'
+        module_files=(pkg/schema.pyi $'def load(row: int) -> int: ...\ndef notes() -> str: ...\n' pkg/schema.py $'def load(row):\n    return row\n')
+        ;;
+    esac
+    dir="$(symbol_plant "symbol-module-named-$form" "$cited" "$symbol" "${module_files[@]}")" &&
+        case "$form" in
+        json-namespace) grep -qw schema "$dir/repo/pkg/schema.json" ;;
+        *) ! grep -rqw schema "$dir/repo/pkg" ;;
+        esac || {
+        printf 'FAIL the symbol %s cited in %s could not be planted in the fixture row f-our-1\n' "$symbol" "$cited"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    json)
+        case_result "a dotted name schema.load, cited in pkg/schema.json, a file holding only the key load, names no module and fails --citations, naming the component schema" \
+            "citation-our-code: f-our-1 cites the symbol schema\\.load, which pkg/schema\\.json holds only by its local part 'load', and the component 'schema' of its prefix 'schema'" "$out"
+        ;;
+    stub-first)
+        case_result "a dotted name schema.notes, cited in pkg/schema.pyi and pkg/schema.py, where only the stub holds notes, is read in schema.py and fails --citations, naming notes" \
+            "citation-our-code: f-our-1 cites the symbol schema\\.notes, whose prefix names the file pkg/schema\\.py as the module schema, and pkg/schema\\.py does not hold the name 'notes'" "$out"
+        ;;
+    *) honest_result "a dotted name schema.load, cited in $cited, which holds load under schema or is the module schema, passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

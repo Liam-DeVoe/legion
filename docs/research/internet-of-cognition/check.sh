@@ -5991,23 +5991,29 @@ paths_below() {
 # components that names such a file as a module, by module_names for a path the citation
 # names that is a file and by module_below for one that is a directory. So `engine.Engine`
 # prints engine and packages/daemon/internal/api/engine.py, the components after the run
-# being names that file holds (module_held). Only a file at the commit counts. It prints
-# nothing and returns 1 when no run names a file, a glob naming none, or when the prefix
-# holds an empty component or a /.
+# being names that file holds (module_held). A module is a Python file, a .py file or a .pyi
+# stub, and among the files the citation names a .py comes before a .pyi, as Python's import
+# takes the .py. Only a file at the commit counts. It prints nothing and returns 1 when no
+# run names a file, a glob naming none, or when the prefix holds an empty component or a /.
 module_file() {
-    local root="$1" commit="$2" prefix="$3" path run found files=() dirs=() form='^[^./]+(\.[^./]+)*$'
+    local root="$1" commit="$2" prefix="$3" path run found files=() stubs=() dirs=() form='^[^./]+(\.[^./]+)*$'
     shift 3
     [[ "$prefix" =~ $form ]] || return 1
     for path in "$@"; do
         case "$path" in ':(glob)'*) continue ;; esac
         case "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" in
-        blob) files+=("$path") ;;
+        blob)
+            case "$path" in
+            *.pyi) stubs+=("$path") ;;
+            *) files+=("$path") ;;
+            esac
+            ;;
         tree) dirs+=("$path") ;;
         esac
     done
     run="$prefix"
     while :; do
-        for path in "${files[@]}"; do
+        for path in "${files[@]}" "${stubs[@]}"; do
             module_names "$run" "$path" && printf '%s\t%s' "$run" "$path" && return 0
         done
         for path in "${dirs[@]}"; do
@@ -6019,24 +6025,28 @@ module_file() {
 }
 
 # module_names <run> <file>; returns 0 when the run of dotted components names the file as a
-# module, as Python names one, and 1 when it does not, by bash alone: the run ends with the
-# file's stem, its name without its last extension, or, for a package's __init__.py, with the
-# name of the directory it stands in, and each dotted component before that is the next
-# directory up the file's path, matched whole, from the file upward. So `engine` and
-# `api.engine` name packages/daemon/internal/api/engine.py, `pkg.mod` names pkg/mod.py while
-# `other.mod` does not, and `pkg` and `a.pkg` name a/pkg/__init__.py.
+# module, as Python names one, and 1 when it does not, by bash alone: the file is a module
+# only when its name ends with .py or .pyi, and the run ends with the file's stem, its name
+# without that extension, or, for a package's __init__.py, with the name of the directory it
+# stands in, and each dotted component before that is the next directory up the file's path,
+# matched whole, from the file upward. So `engine` and `api.engine` name
+# packages/daemon/internal/api/engine.py, `pkg.mod` names pkg/mod.py while `other.mod` does
+# not, `pkg` and `a.pkg` name a/pkg/__init__.py, and `schema` names no module of
+# pkg/schema.json, which is no Python file.
 module_names() {
     local run="$1" path="$2" name stem dir head
     name="${path##*/}"
     if [[ "$path" == */* ]]; then dir="${path%/*}"; else dir=""; fi
-    if [ "$name" = __init__.py ]; then
+    case "$name" in
+    __init__.py)
         [ -n "$dir" ] || return 1
         stem="${dir##*/}"
         if [[ "$dir" == */* ]]; then dir="${dir%/*}"; else dir=""; fi
-    else
-        stem="${name%.*}"
-        [ -n "$stem" ] && [ "$stem" != "$name" ] || return 1
-    fi
+        ;;
+    ?*.py) stem="${name%.py}" ;;
+    ?*.pyi) stem="${name%.pyi}" ;;
+    *) return 1 ;;
+    esac
     if [ "$run" = "$stem" ]; then
         head=""
     elif [[ "$run" == ?*".$stem" ]]; then
@@ -6057,12 +6067,16 @@ module_names() {
 # names none. The run names every directory between that directory and the file: its
 # components are the directory's own last directories, none or more, matched whole and in
 # order, as module_names matches them, then a path below it, each component a directory,
-# ending in a file's stem, as `core.verifier` and `lib.core.verifier` name
-# lib/core/verifier.py below lib, or in a package, a directory holding __init__.py, as `core`
-# names lib/core/__init__.py; the directory's own last directories alone name its own
-# __init__.py, as `lib` names lib/__init__.py. A package comes before a module of its name, as
-# Python imports it. Only a file at the commit counts, read by git ls-tree and git cat-file of
-# <commit>:<path>, which take no pathspec.
+# ending in a module, a file named by the last component and .py, or .pyi where no .py of
+# that name stands, as `core.verifier` and `lib.core.verifier` name lib/core/verifier.py
+# below lib, or in a package, a directory holding __init__.py, as `core` names
+# lib/core/__init__.py; the directory's own last directories alone name its own __init__.py,
+# as `lib` names lib/__init__.py. A file of any other extension is no module, so
+# `core.schema` names lib/core/schema.py and never lib/core/schema.json beside it, and no
+# file where schema.json stands alone. A package comes before a module of its name, as
+# Python imports it, and a .py before a .pyi, as Python's import takes the .py. Only a file at
+# the commit counts, read by git ls-tree and git cat-file of <commit>:<path>, which take no
+# pathspec.
 module_below() {
     local root="$1" commit="$2" run="$3" top="$4" comps=() up=() j i m k base last listing meta entry package module
     IFS=. read -r -a comps <<<"$run"
@@ -6088,7 +6102,10 @@ module_below() {
                     package="$base/$entry/__init__.py"
                 ;;
             *' blob '*)
-                [ -z "$module" ] && [ "$entry" != "$last" ] && [ "${entry%.*}" = "$last" ] && module="$base/$entry"
+                case "$entry" in
+                "$last.py") module="$base/$entry" ;;
+                "$last.pyi") [ -n "$module" ] || module="$base/$entry" ;;
+                esac
                 ;;
             esac
         done <<<"$listing"
@@ -6342,18 +6359,26 @@ symbol_refused() {
 #          commit as a module (module_file) is that file, which becomes here, and the part
 #          holds when each name after the run stands in it, the class or attribute
 #          `engine.Engine.match` writes and then the local part, or fails naming the first it
-#          does not hold (module_held). A run names a file the citation names when it ends
-#          with the file's stem, its name without its last extension, each component before
-#          that being the next directory up, matched whole (module_names): `engine.match`
-#          and `api.engine.match` read packages/daemon/internal/api/engine.py, and
-#          `other.mod.func` names no module of pkg/mod.py (cases 187, 188, 189); or when it
-#          ends with the name of the directory a package's __init__.py stands in, as
-#          `pkg.func` and `a.pkg.func` read a/pkg/__init__.py (case 190). A run names a file
-#          below a directory the citation names when its components are that directory's own
-#          last directories, none or more, then the path below it to a file's stem or to a
-#          package, a package before a module of its name (module_below): cited in lib,
-#          `core.verifier.verify` and `lib.core.verifier.verify` read lib/core/verifier.py,
-#          `core.setup` lib/core/__init__.py and `lib.hook` lib/__init__.py (case 191);
+#          does not hold (module_held). A module is a Python file alone: a .py file, a .pyi
+#          stub, a .py coming before a .pyi of its name as Python's import takes the .py, or a
+#          package's __init__.py. A file of any other extension is never read as a module, and
+#          a part whose run names only such a file is read as the next reading gives it
+#          (cases 210, 211). A run names a file the citation names when it ends with the
+#          file's stem, its name without .py or .pyi, each component before that being the
+#          next directory up, matched whole (module_names): `engine.match` and
+#          `api.engine.match` read packages/daemon/internal/api/engine.py, `other.mod.func`
+#          names no module of pkg/mod.py (cases 187, 188, 189), and `schema.load` names no
+#          module of pkg/schema.json, so it is read as a namespace and its prefix schema must
+#          stand in that file (case 211); or when it ends with the name of the directory a
+#          package's __init__.py stands in, as `pkg.func` and `a.pkg.func` read
+#          a/pkg/__init__.py (case 190). A run names a file below a directory the citation
+#          names when its components are that directory's own last directories, none or more,
+#          then the path below it to a module or to a package, a package before a module of
+#          its name (module_below): cited in lib, `core.verifier.verify` and
+#          `lib.core.verifier.verify` read lib/core/verifier.py, `core.setup`
+#          lib/core/__init__.py and `lib.hook` lib/__init__.py (case 191), and
+#          `core.schema.load` reads lib/core/schema.py and never lib/core/schema.json beside
+#          it (case 210);
 #        - `Namespace.Symbol`, any other prefix: the part holds when here holds the local part
 #          and each component of the prefix too, each a word of letters, digits, `_` and `-`
 #          (prefix_held), so `Engin.match` fails where `class Engine` and `def match` stand,
