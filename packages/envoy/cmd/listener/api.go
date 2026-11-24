@@ -415,7 +415,7 @@ func mayHaveStored(err error) bool {
 // (packages/pi-shared/src/legion-claim-core.ts, stopAfterRegistration). setRole reads a 409
 // carrying error, role and holder as a claim not granted that names its holder, and both
 // harnesses ask again on their own cadence for as long as that holder is their own session
-// (packages/claude-envoy/src/legion-claim.ts, packages/pi-envoy/src/task-queue.ts): the
+// (packages/claude-envoy/src/legion-claim.ts, packages/pi-envoy/src/registration-state.ts): the
 // wait a standing claim of another process gets. claude-envoy asks for no longer than
 // ROLE_CLAIM_WAIT_MS, the live window and 10 s, so a refusal that outlasts that still stops its
 // pane.

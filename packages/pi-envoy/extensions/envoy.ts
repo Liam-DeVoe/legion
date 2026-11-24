@@ -238,6 +238,7 @@ import {
   type DialLimit,
   type RegistrationInput,
   type RoleSnapshot,
+  type TaskHandle,
 } from "../src/registration-state";
 import { scrubbedConsole, scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
 import { ServerClock } from "../src/server-clock";
@@ -251,7 +252,7 @@ import { type SessionInbound, sessionInbound } from "../src/session-inbound";
 import { sideTurn } from "../src/side-turn";
 import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
 import { gatedLogger } from "../src/stop-gates";
-import { stepWasRefused, type TaskHandle, taskWasAbandoned } from "../src/task-queue";
+import { stepWasRefused, taskWasAbandoned } from "../src/task-queue";
 import { TypedPictures } from "../src/typed-pictures";
 import {
   MOVED_SESSION_REASON,
@@ -3457,13 +3458,14 @@ export default function envoyExtension(hostApi: PiApi): void {
     if (refusal !== undefined) throw new Error(refusal);
   };
 
-  // The registration and role state the two serial queues write, the queues themselves, each
-  // task's deadline and this extension instance's client instance id, all private to
-  // `../src/registration-state` and `../src/task-queue`. A queued task writes none of it by hand:
-  // `run` hands it a handle whose every step — a state write, a listener request, a NATS
-  // connection, a subscribe — refuses once that task was abandoned at its deadline or the session
-  // it acts for stopped being the open one, and a role move's once this session's stop has begun
-  // (`shuttingDown`). The first refusal latches. Nothing here re-checks a fence before a step.
+  // The registration and role state the two serial queues write, the queues themselves and this
+  // extension instance's client instance id, all private to `../src/registration-state`. That
+  // module builds the queues from the generic serial queue of `../src/task-queue`, which holds
+  // each task's deadline timer. A queued task writes none of it by hand: `run` hands it a handle
+  // whose every step — a state write, a listener request, a NATS connection, a subscribe —
+  // refuses once that task was abandoned at its deadline or the session it acts for stopped being
+  // the open one, and a role move's once this session's stop has begun (`shuttingDown`). The
+  // first refusal latches. Nothing here re-checks a fence before a step.
   // `handle.check()` is left at the two places that are not steps: where a catch-all would
   // otherwise swallow the refusal, and before an action outside the handle (a replay trigger, a
   // throw this pass reports) that a refused task must not take.
