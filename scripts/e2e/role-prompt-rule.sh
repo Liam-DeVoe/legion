@@ -15,7 +15,7 @@
 # of the prompt file, and reads that file. The pid the claim's locator carries is the
 # `legion worker-shim`'s, which starts Oh My Pi as a child, so the driver walks /proc for that
 # shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It finds the phase worker's five
-# sentences of the pod memory rule and every architect's six in that prompt; the planner's three
+# sentences of the pod memory rule and every architect's four in that prompt; the planner's three
 # parts of the completion-after-work rule — the `head` its handoff body names, the clause that
 # carries that head to the daemon, and the sentence that records the `plan` handoff with
 # `dispatch handoff-write` and then reports completion — in the planner's; and, in the child's

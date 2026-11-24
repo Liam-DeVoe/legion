@@ -210,8 +210,8 @@ type launchedPrompt struct {
 
 // TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive boots the daemon over three real
 // panes, reads the command line each of those three processes was launched with, and holds in
-// each the rules that role's own prompt carries: the pod memory rule, the phase worker's eight
-// sentences and every architect's six; in the planner's, the three needles of the rule that its
+// each the rules that role's own prompt carries: the pod memory rule, the phase worker's five
+// sentences and every architect's four; in the planner's, the three needles of the rule that its
 // completion reports work already done at a named head: the `head` field, the clause that carries
 // it to the daemon, and the order sentence that records the `plan` handoff before the completion
 // is reported; and in the child's architect's, the sub-architect's own heading in place of the
@@ -404,7 +404,7 @@ func (r *rolePromptRuleLive) phaseWorkerCarriesTheRule() {
 	r.carriesTheRule("phase worker", "pod memory rule", r.token(r.issue, claim.RolePlanner), podRuleForPhaseWorker)
 }
 
-// rootArchitectCarriesTheRule holds the six sentences of the architect's own wording of the rule
+// rootArchitectCarriesTheRule holds the four sentences of the architect's own wording of the rule
 // in the root architect's own command line.
 func (r *rolePromptRuleLive) rootArchitectCarriesTheRule() {
 	r.carriesTheRule("root architect", "pod memory rule", r.token(r.issue, claim.RoleArchitect), podRuleForArchitect)
@@ -423,7 +423,7 @@ func (r *rolePromptRuleLive) plannerCarriesTheCompletionRule() {
 // subArchitectCarriesItsPrompt holds, in the prompt the child's architect's own Oh My Pi was
 // launched with, what a sub-architect is launched with: the heading of its own part, and not the
 // root's; the addressing clause that names the root's architect, by its role topic, as the
-// architect above it; and every architect's six sentences of the pod memory rule. The root
+// architect above it; and every architect's four sentences of the pod memory rule. The root
 // architect's own prompt carries the root's heading and not the sub-architect's, so the two
 // architects were composed apart.
 func (r *rolePromptRuleLive) subArchitectCarriesItsPrompt() {
