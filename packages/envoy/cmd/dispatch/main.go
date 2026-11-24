@@ -1077,7 +1077,7 @@ func main() {
 	if reconciler != nil {
 		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", ciReconcileInterval)
 		if boot.VerdictAppID == "" {
-			slog.Info("dispatch: the CI reconcile pass records no verdict check run: DISPATCH_VERDICT_APP_ID is unset, so no App's verdict checks are trusted")
+			slog.Info("dispatch: the CI reconcile pass records no verdict check run and leaves no App's check suites out: DISPATCH_VERDICT_APP_ID is unset, so no App's verdict checks are trusted; give it the listener's ENVOY_VERDICT_APP_ID")
 		}
 		reconciler.GitHubReads = recordGitHubRead
 		// The period argument is what makes one process serve each period (duty_passes): the
@@ -1544,6 +1544,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if boot.VerdictAppID, err = verdictAppID(env); err != nil {
+		return bootConfig{}, err
 	}
 	if boot.VerdictAppID, err = verdictAppID(env); err != nil {
 		return bootConfig{}, err

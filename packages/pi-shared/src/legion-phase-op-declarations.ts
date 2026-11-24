@@ -372,9 +372,9 @@ export const PHASE_OP_SENTENCES = {
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
     "The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester " +
     "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
-    "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing, and names in " +
-    "`commit` the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the pull request's " +
-    "current head (VERDICT_HEAD_NOT_CURRENT). That move counts no review round. ",
+    "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task, and " +
+    "names in `commit` the head it sends back. That move is its acceptance's changes at that head, which the daemon takes only at the " +
+    "pull request's current head (VERDICT_HEAD_NOT_CURRENT). That move counts no review round: only a review that requests changes counts one. ",
   reviewVerdict:
     "review_verdict answers the daemon's request, when the head of the pull request moves while its issue stands past its review " +
     "(accepting, retro or merging), for a verdict on the new head from the agent of each review step of the issue's task that has " +
@@ -465,7 +465,8 @@ export function legionToolDescription(host: {
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
-    "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
+    "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
+    "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
     "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
     "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +

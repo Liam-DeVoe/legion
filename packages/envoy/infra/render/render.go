@@ -287,6 +287,9 @@ func webhookListenerEnv(args []string, stdout, stderr io.Writer) int {
 	if given["verdict-app-id"] {
 		env.VerdictAppId = &verdictAppID
 	}
+	if given["verdict-app-id"] {
+		env.VerdictAppId = &verdictAppID
+	}
 	if given["mention-trigger"] {
 		env.MentionTrigger = &mentionTrigger
 	}

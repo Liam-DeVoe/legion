@@ -29,8 +29,8 @@ type WebhookConfig struct {
 type GitHubWebhook struct {
 	Secret         string
 	MentionTrigger string
-	// VerdictAppID is the verdict App's id, ENVOY_VERDICT_APP_ID: the App whose verdict check runs
-	// the listener records and whose own check suites it leaves out of the CI record.
+	// VerdictAppID is the verdict App's id, ENVOY_VERDICT_APP_ID, trimmed: the App whose verdict
+	// check runs the listener records and whose own check suites it leaves out of the CI record.
 	VerdictAppID string
 	// RepositoryRenames is each repository GitHub renamed, as ENVOY_GITHUB_REPOSITORY_RENAMES
 	// configures it: the listener publishes a copy of every envelope of the current repository
@@ -83,12 +83,16 @@ func LoadWebhookConfig() (*WebhookConfig, error) {
 			if err != nil {
 				return nil, fmt.Errorf("ENVOY_GITHUB_REPOSITORY_RENAMES: %w", err)
 			}
-			verdictAppID, err := contracts.VerdictAppID(os.Getenv, "ENVOY_VERDICT_APP_ID", "ENVOY_REVIEWER_APP_ID")
-			if err != nil {
-				return nil, err
-			}
+			// The verdict App's id, from ENVOY_VERDICT_APP_ID or, while that is unset, the former
+			// ENVOY_REVIEWER_APP_ID (contracts.VerdictAppSetting). A verdict App id that is not a
+			// GitHub App's would match no suite and leave the filter off without a word, so it
+			// refuses the start, naming the setting it was read from.
+			verdictAppID, name := contracts.VerdictAppSetting(os.Getenv, "ENVOY_VERDICT_APP_ID", "ENVOY_REVIEWER_APP_ID")
 			if verdictAppID == "" {
 				return nil, fmt.Errorf("ENVOY_VERDICT_APP_ID required when github enabled")
+			}
+			if !contracts.IsGithubAppID(verdictAppID) {
+				return nil, fmt.Errorf("%s %q is not a GitHub App id: a whole number above 0, with no leading zero", name, verdictAppID)
 			}
 			cfg.GitHub = &GitHubWebhook{
 				Secret:            secret,

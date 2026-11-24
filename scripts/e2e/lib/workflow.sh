@@ -572,10 +572,23 @@ reviewer_commented() {
     --jq ".[] | select(.user.login == \"$app\" and .state == \"COMMENTED\" and .body != \"\") | .id") || return 1
   [ -n "$commented" ]
 }
+# reviewer_completed ISSUE: the daemon recorded the reviewer's completion of the issue's open round,
+# which names the reviewer's Dispatch handoff record (the reviewer pushes nothing).
+reviewer_completed() { daemon_state | jq -e --arg issue "$1" '(.issues[$issue].workers.reviewer.handoffRecord.id // "") != ""' >/dev/null; }
+# assert_review_round_handoff ISSUE ROUND checks the reviewer's handoff record of a changes-requested
+# round. The round ends on the reviewer's completion with its verdict, which names the record, so
+# the completion is recorded once the issue stands in implementing; the move into reviewing clears
+# the reviewer's record of the round before, so a record in the state is this round's. It waits for
+# that completion (reviewer_completed), then checks the record (assert_handoff_record).
+assert_review_round_handoff() {
+  until_true 600 "the daemon to record the reviewer's completion of $1's round $2, naming its handoff record" reviewer_completed "$1"
+  assert_handoff_record "$1" reviewer reviewing "$2"
+}
 # approve_as_reviewer asks the reviewer for the round's last review and waits for its verdict
 # approve on the head, from its own claim, in the daemon's record: the reviewer approves the code
-# head and pushes nothing above it, its handoff being a record on the Dispatch issue. The merge
-# carries the run's retro learnings onto the smoke main, and clean_smoke_main removes them.
+# head and pushes nothing above it, its handoff being a record on the Dispatch issue. Retro commits
+# nothing, so the merge carries no retro learning onto the smoke main, and clean_smoke_main removes
+# any an earlier merge left there.
 approve_as_reviewer() {
   local issue=$1
   send_agent "$issue" reviewer "Stage 3 proof final review: review pull request #$pr_number in $repo as your role says, taking the round's steps in the order it gives. Post your findings as one COMMENT review (GitHub takes no approval from the pull request's author, whose App you act as), and complete the reviewer handoff with your verdict on the head you reviewed. This is the round's last review."
@@ -627,8 +640,8 @@ release_smoke_main() {
   note "released $repo main ($smoke_main_lock)"
 }
 # smoke_main_leftovers prints each path on the smoke repository's main under docs/solutions/, the
-# retro learnings a merged proof pull request carries there, or under .legion/, which only a merge
-# from before handoffs moved to Dispatch can have left.
+# retro learnings a proof pull request merged before retro stopped committing left there, or under
+# .legion/, which only a merge from before handoffs moved to Dispatch can have left.
 smoke_main_leftovers() {
   gh api "repos/$repo/git/trees/main?recursive=1" \
     --jq '.tree[] | select(.type == "blob") | .path | select(startswith(".legion/") or startswith("docs/solutions/"))'
@@ -894,7 +907,7 @@ clean_smoke_main() {
     gh api -X DELETE "repos/$repo/contents/$path" -f message="proof fixture: remove $path" -f sha="$sha" -f branch="$branch" >/dev/null
   done <<<"$paths"
   url=$(gh -R "$repo" pr create --base main --head "$branch" --title "proof fixture: remove the handoffs and learnings Stage 3 runs merged ($project)" \
-    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which each proof merge carries, and any .legion/ handoffs a merge from before retro removed them left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
+    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which proof merges from before retro stopped committing left, and any .legion/ handoffs a merge from before retro removed them left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
   smoke_cleanup_url=$url
   pr=${url##*/}
   timeout_hook=report_smoke_pr_merge_state

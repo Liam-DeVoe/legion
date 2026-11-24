@@ -148,9 +148,9 @@ type CIObservation struct {
 // the CI store takes a check suite only once it completes, as Dispatch's CI reconcile records
 // only completed suites.
 //
-// The verdict App's own check suites and legion-verdict runs are no CI result
-// (VerdictAppsOwn), so they map to nothing, in every action, and the listener
-// logs a line for each one left out, a requested suite's too.
+// A check suite the verdict App created (VerdictAppsOwnSuite) and a legion-verdict run it created
+// (VerdictAppsOwn) map to nothing, in every action, and the listener logs a line for each one left
+// out, a requested suite's too.
 func GithubCIObservations(event string, body map[string]any, verdictAppID string) []CIObservation {
 	numbers := githubCIPullRequests(event, body)
 	if len(numbers) == 0 {
@@ -192,6 +192,30 @@ func GithubCIObservations(event string, body map[string]any, verdictAppID string
 		out = append(out, obs)
 	}
 	return out
+}
+
+// VerdictAppsOwnSuite reports whether an observation is a check suite the verdict App created,
+// in any state, which is no CI result: GitHub makes the App a check suite on every push, queued
+// until the App writes a run in it, and a head's record that kept it would never settle. With no
+// verdict App id nothing is the App's own.
+func VerdictAppsOwnSuite(observation CIObservation, verdictAppID string) bool {
+	return verdictAppID != "" && observation.CheckName == "" && observation.AppID == verdictAppID
+}
+
+// IsGithubAppID reports whether id is a GitHub App's id as GitHub's JSON gives it and an
+// observation's AppID writes it (nestedNumberString): a whole number above 0, in decimal digits
+// with no leading zero. Any other id would match no App's suite, so a verdict App setting of one
+// is refused rather than read as a filter that leaves nothing out.
+func IsGithubAppID(id string) bool {
+	if id == "" || id[0] == '0' {
+		return false
+	}
+	for _, digit := range []byte(id) {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // GithubCIObservation maps one GitHub check-run or check-suite object (event is "check_run" or
@@ -371,16 +395,15 @@ func ReviewerVerdictDecision(checkName, appID, verdictAppID string) ReviewerVerd
 
 // VerdictAppsOwn reports whether an observation is the verdict App's own output rather than a CI
 // result, and so no part of a head's CI record: a check suite the verdict App created, in any
-// state, or a legion-verdict run it created. GitHub makes the App a check suite on every push,
-// queued until the App writes a run in it, which a record that kept it would never settle past;
-// and the legion-verdict run is the daemon's own write, which would wake a role a second time.
-// A legion-verdict run of any other App is no verdict (ReviewerVerdictDecision), so no
-// legion-verdict run reaches a record at all. With no verdict App id nothing is the App's own.
+// state (VerdictAppsOwnSuite), or a legion-verdict run it created, which is the daemon's own write
+// and would wake a role a second time. A legion-verdict run of any other App is no verdict
+// (ReviewerVerdictDecision), so no legion-verdict run reaches a record at all. With no verdict App
+// id nothing is the App's own.
 func VerdictAppsOwn(observation CIObservation, verdictAppID string) bool {
-	if verdictAppID == "" || observation.AppID != verdictAppID {
-		return false
+	if VerdictAppsOwnSuite(observation, verdictAppID) {
+		return true
 	}
-	return observation.CheckName == "" || observation.CheckName == LegionVerdictCheck
+	return verdictAppID != "" && observation.AppID == verdictAppID && observation.CheckName == LegionVerdictCheck
 }
 
 // VerdictAppSetting reads the verdict App's id from a program's settings, through get: the

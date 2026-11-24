@@ -241,6 +241,11 @@ type Manager struct {
 	// leaves it nil: its read is the token_command's run, which runTokenCommand shares.
 	pendingInstallations *pendingInstallations
 	commands             map[scope]*commandRun
+	// keptLogin holds, in token mode, the installation AppLogin took from the command's release of
+	// every installation and has not yet read the App's login under (loginRelease), nil for none:
+	// a later AppLogin reads under it while it is fresh, so a login read that failed after its
+	// release runs the command no second time for it.
+	keptLogin *releasedInstallation
 	// keys holds each App private key parsed, by its PEM text (generateJWT).
 	keys map[string]*rsa.PrivateKey
 

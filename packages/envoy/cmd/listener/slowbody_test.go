@@ -27,10 +27,13 @@ type slowBodyPublisher struct {
 	published []contracts.Envelope
 }
 
-func (p *slowBodyPublisher) PublishWithin(_ context.Context, e contracts.Envelope) error {
+func (p *slowBodyPublisher) PublishEachWithin(_ context.Context, e contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.published = append(p.published, e)
+	if published != nil {
+		published(e.Topic, false, false)
+	}
 	return nil
 }
 

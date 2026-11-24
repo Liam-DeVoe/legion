@@ -306,7 +306,7 @@ nats_urls:
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
 # The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
-# default repository in Dispatch. `production_check: tester` is the word that names the role a merge's production check
+# default repository in Dispatch. \`production_check: tester\` is the word that names the role a merge's production check
 # is handed to, written out here rather than left to the default, so the run proves the setting is
 # read; Stage 4b's rig names no key and proves the default.
 projects:
@@ -928,7 +928,7 @@ primary_issue() {
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
     # The round ends when the reviewer completes it: its review, its handoff record, its verdict.
     wait_for_phase "$root_issue" implementing 1200
-    assert_handoff_record "$root_issue" reviewer reviewing "$round"
+    assert_review_round_handoff "$root_issue" "$round"
     assert_reviewer_verdict "$root_issue" "$round" changes
     if [ "$round" = 2 ]; then
       bot_thread_resolved "$bot_thread" $((bot_replies_before + 1)) ||

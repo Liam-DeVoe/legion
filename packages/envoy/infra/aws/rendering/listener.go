@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 const (
@@ -76,6 +77,11 @@ func (e ListenerEnv) Check() error {
 	}); err != nil {
 		return err
 	}
+	// A verdict App id that is not a GitHub App's id would stop the listener at start
+	// (webhook.LoadWebhookConfig).
+	if set(e.VerdictAppId) && !contracts.IsGithubAppID(*e.VerdictAppId) {
+		return core.InputErrorf("verdictAppId", "verdictAppId %q is not a GitHub App id: a whole number above 0, with no leading zero", *e.VerdictAppId)
+	}
 	if !slices.ContainsFunc(supportedWebhooks, func(w []string) bool { return slices.Equal(e.Webhooks, w) }) {
 		supported := make([]string, len(supportedWebhooks))
 		for i, w := range supportedWebhooks {
@@ -110,10 +116,11 @@ func (e ListenerEnv) Check() error {
 // container definitions list it: core.ListenerConfig.Env's, which writes the listen host after the
 // port where the reference lists it and the sender limit only when it is set, then the replicas
 // and the webhooks: ENVOY_WEBHOOKS only when one is listed, and the GitHub variables only with
-// github. It refuses NatsUrls as Env does, and the sender limit as Check does, since it reads the
-// limit through the same rule; it expects the rest to have passed Check, which the component and
-// the render command run first, and runs none of Check's other checks itself, so the container
-// definitions are written for any webhook list.
+// github, ENVOY_VERDICT_APP_ID last. It refuses NatsUrls as Env does,
+// and the sender limit as Check does, since it reads the limit through the same rule; it expects
+// the rest to have passed Check, which the component and the render command run first, and runs
+// none of Check's other checks itself, so the container definitions are written for any webhook
+// list.
 func (e ListenerEnv) Variables() ([]string, error) {
 	config, err := e.config()
 	if err != nil {

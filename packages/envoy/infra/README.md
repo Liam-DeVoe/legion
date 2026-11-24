@@ -1530,6 +1530,13 @@ Setting the App also starts Dispatch's webhook redelivery sweep, which needs the
 bucket the hub's Dispatch user is granted (`DispatchPermissions`): a pod whose NATS user lacks it
 exits at boot. With either group unset, nothing renders and the app's pod template is unchanged.
 
+`verdictAppId` (plain, optional, with the App) is the id of the App that writes `legion-verdict`,
+rendered as `DISPATCH_VERDICT_APP_ID` after the App's three variables and only when given: Dispatch's
+CI reconcile pass, which the App's key runs, leaves that App's check suites out of the CI record, as
+the listener does under `ENVOY_VERDICT_APP_ID` (`aws:WebhookListener`'s `verdictAppId`). Set the
+listener's and this one to the same App id, or neither: with the listener's set and this one unset,
+the pass writes the App's completed suite back into a settled record and the head is published twice.
+
 The Azure embedder's inputs are a third optional group, which takes no secret value either, and
 which reaches the app's `envoy-dispatch` container alone. `azureEmbedEndpoint` turns meaning search
 onto Azure AI Foundry: `DISPATCH_EMBEDDER=azure` and `DISPATCH_AZURE_EMBED_ENDPOINT`, the base URL
@@ -1625,7 +1632,8 @@ inputs or with an entry Dispatch would refuse, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` that is no
-Secret's key (as `seedSecretKey`'s rule above), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
+Secret's key (as `seedSecretKey`'s rule above), a `verdictAppId` without the App, blank, or not a
+GitHub App id (a whole number above 0 with no leading zero), and an `agentSecretsUrl` that is not an absolute http(s) URL with no path; and,
 of the Azure embedder's group, any `azureEmbed` input without `azureEmbedEndpoint`, an endpoint
 without `azureEmbedTokensPerMinute` or with one below 1, both credential forms or neither,
 `azureTenantId` or `azureClientId` without the other, an `azureFederationAudience` without them or
@@ -3262,6 +3270,9 @@ none for `webhooks: []`, and refuses `--verdict-app-id` and `--mention-trigger`.
 
 Without `--verdict-app-id`, it prints
 `refused: --verdict-app-id: verdictAppId is required with webhook "github"` and exits 2.
+
+`--verdict-app-id` sets `verdictAppId` and prints `ENVOY_VERDICT_APP_ID` after the other GitHub
+lines; left out, it prints none.
 
 `--sender-messages-per-minute` and `--sender-message-burst` set `senderMessagesPerMinute` and
 `senderMessageBurst`. Each prints its variable, `ENVOY_SENDER_MESSAGES_PER_MINUTE` or

@@ -22,6 +22,7 @@ import (
 )
 
 func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 

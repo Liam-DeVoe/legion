@@ -50,11 +50,13 @@ var _ Logins = (*Manager)(nil)
 
 // AppLogin is the App's bot login, "<slug>[bot]", read from GET /app under the App's JWT, or in
 // token mode from GraphQL's viewer under a token of any installation, checked against the
-// configured app_id (tokenIdentity).
+// configured app_id (tokenIdentity). In token mode the installation is kept until the login is
+// read under it (loginRelease), so a call after one that failed past its release runs the
+// command again only once that installation is within refreshWindow of its expiry.
 func (m *Manager) AppLogin(ctx context.Context) (string, error) {
 	app := m.githubApp
 	if app.TokenCommand != "" {
-		installation, err := m.anyInstallation(ctx, app)
+		installation, err := m.loginRelease(ctx, app)
 		if err != nil {
 			return "", fmt.Errorf("read the App's login: %w", err)
 		}
@@ -62,6 +64,7 @@ func (m *Manager) AppLogin(ctx context.Context) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read the App's login: %w", err)
 		}
+		m.forgetLoginRelease()
 		return bot.identity.Name, nil
 	}
 	jwt, err := m.generateJWT(app.AppID, app.PrivateKey, m.now())

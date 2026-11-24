@@ -30,12 +30,19 @@ import (
 // (record.AttemptRun), which the judgement carries: both fuzzes settle heads, so every judgement
 // with a check run in it reads differently, and a settlement that is newer for some names and
 // older for others is applied per name now rather than dropped whole (ClassifySettlement), which
-// moves what the fences of the run fuzz's several heads come to. What they fence is this release
-// against itself: a daemon running ahead of its listener judges as recorded here, so a later
-// change that moves that judgement is seen rather than deployed. They moved again when a push
-// stopped naming whose role made it, since one App pushes for every role: the fuzzes no longer
-// draw that mark, so each seed draws another history. Drawn as before, the histories still judged
-// to the digests recorded before the mark went, so that change moved no judgement.
+// moves what the fences of the run fuzz's several heads come to. The run fuzz's run-1 digest moved
+// once more with the fence the pull request remembers for each settled head (SettledHeads,
+// SettlementFor): in two of its histories a head's fence was reset - the branch left the head and
+// came back, or a reopen - and a settlement of that head with an older run of ci than one applied
+// before was delivered after, which that memory finds stale where the release before applied it.
+// Weighing such a settlement against the head's whole remembered fence, rather than its runs alone,
+// moved no digest: the fuzz's settlements each name one check and no commit status.
+// What they fence is this release against itself: a daemon running ahead of its listener judges
+// as recorded here, so a later change that moves that judgement is seen rather than deployed. They
+// moved again when a push stopped naming whose role made it, since one App pushes for every role:
+// the fuzzes no longer draw that mark, so each seed draws another history. Drawn as before, the
+// histories still judged to the digests recorded before the mark went, so that change moved no
+// judgement.
 var noMoveNamedDigests = map[string]string{
 	"run-1":          "245fb1515d4bfe0e6d5f80b70b168529119049c06e0a304fcc444560a8d5a195",
 	"run-7":          "636aaa65ec64bb8ea6c3c63540e1c5ff736fbdfcee32618d198660eb6215b6b7",

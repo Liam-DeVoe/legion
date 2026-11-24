@@ -1150,7 +1150,7 @@ pass
 begin merger-merges-with-its-own-squash-message
 # The early-merge section merged $root2's pull request into the scratch base, and both proof pull
 # requests branched from the same main commit, so $root1's may no longer merge there cleanly (their
-# retro learnings, for one). It merges into a base of its own, cut from that main commit.
+# changes to one file, for one). It merges into a base of its own, cut from that main commit.
 gh api "repos/$repo/git/refs" -f ref="refs/heads/$merge_base" -f sha="$main_sha" >/dev/null
 gh -R "$repo" pr edit "${pr_of[$root1]}" --base "$merge_base" >/dev/null
 note "$repo#${pr_of[$root1]} retargeted to its own base $merge_base at main $main_sha"

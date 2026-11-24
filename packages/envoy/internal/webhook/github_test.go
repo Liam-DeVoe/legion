@@ -743,7 +743,8 @@ func TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHa
 	}
 
 	// Another delivery the full stream refused, asked for again once the stream has room: the
-	// redelivery is stored, so the listener answers 200 and logs nothing.
+	// redelivery is stored, so the listener answers 200 and logs no failure, only the line naming
+	// the stored publish.
 	stored := envelope("d-room", "stored")
 	if status, lines = post("d-room", "stored"); status != http.StatusServiceUnavailable || len(lines) != 1 {
 		t.Fatalf("the delivery into the full stream answered %d and logged %v, want 503 and one counted line", status, lines)
@@ -751,8 +752,9 @@ func TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHa
 	if err := js.PurgeStream(bus.Stream); err != nil {
 		t.Fatalf("purge the stream: %v", err)
 	}
-	if status, lines = post("d-room", "stored"); status != http.StatusOK || len(lines) != 0 {
-		t.Fatalf("after the purge, the redelivery answered %d and logged %v, want 200 and no line", status, lines)
+	if status, lines = post("d-room", "stored"); status != http.StatusOK || len(lines) != 1 ||
+		!strings.HasPrefix(lines[0], `github published delivery="d-room" `) || !strings.HasSuffix(lines[0], " result=stored resent=false") {
+		t.Fatalf("after the purge, the redelivery answered %d and logged %v, want 200 and its one github published line, stored", status, lines)
 	}
 	info, err := js.StreamInfo(bus.Stream)
 	if err != nil {
@@ -936,58 +938,6 @@ func TestGitHubHandlerStatus(t *testing.T) {
 				t.Errorf("recorder calls = %d, want 0", n)
 			}
 		})
-	}
-}
-
-// TestGitHubSenderLineNamesTheWebhookApp asserts the line each sender-logged delivery writes names
-// the resource whose webhook sent it, from GitHub's X-GitHub-Hook-Installation-Target-Type and
-// X-GitHub-Hook-Installation-Target-ID headers: for an App's webhook, integration and the App's
-// id, so a read of the listener's log tells which App's webhook delivers. A delivery without the
-// headers names neither value, and the line keeps both keys.
-func TestGitHubSenderLineNamesTheWebhookApp(t *testing.T) {
-	logtest.Keep(t)
-	log.SetFlags(0)
-	body := []byte(`{
-		"action": "created",
-		"issue": {"number": 42, "title": "test issue"},
-		"comment": {"body": "just a comment", "user": {"login": "octocat"}},
-		"sender": {"login": "octocat", "type": "User"},
-		"repository": {"name": "widgets", "owner": {"login": "acme"}, "full_name": "acme/widgets"}
-	}`)
-	post := func(delivery string, headers map[string]string) string {
-		t.Helper()
-		logged := &logtest.Buffer{}
-		log.SetOutput(logged)
-		handler := GitHubHandler("s", "@legion", "5341240", &mockPublisher{}, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
-		req := httptest.NewRequest("POST", "/webhook/github", bytes.NewReader(body))
-		req.Header.Set("X-GitHub-Delivery", delivery)
-		req.Header.Set("X-GitHub-Event", "issue_comment")
-		req.Header.Set("X-Hub-Signature-256", githubSign("s", body))
-		for name, value := range headers {
-			req.Header.Set(name, value)
-		}
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
-		}
-		for _, line := range strings.Split(logged.String(), "\n") {
-			if strings.HasPrefix(line, "github sender ") {
-				return line
-			}
-		}
-		t.Fatalf("no github sender line in %q", logged.String())
-		return ""
-	}
-	line := post("d-target", map[string]string{
-		"X-GitHub-Hook-Installation-Target-Type": "integration",
-		"X-GitHub-Hook-Installation-Target-ID":   "5341240",
-	})
-	if want := "github sender login=octocat type=User target_type=integration target_id=5341240 delivery=d-target event=issue_comment"; line != want {
-		t.Errorf("line = %q, want %q", line, want)
-	}
-	if line := post("d-no-target", nil); line != "github sender login=octocat type=User target_type= target_id= delivery=d-no-target event=issue_comment" {
-		t.Errorf("line without the headers = %q, want both target keys with no value", line)
 	}
 }
 

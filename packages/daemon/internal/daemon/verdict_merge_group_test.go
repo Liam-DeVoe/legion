@@ -135,7 +135,7 @@ func TestMergeGroupHandlerIsRegistered(t *testing.T) {
 		VerdictRepositories: []config.VerdictRepository{widgetsEntry},
 	}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames),
-		appauth.NewInstalled(), slog.New(slog.DiscardHandler), verdictBootTokens{loginTokens{login: verdictAppLogin}}, api, nil, time.Now)
+		appauth.NewInstalled(), slog.New(slog.DiscardHandler), verdictBootTokens{loginTokens{login: verdictAppLogin}}, api, nil, time.Now, nil)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}

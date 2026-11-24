@@ -4,6 +4,10 @@
 // the state of each head computed for its own repository. The rig is check_states_test.go's.
 package api
 
+//ci:reads packages/contracts/src/** the stored check.state_changed payload is parsed by `bun -e` in packages/contracts, importing ./src/index.ts for CheckStateChangedEventPayloadSchema
+//ci:reads packages/contracts/package.json that `bun -e` runs in packages/contracts, which reads the package's manifest
+//ci:reads packages/contracts/tsconfig.json that `bun -e` runs in packages/contracts, which reads its tsconfig
+
 import (
 	"context"
 	"encoding/json"

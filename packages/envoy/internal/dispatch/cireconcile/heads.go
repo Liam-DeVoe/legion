@@ -534,14 +534,11 @@ func (r *Reconciler) recordSuites(ctx context.Context, writer Writer, head pullH
 			if !mapped || observation.Status != "completed" {
 				continue
 			}
-			// The verdict App's own check suite is no CI result (contracts.VerdictAppsOwn), so the
-			// pass leaves it out of the record as the listener does.
-			if contracts.VerdictAppsOwn(observation, r.VerdictAppID) {
-				if r.Logger.Enabled(ctx, slog.LevelDebug) {
-					r.Logger.Debug("ci: left out the verdict App's own check suite",
-						"suite", observation.SuiteID, "app_id", observation.AppID,
-						"repository", head.repository(), "pr", head.number, "sha", head.sha)
-				}
+			// The verdict App's suite is no CI result, and the listener leaves it out of the
+			// record (contracts.VerdictAppsOwnSuite). Written here, a change to a settled record
+			// re-arms it (cistore's rearm), and the head would be published a second time once
+			// the App's run completes its suite.
+			if contracts.VerdictAppsOwnSuite(observation, r.VerdictAppID) {
 				continue
 			}
 			wanted++

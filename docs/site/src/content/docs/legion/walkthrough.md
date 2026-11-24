@@ -60,10 +60,12 @@ findings on it as a `COMMENT` review and sends its verdict to the daemon. In Dis
 
 ## 6. The acceptance
 
-When the reviewer sends `approve`, the architect reads the evidence (the tester's handoff, each check of
-the issue with its latest result, the reviewer's verdict at the head) and accepts the change with `sign_off`, naming
-that head, beside a comment on the issue that sums up the evidence. The sign-off moves the issue to `retro`; a change that falls short goes back to the implementer or the
-tester instead. The acceptance is the architect's own `approve` at that head, and the daemon writes
+On the default steps, when the reviewer sends `approve`, the architect reads the evidence (the
+tester's handoff, each check of the issue with its latest result, the reviewer's verdict at the head)
+and accepts the change: it posts a comment on the issue that sums up the evidence, then signs off with
+the `legion` tool's `sign_off`, naming that head, which moves the issue to `retro`, since the
+acceptance is the last of the default steps. A change that falls short goes back to an earlier step of
+its task instead. The acceptance is the architect's own `approve` at that head, and the daemon writes
 the required check `legion-verdict` from the two verdicts and the check results there. Retro runs next.
 
 ## 7. The merge
@@ -78,9 +80,9 @@ them. It closes the issue: the daemon reads the merged pull request and moves th
 
 ## 8. The production check
 
-After the close the tester gets the production check in its live session — the role your
-project's `production_check` names, which is the tester unless the setting is `off`, where no
-check opens. It asks your deploy
+After the close the tester gets the production check in its live session, or in a fresh one where
+the task had no tester step — the role your project's `production_check` names, which is the
+tester unless the setting is `off`, where no check opens. It asks your deploy
 role to carry the merge and waits for no reply; when production does not carry the merge yet, or
 carries it with a requirement only the deploy can show still unobserved, it reports `pending` with
 `wake_at`, the time it wants to look again, its pod goes, and the daemon brings it back at that

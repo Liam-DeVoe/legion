@@ -119,7 +119,7 @@ func TestOpenWorkflowRefusesAnAppThatNamesNoLogin(t *testing.T) {
 		Projects: map[string]config.Project{"demo": {}},
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, loginTokens{}, repositoriesGitHub(t), nil, time.Now)
+	_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, loginTokens{}, repositoriesGitHub(t), nil, time.Now, nil)
 	if err == nil || !strings.Contains(err.Error(), "the GitHub App names no bot login") {
 		t.Fatalf("openWorkflow = %v, want the refusal of an App with no login", err)
 	}

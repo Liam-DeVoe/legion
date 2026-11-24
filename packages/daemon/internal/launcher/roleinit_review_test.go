@@ -237,7 +237,7 @@ func runReviewStage(t *testing.T, plan reviewStagePlan) error {
 	}
 	fmt.Printf("stage review=%s\nstage workspace=%s\nstage first=%s\n", review, located.Dir, first)
 
-	roleInitLaunch = roleInitHelperLaunch(self)
+	roleInitLaunch = roleInitHelperLaunch(t, self)
 	cover := RoleCover{RolesDir: rolesDir, Home: home, HomeMounts: homeMounts, FixedRoot: fixedRoot}
 	generation := func(role, label, workspaceDir, head string) error {
 		roleEnv := append(slices.Clip(env), "LEGION_WORKSPACE="+workspaceDir, "LEGION_ISSUE=ACME-1", "LEGION_DEFAULT_BRANCH=main",

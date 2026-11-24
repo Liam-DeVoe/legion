@@ -319,6 +319,7 @@ The Dispatch service reads its public browser origin and NATS URLs from
 | `DISPATCH_URL` | no | Host-adapter override for the Dispatch base URL; use with `DISPATCH_TOKEN`. |
 | `DISPATCH_TOKEN` | host adapters | Bearer token paired with `DISPATCH_URL`. |
 | `DISPATCH_APP_CLIENT_ID` | GitHub App | The GitHub App's client ID; with its private key (the `pem` in the data volume's `app.json`) Dispatch handles webhooks and architecture sources and reads GitHub for the web app. `DISPATCH_APP_CLIENT_SECRET` is removed and refused at startup. |
+| `DISPATCH_VERDICT_APP_ID` | with the listener's `ENVOY_VERDICT_APP_ID` | The id of the App that writes `legion-verdict`, the listener's `ENVOY_VERDICT_APP_ID`: the CI reconcile pass leaves that App's check suites out of the CI record, as the listener does. Set both to the same App id, or neither: with the listener's set and this one unset, the pass writes the App's completed suite back into a settled record and the head is published twice. Unset, the pass records every App's completed suite and says so once at start. A value that is not a positive decimal number refuses startup naming the variable. |
 | `DISPATCH_INSECURE_COOKIE` | HTTP | Set to `1` whenever browsers reach Dispatch over `http://` (the tailnet deployment); leave unset behind an HTTPS terminator. |
 
 The Dispatch signing material is a named volume; the database is external.

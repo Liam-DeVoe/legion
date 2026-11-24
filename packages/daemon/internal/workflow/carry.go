@@ -24,7 +24,7 @@ import (
 
 // reviewVerdict applies the verdict past review (intake.ReviewVerdict, which the review-verdict
 // route queues): the approve or changes, at the head the pull request moved to while the issue
-// stands past its review (record.PastReview), of the agent of a review step of the issue's task,
+// stands past its review (record.InSlotlessPhase), of the agent of a review step of the issue's task,
 // as the step's record names it (reviewSteps): the reviewer, or the architect that ran the owner's
 // acceptance. It records that step's verdict at that head (recordVerdict), whose write of
 // legion-verdict the fact's commit asks for (askMergeState), and the reviewer's is also the round's
@@ -56,7 +56,7 @@ func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.Revie
 			"review_verdict is the verdict of the agent of a review step of %s's task, as its step record names it, and %s; this call is claim %s's. An architect that ran a child's acceptance names that child as issue; nothing was recorded",
 			issue.Key, agentsOf(steps), fact.Claim)}}, nil
 	}
-	if !record.PastReview(*issue) {
+	if !record.InSlotlessPhase(*issue) {
 		return refused("VERDICT_NOT_PAST_REVIEW", fmt.Sprintf(
 			"%s stands in %s: review_verdict is the verdict of a review step's agent on a head that moved past review, in accepting, retro or merging; nothing was recorded",
 			issue.Key, record.StandsAt(*issue))), nil
@@ -112,7 +112,7 @@ func (e *Engine) reviewVerdict(ctx context.Context, tx pgx.Tx, fact intake.Revie
 // mergeForwardLanded, so this is every other move (askReviewSteps). A tree that lingers, where
 // every role is suspended, asks nothing.
 func (e *Engine) askVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, from string) error {
-	if !record.PastReview(issue) || from == "" || from == pr.HeadSHA {
+	if !record.InSlotlessPhase(issue) || from == "" || from == pr.HeadSHA {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
@@ -189,7 +189,7 @@ func (e *Engine) askReviewSteps(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // VerdictAskStands reads in tx whether agent is still owed its ask of a verdict past review on
 // issue key (askReviewSteps): the issue is in the workflow, its tree does not linger, the pull
-// request the record holds for it is open, the issue stands past its review (record.PastReview),
+// request the record holds for it is open, the issue stands past its review (record.InSlotlessPhase),
 // and agent is the agent the record names of a review step of the issue's task that has passed,
 // the reviewer's aside, whose last verdict on the pull request names no head or another head than
 // the pull request's current one (storedVerdictSince). It also returns the issue the record holds,
@@ -207,7 +207,7 @@ func (e *Engine) askReviewSteps(ctx context.Context, tx pgx.Tx, issue record.Iss
 // reviewSteps), and builds no engine.
 func VerdictAskStands(ctx context.Context, records record.Store, tx pgx.Tx, key string, agent claim.Token) (*record.Issue, bool, error) {
 	issue, err := records.Issue(ctx, tx, key)
-	if err != nil || issue == nil || agent == "" || !record.InWorkflow(*issue) || !record.PastReview(*issue) {
+	if err != nil || issue == nil || agent == "" || !record.InWorkflow(*issue) || !record.InSlotlessPhase(*issue) {
 		return issue, false, err
 	}
 	if lingers, err := record.TreeLingers(ctx, records, tx, issue.Tree); err != nil || lingers {

@@ -515,7 +515,8 @@ func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, req
 // joins another run in flight or runs the command again. At the boot the login read runs before
 // the key proof (internal/daemon's openWorkflow) and passes only once it has taken a run's
 // release, so the key proof never takes a release the login read was answered with: its first
-// read joins a run in flight or runs the command again.
+// read joins a run in flight or runs the command again. The installation AppLogin took stays its
+// own (loginRelease), never the shared run's.
 func (m *Manager) anyInstallation(ctx context.Context, app config.GitHubApp) (releasedInstallation, error) {
 	installations, err := m.runTokenCommand(ctx, app, everyInstallation)
 	if err != nil {
@@ -530,6 +531,39 @@ func (m *Manager) anyInstallation(ctx context.Context, app config.GitHubApp) (re
 	}
 	slices.Sort(owners)
 	return installations[owners[0]], nil
+}
+
+// loginRelease is the installation AppLogin reads the App's login under in token mode: the one
+// an earlier AppLogin took and kept (keptLogin), while more than refreshWindow of it is left, as
+// a lease is served; else one of a release the command gives now (anyInstallation), which it
+// keeps. Each run of the command asks the secrets broker for a release, which may wait on a
+// person's approval of a grant, so a login read that failed after it took its release (GitHub's
+// trouble on the viewer read, its attempt's bound) reads again under the same token rather than
+// run the command a second time. A kept installation that has come within refreshWindow of its
+// expiry, as one can across the start's waits for GitHub's rate limit, is replaced by a new
+// release: the command runs again.
+func (m *Manager) loginRelease(ctx context.Context, app config.GitHubApp) (releasedInstallation, error) {
+	m.mu.Lock()
+	kept := m.keptLogin
+	m.mu.Unlock()
+	if kept != nil && kept.expiresAt.Sub(m.now()) > refreshWindow {
+		return *kept, nil
+	}
+	installation, err := m.anyInstallation(ctx, app)
+	if err != nil {
+		return releasedInstallation{}, err
+	}
+	m.mu.Lock()
+	m.keptLogin = &installation
+	m.mu.Unlock()
+	return installation, nil
+}
+
+// forgetLoginRelease drops the installation AppLogin kept, once the App's login is read under it.
+func (m *Manager) forgetLoginRelease() {
+	m.mu.Lock()
+	m.keptLogin = nil
+	m.mu.Unlock()
 }
 
 // tokenIdentity is the bot user of the App whose installation token token is, with no JWT:

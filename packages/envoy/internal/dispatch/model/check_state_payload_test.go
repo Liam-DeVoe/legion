@@ -1,5 +1,7 @@
 package model
 
+//ci:reads packages/contracts/fixtures/dispatch-events/check-state-changed.json TestCheckStateChangedEventPayloadGolden compares the bytes the payload writes with the committed fixture
+
 import (
 	"bytes"
 	"encoding/json"
