@@ -209,8 +209,9 @@ type windowIndexBuild struct {
 }
 
 // groupTime is how long one statement of a fill or a recount took: a group's statement
-// (recountStatement over the group's classes), or, as "refresh", the refresh batches of the issues'
-// state rows that come before the groups (refreshIssueStates), summed.
+// (recountStatement over the group's classes), or, as "refresh", every statement of the refresh of
+// the issues' state rows that comes before the groups (refreshIssueStates), the finds and the
+// refreshes, summed.
 type groupTime struct {
 	group string
 	took  time.Duration
@@ -756,10 +757,10 @@ func countsGroupName(group countsGroup) string {
 }
 
 // timeCountsRun runs run, one fill or one recount on a pool timer traces, failing the test with
-// what when it fails, and answers its whole time and each of its statements' (groupTime): the
-// refresh batches of the issues' state rows (staleIssueStates, goneIssueStates), summed as
-// "refresh", then each group's statement (recountStatement over the group's classes) in the order
-// sent, which is countsGroups'.
+// what when it fails, and answers its whole time and each of its statements' (groupTime): every
+// statement of the refresh of the issues' state rows (staleIssueKeys, goneIssueKeys,
+// refreshIssues), summed as "refresh", then each group's statement (recountStatement over the
+// group's classes) in the order sent, which is countsGroups'.
 func timeCountsRun(t *testing.T, timer *statementTimer, what string, run func() error) countsRun {
 	t.Helper()
 	timer.take()
@@ -768,7 +769,7 @@ func timeCountsRun(t *testing.T, timer *statementTimer, what string, run func() 
 		t.Fatalf("%s: %v", what, err)
 	}
 	measured := countsRun{whole: time.Since(started)}
-	names := map[string]string{staleIssueStates: "refresh", goneIssueStates: "refresh"}
+	names := map[string]string{staleIssueKeys: "refresh", goneIssueKeys: "refresh", refreshIssues: "refresh"}
 	for _, group := range countsGroups {
 		names[group.statement] = countsGroupName(group)
 	}

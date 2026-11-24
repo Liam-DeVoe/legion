@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -194,35 +195,43 @@ var countsGroups = func() []countsGroup {
 	return groups
 }()
 
-// staleIssueStates refreshes (search_coverage_issue_refresh), in key order, up to $2 issues whose
-// key sorts after $1 and whose state row is missing or records other inputs than the issue's own
-// now: search_coverage_issue_inputs over issueSource, the issue's created_at and its embeddings
-// row's id and xmin, the one rendering the refresh records, so a write to any input with its
-// triggers off changes a value or a row's xmin and the comparison finds it (issueSource's comment
-// names its one theoretical miss). It answers the last key it refreshed (the empty string when
-// none) and how many.
-var staleIssueStates = `
-	select coalesce(max(refreshed.key), ''), count(*)
-	from (select picked.key, search_coverage_issue_refresh(picked.key)
-	      from (select i.key
-	            from ` + issueSourceFrom + `
-	            left join search_coverage_issues s on s.key = i.key
-	            where i.key > $1
-	              and s.inputs is distinct from search_coverage_issue_inputs(` + issueSource + `, i.created_at, e.id, e.xmin)
-	            order by i.key
-	            limit $2) picked
-	      order by picked.key) refreshed`
+// staleIssueKeys answers, in key order, up to $2 keys of issues whose key sorts after $1 and whose
+// state row is missing or records other inputs than the issue's own now:
+// search_coverage_issue_inputs over issueSource, the issue's created_at and its embeddings row's id
+// and xmin, the one rendering the refresh records, so a write to any input with its triggers off
+// changes a value or a row's xmin and the comparison finds it (issueSource's comment names its one
+// theoretical miss). It only reads: it refreshes nothing and locks no row, and refreshIssueStates
+// refreshes the issues it answers (refreshIssues).
+//
+// The join to the state rows bounds their key at $1 as well, which changes no row it answers,
+// since i.key > $1 already holds: Postgres carries no range condition from one side of a join to
+// the other, so without it the merge join the planner picks for all but the last keys reads the
+// state rows from the first key on every call and passes over every one before $1 (from the
+// middle key at scale 0.3 of the coverage-scale corpus, 1,683 state rows in 2.2 ms, measured in
+// dispatch://INFRA-4864's pod).
+var staleIssueKeys = `
+	select i.key
+	from ` + issueSourceFrom + `
+	left join search_coverage_issues s on s.key = i.key and s.key > $1
+	where i.key > $1
+	  and s.inputs is distinct from search_coverage_issue_inputs(` + issueSource + `, i.created_at, e.id, e.xmin)
+	order by i.key
+	limit $2`
 
-// goneIssueStates refreshes, in key order, up to $2 state rows whose key sorts after $1 and whose
-// issue is gone, which the refresh deletes, and answers as staleIssueStates does.
-const goneIssueStates = `
-	select coalesce(max(refreshed.key), ''), count(*)
-	from (select gone.key, search_coverage_issue_refresh(gone.key)
-	      from (select s.key from search_coverage_issues s
-	            where s.key > $1 and not exists (select 1 from issues i where i.key = s.key)
-	            order by s.key
-	            limit $2) gone
-	      order by gone.key) refreshed`
+// goneIssueKeys answers, in key order, up to $2 keys of state rows whose key sorts after $1 and
+// whose issue is gone. It only reads, as staleIssueKeys does; the refresh of those keys
+// (refreshIssues) deletes their rows.
+const goneIssueKeys = `
+	select s.key from search_coverage_issues s
+	where s.key > $1 and not exists (select 1 from issues i where i.key = s.key)
+	order by s.key
+	limit $2`
+
+// refreshIssues refreshes (search_coverage_issue_refresh) the issues whose keys $1 holds, in key
+// order, as every statement that refreshes several issues does, and answers how many. Its plan is
+// a sort of the array's keys, with no table to scan or join, so it costs its refreshes and little
+// else.
+const refreshIssues = `select count(*) from (select search_coverage_issue_refresh(k) from unnest($1::text[]) as k order by k) refreshed`
 
 // markFilled records that a fill has ended, in the transaction of the fill's last group.
 const markFilled = `insert into search_coverage_filled (done_at) values (now()) on conflict (id) do nothing`
@@ -287,36 +296,61 @@ func foldCoverage(ctx context.Context, database *store.Store) error {
 }
 
 // coverageRefreshBatch bounds how many issues one transaction of the refresh refreshes
-// (refreshIssueStates). Each refresh (search_coverage_issue_refresh) holds its issue's state row
-// lock until its batch commits, and a write of that issue's inputs, whose trigger refreshes the
-// same row, waits for it; so that write waits for at most one batch of 10 refreshes, about
-// 10 x 0.2 ms on the coverage-scale Job's 8 CPUs (the fill's refresh of 40,144 issues at scale
-// 3.6 took 6,384 ms in infra-4864-coverage-scale-h96p8). A batch of coverageStatementRows, 500
-// issues, keeps that write waiting far longer: measured at scale 1 of that corpus in
-// dispatch://INFRA-4864's pod beside four writers, the fill's batches took 344 to 991 ms, and an
-// issue's title update waited about 330 ms on one; a recount's batches over 2,000 stale issues
-// took 2,561 to 4,740 ms, and a title update took 2,048 ms, about 1.7 s of it waiting.
+// (refreshIssueStates, refreshIssues). Each refresh (search_coverage_issue_refresh) holds its
+// issue's state row lock until its transaction commits, and a write of that issue's inputs, whose
+// trigger refreshes the same row, waits for it; so that write waits for at most one transaction of
+// 10 refreshes, which runs nothing else: the find before it (staleIssueKeys, goneIssueKeys) is a
+// transaction of its own that locks no row. Measured at scale 1 of the coverage-scale corpus in
+// dispatch://INFRA-4864's pod, a refresh statement of 10 issues took 3.6 to 3.9 ms on average in
+// a fill, where each issue's hash is read from its recorded source, and 14.9 to 16.7 ms in a
+// recount after 2,000 issues' titles changed with their triggers off, where each refresh builds
+// and hashes its issue's text. Beside four writers of issues, documents and embeddings in that
+// pod, the longest transaction of 10 refreshes took 83 ms in a fill and 92 ms in such a recount,
+// and no write was seen waiting on one. Transactions of coverageStatementRows refreshes held such a
+// write far longer in that pod: a fill's took 344 to 991 ms and an issue's title update waited
+// about 330 ms on one; a recount's over 2,000 stale issues took 2,561 to 4,740 ms, and a title
+// update took 2,048 ms, about 1.7 s of it waiting.
 const coverageRefreshBatch = 10
 
 // refreshIssueStates brings every issue's state row up to its inputs before the issue group is
-// counted: staleIssueStates, then goneIssueStates, each in batches of coverageRefreshBatch, each
-// batch a transaction of its own that takes no counts lock (a refresh writes state rows, and
-// through their trigger delta rows, as any write does, and no base row).
+// counted. It finds the stale issues (staleIssueKeys), then the state rows whose issue is gone
+// (goneIssueKeys), a page of coverageStatementRows keys at a time, each page found in a
+// transaction of its own that only reads, and refreshes each page's keys (refreshIssues) in
+// transactions of at most coverageRefreshBatch keys. None of them takes the counts lock: a refresh
+// writes state rows, and through their trigger delta rows, as any write does, and no base row.
+//
+// A refresh computes its issue's row from the issue as it stands when it runs, so it is right
+// whatever ran between the find and it: an issue a trigger refreshed in between is refreshed to the
+// row it already holds, and an issue gone by then has its state row deleted. So every issue stale
+// when refreshIssueStates starts is refreshed, by it or by a trigger, and every state row whose
+// issue is gone is deleted.
 func refreshIssueStates(ctx context.Context, database *store.Store) error {
-	for _, statement := range []string{staleIssueStates, goneIssueStates} {
+	var keys []string
+	for _, find := range []string{staleIssueKeys, goneIssueKeys} {
 		after := ""
 		for {
-			var last string
-			var refreshed int
 			if err := countsTransaction(ctx, database, false, func(tx pgx.Tx) error {
-				return tx.QueryRow(ctx, statement, after, coverageRefreshBatch).Scan(&last, &refreshed)
+				rows, err := tx.Query(ctx, find, after, coverageStatementRows)
+				if err != nil {
+					return err
+				}
+				keys, err = pgx.AppendRows(keys[:0], rows, pgx.RowTo[string])
+				return err
 			}); err != nil {
-				return fmt.Errorf("refresh the issues' coverage states: %w", err)
+				return fmt.Errorf("find the issues' coverage states to refresh: %w", err)
 			}
-			if refreshed < coverageRefreshBatch {
+			for batch := range slices.Chunk(keys, coverageRefreshBatch) {
+				if err := countsTransaction(ctx, database, false, func(tx pgx.Tx) error {
+					_, err := tx.Exec(ctx, refreshIssues, batch)
+					return err
+				}); err != nil {
+					return fmt.Errorf("refresh the issues' coverage states: %w", err)
+				}
+			}
+			if len(keys) < coverageStatementRows {
 				break
 			}
-			after = last
+			after = keys[len(keys)-1]
 		}
 	}
 	return nil

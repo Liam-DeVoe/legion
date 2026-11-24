@@ -139,7 +139,7 @@ var windowKindArray = "'{" + strings.Join(windowCoverageKinds, ",") + "}'::text[
 
 // issueSourceFrom is every issue (issues i) beside what its source (issueSource) is computed from
 // and compared with, for the step that records sources (recordIssueSources) and for the recount's
-// refresh of the issues' state rows (staleIssueStates), which migration
+// find of the issues whose state rows are stale (staleIssueKeys), which migration
 // 20261124011834_search_coverage_counts's search_coverage_issue_refresh reads word for word:
 //
 //   - spec: the id and the row version (xmin) of the latest version of the issue's primary
