@@ -1245,10 +1245,14 @@ func TestEveryStepTakenOutOfATextIsInItsReadersPrompt(t *testing.T) {
 	if len(golden.Samples) == 0 {
 		t.Fatal("the golden file holds no sample")
 	}
+	sentences := make([]*regexp.Regexp, len(goldenSteps))
+	for i, step := range goldenSteps {
+		sentences[i] = goldenSentence(step.sentence)
+	}
 	for _, sample := range golden.Samples {
 		said := goldenSaid(t, sample)
-		for _, step := range goldenSteps {
-			if goldenSentence(step.sentence).MatchString(said) {
+		for i, step := range goldenSteps {
+			if sentences[i].MatchString(said) {
 				t.Errorf("%s holds %q, the step of %s that the %s's prompt gives now (%s)", sample.id(), step.sentence, step.kind, step.readers, step.file)
 			}
 		}

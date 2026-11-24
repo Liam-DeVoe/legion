@@ -186,14 +186,23 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		// refusal with that code. A reason posted beside a status is such a message too, so a
 		// reason refused beside a status that stands carries the same code.
 		const bodyRefused = "CAP_EXCEEDED: "
-		// Dispatch refuses a status write of the daemon with ISSUE_CHANGED where the issue moved
-		// since the daemon read it: the daemon names the sequence it read (expected_sequence,
-		// packages/daemon/internal/dispatch/client.go), and the issue route
-		// (packages/envoy/internal/dispatch/api/issue_patch.go:patchIssue) refuses a write whose
-		// sequence is not the issue's own with that code, whatever the status. A status row whose
-		// status did not land carries the status write's refusal, since that write comes after the
-		// reason's post (outbox.go:status).
-		const statusRefused = "ISSUE_CHANGED: "
+		// A status row whose status and reason both did not land is one that ended at the issue
+		// read that opens it (outbox.go:status), and Dispatch answers that read 404 NOT_FOUND when
+		// it holds no such issue (GET /api/v1/issues/{key}: api/issue_queries.go:readIssue answers
+		// pgx.ErrNoRows, which api/handler_errors.go:writeHandlerError writes as NOT_FOUND).
+		// dispatch.PermanentRefusal takes that as permanent, so the row is finished refused with
+		// neither write made (statusRefusalTold). ISSUE_CHANGED, Dispatch's refusal of a write
+		// fenced on a read the issue has moved past, is no such refusal: the daemon reads the issue
+		// again and writes again (writeStatus), and the row retries on its backoff.
+		const statusRefused = "NOT_FOUND: "
+		// The refusal a status sample carries follows from whether its status stands: the
+		// reason's where it does, the opening read's where it does not.
+		refusal := func(statusSet bool) string {
+			if statusSet {
+				return bodyRefused
+			}
+			return statusRefused
+		}
 		// workflow's backwardMoveReason: the move and the role that asked, then that role's words.
 		words := goldenHostile[r.n-1][5] + " " + r.words("refused/body", 600) + "\n" + r.words("refused/rest", 80)
 		body := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request: ", from, to, phase.RoleFor(from)) + words
@@ -216,25 +225,29 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		b.notice(r, "message-empty-first-line", arch, refusedQuotedAt(refused, queued),
 			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", goldenUnits(blank), "first_line_empty", true))
 		// A close's reason, the daemon's sentence and then the architect's. In sample 1 the status
-		// stands and Dispatch refused the reason. In sample 2 Dispatch refused the status.
+		// stands and Dispatch refused the reason. In sample 2 Dispatch refused the issue read that
+		// opens the row, so neither write was made.
 		status := []string{"done", "icebox"}[r.n-1]
 		reason := r.words("refused/reason", 300)
+		closeSet := r.n == 1
 		refused = statusWriteRefused(issue.Key, record.StatusWrite{Status: status, Reason: intake.CloseRoot{Reason: reason}.Message()},
-			goldenErr([]string{bodyRefused, statusRefused}[r.n-1]+r.words("refused/status", 30)), statusWrites{status: r.n == 1})
+			goldenErr(refusal(closeSet)+r.words("refused/status", 30)), statusWrites{status: closeSet})
 		begins = refusedPreview(reason)
 		b.notice(r, "status", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "status", status, "status_set", r.n == 1, "reason_posted", false,
+			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "status", status, "status_set", closeSet, "reason_posted", false,
 				"refused_close", texts.BeforeFirstPhase, "begins", begins.Text, "words.begins.by", arch, "words.begins.at", queued,
 				"words.begins.rest", begins.Rest))
 		// A reviewer's backward move refused beside its status. In sample 1 Dispatch refused the
-		// status. In sample 2 the status stands and Dispatch refused the reason.
+		// issue read that opens the row, so neither write was made. In sample 2 the status stands
+		// and Dispatch refused the reason.
 		moved := r.words("refused/moved", 300)
+		moveSet := r.n == 2
 		refused = statusWriteRefused(issue.Key, record.StatusWrite{Status: status,
 			Reason: "Legion moved this issue from reviewing back to implementing at the reviewer's request: " + moved},
-			goldenErr([]string{statusRefused, bodyRefused}[r.n-1]+r.words("refused/move-status", 30)), statusWrites{status: r.n == 2})
+			goldenErr(refusal(moveSet)+r.words("refused/move-status", 30)), statusWrites{status: moveSet})
 		begins = refusedPreview(moved)
 		b.notice(r, "status-move", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "status", status, "status_set", r.n == 2, "reason_posted", false,
+			goldenWant("issue", issue.Key, "refused", texts.RefusedStatus, "status", status, "status_set", moveSet, "reason_posted", false,
 				"refused_move", phase.Pair(phase.Reviewing, phase.Implementing), "begins", begins.Text,
 				"words.begins.by", claim.RoleReviewer, "words.begins.at", queued, "words.begins.rest", begins.Rest))
 	}
