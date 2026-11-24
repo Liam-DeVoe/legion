@@ -173,8 +173,10 @@ func TestAKeyOtherThanOwnerIsTaken(t *testing.T) {
 // agent that starts with the role of another is not taken yet: each agent is named by the role it
 // starts with, and this release runs one agent that starts with each role for an issue, so
 // `implementer reviewer implementer` is refused at the first step of its second implementer, naming
-// the first step of the first. The owner has no name, and a key that starts with another role is an
-// agent of that role's name.
+// the first step of the first. The owner has no name, so `implementer acceptance:owner acceptance`
+// is refused for its keyless acceptance alone and not as a second agent that starts with the role
+// acceptance beside the owner's step; and a key that starts with another role is an agent of that
+// role's name.
 func TestARoleCanStandAtTwoSteps(t *testing.T) {
 	for _, steps := range []string{"implementer:a reviewer implementer:a", "implementer:a reviewer:b implementer:b",
 		"implementer:a tester:a reviewer implementer:a tester:a", "implementer acceptance:owner reviewer acceptance:owner"} {
@@ -187,6 +189,7 @@ func TestARoleCanStandAtTwoSteps(t *testing.T) {
 		{"implementer reviewer implementer", "step 3 of task t needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent that starts with each role for an issue."},
 		{"implementer:a implementer:b", "step 2 of task t needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent that starts with each role for an issue."},
 		{"implementer reviewer:a tester:a reviewer", "step 4 of task t needs an agent of its own beside the agent of step 2, and both agents start with the role reviewer, and this release runs one agent that starts with each role for an issue."},
+		{"implementer acceptance:owner acceptance", "step 3 of task t names acceptance with no key, which asks for a fresh agent of the role acceptance."},
 	} {
 		want := []Refusal{{Task: "t", Reason: tc.reason + yet}}
 		if r := Supported(oneTask("t", tc.steps), builtin); !reflect.DeepEqual(r, want) {
