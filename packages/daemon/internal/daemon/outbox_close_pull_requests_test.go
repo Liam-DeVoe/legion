@@ -397,7 +397,7 @@ func TestACloseGitHubRefusesForGoodEndsItsRowAndTellsTheArchitectOnce(t *testing
 				}
 			}
 			if queuedRows := rig.closeRowsQueued(t); queuedRows != 0 {
-				t.Fatalf("the rows that close pull requests after the last run = %d, want none", queuedRows)
+				t.Errorf("the rows that close pull requests after the last run = %d, want none", queuedRows)
 			}
 			if state, comments := closing.pull(3); state != "closed" || !slices.Equal(comments, merged) {
 				t.Fatalf("#3 is %s with the comments %+v, want closed with %+v", state, comments, merged)

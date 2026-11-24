@@ -196,10 +196,10 @@ func TestAPersonsCloseBeforeTheRowGetsNoComment(t *testing.T) {
 	pull := &closingPull{state: "closed", closedBy: new("a-person")}
 	closed, err := closeSeven(pull.serve(t))
 	if err != nil || closed != (Closed{By: "a-person"}) {
-		t.Fatalf("ClosePullRequest of #7, closed by a-person = %+v, %v; want Closed{By: a-person}", closed, err)
+		t.Errorf("ClosePullRequest of #7, closed by a-person = %+v, %v; want Closed{By: a-person}", closed, err)
 	}
 	if want := []string{"GET /pulls/7", "GET /issues/7"}; !slices.Equal(pull.sent(), want) {
-		t.Fatalf("GitHub was sent %q, want %q", pull.sent(), want)
+		t.Errorf("GitHub was sent %q, want %q", pull.sent(), want)
 	}
 	if comments := pull.written(); len(comments) != 0 {
 		t.Fatalf("#7 holds the comments %+v, want none", comments)
@@ -250,7 +250,6 @@ func TestAnUnreadableClosedByWritesNoComment(t *testing.T) {
 		want     Closed
 		failure  string
 		canPass  bool
-		readable bool
 	}{
 		{name: "the read answers 502", refusal: &refusal{status: http.StatusBadGateway, body: "bad gateway"}, failure: "with 502", canPass: true},
 		{name: "closed_by is null", want: Closed{Unread: ClosedByNull}},
@@ -269,7 +268,7 @@ func TestAnUnreadableClosedByWritesNoComment(t *testing.T) {
 					t.Fatalf("ClosePullRequest of #7 = %+v, %v; want an error %q that can pass", closed, err, tc.failure)
 				}
 			} else if err != nil || closed != tc.want {
-				t.Fatalf("ClosePullRequest of #7 = %+v, %v; want %+v and no error", closed, err, tc.want)
+				t.Errorf("ClosePullRequest of #7 = %+v, %v; want %+v and no error", closed, err, tc.want)
 			}
 			if comments := pull.written(); len(comments) != 0 {
 				t.Fatalf("#7 holds the comments %+v, want none", comments)
