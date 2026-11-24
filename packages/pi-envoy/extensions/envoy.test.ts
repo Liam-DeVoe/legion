@@ -23448,12 +23448,13 @@ console.log(JSON.stringify(args));
       }
     });
     // A hang guard: what can hang is the import of the row's own instance, or a session's boot or
-    // shutdown, each held for at most 10_000 turns of the test's clock. Worst measured cost of the
-    // row's form on the real clock: 5 404 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-r26-gd-v7fxf of the cluster's `builds` namespace, two CPUs and 8 GiB (116 busy
-    // loops, at which row A's runs took 39.9 s against the calibration's 31.2 s), at 0fba4c77.
-    // Main's 30_000 is 5.6 times that, so this takes 60_000, 11.1 times it.
-  }, 60_000);
+    // shutdown, each held for at most 10_000 turns of the test's clock. Worst measured cost:
+    // 10 102 ms over 20 runs at the 96 rung in the Job infra-1580-cn-mbxl9 of the cluster's
+    // `builds` namespace, two CPUs and 8 GiB (217 busy loops, at which row A's runs took 38.3 s
+    // against the calibration's 31.2 s), at bb5b4535; on the real clock, 5 404 ms over 20 runs in
+    // the Job infra-1580-r26-gd-v7fxf (116 busy loops, row A 39.9 s) at 0fba4c77. 90_000 is 8.9
+    // times the worst.
+  }, 90_000);
 
   for (const { row, error, shown, withheld } of [
     {
