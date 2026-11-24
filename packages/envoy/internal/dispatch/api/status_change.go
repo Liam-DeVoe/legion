@@ -113,8 +113,9 @@ func answeredStatusChangeEntry(issue model.Issue, previousLastSeq int) statusCha
 
 // statusChangeRefusal is every refusal of the route but 409 PARENT_STATUS_CONFLICT, the handler's
 // and its request key's (refuseStatusChangeKey): its code and its message, and the entries of the
-// writes that committed before it, [] when none did. Every other layer's refusal reads as this
-// shape too (addChangedToRefusals).
+// writes that committed before it, [] when none did. Every other layer's refusal on the route reads
+// as this shape too (addChangedToRefusals), but the router's cookie-origin 403, which no layer of
+// the route answers.
 type statusChangeRefusal struct {
 	Code    string              `json:"code"`
 	Error   string              `json:"error"`
