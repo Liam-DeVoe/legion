@@ -13,7 +13,7 @@ This file gives the conventions every window is written and worked by, once: the
 | `link-added-and-removed` | a link added and taken off inside the window, each at its time | `main` |
 | `child-moved-out` | a child moved out from under its parent ends the parent's wait | `main` |
 | `child-filed-after-parent-start` | a child's filing moves with its parent's start | `keep-past-review`, `main` |
-| `conflict-from-fitted-rate` | a conflict drawn from the window's fitted rate, on each conflict path | `legion-v20.42.5`, `main` |
+| `conflict-from-fitted-rate` | a conflict drawn from the window's fitted rate, on each conflict path | `legion-v20.42.5`, `legion-v22.14.1`, `main` |
 | `review-and-test-kept` | a review that asks for changes and a failed test keep their count and length | `main` |
 | `reopen-works-again` | an issue that reopens keeps its later work | `main` |
 | `send-back-at-full-cap` | a send-back from accepting at a full cap waits for a slot, or keeps one | `main`, `keep-past-review`, `cover` |
@@ -185,12 +185,14 @@ The two may differ by the reconstruction error the tool reports; these windows h
   under `main` the merge-forward segment lasts as that loop's implementing round, unended where the round is.
   The run counts each conflict kept (`divergence.keptOpenLoops`).
 
-- Under `legion-v20.42.5` (`ConflictMovesBack`) a drawn conflict in testing, reviewing or merging moves the issue back to implementing by `conflict`, and the loop's work is drawn with the run's seed among the window's recorded conflict loops that left the same phase and whose work the record shows ending: the segments from a recorded conflict move to the issue's return to the phase it left.
+- Under `legion-v20.42.5` (`ConflictMovesBack`) a drawn conflict in testing, reviewing, accepting, retro or merging moves the issue back to implementing by `conflict`, and the loop's work is drawn with the run's seed among the window's recorded conflict loops that left the same phase and whose work the record shows ending: the segments from a recorded conflict move to the issue's return to the phase it left.
 
 - Under `main` (`ConflictMergeForward`) a drawn conflict in testing, reviewing or merging keeps the phase: a merge-forward segment follows, its implementer in a turn in testing and reviewing and its merger in merging (cybermonklabs/legion#4979), its length drawn from the implementing rounds of those same loops (assumption 23), and then the issue goes on with the work the record shows after the loop returned to the phase the conflict left.
   The stretch is not drawn a second time.
 
-- `legion replay run` of `replay.md`, and its assumptions 23 and 37, give the rest: the loops a draw falls back on where the window records none from the conflict's phase, and a conflict in accepting or retro, which waits for merging.
+- Under `legion-v22.14.1` (`ConflictImplementerMergesForward`) a drawn conflict keeps the phase in every phase, and the merge-forward segment is its implementer's, in merging too: otherwise as under `main`.
+
+- `legion replay run` of `replay.md`, and its assumptions 23 and 37, give the rest: the loops a draw falls back on where the window records none from the conflict's phase, and under `main` a conflict in accepting or retro, which waits for merging.
   `conflict-from-fitted-rate`, the one window with a conflict, has one loop, which left merging and ended, so its draws need none of them.
 
 ## The measures
@@ -203,7 +205,7 @@ The two may differ by the reconstruction error the tool reports; these windows h
   `firstDayApart` is left out: every window is shorter than a day.
   `unplaced` is 0.
 
-- Under `main` a drawn conflict that keeps its phase is one round of `conflict` in `loops`, its hours the merge-forward segment.
+- Under `main` and `legion-v22.14.1` a drawn conflict that keeps its phase is one round of `conflict` in `loops`, its hours the merge-forward segment.
 
 - In `waits`, a wait goes on while the root of its tree lingers, and ends where its children close or move out, or its blockers are done.
   A wait that begins at the moment another ends, a link done as a child is filed, is the same stretch and counts once, ended by what ended the last.

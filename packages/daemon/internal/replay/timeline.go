@@ -37,8 +37,9 @@ type Course struct {
 	// Moves is each move of the issue's phase, in order.
 	Moves []CourseMove
 	// Rounds is each round of a send-back loop that moved no phase, in order: a conflicting head
-	// merged forward while the issue kept its phase (record.ConflictMergeForward, and a conflict past
-	// the review the merger merges forward under every rule since cybermonklabs/legion#4979).
+	// merged forward while the issue kept its phase (record.ConflictMergeForward, whose conflict
+	// past the review the merger merges forward since cybermonklabs/legion#4979, and
+	// record.ConflictImplementerMergesForward).
 	Rounds []CourseRound
 	// Waits is each wait of the issue on another issue, by the moment it began.
 	Waits []CourseWait

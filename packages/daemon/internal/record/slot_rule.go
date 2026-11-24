@@ -1,9 +1,11 @@
 package record
 
 import (
+	"cmp"
 	"slices"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -60,7 +62,10 @@ type SlotRule struct {
 	// Take is what a start may take from the cap (admit's capLets).
 	Take StartTake
 	// Conflict is what a head that conflicts with its base does once a second read confirms the
-	// conflict (workflow's mergeability, TableFor).
+	// conflict (workflow's mergeability, TableFor). Past the review it is also what the decision on
+	// the conflict answers (classify.ConflictNeedsMergeUnder, ConflictWaitsForMerging), whom the
+	// merge forward asks (MergeForwardAsker) and what a move past the review at a conflicting head
+	// does (workflow's mergeForwardOnEntry).
 	Conflict ConflictPath
 	// ReleaseAtReady says whether an issue in merging gives its slot back at the merger's ready
 	// mark: the merger's completion of merging, which records the head it stands on
@@ -108,20 +113,32 @@ const (
 type ConflictPath string
 
 const (
-	// ConflictMergeForward is the daemon's own: the issue keeps its phase and the implementer is
-	// asked to merge the base forward (workflow's mergeForward).
+	// ConflictMergeForward is the daemon's own (cybermonklabs/legion#4979): the issue keeps its
+	// phase and the base is merged forward (workflow's mergeForward). Up to the review the
+	// implementer is asked at once. Past it, in merging the merger is asked, and in accepting or
+	// retro, where the merge comes next before merging (classify.MergeComesNext), the head is
+	// recorded conflicting, nobody is asked, and the issue's move into merging asks the merger.
 	ConflictMergeForward ConflictPath = "merge_forward"
-	// ConflictMovesBack moves the issue back to implementing by workflow.TriggerConflict.
+	// ConflictMovesBack moves the issue back to implementing by workflow.TriggerConflict, from
+	// accepting, retro and merging as from testing and reviewing.
 	ConflictMovesBack ConflictPath = "moves_back_conflict"
-	// ConflictChecksRed moves the issue back to implementing by workflow.TriggerChecksRed.
+	// ConflictChecksRed moves the issue back to implementing by workflow.TriggerChecksRed, from
+	// accepting, retro and merging as from testing and reviewing.
 	ConflictChecksRed ConflictPath = "moves_back_checks_red"
+	// ConflictImplementerMergesForward is cybermonklabs/legion#4464 without #4979, the path of
+	// commit bafd3618: the issue keeps its phase in every phase, accepting, retro and merging
+	// included, and the implementer is asked at once to merge the base forward there as well
+	// (SlotRule.MergeForwardAsker). The merge forward past the review writes no supervise row and
+	// takes no slot, as every merge forward does (workflow's mergeForward).
+	ConflictImplementerMergesForward ConflictPath = "implementer_merges_forward"
 )
 
 // MainRule is the daemon's own rule, the one it is built with: a slot is kept from the start
 // through the review and in held, and none past the review; a link wait and a children wait give
 // the slot back at the pass that finds them, with no grace, and stop nothing; work that came back
 // goes first, oldest first, then the line by rank; a start takes a slot of its own; a conflicting
-// head keeps its phase while the base is merged forward. Its commit is the commit the rule was
+// head keeps its phase while the base is merged forward, and past the review waits for merging,
+// where the merger merges it (cybermonklabs/legion#4979). Its commit is the commit the rule was
 // first written as a value at.
 var MainRule = SlotRule{
 	Name:   "main",
@@ -184,6 +201,37 @@ func (r SlotRule) GraceOver(since, now time.Time) bool {
 	return !now.Before(since.Add(r.OrMain().WaitGrace))
 }
 
+// ConflictWaitsForMerging says whether, under r, a confirmed conflict where the merge comes next
+// before merging, in retro or in accepting where no step of the task follows the acceptance
+// (classify.MergeComesNext), records the head conflicting, asks nobody and waits for the issue's
+// move into merging, where the merger is asked to merge the base forward: the daemon's own path
+// (ConflictMergeForward, cybermonklabs/legion#4979), which a rule that names no path runs too.
+// Under every other path a conflict in accepting, retro or merging is acted on at once: by the move
+// back of a path that moves back (ConflictMovesBack, ConflictChecksRed), or by the implementer's
+// merge forward (ConflictImplementerMergesForward). It is read by the decision on a confirmed
+// conflict (classify.ConflictNeedsMergeUnder), by a move past the review at a conflicting head
+// (workflow's mergeForwardOnEntry) and by a replay's conflict (replay's conflictFor).
+func (r SlotRule) ConflictWaitsForMerging() bool {
+	return r.conflictPath() == ConflictMergeForward
+}
+
+// MergeForwardAsker is the role r's conflict path asks to merge the base forward while the issue
+// stands in at: the implementer in every phase under ConflictImplementerMergesForward, and under
+// every other path the daemon's own answer (the package's MergeForwardAsker: the merger in merging,
+// and the implementer before it). The engine's merge forward asks this role (workflow's
+// mergeForward).
+func (r SlotRule) MergeForwardAsker(at phase.Phase) claim.Role {
+	if r.conflictPath() == ConflictImplementerMergesForward {
+		return claim.RoleImplementer
+	}
+	return MergeForwardAsker(at)
+}
+
+// conflictPath is r's conflict path (Conflict), the daemon's own for a rule that names none.
+func (r SlotRule) conflictPath() ConflictPath {
+	return cmp.Or(r.OrMain().Conflict, ConflictMergeForward)
+}
+
 // KeepsSlot is the phase half of r's admission rule, as the package's KeepsSlot is of the
 // daemon's own: issue is in the workflow (InWorkflow) and stands, as StandsAt reads it, in a
 // phase r keeps a slot in.
@@ -210,7 +258,9 @@ func (r SlotRule) NeedsSlot(issue, root Issue, live bool) bool {
 // besides (admit's readSlotHolders), and the state's answer of `why`, which serves such an issue
 // at work no answer (projection's atWorkInSlotlessPhase). The readers that mean where the merge
 // comes next on the task's own line, whatever slot the issue holds, read the workflow's walk and
-// no rule (classify.ConflictNeedsMerge and classify.MergeComesNext, workflow's merge forward).
+// no phase of the rule: classify.MergeComesNext, and the decision on a conflict and the merge
+// forward (classify.ConflictNeedsMergeUnder, workflow's merge forward), which read the rule's
+// conflict path alone (Conflict).
 func (r SlotRule) InSlotlessPhase(issue Issue) bool {
 	at := StandsAt(issue)
 	return slices.Contains(phase.Order, at) && !r.PhaseKeepsSlot(at)
@@ -261,24 +311,26 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 }
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
-// the replay's comparison runs beside it: the rules two recorded windows ran under
-// (legion-v20.42.5, legion-v19.57.3) and the seven candidates of the comparison (keep-past-review,
-// blockers-first, returned-by-rank, cover, wait-grace and wait-grace-1h, one rule at two graces,
-// and returned-by-first-slot). `legion replay rules` prints them. Each answer is built afresh, so a
-// caller that changes a rule it was handed changes no other caller's.
+// the replay's comparison runs beside it: the rules three recorded windows ran under
+// (legion-v20.42.5, legion-v19.57.3, legion-v22.14.1) and the seven candidates of the comparison
+// (keep-past-review, blockers-first, returned-by-rank, cover, wait-grace and wait-grace-1h, one rule
+// at two graces, and returned-by-first-slot). `legion replay rules` prints them. Each answer is
+// built afresh, so a caller that changes a rule it was handed changes no other caller's.
 func SlotRules() []SlotRule {
-	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), keepPastReviewRule(),
-		blockersFirstRule(), returnedByRankRule(), coverRule(),
+	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), windowThreeRule(),
+		keepPastReviewRule(), blockersFirstRule(), returnedByRankRule(), coverRule(),
 		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule()}
 }
 
 // The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
 // window one, whose slot rule is the one 20.25.1 (52b3cf5c) ran before it and whose transition
-// table carries the five rows that move a conflicting head back to implementing; and release
-// 19.57.3, which the same deployment ran over its window two.
+// table carries the five rows that move a conflicting head back to implementing; release 19.57.3,
+// which the same deployment ran over its window two; and release 22.14.1, which it ran from the
+// start of its window three.
 const (
-	conflictMovesBackCommit = "958173da0ea4cd03290a1964edf9eb92e6685200"
-	awaitingMergeCommit     = "9542c6fbbecd184ccee73523ab3defa39d6cf23a"
+	conflictMovesBackCommit        = "958173da0ea4cd03290a1964edf9eb92e6685200"
+	awaitingMergeCommit            = "9542c6fbbecd184ccee73523ab3defa39d6cf23a"
+	implementerMergesForwardCommit = "bafd3618eb58722419c77f34174c1b77525c891b"
 )
 
 // mainRuleWith is MainRule under name, moved by change and nothing else, its phases a copy: the
@@ -325,6 +377,18 @@ func windowTwoRule() SlotRule {
 		rule.LinkWaitGivesBack, rule.ChildrenWaitGivesBack = false, false
 		rule.Conflict = ConflictChecksRed
 		rule.ReleaseAtReady = true
+	})
+}
+
+// windowThreeRule is the rule named legion-v22.14.1, which release 22.14.1 ran: the daemon's own
+// slot choices, and the conflict path of cybermonklabs/legion#4464 without #4979's
+// (ConflictImplementerMergesForward): a conflicting head keeps its phase in every phase, accepting,
+// retro and merging included, and the implementer is asked at once to merge the base forward,
+// where main leaves a conflict in accepting or retro to wait for merging and asks the merger there.
+func windowThreeRule() SlotRule {
+	return mainRuleWith("legion-v22.14.1", func(rule *SlotRule) {
+		rule.Commit = implementerMergesForwardCommit
+		rule.Conflict = ConflictImplementerMergesForward
 	})
 }
 

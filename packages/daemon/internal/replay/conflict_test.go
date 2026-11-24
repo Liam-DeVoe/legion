@@ -822,24 +822,26 @@ func pastReviewConflictWindow(t *testing.T) Window {
 	return window
 }
 
-// A conflict past the review is played as the daemon the replay runs plays it, which leaves it to
-// the merger (cybermonklabs/legion#4979, assumption 37), not as the daemon that recorded the window
-// did. In merging, under a rule whose conflicting head keeps its phase, the merger merges the base
-// forward; in accepting, under every rule, the conflict waits for merging, where the merger merges
-// it forward, and nothing moves the issue back. The test replays pastReviewConflictWindow at the
-// seeds 1 to 3. Under main ACME-1 stays in merging at 11:00, its merger merges the base forward for
-// its loop's 30 minutes of implementing, the merge forward lands at 11:30, and its last merging
-// segment runs from then to its merge at 11:45. ACME-2 stays in accepting at 10:35 and goes on with
-// the work the record shows after its loop came back there: its architect's 15 minutes to retro at
-// 10:50 and its implementer's 15 to merging at 11:05, where its merger is asked and merges forward
-// for its loop's 20 minutes of implementing, landing at 11:25, and its last merging segment runs to
-// its merge at 11:40. Under legion-v20.42.5, the rule that recorded the window, ACME-2 runs as under
-// main, and ACME-1, which that rule still moves back from merging, moves back at 11:00 and runs its
-// own loop to its merge at 12:45, as recorded. The test fails for a replay that moves either issue
-// from 10:10 on otherwise or at other moments, asks or lands either's merge forward at other
-// moments, starts the turns of either's merger or implementer from 10:10 on at other moments,
-// finishes either at another time, refuses a move, counts other than the conflicts it left to the
-// merger (two under main, ACME-2's alone under legion-v20.42.5), or does not name assumption 37.
+// A conflict past the review is played by the conflict path of the rule the replay runs
+// (record.SlotRule.Conflict, assumption 37). Under main the daemon the replay runs leaves it to the
+// merger (cybermonklabs/legion#4979): in merging the merger merges the base forward; in accepting
+// the conflict waits for merging, where the merger merges it forward, and nothing moves the issue
+// back. Under legion-v20.42.5, the rule that recorded the window, the conflict moves the issue back
+// to implementing from merging and from accepting, as the release that ran the rule did. The test
+// replays pastReviewConflictWindow at the seeds 1 to 3. Under main ACME-1 stays in merging at
+// 11:00, its merger merges the base forward for its loop's 30 minutes of implementing, the merge
+// forward lands at 11:30, and its last merging segment runs from then to its merge at 11:45. ACME-2
+// stays in accepting at 10:35 and goes on with the work the record shows after its loop came back
+// there: its architect's 15 minutes to retro at 10:50 and its implementer's 15 to merging at 11:05,
+// where its merger is asked and merges forward for its loop's 20 minutes of implementing, landing
+// at 11:25, and its last merging segment runs to its merge at 11:40. Under legion-v20.42.5 each
+// issue moves back and is given the one recorded loop left from its phase, its own, so it runs as
+// recorded: ACME-1 moves back at 11:00 and merges at 12:45, and ACME-2 moves back at 10:35 and
+// merges at 12:10. The test fails for a replay that moves either issue from 10:10 on otherwise or
+// at other moments, asks or lands either's merge forward at other moments, starts the turns of
+// either's merger or implementer from 10:10 on at other moments, finishes either at another time,
+// refuses a move, counts other than the conflicts it left to the merger (two under main, none
+// under legion-v20.42.5), or names assumption 37 otherwise than where it left one.
 func TestAConflictPastTheReviewIsTheMergers(t *testing.T) {
 	replayDSN(t)
 	window := pastReviewConflictWindow(t)
@@ -875,7 +877,7 @@ func TestAConflictPastTheReviewIsTheMergers(t *testing.T) {
 			},
 			"ACME-2": waitedForTheMerger,
 		}},
-		{rule: "legion-v20.42.5", toThem: 1, want: map[string]course{
+		{rule: "legion-v20.42.5", toThem: 0, want: map[string]course{
 			"ACME-1": {
 				moves: []fixtureMove{accepted, signedOff, toMerging, move(phase.Merging, phase.Implementing, workflow.TriggerConflict),
 					move(phase.Implementing, phase.Testing, workflow.TriggerImplementationReady), move(phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed),
@@ -885,7 +887,13 @@ func TestAConflictPastTheReviewIsTheMergers(t *testing.T) {
 				mergerTurns: []time.Time{clock(10, 45), clock(12, 30)}, implementer: []time.Time{clock(10, 30), clock(11, 0), clock(12, 15)},
 				done: clock(12, 45),
 			},
-			"ACME-2": waitedForTheMerger,
+			"ACME-2": {
+				moves: []fixtureMove{accepted, move(phase.Accepting, phase.Implementing, workflow.TriggerConflict),
+					move(phase.Implementing, phase.Testing, workflow.TriggerImplementationReady), move(phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed),
+					accepted, signedOff, toMerging, merged},
+				at:          []time.Time{clock(10, 20), clock(10, 35), clock(10, 55), clock(11, 10), clock(11, 25), clock(11, 40), clock(11, 55), clock(12, 10)},
+				mergerTurns: []time.Time{clock(11, 55)}, implementer: []time.Time{clock(10, 35), clock(11, 40)}, done: clock(12, 10),
+			},
 		}},
 	} {
 		for seed := int64(1); seed <= 3; seed++ {
@@ -931,9 +939,10 @@ func TestAConflictPastTheReviewIsTheMergers(t *testing.T) {
 				if refused := result.Divergence.Refused; len(refused) > 0 {
 					t.Errorf("the replay refused %+v", refused)
 				}
-				if got := result.Divergence.ConflictsToMerger; got != c.toThem || !slices.Contains(result.Assumptions, assumeConflictToMerger) {
-					t.Errorf("the run left %d conflicts past the review to the merger and named the assumptions %v, want %d and assumption %d named",
-						got, result.Assumptions, c.toThem, assumeConflictToMerger)
+				got, named := result.Divergence.ConflictsToMerger, slices.Contains(result.Assumptions, assumeConflictToMerger)
+				if got != c.toThem || named != (c.toThem > 0) {
+					t.Errorf("the run left %d conflicts past the review to the merger and named the assumptions %v, want %d, and assumption %d named: %t",
+						got, result.Assumptions, c.toThem, assumeConflictToMerger, c.toThem > 0)
 				}
 			})
 		}

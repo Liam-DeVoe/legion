@@ -1069,9 +1069,11 @@ type ConflictRead struct {
 }
 
 // MergeForward is the daemon's ask that a role merge Base forward onto Head
-// (PullRequest.MergeForward). Role is the role asked: the implementer before merging, and the
-// merger in merging (MergeForwardAsker, cybermonklabs/legion#4979); Asked reads it. Phase is the phase
-// the issue stood in when the daemon asked, and stays in. Why is the first of R0's reasons that
+// (PullRequest.MergeForward). Role is the role asked: under the daemon's own rule the implementer
+// before merging, and the merger in merging (MergeForwardAsker, cybermonklabs/legion#4979), and
+// under another rule the role its conflict path asks (SlotRule.MergeForwardAsker); Asked reads it.
+// Phase is the phase the issue stood in when the daemon asked, and stays in. Why is the first of
+// R0's reasons that
 // held (dispatch://INFRA-4374 R0, ConflictWhy). AskedAt is when the ask was written. Landed is the
 // first new head that arrived after the ask, "" until one does; ReviewAsked is whether that
 // landing asked the reviewer to read the merge, which it does when the reviewer step of the
@@ -1123,10 +1125,12 @@ type LandedMergeForward struct {
 type ConflictWhy string
 
 const (
-	// ConflictMergeNext: the issue stands in merging, or is held from it. A conflict where the
-	// merge comes next before merging - retro, or accepting where no step of the task follows the
-	// acceptance (classify.MergeComesNext) - waits for merging, where the merger merges the base
-	// forward (cybermonklabs/legion#4979).
+	// ConflictMergeNext: under the daemon's own rule, the issue stands in merging, or is held from
+	// it; a conflict where the merge comes next before merging - retro, or accepting where no step
+	// of the task follows the acceptance (classify.MergeComesNext) - waits for merging, where the
+	// merger merges the base forward (cybermonklabs/legion#4979). Under a rule whose conflict path
+	// acts at once past the review (SlotRule.ConflictWaitsForMerging false), the issue stands in
+	// accepting, retro or merging, or is held from one of them.
 	ConflictMergeNext ConflictWhy = "merge-next"
 	// ConflictRulesUnread: the daemon could not read the base branch's rules.
 	ConflictRulesUnread ConflictWhy = "base-rules-unread"
@@ -1137,10 +1141,12 @@ const (
 )
 
 // MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
-// in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
-// the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
-// implementing, or a phase after it on the task's line). The ask's row goes to it
-// (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
+// in at under its own rule (cybermonklabs/legion#4979): the merger in merging, where the merge is
+// its own work, and the implementer in every earlier phase where a merge forward stands
+// (classify.MergeForwardStands: implementing, or a phase after it on the task's line). The ask's
+// row goes to it (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role). The
+// engine asks the role of the rule it runs (SlotRule.MergeForwardAsker), which is this one but
+// under a conflict path that asks the implementer past the review too.
 func MergeForwardAsker(at phase.Phase) claim.Role {
 	if at == phase.Merging {
 		return claim.RoleMerger

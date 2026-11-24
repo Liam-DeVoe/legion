@@ -13,10 +13,10 @@ import (
 var fortyHex = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // keptRuleNames is the rules the replay's comparison runs, by name, in the order the repository
-// keeps them: the daemon's own first, then the rules two recorded windows ran under, then the
+// keeps them: the daemon's own first, then the rules three recorded windows ran under, then the
 // candidates of the comparison.
-var keptRuleNames = []string{"main", "legion-v20.42.5", "legion-v19.57.3", "keep-past-review", "blockers-first", "returned-by-rank", "cover",
-	"wait-grace", "wait-grace-1h", "returned-by-first-slot"}
+var keptRuleNames = []string{"main", "legion-v20.42.5", "legion-v19.57.3", "legion-v22.14.1", "keep-past-review", "blockers-first",
+	"returned-by-rank", "cover", "wait-grace", "wait-grace-1h", "returned-by-first-slot"}
 
 // Every rule the repository keeps names the commit of cybermonklabs/legion its choices come from,
 // so a reader of a replay's result can read the code that made them (record.SlotRule.Commit): the

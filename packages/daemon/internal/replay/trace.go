@@ -174,9 +174,10 @@ const (
 const checkClosedLine = "workflow: production check closed"
 
 // mergeForwardAskedLine and mergeForwardLandedLine are the msgs of the lines a conflicting head's
-// merge forward writes where the issue keeps its phase (record.ConflictMergeForward, and under every
-// rule a conflict past the review since cybermonklabs/legion#4979): the engine's ask of the
-// implementer, or in merging the merger, to merge the base forward (workflow's mergeForward) and the
+// merge forward writes where the issue keeps its phase (record.ConflictMergeForward, whose
+// conflict past the review waits for the merger since cybermonklabs/legion#4979, and
+// record.ConflictImplementerMergesForward): the engine's ask of the role the rule names
+// (record.SlotRule.MergeForwardAsker) to merge the base forward (workflow's mergeForward) and the
 // head that merge left arriving (mergeForwardLanded), the round of conflict a merge forward is
 // (MergeForwardRound).
 const (

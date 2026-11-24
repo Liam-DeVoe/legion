@@ -70,9 +70,10 @@ const (
 	endLeft
 	endOpen
 	// endMergeForward is the merge-forward segment a conflict adds where the daemon keeps the
-	// issue's phase and asks a role to merge the base forward (record.ConflictMergeForward, or a
-	// conflict past the review that waited for merging; assumptions 23 and 37): at its end the merge
-	// forward lands, and the work of the stretch that drew goes on (driver.mergedForward).
+	// issue's phase and asks a role to merge the base forward (record.ConflictMergeForward and
+	// record.ConflictImplementerMergesForward, or under main's path a conflict past the review that
+	// waited for merging; assumptions 23 and 37): at its end the merge forward lands, and the work
+	// of the stretch that drew goes on (driver.mergedForward).
 	endMergeForward
 )
 

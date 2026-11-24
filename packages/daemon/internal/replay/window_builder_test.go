@@ -1329,6 +1329,96 @@ func TestARootArchitectsDesignVersionPastAPassedOverLoopKeepsItsRecordedTime(t *
 	}
 }
 
+// acceptingOpenLoopWindow is a window from 10:00 to 13:00 recorded under legion-v20.42.5, its inputs
+// reaching back to the daemon's boot at 07:00. ACME-2, a root promoted at 07:05, works 30 minutes
+// in each phase to accepting at 09:20, where it stands at the window's start. At 10:30 a conflict
+// moves it back to implementing, and the record shows no return to accepting: its implementer works
+// 30 minutes to testing at 11:00, where its tester is in a turn to the window's end. So the stretch
+// keeps its conflict under every rule, whatever the fitted rate gives (assumption 35).
+func acceptingOpenLoopWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(3 * time.Hour)
+	b.boot(clock(7, 0))
+	rootThrough(b, "ACME-2", "a2", clock(7, 5), clock(7, 20), moveAt(7, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(8, 20, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 50, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(9, 20, phase.Accepting, workflow.TriggerReviewApproved), moveAt(10, 30, phase.Implementing, workflow.TriggerConflict),
+		moveAt(11, 0, phase.Testing, workflow.TriggerImplementationReady))
+	return b.build()
+}
+
+// A conflict in accepting takes the conflict path of the rule the replay runs (record.SlotRule.Conflict,
+// assumption 37). The test replays acceptingOpenLoopWindow, whose conflict at 10:30 the stretch keeps,
+// under each of the four paths. Under legion-v20.42.5 ACME-2 moves back to implementing by conflict
+// at 10:30, as the table of 958173da moved it, and runs its own loop, its implementer from 10:30 to
+// testing at 11:00. Under legion-v19.57.3 it moves back by checks_red at 10:30, as the table of
+// 9542c6fb moved it, and runs the same loop. Under legion-v22.14.1 it keeps accepting, and the engine
+// asks its implementer to merge the base forward at 10:30, as bafd3618 asked it: the implementer's
+// merge forward lasts as the loop's implementing round and lands at 11:00. Under main it keeps
+// accepting, the engine asks nobody, and the conflict waits for merging (cybermonklabs/legion#4979),
+// which the run counts as a conflict left to the merger. The test fails for a replay that moves
+// ACME-2 after 10:00 otherwise or at other moments, asks or lands its merge forward at other moments,
+// starts its implementer's turns after 10:00 at other moments, keeps other than the one conflict,
+// leaves another count of conflicts to the merger, or refuses a move.
+func TestAConflictInAcceptingTakesTheRulesPath(t *testing.T) {
+	replayDSN(t)
+	window := acceptingOpenLoopWindow(t)
+	movedBack := func(trigger workflow.TriggerKind) []fixtureMove {
+		return []fixtureMove{{From: phase.Accepting, To: phase.Implementing, Trigger: trigger},
+			{From: phase.Implementing, To: phase.Testing, Trigger: workflow.TriggerImplementationReady}}
+	}
+	for _, c := range []struct {
+		rule                         string
+		moves                        []fixtureMove
+		movedAt, asked, landed, turn []time.Time
+		toMerger                     int
+	}{
+		{rule: "legion-v20.42.5", moves: movedBack(workflow.TriggerConflict), movedAt: []time.Time{clock(10, 30), clock(11, 0)},
+			turn: []time.Time{clock(10, 30)}},
+		{rule: "legion-v19.57.3", moves: movedBack(workflow.TriggerChecksRed), movedAt: []time.Time{clock(10, 30), clock(11, 0)},
+			turn: []time.Time{clock(10, 30)}},
+		{rule: "legion-v22.14.1", asked: []time.Time{clock(10, 30)}, landed: []time.Time{clock(11, 0)}, turn: []time.Time{clock(10, 30)}},
+		{rule: "main", toMerger: 1},
+	} {
+		t.Run(c.rule, func(t *testing.T) {
+			result, log, _ := replayLoopWindow(t, window, c.rule, 1)
+			afterTen := func(line replayLine) bool { return line.Issue == "ACME-2" && line.Time.After(clock(10, 0)) }
+			var moves []fixtureMove
+			var movedAt []time.Time
+			for _, line := range log {
+				if line.Msg == phaseChangedLine && afterTen(line) {
+					moves = append(moves, fixtureMove{From: phase.Phase(line.From), To: phase.Phase(line.To), Trigger: line.Trigger})
+					movedAt = append(movedAt, line.Time)
+				}
+			}
+			if !slices.Equal(moves, c.moves) || !slices.EqualFunc(movedAt, c.movedAt, time.Time.Equal) {
+				t.Errorf("ACME-2 moved %s at %s after 10:00, want %s at %s", describeMoves(moves), describeTimes(movedAt),
+					describeMoves(c.moves), describeTimes(c.movedAt))
+			}
+			asked := linesAt(log, func(line replayLine) bool { return line.Msg == mergeForwardAskedLine && afterTen(line) })
+			landed := linesAt(log, func(line replayLine) bool { return line.Msg == mergeForwardLandedLine && afterTen(line) })
+			if !slices.EqualFunc(asked, c.asked, time.Time.Equal) || !slices.EqualFunc(landed, c.landed, time.Time.Equal) {
+				t.Errorf("ACME-2's merge forward was asked at %s and landed at %s, want asked at %s and landed at %s", describeTimes(asked),
+					describeTimes(landed), describeTimes(c.asked), describeTimes(c.landed))
+			}
+			implementer := string(builtToken(t, "ACME-2", claim.RoleImplementer))
+			turns := linesAt(log, func(line replayLine) bool {
+				return line.Msg == turnStartedLine && line.Claim == implementer && line.Time.After(clock(10, 0))
+			})
+			if !slices.EqualFunc(turns, c.turn, time.Time.Equal) {
+				t.Errorf("ACME-2's implementer started turns at %s after 10:00, want at %s", describeTimes(turns), describeTimes(c.turn))
+			}
+			if result.Divergence.KeptOpenLoops != 1 || result.Divergence.ConflictsToMerger != c.toMerger {
+				t.Errorf("the run kept %d conflicts and left %d to the merger, want 1 kept and %d left to the merger",
+					result.Divergence.KeptOpenLoops, result.Divergence.ConflictsToMerger, c.toMerger)
+			}
+			if refused := result.Divergence.Refused; len(refused) > 0 {
+				t.Errorf("the replay refused %+v", refused)
+			}
+		})
+	}
+}
+
 // phaseCells is the stretches of phaseStretchesWindow by the phase each ends in and whether the
 // base branch took a merge during it, with how many of them end in a conflict. In each cell the
 // share of conflicts is the chance logistic(base + phase term + merges term × log2(1 + M)) gives,

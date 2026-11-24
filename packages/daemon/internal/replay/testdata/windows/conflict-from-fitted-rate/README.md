@@ -4,7 +4,7 @@ A recorded window of project ACME, written by hand by the conventions of `../REA
 four hours, from 2001-03-05T09:00Z to 13:00Z, an admission cap of 2, two issues, recorded under the rule `legion-v20.42.5` (a conflicting head moves back to implementing by `conflict`, as release 20.42.5 did).
 It holds one fact of check k1: a conflict comes from the rate fitted on the window, not from the recorded move (spec R2).
 `merges/acme__widgets.jsonl` holds the base branch's two first-parent commits, the two merges of the window.
-`expect.json` holds the scorecards of a replay under each of the two conflict paths, `legion-v20.42.5` and `main`, on the main branch, worked by hand below.
+`expect.json` holds the scorecards of a replay under each of three conflict paths, `legion-v20.42.5`, `main` and `legion-v22.14.1`, on the main branch, worked by hand below.
 The draw is certain at the precision "The fit" below gives, so every seed gives them.
 
 ## The issues
@@ -78,6 +78,19 @@ The stretch is not drawn again.
 ACME-1 holds no slot after 10:15 (merging keeps none under `main`).
 ACME-2 is as recorded.
 
+## The replay under `legion-v22.14.1`
+
+`legion-v22.14.1` keeps a conflicting head in its phase in every phase, and asks the implementer to merge the base forward at once, in merging too (cybermonklabs/legion#4464 without #4979, the conflict path of `bafd3618`).
+Up to 11:00 nothing differs: ACME-1's first stretch draws at 11:00 with M = 1, a conflict.
+ACME-1 stays in merging, and the engine asks its implementer to merge the base forward and tells its merger to wait.
+A merge-forward segment follows, as long as the recorded loops' implementing round (assumption 23), 30 minutes, its implementer in a turn from 11:00 to 11:30.
+The merge forward writes no supervise row and takes no slot.
+Then ACME-1 goes on as under `main`: its last merging segment of 15 minutes, its merger in a turn from 11:30 to 11:45, and it merges at 11:45.
+The stretch is not drawn again.
+ACME-1 holds no slot after 10:15 (merging keeps none under `legion-v22.14.1`, whose slot choices are those of `main`).
+No conflict is left to the merger.
+ACME-2 is as recorded.
+
 ## The scorecard under `legion-v20.42.5`, worked by hand
 
 The span is 4 hours.
@@ -149,5 +162,42 @@ None.
 
 **Assumptions.**
 1; 2; 3 (a drawn conflict); 9; 18 (the window records a conflict); 23 (the conflict drawn under `main` merges forward).
+Nothing moves ACME-1 back, so not 13.
+`assumptions` is [1, 2, 3, 9, 18, 23]; `scenario` is `none`.
+
+## The scorecard under `legion-v22.14.1`, worked by hand
+
+Each measure is the one under `main`: the two paths give the same times, and only the role of the merge-forward segment differs, the implementer in place of the merger.
+
+**Slots.**
+ACME-1 09:00 to 10:15 (75 minutes), ACME-2 09:05 to 10:20 (75): 2 slots on 2001-03-05, waits 0 and 0, median 0; `firstSlot` as above.
+
+**Slot-hours.**
+150 minutes in a turn, 2.5 hours; none without.
+The implementer's merge forward and the last merging segment run with no slot.
+
+**In flight.**
+ACME-1 09:00 to 11:45 (165 minutes), ACME-2 09:05 to 10:45 (100): 265 minutes, 4.41666… hours, an average of 1.104166…, at most 2.
+
+**Done and work left.**
+ACME-2 at 10:45, ACME-1 at 11:45 (`done` 2); `workLeft` 0.
+
+**Started work without a slot.**
+0 in both readings.
+
+**Past the review.**
+ACME-1 10:15 to 11:45 (90 minutes), ACME-2 10:20 to 10:45 (25), with no slot:
+115 minutes, 1.91666… hours, an average of 0.479166…, at most 2; `pastReviewHolding` 0.
+
+**Priority taken.** 0.
+
+**Loops.**
+One round of `conflict`, from the ask at 11:00 to the landing at 11:30, its hours the merge-forward segment: 0.5 hours.
+
+**Waits.**
+None.
+
+**Assumptions.**
+1; 2; 3 (a drawn conflict); 9; 18 (the window records a conflict); 23 (the conflict drawn merges forward).
 Nothing moves ACME-1 back, so not 13.
 `assumptions` is [1, 2, 3, 9, 18, 23]; `scenario` is `none`.

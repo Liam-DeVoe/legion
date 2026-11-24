@@ -177,8 +177,11 @@ const conflictConfirmWait = time.Minute
 //
 // The decision is R0's (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge), read on the
 // base's rules for its required checks, which the confirming read carries
-// (intake.PullRequestMergeability.Rules). A reason to act asks the implementer, or in merging the
-// merger, to merge the base forward, and the issue keeps its phase (mergeForward, R1); no reason
+// (intake.PullRequestMergeability.Rules), under the slot rule the engine runs, whose conflict path
+// decides a conflict past the review (classify.ConflictNeedsMergeUnder, Config.SlotRule). A reason
+// to act asks the role that rule names (record.SlotRule.MergeForwardAsker: the implementer, or
+// under the daemon's own rule the merger in merging) to merge the base forward, and the issue keeps
+// its phase (mergeForward, R1); no reason
 // leaves the conflict recorded and logged with the checks the base requires and those green on
 // the head, and the task's steps go on at that head. A CONFLICTING read of a head the
 // record already holds conflicting decides again in the same way, since the phase the issue has
@@ -229,11 +232,14 @@ const conflictConfirmWait = time.Minute
 // one from GitHub's answer: the UNKNOWN of a read on the ladder that follows would lose the
 // conflict, and the next round at the conflicting head would count.
 //
-// A confirmed conflict that needs the merge (classify.ConflictNeedsMerge) is merged forward under
-// the daemon's own slot rule, the issue keeping its phase (mergeForward). Under a rule whose
+// A confirmed conflict that needs the merge (classify.ConflictNeedsMergeUnder) is merged forward
+// under the daemon's own slot rule, the issue keeping its phase (mergeForward). Under a rule whose
 // conflicting head moves back (record.SlotRule.Conflict, Config.SlotRule) the issue moves back to
 // implementing by that rule's trigger instead, as the releases that ran such a rule did
-// (conflictMovesBack).
+// (conflictMovesBack), from accepting, retro and merging too, where that rule's conflict needs the
+// merge at once. Under a rule whose implementer merges forward past the review
+// (record.ConflictImplementerMergesForward) the issue keeps its phase there too, and the
+// implementer is asked.
 func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMergeability) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
@@ -315,7 +321,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			return intake.Result{}, err
 		}
 		green := classify.GreenContexts(*pr)
-		if why := classify.ConflictNeedsMerge(*issue, w.Line, fact.Rules, green); why != "" {
+		if why := classify.ConflictNeedsMergeUnder(e.cfg.SlotRule, *issue, w.Line, fact.Rules, green); why != "" {
 			// A slot rule whose conflicting head moves back (record.SlotRule.Conflict) moves the
 			// issue to implementing by its trigger in place of the merge forward; the daemon's
 			// own keeps the phase and asks the merge (conflictMovesBack). An issue moved back
@@ -330,8 +336,8 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			}
 		} else {
 			// Rules is nil for a read that carried none, which a place where the merge comes next
-			// before merging decides on too: the conflict waits there for merging whatever the rules
-			// (classify.ConflictNeedsMerge, classify.MergeComesNext).
+			// before merging decides on too: under the daemon's own rule the conflict waits there
+			// for merging whatever the rules (classify.ConflictNeedsMerge, classify.MergeComesNext).
 			var required []string
 			if fact.Rules != nil {
 				required = fact.Rules.Required

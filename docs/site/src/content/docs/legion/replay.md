@@ -337,14 +337,16 @@ The replay draws only among the loops whose work, as the drawn conflict takes it
 A loop whose issue the record shows still in it at `--to`, or leaving the workflow inside it, has no known length, and an issue given it would stand in its last work segment to the window's end and never run its own work after the loop.
 A loop that left a later phase counts where the record shows it reaching the phase that the drawn conflict left.
 A stretch whose recorded conflict loop runs to `--to`, with no return to the phase that the conflict left, does not draw: it keeps that conflict, and the issue runs its own loop where the daemon moves it back (assumption 35).
-The replay runs the daemon of the commit that it was built from, which answers a conflict past the review as cybermonklabs/legion#4979 has it, and leaves that conflict to the merger (assumption 37).
-In accepting and retro, the daemon records the head as conflicting and asks nobody, under every rule, because neither the architect's acceptance nor retro needs a head that merges.
+The replay runs the daemon of the commit that it was built from, and that daemon answers a conflict past the review by the conflict path of the rule that you name.
+Under `main` and each candidate built on it, the daemon answers as cybermonklabs/legion#4979 has it, and leaves that conflict to the merger (assumption 37).
+In accepting and retro, the daemon records the head as conflicting and asks nobody, because neither the architect's acceptance nor retro needs a head that merges.
 The issue keeps its phase and goes on with its work: past the loop that the record ran, where the record ended the stretch in a conflict, and otherwise by the move that the record shows.
 When the issue moves into merging, the daemon asks the merger to merge the base forward, and the replay adds a merge-forward segment of the merger's before the issue's merging work, as long as the implementing round that it drew when the conflict came (assumption 23).
 A move back to a phase before accepting ends such a conflict before any merger is asked, and the work goes on from a head of its own, as after a conflict's move back.
-In merging, under a rule whose conflicting head keeps its phase, the daemon asks the merger to merge the base forward at once, and the merge-forward segment is the merger's.
-A rule whose conflicting head moves back still moves the issue back to implementing from merging, from testing and from reviewing.
-In testing and reviewing, under a rule whose conflicting head keeps its phase, the daemon asks the implementer, as before.
+In merging, the daemon asks the merger to merge the base forward at once, and the merge-forward segment is the merger's.
+In testing and reviewing, the daemon asks the implementer.
+Under `legion-v20.42.5` and `legion-v19.57.3`, whose conflicting head moves back, the daemon moves the issue back to implementing from testing, reviewing, accepting, retro and merging, as the releases that ran those rules did.
+Under `legion-v22.14.1`, the daemon keeps the phase in every phase and asks the implementer to merge the base forward at once, as release 22.14.1 did, so the merge-forward segment is the implementer's, in accepting, retro and merging too.
 `run` asks nothing outside: no Dispatch, no GitHub and no NATS.
 
 The daemon records what each holder of a gated tree's work took of its approved design, and its outbox tells a holder what changed when a person approves a later version.
@@ -653,6 +655,7 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `main` | The daemon's own rule, with no slot past the review, the slot given back on a link wait and a children wait, returned issues first, and a conflicting head that keeps its phase. | `0d3786da` |
 | `legion-v20.42.5` | The rule of releases 20.25.1 and 20.42.5, with the slot choices of `main` and a conflicting head that moves back to implementing. | `958173da` |
 | `legion-v19.57.3` | The rule of release 19.57.3, with a slot kept in every phase until the merger's ready mark in merging, no slot given back on a wait, and red checks that move back to implementing. | `9542c6fb` |
+| `legion-v22.14.1` | The rule of release 22.14.1, with the slot choices of `main` and a conflicting head that keeps its phase in every phase, accepting, retro and merging too, while the implementer merges the base forward at once (cybermonklabs/legion#4464 without #4979). | `bafd3618` |
 | `keep-past-review` | `main` with the slot kept in accepting, retro and merging, so that a send-back past the review finds its issue with its slot. | `0d3786da` |
 | `blockers-first` | `main` with each issue that a started issue waits on placed first among the issues that have not started. | `0d3786da` |
 | `returned-by-rank` | `main` with a returned issue placed in the line by its board rank, not by the time at which it gave its slot back. | `0d3786da` |
@@ -698,6 +701,17 @@ legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   a start takes: own_slot
   a conflicting head: moves_back_checks_red
   the slot goes back at the ready mark: true
+
+legion-v22.14.1 (commit bafd3618eb58722419c77f34174c1b77525c891b)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  a start takes: own_slot
+  a conflicting head: implementer_merges_forward
+  the slot goes back at the ready mark: false
 
 keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
@@ -800,8 +814,9 @@ Each line of a rule gives one choice:
   `cover` lets an issue that a waiter waits on start on that waiter's slot, whatever the cap says, one cover for each holder.
 
 - `a conflicting head`: `merge_forward` keeps the phase and asks the implementer, or in merging the merger, to merge the base forward.
-  `moves_back_conflict` moves the issue back to implementing by the trigger `conflict`, and `moves_back_checks_red` by the trigger `checks_red`, from testing, reviewing and merging.
-  Under every rule, a conflict in accepting or retro keeps its phase and waits for merging, where the merger merges the base forward (assumption 37).
+  Under `merge_forward`, a conflict in accepting or retro keeps its phase and waits for merging, where the merger merges the base forward (assumption 37).
+  `moves_back_conflict` moves the issue back to implementing by the trigger `conflict`, and `moves_back_checks_red` by the trigger `checks_red`, from testing, reviewing, accepting, retro and merging.
+  `implementer_merges_forward` keeps the phase in every phase and asks the implementer to merge the base forward at once, in accepting, retro and merging too.
 
 - `the slot goes back at the ready mark`: whether an issue in merging gives its slot back at the merger's ready mark, under a rule that keeps a slot in merging.
 
@@ -1661,10 +1676,11 @@ A merge forward shorter than a conflict's implementing round makes the conflict 
 **Evidence in a recorded window.** _The recorded conflict loops._
 A window of a release whose conflicting head moves back holds each conflict loop: the move back by `conflict`, and the implementing round after it.
 Under `main`, a drawn conflict keeps its phase, and the replay adds a merge-forward segment, with the worker that the daemon asks in a turn: the implementer in testing and reviewing, and the merger in merging.
-A conflict in accepting or retro waits for merging under every rule, and its merge-forward segment, the merger's, runs when the issue moves into merging, with a length that the replay draws when the conflict comes (assumption 37).
+Under `main`, a conflict in accepting or retro waits for merging, and its merge-forward segment, the merger's, runs when the issue moves into merging, with a length that the replay draws when the conflict comes (assumption 37).
+Under `legion-v22.14.1`, the segment is the implementer's in every phase, and it runs at once.
 The replay draws the length of that segment from the implementing rounds of the recorded conflict loops that left the same phase, among the loops whose work the record shows ending.
 Where the window records no loop from that phase, the replay draws from the loops that left a later phase, and where it records none of those either, from the loops that left an earlier phase.
-The fixture window `conflict-from-fitted-rate` replays one under `main` and `legion-v20.42.5`.
+The fixture window `conflict-from-fitted-rate` replays one under `main`, `legion-v22.14.1` and `legion-v20.42.5`.
 
 **If it is wrong.**
 If a merge forward is shorter than the implementing round of a conflict loop, the replay moves the measures so for `main` and each rule built on it.
@@ -2026,9 +2042,9 @@ The record then holds no work of the issue after the stretch but that loop.
 Drawn as any other stretch, a draw of no conflict would take the issue past a loop after which the record shows nothing, and a drawn conflict would give it another loop in place of its own, after which it has nothing either: either way the issue would stand idle, with no worker, to the window's end.
 So the replay does not draw such a stretch.
 It keeps the conflict and makes it through the daemon's own path, as it makes a drawn one.
-Under a rule whose conflicting head moves back, a kept conflict in testing, reviewing or merging moves the issue back, and it then runs its own loop as recorded.
-Under `main`, the merge-forward segment of a kept conflict in testing, reviewing or merging lasts as long as that loop's implementing round, and has no end where the round has none.
-In accepting or retro, the daemon at the head moves nothing and asks nobody, under every rule, and the record holds no work of the issue after the stretch but the loop, so the issue stands in its phase with no worker to `--to` (assumption 37).
+Under a rule whose conflicting head moves back, a kept conflict in testing, reviewing, accepting, retro or merging moves the issue back, and it then runs its own loop as recorded.
+Under a rule whose conflicting head keeps its phase, the merge-forward segment that the daemon asks at once for a kept conflict lasts as long as that loop's implementing round, and has no end where the round has none.
+Under `main`, in accepting or retro, the daemon at the head moves nothing and asks nobody, and the record holds no work of the issue after the stretch but the loop, so the issue stands in its phase with no worker to `--to` (assumption 37).
 Every other stretch is drawn.
 
 **Evidence in a recorded window.** _Stretches that a recorded conflict loop runs past `--to`._
@@ -2075,7 +2091,7 @@ The branches under `firstStarts=rank` keep the board's ranks, and show how much 
 In a replay of one deployment's recorded window under the rule that its daemon ran, each root first kept the rank of its tree's earliest first start for the whole window.
 The replay then gave a slot to a child that the record started much later, ahead of the issues of other trees that the record started earlier, which waited.
 Once the replay moved a root's rank at each first slot of its tree, a few roots still kept an early rank for the whole window.
-Their first slot in the window was a return after a conflict or after the end of a wait, and the replay never made the return, since it moves no issue back for a conflict past the review (assumption 37).
+Their first slot in the window was a return after a conflict or after the end of a wait, and the replay never made the return, since that replay moved no issue back for a conflict past the review (assumption 37, which then covered every rule).
 Children that the record never started, in the trees of those roots, took slots and held them with no work while issues that the record started waited, so the replay gave fewer slots and finished fewer issues than the record on the window's last days.
 A later replay of the same window showed a root that kept the rank of a child that waited for its own children, which its architect filed at their recorded times.
 That child never started in the replay, and children of its tree that the record never started took slots ahead of the recorded starts of other trees.
@@ -2103,50 +2119,49 @@ For each child that the record started after a child of another tree, read the r
 A start that those ranks and holds explain is one where the order of the starts and the board agree.
 A start that they do not explain is one that only the order of the starts keeps.
 
-### Assumption 37: A conflict past the review is answered as the daemon that the replay runs answers it, which leaves it to the merger
+### Assumption 37: Under main and the candidates built on it, a conflict past the review is answered as the daemon that the replay runs answers it, which leaves it to the merger
 
 The tool's own.
-Wrong, by design, for a window recorded before cybermonklabs/legion#4979, such as a window of release 20.42.5.
+It covers `main` and each candidate built on it, whose conflict path is the path of `main`.
 The replay runs the daemon of the commit that it was built from, not the daemon that made the record.
-Since cybermonklabs/legion#4979, that daemon leaves a conflict past the review to the merger.
-In accepting and retro, it records the head as conflicting and asks nobody, under every rule, and it asks the merger to merge the base forward when the issue moves into merging.
-In merging, it asks the merger to merge the base forward under a rule whose conflicting head keeps its phase, and it still moves the issue back to implementing under a rule whose conflicting head moves back.
-A daemon before cybermonklabs/legion#4979 moved the issue back to implementing from accepting, retro and merging under a rule whose conflicting head moves back, and asked the implementer to merge the base forward in each of them under `main`.
-So a replay of such a window under its own rule plays each conflict that it draws or keeps in accepting or retro otherwise than the record: the issue keeps its phase and runs no loop, and its merger merges the base forward when it moves into merging.
+That daemon answers a conflict past the review by the conflict path of the rule that it runs.
+Under the path of `main`, since cybermonklabs/legion#4979, it leaves a conflict past the review to the merger.
+In accepting and retro, it records the head as conflicting and asks nobody, and it asks the merger to merge the base forward when the issue moves into merging.
+In merging, it asks the merger to merge the base forward at once.
+A rule that names another path answers by that path, as the release that ran the rule did.
+`legion-v20.42.5` and `legion-v19.57.3` move the issue back to implementing from accepting, retro and merging, as releases 20.42.5 and 19.57.3 did.
+`legion-v22.14.1` keeps the phase and asks the implementer to merge the base forward at once, as release 22.14.1 did before cybermonklabs/legion#4979.
+So a replay of a window under the rule that recorded it plays each conflict past the review that it draws or keeps as the record does, and this assumption does not move it.
+Under `main` or a candidate built on it, a conflict in accepting or retro keeps its phase and runs no loop.
 The work that the issue goes on with after the loop then opens at once, earlier than the record shows it.
 A version or a registration of the root's design that its architect made in that work keeps its recorded time and does not move with the work.
 Such an act opens or closes the tree's design gate, which holds the first start of every member of the tree and the start of its merger.
 So the gate of the tree opens and closes at the record's times, and not with the work that the replay runs early.
 Where the record shows no work of the issue after a kept conflict but its loop (assumption 35), the issue stands in its phase with no worker to `--to`.
-`validate` measures that difference as the replay's error under the rule that made the record.
-A window of release 19.57.3 records no `conflict` move, so it draws no conflict (assumption 22), and this assumption does not move it.
 
 **Evidence in a recorded window.** _The conflict moves past the review, against the run's count._
 A window recorded under `legion-v20.42.5` holds a phase line with the trigger `conflict` for each conflict out of accepting, retro or merging.
+A replay of that window under `legion-v20.42.5` moves the issue back at each such conflict that it draws or keeps, as the record does.
 `run` prints the number of conflicts past the review that it left to the merger, and `run.json` counts them as `divergence.conflictsToMerger`.
-In a replay of one deployment's recorded window, a root that stood in accepting at the window's start went past two recorded conflict loops, and its architect's spec versions moved with its next work in accepting.
+In a replay of one deployment's recorded window under its own rule, made while this assumption covered every rule, a root that stood in accepting at the window's start went past two recorded conflict loops, and its architect's spec versions moved with its next work in accepting.
 A new version closed the tree's design gate 19 hours earlier than in the record, and the gate stayed closed for 56 hours against the record's 37, which held the tree's merger starts and first starts.
+Since then, each such version keeps its recorded time.
 
 **If it is wrong.**
-If the project runs a daemon from before cybermonklabs/legion#4979, the replay moves the measures so for a rule whose conflicting head moves back, such as `legion-v20.42.5`.
-For `main` and each rule built on it, a merge forward lasts as long whichever worker runs it, so the direction is None.
+If a project ran a candidate built on `main` on a daemon from before cybermonklabs/legion#4979, that daemon would ask the implementer to merge the base forward at once in accepting and retro, as `legion-v22.14.1` does.
+A merge forward lasts as long whichever worker runs it, and the issue waits for it once either way, so the direction is None for `main` and each candidate built on it.
 
-- Issues finished: Up for a rule whose conflicting head moves back, because an issue whose conflict in accepting or retro waits for the merger finishes without the loop that the older daemon would run.
-  None for `main`.
+- Issues finished: None, because the issue waits for one merge forward of the same length either way.
 
-- Started work that waits for a slot: Down for a rule whose conflicting head moves back, because the issue does not go back to implementing, a phase that keeps a slot, so it never waits for one there.
-  None for `main`.
+- Started work that waits for a slot: None, because the merge forward takes no slot, and the issue holds the same slots either way.
 
-- Priority taken by holders: Unknown.
-  The loops that the replay does not run change which issues hold slots, not their rank.
+- Priority taken by holders: None, because the holders and the issues that wait are the same either way.
 
-- Other delays: Down for a rule whose conflicting head moves back, because each such conflict counts the merger's merge forward as its round, which is shorter than the loop that the older daemon would run.
-  None for `main`.
+- Other delays: None, because the conflict's round is one merge forward of the same length either way.
 
-- Slots: Down for a rule whose conflicting head moves back, because the replay runs none of the loop's work, with its slot-hours and its time in flight.
-  None for `main`.
+- Slots: None, because the merge forward takes no slot and its worker is in a turn for the same time either way.
 
 **The reading that would test it.** _A window of a release with cybermonklabs/legion#4979._
 Collect a window recorded under a release with cybermonklabs/legion#4979, and read each conflict past the review in it.
 A conflict in accepting or retro writes the line `workflow: a confirmed conflict needs no merge yet`, and a merge forward in merging writes the line `workflow: merge forward asked`.
-Compare the time from each conflict to its merge with the replay of a window of an earlier release under its own rule, and that window's `validate` gap with its `divergence.conflictsToMerger`.
+Compare the time from each conflict to its merge with the same time in a window of release 22.14.1 replayed under `legion-v22.14.1`.

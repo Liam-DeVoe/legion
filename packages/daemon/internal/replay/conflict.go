@@ -795,13 +795,14 @@ func (d *driver) keepsOpenLoop(p *piece) bool {
 // keepConflict makes the recorded conflict that ends p's stretch, whose loop the record shows
 // running to the window's end (keepsOpenLoop, assumption 35), through the daemon's own path for a
 // conflicting head (conflictFor), the stretch not drawn: under a rule whose conflicting head moves
-// back, from testing, reviewing or merging, the issue runs its own loop as recorded; under one whose
-// head keeps its phase the merge-forward segment, the implementer's or in merging the merger's,
-// lasts as that loop's implementing round, unended where the round is; and in accepting or retro,
-// where the conflict waits for merging under every rule (assumption 37), the issue stands in its
-// phase with no recorded work to the window's end, the record holding none after the stretch but
-// the loop. Each conflict kept is counted (Divergence.KeptOpenLoops). A conflict the daemon does not
-// act on is counted as a refused move, and the stretch ends as recorded.
+// back, from testing, reviewing, accepting, retro or merging, the issue runs its own loop as
+// recorded; under one whose head keeps its phase the merge-forward segment of the role asked
+// (record.SlotRule.MergeForwardAsker) lasts as that loop's implementing round, unended where the
+// round is; and under main's path in accepting or retro, where the conflict waits for merging
+// (assumption 37), the issue stands in its phase with no recorded work to the window's end, the
+// record holding none after the stretch but the loop. Each conflict kept is counted
+// (Divergence.KeptOpenLoops). A conflict the daemon does not act on is counted as a refused move,
+// and the stretch ends as recorded.
 func (d *driver) keepConflict(p *piece) error {
 	conflicted, err := d.conflictFor(p, true)
 	if err != nil {
@@ -819,25 +820,29 @@ func (d *driver) keepConflict(p *piece) error {
 // (keepConflict), through the daemon's own path for a conflicting head, and plays what the daemon
 // made of it: the replay's own pull request record of the issue (assumption 29) is read by GitHub
 // as conflicting at its head, confirmed, and the engine is handed that read
-// (intake.PullRequestMergeability, whose handler decides by classify.ConflictNeedsMerge and acts by
-// the rule's conflict path). The daemon the replay runs answers a conflict past the review as
-// cybermonklabs/legion#4979 has it, which a daemon before it, the one that recorded a window of
-// legion-v20.42.5 or legion-v19.57.3, did not (assumption 37):
+// (intake.PullRequestMergeability, whose handler decides by classify.ConflictNeedsMergeUnder and
+// acts by the rule's conflict path, record.SlotRule.Conflict). Past the review the path is the
+// rule's own too: main's and the candidates built on it answer as cybermonklabs/legion#4979 has
+// it, which a daemon before it, the one that recorded a window of legion-v20.42.5 or
+// legion-v19.57.3, did not (assumption 37):
 //
-//   - Under a rule whose conflicting head moves back, in testing, reviewing and merging, the engine
-//     moves the issue back to implementing by the rule's trigger (workflow's conflictMovesBack, whose
-//     rows leave each of those phases): the implementer works on a head of its own (headOfItsOwn),
-//     and the loop's work is drawn from the window's recorded conflict loops (drawLoop), or, where
-//     kept, is the issue's own loop as recorded.
-//   - Under a rule whose conflicting head keeps its phase (record.ConflictMergeForward), in testing
-//     and reviewing the engine asks the implementer to merge the base forward, and in merging the
-//     merger (record.MergeForwardAsker): the issue keeps its phase, and the role asked runs a
-//     merge-forward segment (openMergeForward, assumption 23).
-//   - In accepting and retro, under every rule, the engine records the head conflicting and asks
-//     nobody: neither the architect's acceptance nor retro needs a head that merges, so the conflict
-//     waits for merging, where the issue's move asks the merger to merge the base forward
-//     (workflow's mergeForwardOnEntry). The issue keeps its phase and its work goes on
-//     (waitForMerging).
+//   - Under a rule whose conflicting head moves back, in testing, reviewing, accepting, retro and
+//     merging, the engine moves the issue back to implementing by the rule's trigger (workflow's
+//     conflictMovesBack, whose rows leave each of those phases), as the tables of 958173da and
+//     9542c6fb did: the implementer works on a head of its own (headOfItsOwn), and the loop's work
+//     is drawn from the window's recorded conflict loops (drawLoop), or, where kept, is the issue's
+//     own loop as recorded.
+//   - Under a rule whose conflicting head keeps its phase, the engine asks a role to merge the base
+//     forward (record.SlotRule.MergeForwardAsker): the issue keeps its phase, and the role asked
+//     runs a merge-forward segment (openMergeForward, assumption 23). Under main's path
+//     (record.ConflictMergeForward) that is the implementer in testing and reviewing and the merger
+//     in merging; under legion-v22.14.1's (record.ConflictImplementerMergesForward) it is the
+//     implementer in every phase, accepting and retro too, as at bafd3618.
+//   - Under main's path, in accepting and retro, the engine records the head conflicting and asks
+//     nobody (record.SlotRule.ConflictWaitsForMerging): neither the architect's acceptance nor retro
+//     needs a head that merges, so the conflict waits for merging, where the issue's move asks the
+//     merger to merge the base forward (workflow's mergeForwardOnEntry). The issue keeps its phase
+//     and its work goes on (waitForMerging).
 //
 // A conflict the replay so leaves to the merger, in merging or waiting for it, is counted
 // (Divergence.ConflictsToMerger). A conflict the daemon does not act on is counted as a refused
@@ -893,26 +898,25 @@ func (d *driver) conflictFor(p *piece, kept bool) (bool, error) {
 		}
 		d.openMergeForward(p, kept, asked)
 		return true, nil
-	case record.StandsIn(*issue, phase.Accepting, phase.Retro) && classify.ConflictRound(*after):
+	case record.StandsIn(*issue, phase.Accepting, phase.Retro) && classify.ConflictRound(*after) && d.rule.ConflictWaitsForMerging():
 		d.used[3] = true
 		d.counters.ConflictsToMerger++
 		d.used[assumeConflictToMerger] = true
 		return true, d.waitForMerging(p, kept)
 	}
-	trigger, to := workflow.TriggerConflict, phase.Implementing
-	path := cmp.Or(d.rule.Conflict, record.ConflictMergeForward)
-	switch path {
-	case record.ConflictMergeForward:
-		to = p.phase
+	trigger, to := workflow.TriggerConflict, p.phase
+	switch d.rule.Conflict {
+	case record.ConflictMovesBack:
+		to = phase.Implementing
 	case record.ConflictChecksRed:
-		trigger = workflow.TriggerChecksRed
+		trigger, to = workflow.TriggerChecksRed, phase.Implementing
 	}
 	made := "drawn"
 	if kept {
 		made = "kept"
 	}
 	reason := fmt.Sprintf("the engine did not move %s back to implementing for its conflicting head %s in %s", key, made, p.phase)
-	if path == record.ConflictMergeForward {
+	if to == p.phase {
 		reason = fmt.Sprintf("the engine asked no merge forward of %s's conflicting head %s in %s", key, made, p.phase)
 	}
 	d.counters.Refused = append(d.counters.Refused, RefusedMove{Issue: key, At: d.clock.Instant(), Trigger: trigger, From: p.phase, To: to,
@@ -1031,21 +1035,24 @@ func (d *driver) mergeForwardPiece(drew *piece, visit *Visit, at phase.Phase, ro
 }
 
 // openMergeForward runs the merge-forward segment of p's conflict where the engine asked role to
-// merge the base forward at once (conflictFor): inside the phase p worked, the implementer's in
-// testing and reviewing and the merger's in merging (record.MergeForwardAsker), as long as the
-// conflict's round (mergeForwardRound). It follows p in the issue's work, and opens now.
+// merge the base forward at once (conflictFor): inside the phase p worked, the role the rule asks
+// there (record.SlotRule.MergeForwardAsker: under main the implementer's in testing and reviewing
+// and the merger's in merging, and under legion-v22.14.1 the implementer's in every phase), as
+// long as the conflict's round (mergeForwardRound). It follows p in the issue's work, and opens
+// now.
 func (d *driver) openMergeForward(p *piece, kept bool, role claim.Role) {
 	forward := d.mergeForwardPiece(p, p.visit, p.phase, role, d.mergeForwardRound(p, kept))
 	d.replacePieces(p.issue, p.index+1, p.index+1, []*piece{forward})
 	d.openPiece(forward, d.clock.Instant(), false)
 }
 
-// waitingConflict is a conflict past the review the daemon leaves to wait for merging (assumption
-// 37): one made in accepting or retro, where the engine records the head conflicting and asks
-// nobody (classify.ConflictNeedsMerge), until the issue's move into merging asks its merger to merge
-// the base forward (workflow's mergeForwardOnEntry). drew is the piece whose stretch made it, and
-// round the recorded implementing round the merger's merge forward lasts as, drawn when the conflict
-// came (mergeForwardRound).
+// waitingConflict is a conflict past the review the daemon leaves to wait for merging under main's
+// path (assumption 37): one made in accepting or retro, where the engine records the head
+// conflicting and asks nobody (classify.ConflictNeedsMerge, record.SlotRule.ConflictWaitsForMerging),
+// until the issue's move into merging asks its merger to merge the base forward (workflow's
+// mergeForwardOnEntry). drew is the piece whose stretch made it, and round the recorded
+// implementing round the merger's merge forward lasts as, drawn when the conflict came
+// (mergeForwardRound).
 type waitingConflict struct {
 	drew  *piece
 	round *piece

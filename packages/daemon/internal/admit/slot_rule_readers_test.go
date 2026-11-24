@@ -217,16 +217,19 @@ func statusIn(stands phase.Phase) string {
 //   - projection's atWorkInSlotlessPhase (why.go) reads "holds no slot": it finds the issue at work
 //     that `admission.active` does not name because its phase keeps no slot, and serves it no
 //     answer. A row.
-//   - classify.ConflictNeedsMerge and classify.MergeComesNext read "the merge is the next step on
-//     the task's own line": the line of the issue's plan says it, GitHub merges no head that
-//     conflicts with its base, so the merge forward is asked at once there
-//     (record.ConflictMergeNext) whatever slot the issue holds. No row.
-//   - workflow's mergeForwardOnEntry and mergeForwardLanded (merge_forward.go) read the issue's
-//     own walk (Walk.MovesBack, classify.MergeComesNext): a move to where the merge comes next at
-//     a conflicting head asks for the merge, and a merge forward that lands under an issue whose
-//     reviewer step already ran asks the reviewer to read it, because the issue stands on a review
-//     of the older head. The task's line decides both, and no rule does. No row; the conflict
-//     path's own choice is the conflict rows below.
+//   - classify.MergeComesNext reads "the merge is the next step on the task's own line": the line
+//     of the issue's plan says it, whatever slot the issue holds. No row.
+//   - classify.ConflictNeedsMergeUnder, record.SlotRule.MergeForwardAsker and workflow's
+//     mergeForwardOnEntry read the rule's conflict path past the review (record.SlotRule.Conflict):
+//     under the daemon's own a conflict in accepting or retro waits for merging and one in merging
+//     asks the merger (cybermonklabs/legion#4979), and under another path a conflict in accepting,
+//     retro or merging moves the issue back or asks the implementer at once. Rows: the four rows of
+//     the conflict path past the review below, one for each path, each a confirmed conflict in each
+//     of the three phases (pastReviewConflictOutcome).
+//   - workflow's mergeForwardLanded (merge_forward.go) reads the issue's own walk: a merge forward
+//     that lands under an issue whose reviewer step already ran asks the reviewer to read it,
+//     because the issue stands on a review of the older head. The task's line decides it, and no
+//     rule does. No row.
 //   - workflow's startHeldRetro and beneathRetro (retro_hold.go) read the workflow: whether the
 //     parent is still in the workflow (record.InWorkflow) and whether its task's last step is the
 //     owner's acceptance. The hold before the retro stands in place of a phase that keeps no slot
@@ -606,6 +609,55 @@ func slotRuleReaders() []slotRuleReader {
 			why:     "a confirmed conflict keeps the phase and merges the base forward, or moves the issue back to implementing by the rule's trigger",
 		},
 		slotRuleReader{
+			// The row under main of the conflict path past the review. A rule that names no conflict
+			// path runs the daemon's own, so both runs give cybermonklabs/legion#4979's answers, which
+			// each of the three rows after it changes.
+			reader:  "the conflict path past the review: the daemon's own",
+			changes: []string{"Conflict"},
+			rule:    ruleWith("main with no conflict path named", func(rule *record.SlotRule) { rule.Conflict = "" }),
+			outcome: pastReviewConflictOutcome,
+			main:    pastReviewOnMain,
+			changed: pastReviewOnMain,
+			why: "under the daemon's own conflict path a conflict in accepting or in retro is recorded and asks nobody, " +
+				"and one in merging asks the merger to merge the base forward (cybermonklabs/legion#4979)",
+		},
+		slotRuleReader{
+			reader:  "the conflict path past the review: move back by conflict",
+			changes: []string{"Conflict"},
+			rule:    ruleWith("main with a conflict that moves back", func(rule *record.SlotRule) { rule.Conflict = record.ConflictMovesBack }),
+			outcome: pastReviewConflictOutcome,
+			main:    pastReviewOnMain,
+			changed: pastReviewWords(pastReviewMovedBack, string(workflow.TriggerConflict), string(workflow.TriggerConflict),
+				string(workflow.TriggerConflict)),
+			why: "a conflict past the review waits for merging or asks the merger under the daemon's own path, and moves the issue " +
+				"back to implementing by conflict from accepting, retro and merging under the path of 958173da",
+		},
+		slotRuleReader{
+			reader:  "the conflict path past the review: move back by checks_red",
+			changes: []string{"Conflict"},
+			rule:    ruleWith("main with a conflict that moves back by red checks", func(rule *record.SlotRule) { rule.Conflict = record.ConflictChecksRed }),
+			outcome: pastReviewConflictOutcome,
+			main:    pastReviewOnMain,
+			changed: pastReviewWords(pastReviewMovedBack, string(workflow.TriggerChecksRed), string(workflow.TriggerChecksRed),
+				string(workflow.TriggerChecksRed)),
+			why: "a conflict past the review waits for merging or asks the merger under the daemon's own path, and moves the issue " +
+				"back to implementing by checks_red from accepting, retro and merging under the path of 9542c6fb",
+		},
+		slotRuleReader{
+			reader:  "the conflict path past the review: the implementer merges forward at once",
+			changes: []string{"Conflict"},
+			rule: ruleWith("main with the implementer asked to merge forward past the review", func(rule *record.SlotRule) {
+				rule.Conflict = record.ConflictImplementerMergesForward
+			}),
+			outcome: pastReviewConflictOutcome,
+			main:    pastReviewOnMain,
+			changed: pastReviewWords([]pastReviewEnd{{stands: phase.Accepting, asked: claim.RoleImplementer},
+				{stands: phase.Retro, asked: claim.RoleImplementer}, {stands: phase.Merging, asked: claim.RoleImplementer}}),
+			why: "a conflict past the review waits for merging or asks the merger under the daemon's own path, and under the path " +
+				"of bafd3618 keeps its phase in accepting, retro and merging while the implementer is asked to merge the base " +
+				"forward at once, with no supervise start",
+		},
+		slotRuleReader{
 			// The point inside merging where the slot goes back is a choice only of a rule that
 			// keeps a slot in merging, so this row's rule keeps one there and gives it back at the
 			// merger's ready mark: the two choices together, which the reverted runs of
@@ -679,11 +731,11 @@ func slotRuleReaders() []slotRuleReader {
 	)
 }
 
-// conflictOutcome is the outcome of both rows of the conflict path: a root in testing holding its
-// slot, whose open pull request's head GitHub reads conflicting twice a minute apart against a base
-// that requires a check the head has not passed, so the conflict is confirmed and needs the merge
-// (workflow's mergeability, classify.ConflictNeedsMerge). The engine's own log says which move it
-// made ("workflow: phase changed").
+// conflictOutcome is the outcome of the two rows of the conflict path in testing: a root in testing
+// holding its slot, whose open pull request's head GitHub reads conflicting twice a minute apart
+// against a base that requires a check the head has not passed, so the conflict is confirmed and
+// needs the merge (workflow's mergeability, classify.ConflictNeedsMergeUnder). The engine's own log
+// says which move it made ("workflow: phase changed").
 func conflictOutcome(t *testing.T, rule record.SlotRule) string {
 	t.Helper()
 	pool := migratedPool(t)
@@ -704,6 +756,119 @@ func conflictOutcome(t *testing.T, rule record.SlotRule) string {
 			ReadAt: fixedNow.Add(after), Rules: &record.BaseRules{Required: []string{"ci"}}})
 	}
 	return phaseWord(t, pool, key) + "; " + movesWord(phaseMoves(t, &logged))
+}
+
+// pastReviewIssues is the issues of the rows of the conflict path past the review, one in each
+// phase past the review of the default steps, with the number of each one's pull request.
+var pastReviewIssues = []struct {
+	key    string
+	number int
+	stands phase.Phase
+}{{"ACME-155", 155, phase.Accepting}, {"ACME-156", 156, phase.Retro}, {"ACME-157", 157, phase.Merging}}
+
+// pastReviewEnd is how one issue of pastReviewIssues ends in a row of the conflict path past the
+// review: the phase it stands in, the role the record says was asked to merge the base forward
+// (record.MergeForward.Asked, "" for nobody) and the role of each supervise start written for it.
+type pastReviewEnd struct {
+	stands  phase.Phase
+	asked   claim.Role
+	started []claim.Role
+}
+
+// pastReviewOnMain is the outcome of the conflict path past the review under the daemon's own
+// path (cybermonklabs/legion#4979): the issues in accepting and in retro keep their phase and
+// nobody is asked, and the merger is asked for the issue in merging, with no supervise start and
+// no phase move.
+var pastReviewOnMain = pastReviewWords([]pastReviewEnd{{stands: phase.Accepting}, {stands: phase.Retro},
+	{stands: phase.Merging, asked: claim.RoleMerger}})
+
+// pastReviewMovedBack is how each issue of pastReviewIssues ends under a path that moves a
+// conflicting head back: in implementing, nobody asked, the implementer's start written.
+var pastReviewMovedBack = []pastReviewEnd{{stands: phase.Implementing, started: []claim.Role{claim.RoleImplementer}},
+	{stands: phase.Implementing, started: []claim.Role{claim.RoleImplementer}},
+	{stands: phase.Implementing, started: []claim.Role{claim.RoleImplementer}}}
+
+// pastReviewWords is the outcome pastReviewConflictOutcome gives where each issue of
+// pastReviewIssues ends as ends says, in order, its head held conflicting, and the engine logged
+// the phase moves by moves.
+func pastReviewWords(ends []pastReviewEnd, moves ...string) string {
+	words := make([]string, 0, len(ends)+1)
+	for i, end := range ends {
+		words = append(words, pastReviewWord(pastReviewIssues[i].key, end, true))
+	}
+	return strings.Join(append(words, movesWord(moves)), "; ")
+}
+
+// pastReviewWord is how key ends in a row of the conflict path past the review (pastReviewEnd),
+// and whether the record holds its head conflicting.
+func pastReviewWord(key string, end pastReviewEnd, conflicting bool) string {
+	head := "its head held conflicting"
+	if !conflicting {
+		head = "its head not held conflicting"
+	}
+	asked := "nobody asked to merge forward"
+	if end.asked != "" {
+		asked = "the " + string(end.asked) + " asked to merge forward"
+	}
+	started := "no supervise start"
+	if len(end.started) > 0 {
+		roles := make([]string, 0, len(end.started))
+		for _, role := range end.started {
+			roles = append(roles, string(role))
+		}
+		started = "a supervise start of the " + strings.Join(roles, ", the ")
+	}
+	return fmt.Sprintf("%s stands in %s, %s, %s, %s", key, end.stands, head, asked, started)
+}
+
+// pastReviewConflictOutcome is the outcome of the rows of the conflict path past the review: a root
+// in each phase past the review (pastReviewIssues), holding no slot, whose open pull request's head
+// GitHub reads conflicting twice a minute apart against a base that requires a check the head has
+// not passed, so each conflict is confirmed (workflow's mergeability). For each issue it reads where
+// the issue stands, whether the record holds its head conflicting, whom the record says was asked to
+// merge the base forward (record.MergeForward.Asked) and each supervise start written for it, which
+// a move back writes and a merge forward does not; the engine's own log says which moves it made.
+func pastReviewConflictOutcome(t *testing.T, rule record.SlotRule) string {
+	t.Helper()
+	pool := migratedPool(t)
+	for i, at := range pastReviewIssues {
+		acmeRoot(t, pool, at.key, at.stands, statusIn(at.stands), fmt.Sprintf("a%d", i), nil, nil)
+		inTx(t, pool, func(tx pgx.Tx) {
+			if err := record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{State: record.PullRequestOpen, Issue: at.key,
+				Repo: "acme/widgets", Number: at.number, Branch: "legion/" + at.key, HeadSHA: "head-" + at.key, Base: "main",
+				Failing: []string{}}); err != nil {
+				t.Fatalf("seed the pull request of %s: %v", at.key, err)
+			}
+		})
+	}
+	var logged bytes.Buffer
+	admission := ruledAdmission(t, len(pastReviewIssues), rule, slog.New(slog.NewJSONHandler(&logged, nil)))
+	for _, at := range pastReviewIssues {
+		for _, after := range []time.Duration{0, time.Minute} {
+			applyThrough(t, pool, admission, "github", "conflict-"+at.key+"-"+after.String(), intake.PullRequestMergeability{
+				Repo: "acme/widgets", Number: at.number, Base: "main", HeadSHA: "head-" + at.key, Mergeable: record.MergeabilityConflicting,
+				MergeState: record.MergeStateDirty, ReadAt: fixedNow.Add(after), Rules: &record.BaseRules{Required: []string{"ci"}}})
+		}
+	}
+	words := make([]string, 0, len(pastReviewIssues)+1)
+	for _, at := range pastReviewIssues {
+		var pr *record.PullRequest
+		inTx(t, pool, func(tx pgx.Tx) {
+			var err error
+			if pr, err = record.NewStore().PullRequest(context.Background(), tx, at.key); err != nil || pr == nil {
+				t.Fatalf("read the pull request of %s: %+v, %v", at.key, pr, err)
+			}
+		})
+		end := pastReviewEnd{stands: issue(t, pool, at.key).Phase}
+		if pr.MergeForward != nil {
+			end.asked = pr.MergeForward.Asked()
+		}
+		for _, start := range startsOfForProject(t, pool, acmeProject, at.key) {
+			end.started = append(end.started, start.role)
+		}
+		words = append(words, pastReviewWord(at.key, end, pr.ConflictingHead != "" && pr.ConflictingHead == pr.HeadSHA))
+	}
+	return strings.Join(append(words, movesWord(phaseMoves(t, &logged))), "; ")
 }
 
 // silent is a logger that writes nowhere, for the rows that read records and outbox rows alone.

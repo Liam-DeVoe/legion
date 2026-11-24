@@ -25,8 +25,9 @@ type Assumption struct {
 // inference of a slot an issue held from before the window's reach (34: SlotSpan.Inferred), the
 // recorded conflict a stretch keeps whose loop runs to the window's end (35: keepConflict), the
 // rank a tree's root is shown at under the recorded order of first starts (36: firstStartRanks),
-// and the answer of the daemon the replay runs to a conflict past the review (37: conflictFor). A
-// run names the ones its measures rest on by these numbers.
+// and, under main and the candidates built on it, the answer of the daemon the replay runs to a
+// conflict past the review (37: conflictFor). A run names the ones its measures rest on by these
+// numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -137,8 +138,8 @@ var Assumptions = []Assumption{
 		Text:      "Under the recorded order of first starts, a tree's root ranks at the earliest recorded first start among the issues of its tree that can still take their first start in the replay.",
 		Direction: "A choice of the main branch, not a fact of the record: only the first slot of a run is a first start, a start the replay cannot make holds no root at its rank, and a tree's next child takes the place its own recorded start gives it among every tree's work, so the branch starts children in the order the record started them, ahead of a root's later work where the record did so. The branches under rank keep the board's ranks and show how much the choice moves the result."},
 	{Number: assumeConflictToMerger,
-		Text:      "A conflict past the review is answered as the daemon the replay runs answers it, which leaves it to the merger (cybermonklabs/legion#4979): in accepting or retro the issue keeps its phase under every rule, and the merger merges the base forward once the issue moves into merging; in merging the merger merges it forward at once, but under a rule whose conflicting head moves back, which moves the issue back from merging as before. A version or a registration of a root's design in the work the issue goes on with keeps its recorded time.",
-		Direction: "The tool's own, and wrong for a window recorded before cybermonklabs/legion#4979, whose daemon moved the issue back to implementing from accepting, retro and merging under a rule whose conflicting head moves back, and asked the implementer to merge forward under main. Replayed under its own rule, such a window runs no loop for a conflict in accepting or retro, so the issue finishes sooner, with fewer hours of conflict and less work, than the record shows, which validate measures as the replay's error; the root's design gate still opens and closes at the record's times, not with the work the replay runs early, so the gate holds the tree's first starts and its merger as the record did. Under main a merge forward lasts as long whichever role runs it. The tool counts the conflicts it leaves to the merger."},
+		Text:      "Under main and the candidates built on it, whose conflict path is main's, a conflict past the review is answered as the daemon the replay runs answers it, which leaves it to the merger (cybermonklabs/legion#4979): in accepting or retro the issue keeps its phase, and the merger merges the base forward once the issue moves into merging; in merging the merger merges it forward at once. A rule that names another path answers it by that path, as the release that ran the rule did: legion-v20.42.5 and legion-v19.57.3 move the issue back to implementing from accepting, retro and merging, and legion-v22.14.1 keeps the phase and asks the implementer to merge the base forward at once. A version or a registration of a root's design in the work the issue goes on with keeps its recorded time.",
+		Direction: "The tool's own, and it covers main and the candidates built on it alone: a rule that names another conflict path plays a conflict past the review by that path, so a replay of a window under the rule that recorded it plays that conflict's move back or merge forward as the record does. For main it is the daemon's own answer. For a candidate it is wrong where the candidate would ask the implementer at once, as a daemon before cybermonklabs/legion#4979 did; a merge forward lasts as long whichever role runs it, so the direction is none. Where a conflict in accepting or retro waits for the merger, the work the issue goes on with opens at once, and a version or a registration of the root's design in that work keeps its recorded time, so the tree's design gate opens and closes at the record's times and holds the tree's first starts and its merger as the record did. The tool counts the conflicts it leaves to the merger."},
 }
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
@@ -158,7 +159,7 @@ const assumeKeptOpenLoop = 35
 // which a run under FirstStarts recorded names where any issue ranks by its first start.
 const assumeRootRanksByNextStart = 36
 
-// assumeConflictToMerger is the assumption a conflict past the review rests on, which the daemon the
-// replay runs leaves to the merger (driver.conflictFor), and which a run names where it leaves one
-// (Divergence.ConflictsToMerger).
+// assumeConflictToMerger is the assumption a conflict past the review rests on under main and the
+// candidates built on it, which the daemon the replay runs leaves to the merger
+// (driver.conflictFor), and which a run names where it leaves one (Divergence.ConflictsToMerger).
 const assumeConflictToMerger = 37
