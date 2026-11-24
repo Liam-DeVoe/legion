@@ -841,20 +841,24 @@ func legionFactTime(at *time.Time) *time.Time {
 	return &utc
 }
 
-// card is one issue's card, with the issues holding it, as the waiting line names them for it
-// (legion.WaitingLine.BlockedBy), and the children of its tree that are on no card of their own.
-// The wait the sampler recorded is decoded once, into the rule's own shape (legion.ParseWait):
-// the body carries it in the shape the view reads (legionBoardWaitOf), and the card keeps the
-// decoded value as well, which is what the waiting rule reads (cardWaiting).
+// card is one issue's card, with the issues holding it, as the admission block names them for it
+// (the waiting line's BlockedBy, which takes them by legion.Admission.Blockers' rule, the one an
+// issue's own read names them by), and the children of its tree that are on no card of their own.
 func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string, children int) legionBoardCard {
-	var wait *legion.Wait
-	if raw := issue.state.WaitingOn; raw != nil {
-		wait, _ = legion.ParseWait(raw)
-	}
 	card := legionBoardCard{
 		Key: issue.key, Title: issue.title, Priority: issue.priority, Phase: issue.state.Phase,
 		Slot: issue.state.Slot, Roles: issue.state.Working(), BlockedBy: blockedBy,
-		WaitingOn: legionBoardWaitOf(wait), Tree: p.treeRoot(issue.key), Children: children, wait: wait,
+		Tree: p.treeRoot(issue.key), Children: children,
+	}
+	// The wait the sampler recorded is the daemon's object as the issue's state holds it, which an
+	// issue's own read carries whole. It is decoded once, by the one decode of the field
+	// (legion.ParseWait), into the rule's own shape, and nil where it names no kind or is not the
+	// shape it is read as; the body carries the three fields a card shows in the shape the view
+	// reads, which is this one mapping. The card keeps the decoded value as well, which is what
+	// the waiting rule reads (cardWaiting).
+	if wait, read := legion.ParseWait(issue.state.WaitingOn); read {
+		card.wait = wait
+		card.WaitingOn = &legionBoardWait{Kind: wait.Kind, Since: wait.Since, AnsweredAt: wait.AnsweredAt}
 	}
 	if card.BlockedBy == nil {
 		card.BlockedBy = []string{}
@@ -879,17 +883,6 @@ func cardWaiting(card *legionBoardCard, column string) *legionBoardWaiting {
 		return nil
 	}
 	return &legionBoardWaiting{Reason: waiting.Reason, Since: waiting.Since, BlockedBy: waiting.BlockedBy}
-}
-
-// legionBoardWaitOf is the card's reading of the wait an issue's state holds, the daemon's object
-// as legion.ParseWait reads it: its kind, when it began and when a person answered it, and nil
-// where the issue waits on nothing or its wait names no kind or is not the shape it is read as.
-// An issue's own read carries the whole object; a card shows these three.
-func legionBoardWaitOf(wait *legion.Wait) *legionBoardWait {
-	if wait == nil {
-		return nil
-	}
-	return &legionBoardWait{Kind: wait.Kind, Since: wait.Since, AnsweredAt: wait.AnsweredAt}
 }
 
 // sortedKeys is every issue the daemon reported, in Dispatch's rank order, with the issues
