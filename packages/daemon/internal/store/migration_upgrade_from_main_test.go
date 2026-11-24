@@ -171,8 +171,13 @@ import (
 // 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
 // (migration_20261123212127_test.go reads it).
 // dispatch://INFRA-5471's mark of a re-admission that still owes its tree's members their return
-// (20261123224717) is applied after all of these and touches no outbox_kind_check either: it adds
-// issues.members_owed and marks the roots whose re-admitted generation no promotion has opened.
+// (20261123224717) is applied after all of these but the waiting line's issue priority
+// (20261124060500) and the givers of a plan version (20261124033010), and touches no
+// outbox_kind_check either: it adds issues.members_owed and marks the roots whose re-admitted
+// generation no promotion has opened.
+// The waiting line's issue priority (20261124060500) is applied after all of these but the givers
+// of a plan version, and touches no outbox_kind_check: it adds issues.priority, null on every row
+// it finds, which reads as an issue with no priority.
 // The givers of a plan version (20261124033010) are applied after all of these and touch no
 // outbox_kind_check: they add issue_plans.earlier_givers, a column of a table this list's
 // 20261117034837 creates, at its default, no earlier giver, on every row they find, so they need
@@ -189,6 +194,7 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261120144241,
 	20261121170714, 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124033010,
+	20261124060500,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -208,10 +214,10 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
 // applied sequence, 20261121170714, the release that keeps no saved workspace's 20261123050533,
-// the plan of an experiment's draw (20261123165139), 20261123212127, #5303's 20261123224717 and
-// the givers of a plan version (20261124033010). That is why the loop below holds the list rather
-// than counting it, so that a version added above any of them is named here rather than read as
-// main's.
+// the plan of an experiment's draw (20261123165139), 20261123212127, #5303's 20261123224717, the
+// givers of a plan version (20261124033010) and the waiting line's issue priority
+// (20261124060500). That is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
