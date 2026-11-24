@@ -194,14 +194,14 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		//
 		// The refusal a status sample carries follows from whether its status stands. Where it
 		// does, Dispatch refused the reason posted beside it for its bound and the status was
-		// written all the same, so the run ended with the reason's refused post, carried back with
-		// the status that stands (outbox.status, statusWriteFailure), and the reason holds a block
-		// over the bound as a refused message does. Where it does not, the run ended at the issue
-		// read that opens it, before the reason was posted (goldenReadRefused), and the reason is
-		// of an ordinary length.
+		// written all the same, so the run ended with the reason's refused post (outbox.status),
+		// and the reason holds a block over the bound as a refused message does. Where it does not,
+		// the run ended at the issue read that opens it, before the reason was posted
+		// (goldenReadRefused), and the reason is of an ordinary length. statusWriteRefused reads
+		// only the cause's words, so neither carries the writes that stand: the sample passes them.
 		refusal := func(statusSet bool, reason string) error {
 			if statusSet {
-				return &statusWriteFailure{err: goldenPostRefused(t, issue.Key, reason), wrote: statusWrites{status: true}}
+				return goldenPostRefused(t, issue.Key, reason)
 			}
 			return goldenReadRefused(issue.Key)
 		}
