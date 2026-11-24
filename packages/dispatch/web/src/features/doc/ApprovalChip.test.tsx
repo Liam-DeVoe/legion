@@ -13,7 +13,6 @@ import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
 import { ArtifactHeader } from "../artifacts/ArtifactHeader";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
-import { KeymapProvider } from "../shell/KeymapProvider";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { ApprovalChip } from "./ApprovalChip";
 
@@ -231,65 +230,6 @@ test("while its review is out, Approve, Request changes and the change request d
     written.reject(new Error("the connection dropped"));
     createArtifactReview.mockRestore();
     changing.unmount();
-  }
-});
-
-// Outside `NoTooltips` nothing closes the Request changes dialog while its change request is out:
-// Cancel is held, and Escape and the backdrop are refused with it, so the dialog never closes over
-// a write whose refusal it would show. Once the write has ended - refused here, so the dialog
-// stays with its refusal - Escape closes it. Escape reaches the dialog through the application's
-// key registry alone (`KeymapProvider`, `useDialog`).
-test("outside NoTooltips, Escape and the backdrop leave the change request dialog open while its write is out, and Escape closes it once the write ends", async () => {
-  const user = userEvent.setup();
-  const written = Promise.withResolvers<ArtifactReview>();
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
-    () => written.promise
-  );
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <QueryClientProvider client={queryClient}>
-      <KeymapProvider>
-        <ApprovalChip
-          artifact={artifact({ latest_version: 3, state: "awaiting" })}
-          variant="header"
-        />
-      </KeymapProvider>
-    </QueryClientProvider>
-  );
-  try {
-    await user.click(screen.getByRole("button", { name: "Request changes" }));
-    const dialog = screen.getByRole("dialog", { name: "Request changes" });
-    await user.click(within(dialog).getByLabelText("Reason"));
-    await user.paste("Needs another pass");
-    await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
-    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
-
-    await user.keyboard("{Escape}");
-    expect(
-      screen.queryByRole("dialog", { name: "Request changes" }),
-      "Escape closed the dialog over its pending write"
-    ).toBe(dialog);
-    const backdrop = view.container.querySelector('[aria-hidden="true"].fixed.inset-0');
-    if (backdrop === null) throw new Error("the change request dialog drew no backdrop");
-    await user.click(backdrop);
-    expect(
-      screen.queryByRole("dialog", { name: "Request changes" }),
-      "the backdrop closed the dialog over its pending write"
-    ).toBe(dialog);
-
-    await act(async () =>
-      written.reject(new ApiError(403, { code: "FORBIDDEN", error: "not a reviewer of CORE-1" }))
-    );
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "Could not request changes. Try again."
-    );
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog", { name: "Request changes" })).toBeNull();
-  } finally {
-    createArtifactReview.mockRestore();
-    view.unmount();
   }
 });
 

@@ -221,19 +221,8 @@ function RequestChangesDialog({
   const [reason, setReason] = useState("");
   const reasonId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
   const page = usePageWords();
-  // Every way out of the dialog is this one: Cancel, Escape (`useDialog`) and the backdrop.
-  // Outside `NoTooltips`, while the write is out, it closes nothing, as the held Cancel refuses
-  // to, so the dialog never closes over a pending write whose refusal it would show. Inside, the
-  // three close the dialog at any time (`onClose`).
-  const close = () => {
-    if (page !== null || !saving) onClose();
-  };
-  const dialog = useDialog<HTMLDivElement>({
-    initialFocusRef: textareaRef,
-    onClose: close,
-    open: true,
-  });
   const trimmed = reason.trim();
 
   return (
@@ -241,7 +230,7 @@ function RequestChangesDialog({
       <div
         aria-hidden="true"
         className={`fixed inset-0 z-40 ${page === null ? backdrop40 : ON_PAGE.backdrop}`}
-        onClick={close}
+        onClick={onClose}
       />
       <div className="pointer-events-none fixed inset-0 z-40 flex items-start justify-center p-4 pt-20">
         <div
@@ -302,10 +291,9 @@ function RequestChangesDialog({
               // dialog as Escape and the backdrop do: `onClose` leaves the write going, and the
               // dialog gives the focus back to the button that opened it. Once the write has ended
               // it is Cancel again. Outside it is held while the write is out (`heldPress`), a
-              // press of it doing nothing, and Escape and the backdrop close nothing then either
-              // (`close`).
+              // press of it doing nothing, as Escape and the backdrop still close the dialog.
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`}
-              {...heldPress(page === null && saving, close)}
+              {...heldPress(page === null && saving, onClose)}
               type="button"
             >
               {page !== null && saving ? page.CONTROL_LABELS.close : "Cancel"}
@@ -576,18 +564,17 @@ export function ApprovalChip({
         <RequestChangesDialog
           error={review.isError ? review.error : null}
           onClose={() => {
-            // Outside `NoTooltips` nothing closes the dialog while the write is out: Cancel is
-            // held then, and Escape and the backdrop are refused with it (`RequestChangesDialog`),
-            // so a close here comes with nothing out. Inside, Escape, the backdrop and the
-            // dialog's Close, which stands in Cancel's place while the write is out, close it at
-            // any time, and a write that is out goes on: Approve and Request changes stay refused
-            // until it lands and its read is drawn, or until it ends without landing, and `reset`
-            // would let them be pressed again before it lands. A refusal that comes later is shown
-            // by the shell's write indicator, as every write's is. A write that keeps trying never
-            // holds the reader in that dialog, whose focus trap would keep the indicator's Stop
-            // trying out of reach. With nothing out, closing clears the refusal the dialog showed,
-            // on both sides.
-            if (!review.isPending) review.reset();
+            // Escape and the backdrop close the dialog at any time, and so does its Close inside
+            // `NoTooltips`, which stands in Cancel's place while the write is out; outside, Cancel
+            // is held then (`RequestChangesDialog`). Outside `NoTooltips` closing lets go of
+            // the write (`reset`), as on `main`. Inside, a write that is out goes on, and Approve
+            // and Request changes stay refused until it lands and its read is drawn, or until it
+            // ends without landing: `reset` would let them be pressed again before it lands. A
+            // refusal that comes later is shown by the shell's write indicator, as every write's
+            // is. A write that keeps trying never holds the reader in the dialog, whose focus trap
+            // would keep the indicator's Stop trying out of reach. With nothing out, closing
+            // clears the refusal the dialog showed, on both sides.
+            if (page === null || !review.isPending) review.reset();
             setRequestChangesOpen(false);
           }}
           onSubmit={(reason) =>
