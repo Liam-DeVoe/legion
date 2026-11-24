@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { jump, onFakeClock } from "../../__tests__/fake-clock";
+import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
 import { userOnFakeClock } from "../../__tests__/user";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { CHORD_TIMEOUT_MS, comboOf, createKeymap } from "../shell/keymap";
@@ -482,13 +483,11 @@ test("Escape, and Tab out of the recorder with no press waiting, end a recording
 });
 
 // An input method's key is no press of the reader's: one pressed in a composition, which Chromium
-// and Firefox mark `isComposing`, or the one that ends it, which Safari sends unmarked with keyCode
-// 229 (WebKit bug 165004). An Escape so sent cancels no recording, a letter is recorded as no key,
-// and the recorder waits for the next press.
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an input method's Escape or letter, marked by %s, neither ends a recording nor is recorded", async (_mark, composing) => {
+// and Firefox mark `isComposing`, or the one that ends it. An Escape so sent cancels no recording,
+// a letter is recorded as no key, and the recorder waits for the next press.
+test.each(
+  INPUT_METHOD_MARKS
+)("an input method's Escape or letter, marked by %s, neither ends a recording nor is recorded", async (_mark, composing) => {
   const view = drawSection();
   try {
     await onFakeClock(async () => {

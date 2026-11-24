@@ -1,17 +1,16 @@
 import { expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
 
+import { INPUT_METHOD_MARKS } from "../__tests__/input-method-marks";
 import { usePanelDismiss } from "./usePanelDismiss";
 
 // The Escape that ends an IME composition is the composition's: the open panel stays open, the
 // focus stays where it is, and the key goes on to the view behind. An Escape after the
 // composition closes the panel and puts the focus back on its trigger. Chromium and Firefox mark
-// that Escape `isComposing`; Safari sends it after the composition's end, unmarked, with keyCode
-// 229 (WebKit bug 165004).
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an Escape that ends an IME composition, marked by %s, leaves the open panel open", (_mark, composing) => {
+// that Escape `isComposing`.
+test.each(
+  INPUT_METHOD_MARKS
+)("an Escape that ends an IME composition, marked by %s, leaves the open panel open", (_mark, composing) => {
   const trigger = document.createElement("button");
   const panel = document.createElement("div");
   const field = document.createElement("input");

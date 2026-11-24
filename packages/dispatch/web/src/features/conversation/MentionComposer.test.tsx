@@ -16,6 +16,7 @@ import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { runFocusFixup } from "../../__tests__/focus-fixup";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { heldNotDisabled } from "../../__tests__/held-press";
+import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
@@ -2017,13 +2018,12 @@ test("a Ctrl+Enter that ends an IME composition in Safari, at keyCode 229, sends
   }
 });
 
-// A key an input method takes - one marked `isComposing`, or the one that ends a composition,
-// which Safari sends with `isComposing` false and keyCode 229 - is the input method's. An Enter in
-// an ask option's label adds no option then, and a plain Enter still does.
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an Enter that ends an IME composition in an ask option's label, marked by %s, adds no option", async (_mark, composing) => {
+// A key an input method takes - one marked `isComposing`, or the one that ends a composition - is
+// the input method's. An Enter in an ask option's label adds no option then, and a plain Enter
+// still does.
+test.each(
+  INPUT_METHOD_MARKS
+)("an Enter that ends an IME composition in an ask option's label, marked by %s, adds no option", async (_mark, composing) => {
   const user = userEvent.setup();
   const { view } = renderComposer({ kind: "ask" });
 
@@ -2045,10 +2045,9 @@ test.each([
 
 // The same for Escape: one that ends an input method's composition raises no `Discard draft?`
 // over the draft, and a plain Escape still does.
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an Escape that ends an IME composition in the box, marked by %s, asks nothing", async (_mark, composing) => {
+test.each(
+  INPUT_METHOD_MARKS
+)("an Escape that ends an IME composition in the box, marked by %s, asks nothing", async (_mark, composing) => {
   const user = userEvent.setup();
   const { view } = renderComposer();
 

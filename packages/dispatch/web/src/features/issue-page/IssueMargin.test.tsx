@@ -24,6 +24,7 @@ import { holdNotifications } from "../../__tests__/commits";
 import { realClock } from "../../__tests__/fake-clock";
 import { nextFrame } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { panelOf, pickNamed } from "../../__tests__/list-picks";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -958,12 +959,10 @@ test("Escape in the blocked-by box closes its editor and goes no further", async
 // An Escape that ends an IME composition gives up what the reader was composing, and the
 // blocked-by editor closed on it, with the list typed into it. The editor leaves that press alone,
 // unmarked, as the page's other editors do, and a plain Escape still closes it. Chromium and
-// Firefox mark it `isComposing`; Safari sends it after the composition's end, unmarked, with
-// keyCode 229 (WebKit bug 165004).
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an Escape that ends an IME composition, marked by %s, leaves the blocked-by editor open with its list", async (_mark, composing) => {
+// Firefox mark it `isComposing`.
+test.each(
+  INPUT_METHOD_MARKS
+)("an Escape that ends an IME composition, marked by %s, leaves the blocked-by editor open with its list", async (_mark, composing) => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
   const escapes = watchEscapes();
