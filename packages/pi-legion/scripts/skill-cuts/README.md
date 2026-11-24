@@ -57,7 +57,8 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
   [--reading-models <file>] [--limits <file>] [--build-summary <file>]... \
-  [--again <case id>]... [--confirm-flagged]
+  [--again <case id>]... [--confirm-flagged] \
+  [--allow-runners <digest>[,<digest>...]]
                                  (--again, --confirm-flagged: confirm only; --again not with --case)
 ```
 
@@ -166,10 +167,27 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   that show one are refused, naming the case, by `report` and by every stage command (exit 1), not
   scored. A read that fails for another reason, after its retries, fails the command (exit 1), and
   the next run reads it again.
-- `report`: the compared arm; each case's passes and runs per arm and stage; for a dropped case,
-  the stage that dropped it, why, and the passes of each stage it ran (its screen's passes where
-  the screen ran); for a case with more than one confirm, each confirm numbered (one on another
-  runner or at other texts marked not counted) and, for three pooled ones, their pooled passes,
+- The runner of each run. Each stage and each run records the runner that made it: a digest of the
+  runner's code (each file of this directory but its tests, its test data and this README; the
+  commit is not knowable in a copy of the directory with no git). A run saved before runs recorded
+  it takes its stage's runner, and a stage saved before stages recorded theirs is the runner
+  `unrecorded`. `screen`, `confirm` and `control` take a saved stage of their own kind (a case's
+  screen; a flagged case's last confirm, or with `confirm --case` that case's confirm; the control
+  case's control) as done, or go on with one still running, only when each of its runs, or the
+  stage where it has none, is this runner's or
+  that of a runner `--allow-runners <digest>[,<digest>...]` names. A saved stage of another runner
+  is refused before any model call (exit 2), naming the case, its runner and this runner: it is
+  never skipped as done and never made again. Confirms are pooled on one runner at one set of
+  texts as above, whatever `--allow-runners` says.
+- `report`: for each stage kind (`screen`, `confirm` with earlier confirms, `control`), each
+  runner with its case stages and its runs (a stage whose runs two runners made counts as a case
+  stage of each); results whose runs more than one runner made are refused (exit 2), naming each
+  runner with its counts, unless `--allow-runners` names each, and the runners line then says
+  they were allowed. Then the compared arm; each case's passes and runs per arm and stage; for a
+  dropped case, the stage that dropped it, why, and the passes of each stage it ran (its screen's
+  passes where the screen ran); for a case with more than one confirm, each confirm numbered (one
+  on another runner or at other texts marked not counted) and, for three pooled ones, their pooled
+  passes,
   and a `pooled confirms` line naming each such case with its three results and the pooled
   numbers; the cases of each kind (`source.kind` `session` or `written`; a case with none is a
   session case) and the informative cases of each, the control case's passes of old, `minus` and
@@ -186,9 +204,9 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   false-loss chance at the cases run (exact binomial under identical old and compared texts, the
   pass rates taken from each case's own screen; its assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, each screened
-  case's smallest drop ("The smallest drop" below), the spend
-  at list price, the peak memory, how many captures' system-prompt digests differ from their
-  session's, and the text of `--limits <file>` as it is (the limits a result states, so no limit
+  case's smallest drop ("The smallest drop" below), the spend at list price (below), the peak
+  memory, how many captures' system-prompt digests differ from their session's, and the text of
+  `--limits <file>` as it is (the limits a result states, so no limit
   is written into the runner), or that none was given. A screened case is one whose screen runs
   are counted and that is not dropped at screen. Beside the verdict, as descriptions that
   change no rule: each kind's screened cases (their ids), how many are informative, and each
@@ -241,7 +259,8 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   "deleting the case's line showed no detectable change (planted-loss control not a loss)" (with
   `--planted-line`, the planted line in place of the case's), and one whose control's runs are
   unscreened "planted-loss control not a loss: its runs are unscreened". It calls no model, and
-  needs only `--config`, `--out`, `--old` and `--cases`; its compared arm is the one its results
+  needs only `--config`, `--out`, `--old` and `--cases`; `--request-log` names the log it sets
+  the spend against, `<out>/requests.jsonl` by default; its compared arm is the one its results
   record (a `--new` or `--ours` it is given must be that one). With the cut compared, `keeps`
   prints as "no loss detected by the registered rule" and a loss names the cases where the cut's
   text passes at least 10 fewer of 40 fresh runs than the old text, and those where it passes at
@@ -268,6 +287,24 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   says. A skill too few of whose reading sessions are on served models, and with no written case,
   gets no verdict. Without `--reading-models`, it says the reading sessions by model were not
   given, and the verdict names no models.
+
+The report's spend at list price is the sum of what the case results in `<out>/cases` record
+their calls cost, each call once, and the report prints each part of it: the judge controls (the
+gateway's spend over each case's three controls), and for each stage kind its stages' dollars
+(each stage's `usd`: the gateway's spend while the stage ran, in each process that ran it), split
+into the replays and the judgements its runs record (the runs with no verdict, which are run
+again, among them) and the calls no run records (its captures' hint calls, the rounds a replay
+that then failed had answered, replies whose judgement the budget refused). It is the spend of the
+results in `<out>/cases`, not of every command run on `--out`: the calls of a round stopped
+before it was saved, of a result taken out of `<out>/cases`, or of a capture that failed are in no
+result, and the `done` line of a stage command gives the calls of that command alone. So where
+the request log exists, the report prints the log's total by kind of call and its difference from
+the results' sum in two parts that sum to it, each with its cause: the judge calls against the
+results' judge controls and judgements, and the replay and hint calls against the results'
+replays and the calls no run records. With them it counts the replay calls of the log whose
+session id no run of the results holds (a run records the id its replay went with), and the runs
+of the results whose session id no replay call of the log holds (results made with another
+`--request-log`, or brought from another `--out`).
 
 `score.ts` holds the rules. Each case's results are one file, `<out>/cases/<case id>.json`,
 written whole after each round of runs, so a run started again goes on from what was saved and
@@ -315,6 +352,12 @@ My Pi did store is cached, so a run made again asks for the others alone. A prof
 installs one text twice, once as `<namespace>/<name>`, lists it once: Oh My Pi admits the bare
 copies first, then each namespace's, and drops a copy whose body and frontmatter are those of a
 copy of its name it admitted before, so the capture lists that copy nowhere and owes it no hint.
+Oh My Pi names each copy by its SKILL.md's frontmatter `name`, trimmed, else its directory's name,
+and the runner reads every SKILL.md's frontmatter as Oh My Pi does (`common.ts`'s
+`readFrontmatter`), `copies` among them, so each copy is installed under the name Oh My Pi lists it
+under. A capture whose installed copy Oh My Pi would name otherwise (an arm text that renames the
+case's skill, say) is refused (exit 2, or that task's failure in `load`) as the copy is installed,
+naming the case, the copy's source and both names.
 Oh My Pi asks for temperature 0, but sends no temperature to Opus 4.7 on, Sonnet, Fable and Mythos
 5 on or Haiku 5.5 on, which take none, so their hints run at the API's default of 1. `gateway.ts`
 sends each body to its API's route (the key as `x-api-key`, or as
@@ -1355,11 +1398,12 @@ bun scripts/skill-cuts/cli.ts nearest --config <skill-cuts.json> --key-file <fil
 ```
 
 One fresh request of the `nearest` reader (`prompts/nearest.md`). Its input is the skill's name,
-its whole description and its SKILL.md less the frontmatter block, and every skill of each
+its whole description and its SKILL.md less the frontmatter block (the body Oh My Pi reads after
+the block, trimmed: `common.ts`'s `splitFrontmatter`), and every skill of each
 `--candidates` root (each `<root>/<name>/SKILL.md`), with its name, its whole description and the
-source the flag gives it; the frontmatter is read as `context.ts`'s `readFrontmatter` reads it
+source the flag gives it; the frontmatter is read as `common.ts`'s `readFrontmatter` reads it
 (past any HTML comments before it), and a name is the frontmatter's `name`, trimmed, else the
-directory's name, as `load` names a skill. Two candidates of
+directory's name, as `load` names a skill (`common.ts`'s `ompSkillName`). Two candidates of
 different sources may have one name, so the answer names each candidate by its name and source:
 `{verdict, nearest: [{name, source, verdict, missing, reason}], reason}`, with at most two entries,
 each `equivalent` (it does the skill's job, for the same trigger) or `partial` (it does a material
@@ -2471,6 +2515,61 @@ id, its request id and the provider's request id, the gateway's headers of it (`
 cache read and write tokens, usage and dollars at list price. It never holds the key or a
 message's text.
 
+## Usage records
+
+Each model answer the runner gets records one usage span, as a program with no agent harness of
+its own must (`skill-scenarios/spend-record.ts`, the spend client's `spend_record.py` in
+TypeScript): one OTLP/HTTP JSON span, shaped like Oh My Pi's model-response span, posted to the
+spend collector.
+
+- **The one place.** `skill-scenarios/messages-api.ts`'s `postMessages` gives each ok answer of
+  each try, its body read whole, to `gateway.ts`'s recorder (`createGateway`'s `spendRecorder`,
+  which every gateway must name). Every command that calls a model opens its gateway with the
+  process's recorder (`processSpendRecorder()`): `read`, `control` (`control craft` among them),
+  `craft`, `nearest`, `proposals`, `behaviour` and `load` through `cli.ts`'s `openGateway`,
+  `build-cases` (its `--written` form among them) and `build-tasks` through `build.ts`'s
+  `readerGateway`. So every replay, judge call, reader call, hint call and load run records its
+  answer there, and nowhere else.
+- **Which answers.** Every ok answer, the provider having billed each: one the runner then asks
+  again for (a reply it cannot read), and a stream that ends in a content-policy refusal after
+  its answer started, among them. A streamed answer is read as the whole answer it assembles: a
+  Messages stream's `message_start` message with its `message_delta` counts, or a Responses
+  stream's `response.completed` response. A stream that ends before its answer starts holds no
+  usage, and records nothing; so do a 429, a 5xx, any other refusal and a body that fails while
+  it arrives.
+- **What a span says.** The provider (from the model: anthropic for a Claude model, openai for a
+  GPT one), the body's model and the answer's, the answer's id (`msg_…`, `resp_…`), when the try
+  was sent and when its answer ended, the session id the gateway logs for the body (the
+  `session_id` of a Messages body's `metadata.user_id`, else a Responses body's
+  `prompt_cache_key`, else its `user`), and the token counts: all the prompt's tokens (a Messages
+  answer's uncached input with its cache reads and writes), the cache reads, the cache writes
+  with their 5-minute and 1-hour parts, the output, and a Responses answer's reasoning. It sends
+  no cost: the runner knows only its own list-price count, so the collector prices the row.
+- **Where it goes.** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT` and
+  `/v1/traces`, with `Content-Type: application/json` and no other header, never through a proxy
+  (Bun's fetch reads `http_proxy` and the rest; each post sets `proxy: false`). Its resource
+  attributes are every pair of `OTEL_RESOURCE_ATTRIBUTES`; `service.name`, from
+  `OTEL_SERVICE_NAME`, else `spend-record`, where no pair names one; and `theorem.harness=script`,
+  in place of any pair of that key. An environment with neither endpoint variable records
+  nothing, and stderr says so once.
+- **Never in the way.** A span is queued (1000 at most; one more is dropped) and one sender posts
+  them in order, each post ended after 2 s. The first failure is written once to stderr.
+  `cli.ts`'s `main` waits up to 2 s for the queue on every way out, once for every command
+  (`build.ts`'s `main` leaves the wait to its caller); a run ended by a signal loses what is
+  still queued.
+- **The child programs.** Oh My Pi (`behaviour`'s captures, `load`'s captures and their hint runs)
+  and Claude Code (`load`) run with an environment the runner builds from nothing, which holds no
+  `OTEL_*` variable (and, for Claude Code, `DISABLE_TELEMETRY`), so neither records a span. Their
+  model requests go to the recorder (`recorder.ts`), never to the gateway: it answers each turn
+  itself, which is no model call, and sends each hint request it is owed through the gateway,
+  which records that answer once. Given the OpenTelemetry variables, they would record the
+  recorder's stand-in replies as model calls, and each hint call twice.
+- **A backfill.** `recordLogged(line)` queues the span of one line of a request log (above) with
+  the line's own start (`sentAt`), end (`durationMs` later), ids and usage; a line of a failed call
+  is passed over. A backfill queues at most 1000 lines at a time, then awaits `flush()` until it
+  returns true, the queue emptied, before it queues more: `flush` returns false at its time limit
+  with spans still queued, and the queue drops what it has no room for.
+
 ## Exit status
 
 0 done (a control held); 1 failed (every reply of a reader refused, a control that did not hold, a
@@ -2480,6 +2579,7 @@ with no nearest row, cases file or result, a skill `craft-coverage` finds with n
 line `craft-lines` cites that cannot be read at its commit, or `behaviour` results that show a
 drop no stage makes); 2 refused before any model call or store read (among the refusals, an
 `--out` inside a git or jj checkout, from `behaviour`'s stage commands, `load` and
-`build-cases`); 3 stopped (the budget is spent, the peak memory passed 1 GiB in `behaviour` or
+`build-cases`), or as a case's capture installs a copy Oh My Pi would name otherwise than its
+profile does; 3 stopped (the budget is spent, the peak memory passed 1 GiB in `behaviour` or
 `build-cases`, or 1.5 GiB in `copies`, or the listing rule dropped more than half of a load's
 tasks); 4 stopped by build-cases' stop rule.

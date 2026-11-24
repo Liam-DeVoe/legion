@@ -34,7 +34,7 @@ import {
   UnansweredRead,
   withCacheBreakpoint,
 } from "./replay";
-import { detachedCommit, writeTree } from "./testdata/fixtures";
+import { detachedCommit, f9Completed, fixtureReply, writeTree } from "./testdata/fixtures";
 
 // The replay of an arm, on F5 and F9 (testdata/): the model gateway's replies to request bodies
 // made from F2 and F8, captured as testdata/CAPTURE.md says ("F5", and "F8 and F9") with
@@ -93,15 +93,6 @@ function armWith(name: "old" | "new" | "minus" | "ours", files: Record<string, s
   };
 }
 
-/** The fixture reply `stem` as the gateway sent it. */
-function fixtureReply(stem: string): Response {
-  const kept = JSON.parse(readFileSync(path.join(TESTDATA, `${stem}.headers.json`), "utf8"));
-  return new Response(readFileSync(path.join(TESTDATA, `${stem}.sse`), "utf8"), {
-    status: kept.status,
-    headers: kept.headers,
-  });
-}
-
 /** F5's reply `shape`, a Messages API stream. */
 function f5(shape: string): Response {
   return fixtureReply(`F5-${shape}`);
@@ -110,15 +101,6 @@ function f5(shape: string): Response {
 /** F9's reply `shape`, a Responses API stream. */
 function f9(shape: string): Response {
   return fixtureReply(`F9-${shape}`);
-}
-
-/** The output items of F9's reply `shape`: those its `response.completed` event carries. */
-function f9Output(shape: string): Record<string, unknown>[] {
-  const events = readFileSync(path.join(TESTDATA, `F9-${shape}.sse`), "utf8")
-    .split("\n")
-    .filter((line) => line.startsWith("data: {"))
-    .map((line) => JSON.parse(line.slice("data: ".length)));
-  return events.find((event) => event.type === "response.completed").response.output;
 }
 
 /** A gateway whose fake fetch answers the n-th call (from 1) with `answer`, and the bodies and
@@ -133,6 +115,7 @@ function world(answer: (n: number) => Response) {
     keyFile,
     concurrency: 2,
     timeoutMs: 5_000,
+    spendRecorder: null,
     fetch: async (_url, init) => {
       bodies.push(JSON.parse(String(init.body)));
       headers.push(new Headers(init.headers));
@@ -897,6 +880,7 @@ test("a navigation case passes on its read alone, and fails when the read is of 
     keyFile,
     concurrency: 1,
     timeoutMs: 5_000,
+    spendRecorder: null,
     fetch: async (_url, init) => {
       const step = JSON.parse(String(init.body)).messages[0].content[1].text as string;
       steps.push(step);
@@ -1066,6 +1050,7 @@ test("a run's requests carry an id no other run carries, the same in every round
     keyFile,
     concurrency: 3,
     timeoutMs: 5_000,
+    spendRecorder: null,
     fetch: async (_url, init) => {
       const body = JSON.parse(String(init.body)) as MessagesBody;
       bodies.push(body);
@@ -1117,6 +1102,7 @@ test("the batch probe: a fixed session id sets its batch's count, and the runner
     keyFile,
     concurrency: 8,
     timeoutMs: 5_000,
+    spendRecorder: null,
     fetch: async (_url, init) => {
       const body = JSON.parse(String(init.body)) as MessagesBody;
       const id = bodyIdentity(body);
@@ -1200,6 +1186,7 @@ test("each run sends its arm's body as replayOnce sends it, but for a session id
       keyFile,
       concurrency: 2,
       timeoutMs: 5_000,
+      spendRecorder: null,
       fetch: async (_url, init) => {
         texts.push(String(init.body));
         return answer();
@@ -1312,7 +1299,7 @@ test("on a Responses body (F8, F9): answers a skill read with a function_call_ou
   expect(JSON.stringify(sent)).not.toContain("cache_control");
   // The second send is the body with the reply's output items as they came and the arm's answer
   // to its read, the form Oh My Pi sends a tool result in (F8's `function_call_output`).
-  const [read] = f9Output("skill-read");
+  const [read] = f9Completed("skill-read").output;
   const { input: sentInput, ...sentFields } = sent[1] ?? RESPONSES_BODY;
   const { input: bodyInput, ...bodyFields } = withId(RESPONSES_BODY, key);
   expect(sentFields).toEqual(bodyFields);
@@ -1365,7 +1352,7 @@ test("on a Responses body: at most three rounds of skill reads, and a read of a 
   expect(replayed.rounds).toBe(MAX_SKILL_ROUNDS);
   expect(sent[1]?.input.at(-1)).toEqual({
     type: "function_call_output",
-    call_id: f9Output("skill-read")[0]?.call_id,
+    call_id: f9Completed("skill-read").output[0]?.call_id,
     output: `File not found: ${INSTALLED}/references/x.md`,
   });
 });

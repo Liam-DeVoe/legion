@@ -597,6 +597,7 @@ import path from "node:path";
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { mapLimit, outRefusal } from "../skill-scenarios/production-dispatch";
+import { processSpendRecorder, type SpendRecorder } from "../skill-scenarios/spend-record";
 import {
   readCalls,
   readTargets,
@@ -664,11 +665,13 @@ import {
   json,
   lastTryError,
   type OptionValues,
+  ompSkillName,
   ompText,
   parse,
   parseJson,
   RATE_LIMITED,
   Refused,
+  readFrontmatter,
   required,
   type Sent,
   STORE_QUIET_MS,
@@ -697,7 +700,6 @@ import {
   CopyIndex,
   dirOf,
   factsOf,
-  frontmatter,
   type Gh,
   type GhResult,
   GitBlob,
@@ -996,6 +998,9 @@ export interface BuildIo {
   /** The process's peak resident memory so far, in bytes; memory.ts's `procPeakRssBytes` when
    *  absent (cli.ts's `skill-cuts build-cases`, whose io already samples it). */
   peakRssBytes?(): number;
+  /** Where each reader's answer records its usage span (spend-record.ts; `processSpendRecorder()`
+   *  in a real run); none when absent. `main` leaves the wait for its spans to its caller. */
+  readonly spendRecorder?: SpendRecorder;
 }
 
 /** The peak resident memory of one build-cases run: the largest of the process's peaks read so
@@ -5970,27 +5975,26 @@ function mustBeFile(file: string, what: string): void {
     throw new Refused(`${what} ${file} is not a file`);
 }
 
-/** The skill in `dir` as build-tasks reads it: its SKILL.md's frontmatter name (its directory's
- *  name when it gives none) and description, the file read as Oh My Pi reads it (`ompText`).
- *  Refuses a directory with no SKILL.md. */
+/** The skill in `dir` as build-tasks reads it: its SKILL.md's name and description as Oh My Pi
+ *  reads them (common.ts's `ompText`, `readFrontmatter` and `ompSkillName`: its frontmatter name,
+ *  trimmed, else its directory's name). Refuses a directory with no SKILL.md. */
 function taskSkill(dir: string): { name: string; description: string } {
   const skillFile = path.join(dir, "SKILL.md");
   mustBeFile(skillFile, "--skill's SKILL.md");
-  const fields = frontmatter(ompText(readFileSync(skillFile))) ?? {};
+  const fields = readFrontmatter(ompText(readFileSync(skillFile)));
   return {
-    name:
-      typeof fields.name === "string" && fields.name !== ""
-        ? fields.name
-        : path.basename(path.resolve(dir)),
+    name: ompSkillName(fields, path.basename(path.resolve(dir))),
     description: typeof fields.description === "string" ? fields.description : "",
   };
 }
 
-/** The gateway of a builder's readers, which starts no call once its spend reaches `budgetUsd`,
- *  and takes `concurrency` calls at once. */
+/** The gateway of a builder's readers, which records each answer's usage with `spendRecorder`
+ *  (none when undefined), starts no call once its spend reaches `budgetUsd`, and takes
+ *  `concurrency` calls at once. */
 function readerGateway(
   config: SkillCutsConfig,
   keyFile: string,
+  spendRecorder: SpendRecorder | undefined,
   budgetUsd?: number,
   concurrency = 1
 ): Gateway {
@@ -6000,6 +6004,7 @@ function readerGateway(
     concurrency,
     timeoutMs: READER_TIMEOUT_MS,
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
+    spendRecorder: spendRecorder ?? null,
   });
 }
 
@@ -8479,7 +8484,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     dropNavigation: values["drop-navigation"] === true,
     copies,
     github: githubReads(io, copies.branches, "build-cases"),
-    gateway: readerGateway(config, given["key-file"], budgetUsd),
+    gateway: readerGateway(config, given["key-file"], io.spendRecorder, budgetUsd),
     placer: placing,
     servedIds: new Set(config.servedModels.map(modelId)),
     // The written path decides one context session at a time, so its store reads are one at a
@@ -9427,6 +9432,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     gateway: readerGateway(
       config,
       given["key-file"],
+      io.spendRecorder,
       budgetUsd === undefined ? undefined : Math.max(0, budgetUsd - priorSpend.usd),
       concurrency
     ),
@@ -11121,7 +11127,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   const spools = plan === undefined && model === undefined ? undefined : spoolDir(given.out, io);
   const spool = spools === undefined ? "" : path.join(spools, "profile.jsonl");
   const context = plan === undefined ? undefined : await contextProfile(plan, spool, skill.name);
-  const gateway = readerGateway(config, given["key-file"]);
+  const gateway = readerGateway(config, given["key-file"], io.spendRecorder);
   const spend = () => addSpend(priorSpend, gateway.spend());
   let terms = prior?.terms;
   const queries: TasksQuery[] = [];
@@ -11533,7 +11539,7 @@ async function buildControlTasks(
   // the next session.
   const spools = spoolDir(given.out, io);
   const spool = path.join(spools, "session.jsonl");
-  const gateway = readerGateway(config, given["key-file"]);
+  const gateway = readerGateway(config, given["key-file"], io.spendRecorder);
   const spend = () => addSpend(priorSpend, gateway.spend());
   const sessions: ControlRecord[] = [];
   const write = (done: boolean, extra: Record<string, unknown> = {}) =>
@@ -11814,7 +11820,9 @@ async function buildControlTasks(
 const USAGE = [BUILD_CASES_USAGE, BUILD_TASKS_USAGE].join("\n");
 
 /** `skill-cuts build-cases …` and `skill-cuts build-tasks …`: `argv` starts with the command's
- *  name. Returns the exit status (EXIT). */
+ *  name. Returns the exit status (EXIT). The usage spans its reader calls queued are its caller's
+ *  to wait for (`io.spendRecorder`'s `flush`), so that a process waits once: cli.ts's `main` does
+ *  for every command, and this file's own run once `main` has returned. */
 export async function main(argv: readonly string[], io: BuildIo): Promise<number> {
   const [command, ...rest] = argv;
   try {
@@ -11841,13 +11849,15 @@ export async function main(argv: readonly string[], io: BuildIo): Promise<number
 if (import.meta.main) {
   // Where the kernel keeps no VmHWM, the resident memory is read every second from now on.
   startPeakRssSampling();
-  process.exit(
-    await main(Bun.argv.slice(2), {
-      out: (text) => process.stdout.write(text),
-      err: (line) => process.stderr.write(`${line}\n`),
-      gh: spawnGh,
-      now: () => performance.now(),
-      peakRssBytes: procPeakRssBytes,
-    })
-  );
+  const spendRecorder = processSpendRecorder();
+  const code = await main(Bun.argv.slice(2), {
+    out: (text) => process.stdout.write(text),
+    err: (line) => process.stderr.write(`${line}\n`),
+    gh: spawnGh,
+    now: () => performance.now(),
+    peakRssBytes: procPeakRssBytes,
+    spendRecorder,
+  });
+  await spendRecorder.flush();
+  process.exit(code);
 }

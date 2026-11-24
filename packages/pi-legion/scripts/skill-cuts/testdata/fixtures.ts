@@ -1,9 +1,10 @@
 /**
- * Builders of made-up fixtures that more than one test file of the runner uses. Each repository,
- * commit and route they give is made up.
+ * Builders of fixtures that more than one test file of the runner uses: made-up ones, each
+ * repository, commit and route they give made up, and the gateway replies this directory holds
+ * (CAPTURE.md).
  */
 import { expect } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { type Manifest, type ManifestKind, parseManifest } from "../copies";
 
@@ -98,4 +99,28 @@ process.stdout.write(JSON.stringify(answers[route]));
 `,
     { mode: 0o755 }
   );
+}
+
+/** The fixture reply `stem` (testdata/CAPTURE.md) as the gateway sent it: its SSE body, and the
+ *  status and headers kept beside it. */
+export function fixtureReply(stem: string): Response {
+  const kept = JSON.parse(readFileSync(path.join(import.meta.dir, `${stem}.headers.json`), "utf8"));
+  return new Response(readFileSync(path.join(import.meta.dir, `${stem}.sse`), "utf8"), {
+    status: kept.status,
+    headers: kept.headers,
+  });
+}
+
+/** The response F9's reply `shape`, a Responses API stream, holds whole: the one its
+ *  `response.completed` event carries, with its id, its output items and its usage. */
+export function f9Completed(shape: string): {
+  readonly id: string;
+  readonly output: { type: string; [key: string]: unknown }[];
+  readonly usage: { readonly cost: number };
+} {
+  return readFileSync(path.join(import.meta.dir, `F9-${shape}.sse`), "utf8")
+    .split("\n")
+    .filter((line) => line.startsWith("data: {"))
+    .map((line) => JSON.parse(line.slice("data: ".length)))
+    .find((event) => event.type === "response.completed").response;
 }

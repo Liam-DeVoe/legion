@@ -17,12 +17,12 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import type { SessionMessage } from "../skill-scenarios/transcript";
 import { type Arm, buildArm } from "./arms";
 import { type Case, pathHash } from "./cases";
+import { Refused, readFrontmatter } from "./common";
 import {
   type AgentDefinition,
   buildContext,
   type ContextOptions,
   cacheKey,
-  frontmatterBlock,
   ghSource,
   gitBlobId,
   installedCopies,
@@ -33,7 +33,6 @@ import {
   NoSuchFile,
   PROMPTS_GO,
   type RepoSource,
-  readFrontmatter,
   skillFrontmatter,
   subagentDefinition,
   UnreadableDirectory,
@@ -478,6 +477,43 @@ test("a second copy of a name whose text differs goes in a skills directory of i
   expect(built.skills[2]?.description).toBe("Use for the tools' own beta.");
 });
 
+// Catches: a copy installed under a name its SKILL.md's frontmatter does not give it. Oh My Pi
+// names a skill by its frontmatter `name`, so it listed the copy, asked its hint and found its
+// collisions under another name than the profile's, and the capture failed only after its hint
+// run had waited for a hint Oh My Pi never asked for.
+test("an installed copy whose frontmatter names another skill is refused, naming the case, its source and both names; so is an arm text that renames the case's skill", async () => {
+  const root = path.join(dir, "misnamed");
+  const c = aCase("devbox", {});
+  c.profile.skills.push({
+    repo: "acme/tools",
+    commit: COMMIT,
+    path: "skills/gamma",
+    name: "gamma",
+  });
+  const { options, arm } = setUp(root, c);
+  writeTree(path.join(root, "repos", "acme", "tools", COMMIT, "skills", "gamma"), {
+    "SKILL.md": "---\nname: delta\ndescription: Use for the made-up delta.\n---\n\n# Delta\n",
+  });
+  const refused = await buildContext(c, arm, options).catch((caught: unknown) => caught);
+  expect(refused).toBeInstanceOf(Refused);
+  expect((refused as Error).message).toBe(
+    `case case-devbox: the profile's skill gamma is installed from skills/gamma of acme/tools at ${COMMIT}, whose SKILL.md's frontmatter names it delta, and Oh My Pi names a skill by its frontmatter name, not gamma, the name the profile gives it`
+  );
+
+  const renamed = aCase("devbox", {});
+  const other = path.join(root, "renamed");
+  writeTree(other, { "SKILL.md": ALPHA_ARM.replace(/^name: alpha$/m, "name: alpha-two") });
+  const renamedArm = buildArm(renamed, "new", { old: path.join(root, "old"), new: other }, root);
+  const refusedArm = await buildContext(renamed, renamedArm, {
+    ...options,
+    root: path.join(root, "scratch-renamed"),
+  }).catch((caught: unknown) => caught);
+  expect(refusedArm).toBeInstanceOf(Refused);
+  expect((refusedArm as Error).message).toBe(
+    `case case-devbox: the profile's skill alpha is installed from the arm's text, ${other}, whose SKILL.md's frontmatter names it alpha-two, and Oh My Pi names a skill by its frontmatter name, not alpha, the name the profile gives it: an arm's text must keep the case skill's name`
+  );
+});
+
 // Catches: a none arm that lists another source's copy under the case skill's name taken for the
 // arm's own copy (cases.ts's testedCopy finds the copy listed under the name), so its context
 // refused it as an arm with no skill; or that copy left in its namespace's directory.
@@ -829,18 +865,16 @@ test("comments inside the block are dropped in one left-to-right pass, as Oh My 
   });
 });
 
-// Catches: a SKILL.md body that keeps the frontmatter where readFrontmatter finds it past leading
-// HTML comments, or that loses the text after the block.
-test("frontmatterBlock gives the block readFrontmatter reads and the text after its closing line", () => {
-  expect(
-    frontmatterBlock("<!-- a made-up comment -->\r\n---\r\nname: x\r\n---\r\n\r\n# Body\r\n")
-  ).toEqual({ block: "name: x", rest: "\n# Body\n" });
-  expect(frontmatterBlock("---\nname: x<!-- kept -->\n---")).toEqual({
-    block: "name: x<!-- kept -->",
-    rest: "",
+// Catches: nested keys left in kebab-case, where Oh My Pi's `normalizeFrontmatterKeys` makes each
+// key camelCase at every depth: two copies of a skill that differ only so read as different,
+// though Oh My Pi drops one as the other (capture.ts's `listedSkills`).
+test("kebab-case keys become camelCase at every depth, in a list's mappings too, and no value changes", () => {
+  const text =
+    "---\nname: nested\nmetadata:\n  made-up-kind: greeting\n  steps:\n    - step-name: one\n      keep: [a-b]\n---\nBody.\n";
+  expect(readFrontmatter(text)).toEqual({
+    name: "nested",
+    metadata: { madeUpKind: "greeting", steps: [{ stepName: "one", keep: ["a-b"] }] },
   });
-  expect(frontmatterBlock("# No frontmatter\n---\n")).toBeUndefined();
-  expect(frontmatterBlock("---\nname: x\nno end\n")).toBeUndefined();
 });
 
 /** A stand-in `gh` that answers its first `fails` calls with a network timeout on stderr, then

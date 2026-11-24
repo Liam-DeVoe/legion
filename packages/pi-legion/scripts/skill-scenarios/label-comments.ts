@@ -9,7 +9,10 @@
  * was counted from: one `GET /api/v1/issues` with no query (every issue of every project, closed
  * issues too, in one unpaged read), then `GET /api/v1/issues/{key}/comments` for each issue, then
  * each comment whose author kind is `user` and whose `created_at` is in the window. No
- * `updated_since` is sent, because a comment need not move the `updated_at` of its issue.
+ * `updated_since` is sent, because a comment need not move the `updated_at` of its issue. A
+ * comment of that set its author deleted is left out, and stdout counts it: Dispatch serves a
+ * deleted comment with no body, so the judge would label an empty comment and not the words the
+ * person wrote.
  *
  * Each comment gets one model call to claude-sonnet-5-5. The call is the call of the judge that
  * made the baseline labels: Oh My Pi's text judge (`judge_batch` with eleven `bool` questions), as
@@ -33,6 +36,13 @@
  * which is renamed to labels.jsonl, so a failed run leaves an earlier labels.jsonl as it was. A
  * comment that gets no label fails the run (exit 1) and stderr names it. Exit 2 is a refusal
  * before any read: a bad argument, an --out inside a git or jj checkout, or no Dispatch.
+ *
+ * Each model answer, every one asked for again among them, records one usage span
+ * (spend-record.ts, as skill-cuts/README.md's "Usage records" says): the answer's id, model and
+ * token counts, MODEL as the request's model, and when its try was sent and when it ended, posted
+ * to the spend collector that OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT
+ * names, never through a proxy. The run waits up to 2 s for those posts before it exits, whatever
+ * its exit status; a refusal exits before any model call, so it has none to wait for.
  */
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -42,7 +52,6 @@ import { postMessages, readKeyFile, runKeyCommand } from "./messages-api";
 import {
   byCreatedAt,
   type CliIo,
-  type Fetch,
   inWindow,
   mapLimit,
   outRefusal,
@@ -51,8 +60,14 @@ import {
   parseWindow,
   processIo,
   resolveDispatch,
-  type Sleep,
 } from "./production-dispatch";
+import { processSpendRecorder, type SpendRecorder } from "./spend-record";
+
+/** What `main` reads and writes: production-dispatch.ts's CliIo, and where each model answer
+ *  records its usage span (`processSpendRecorder()` in a real run; none when absent). */
+export interface LabelIo extends CliIo {
+  readonly spendRecorder?: SpendRecorder;
+}
 
 /** The eleven questions of the labels artifact, word for word, in its order. */
 export const QUESTIONS = [
@@ -213,13 +228,14 @@ export function isYes(chance: number): boolean {
   return chance > 0.5;
 }
 
-/** The chances that the model gave for one comment. Throws naming why it has no label. */
+/** The chances that the model gave for one comment, each answer's usage recorded with
+ *  `io.spendRecorder`. Throws naming why it has no label. */
 async function label(
   item: Labelled,
   route: ModelRoute,
-  fetchImpl: Fetch,
-  sleep: Sleep
+  io: Pick<LabelIo, "fetch" | "sleep" | "spendRecorder">
 ): Promise<Record<QuestionKey, number>> {
+  const { spendRecorder } = io;
   return postMessages({
     url: route.url,
     key: route.key,
@@ -230,12 +246,17 @@ async function label(
       system: SYSTEM_BLOCKS,
       messages: [{ role: "user", content: stateMessage(item.issue, item.comment) }],
     }),
-    fetch: fetchImpl,
-    sleep,
+    fetch: io.fetch,
+    sleep: io.sleep,
     tries: MODEL_TRIES,
     timeoutMs: MODEL_TIMEOUT_MS,
     // A sampled reply can leave out a question: chancesOf throws, and the comment is asked again.
     accept: chancesOf,
+    ...(spendRecorder === undefined
+      ? {}
+      : {
+          onAnswer: (answer, times) => spendRecorder.record(answer, { model: MODEL, ...times }),
+        }),
   });
 }
 
@@ -314,8 +335,9 @@ function isoWeek(createdAt: string): string {
   return `${day.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
-/** The stdout lines: counts only. No person is named and no comment is quoted. */
-export function summary(rows: readonly LabelRow[]): string[] {
+/** The stdout lines: counts only. No person is named and no comment is quoted. `deleted` is how
+ * many comments of the set were left out because their author deleted them. */
+export function summary(rows: readonly LabelRow[], deleted: number): string[] {
   const share = (count: number) =>
     rows.length === 0 ? "" : ` (${((count / rows.length) * 100).toFixed(1)}%)`;
   const yes = (key: QuestionKey, of: readonly LabelRow[] = rows) =>
@@ -328,6 +350,7 @@ export function summary(rows: readonly LabelRow[]): string[] {
   }
   return [
     `comments: ${rows.length}`,
+    `deleted comments left out: ${deleted} (Dispatch serves a deleted comment with no body, so there is nothing of it to label)`,
     `first created_at: ${rows[0]?.created_at ?? "none"}`,
     `last created_at: ${rows.at(-1)?.created_at ?? "none"}`,
     `writing complaints (about_doc_writing yes): ${writing} of ${rows.length}${share(writing)}`,
@@ -408,8 +431,9 @@ function modelRoute(args: Arguments): ModelRoute | string {
   return { url: gateway.replace(/\/+$/, ""), key: () => runKeyCommand(keyCommand) };
 }
 
-/** The whole run. Returns the exit status: 0, 1 (a read or a label failed) or 2 (refused). */
-export async function main(argv: readonly string[], io: CliIo): Promise<number> {
+/** The whole run. Returns the exit status: 0, 1 (a read or a label failed) or 2 (refused), once
+ *  the usage spans of its model answers are sent (`io.spendRecorder`'s `flush`, at most 2 s). */
+export async function main(argv: readonly string[], io: LabelIo): Promise<number> {
   const refuse = (why: string) => {
     io.err(`label-comments: ${why}`);
     return 2;
@@ -440,15 +464,17 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     const perIssue = await mapLimit(issues, CONCURRENCY, async ({ key }) =>
       (await dispatch.comments(key)).map((comment) => ({ issue: key, comment }))
     );
-    const set = perIssue
+    const people = perIssue
       .flat()
       .filter(({ comment }) => comment.author.kind === "user")
-      .filter(({ comment }) => inWindow(window, comment.created_at))
+      .filter(({ comment }) => inWindow(window, comment.created_at));
+    const set = people
+      .filter(({ comment }) => comment.deleted_at == null)
       .toSorted((a, b) => byCreatedAt(a.comment, b.comment));
 
     const outcomes = await mapLimit(set, CONCURRENCY, async (item) => {
       try {
-        return { item, chances: await label(item, route, io.fetch, io.sleep) };
+        return { item, chances: await label(item, route, io) };
       } catch (error) {
         return { item, failure: messageFor(error) };
       }
@@ -481,7 +507,7 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     }
     writeFileSync(partial, rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
     renameSync(partial, file);
-    for (const line of summary(rows)) io.out(line);
+    for (const line of summary(rows, people.length - set.length)) io.out(line);
     return 0;
   } catch (error) {
     io.err(`label-comments: ${messageFor(error)}`);
@@ -489,9 +515,12 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
   } finally {
     // Gone after a rename. Left only by a write or rename that failed.
     rmSync(partial, { force: true });
+    await io.spendRecorder?.flush();
   }
 }
 
 if (import.meta.main) {
-  process.exit(await main(Bun.argv.slice(2), processIo()));
+  process.exit(
+    await main(Bun.argv.slice(2), { ...processIo(), spendRecorder: processSpendRecorder() })
+  );
 }

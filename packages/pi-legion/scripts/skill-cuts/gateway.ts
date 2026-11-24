@@ -50,12 +50,25 @@
  *   which says so. A call already in flight finishes and is counted, so the spend can pass the
  *   budget by at most the calls in flight, and the bill by those and the tries that failed
  *   mid-stream.
+ * - Each ok answer of each try records one usage span through `spendRecorder`
+ *   (`skill-scenarios/spend-record.ts`, README.md "Usage records"), whether the try's reply is
+ *   then taken or tried again, since the provider bills each: postMessages gives it the answer's
+ *   text whole, the body's model, the try's start and end, and the session id the gateway logs for
+ *   the body (`gatewaySessionId`). A try that got no ok answer records nothing. `spendRecorder`
+ *   null records nothing: a gateway whose answers are a test's stand-ins.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { holdSecret, scrubError } from "@legion/contracts/held-secrets";
 import { z } from "zod";
-import { MessagesApiError, postMessages, readKeyFile } from "../skill-scenarios/messages-api";
+import {
+  type AnswerTimes,
+  MessagesApiError,
+  postMessages,
+  readKeyFile,
+  sseData,
+} from "../skill-scenarios/messages-api";
 import type { Fetch, Sleep } from "../skill-scenarios/production-dispatch";
+import { conversationId, type SpendRecorder } from "../skill-scenarios/spend-record";
 
 /** How many times one call is tried before `send` fails: the back-off's waits before the last of
  *  them (1 + 2 + 4 + 8 + 16 + 30 + 30 s) pass the 60 s window a rate guard's refusal counts over. */
@@ -457,6 +470,15 @@ export function bodyIdentity(body: RequestBody): string | null {
   return typeof id === "string" ? id : null;
 }
 
+/** The session id the gateway logs (`session_id`) for `body`, as its usage span sends it
+ *  (`gen_ai.conversation.id`): the `session_id` of a Messages body's `metadata.user_id`, or a
+ *  Responses body's `prompt_cache_key`, else its `user` (spend-record.ts's `conversationId`);
+ *  undefined for a body that names none. */
+export function gatewaySessionId(body: RequestBody): string | undefined {
+  const user = isResponsesBody(body) && typeof body.user === "string" ? body.user : null;
+  return conversationId(bodyIdentity(body) ?? user);
+}
+
 /** One tool call of a reply: its id, its tool's name and its input, as either API writes one (a
  *  Messages `tool_use` block, its `id` and its `input` object; a Responses `function_call` item,
  *  its `call_id` and its `arguments`, JSON text parsed here). A call whose arguments do not parse
@@ -591,6 +613,10 @@ export interface GatewayOptions {
   readonly prices?: Readonly<Record<string, Price>>;
   readonly fetch?: Fetch;
   readonly sleep?: Sleep;
+  /** Where each ok answer records its usage span (spend-record.ts's recorder; the runner's is
+   *  `processSpendRecorder()`), or null for none: a gateway whose answers are a test's
+   *  stand-ins. */
+  readonly spendRecorder: SpendRecorder | null;
 }
 
 /** When a call got its place and was sent, and how many calls were in flight then, this one
@@ -713,16 +739,7 @@ export function responsesCostUsd(usage: ResponsesUsage, price: Price): number {
 /** Each event of an SSE stream, in order: the JSON of its `data` lines. The `[DONE]` that closes
  *  a Responses stream (F9) is no event. */
 function sseEvents(text: string): unknown[] {
-  const events: unknown[] = [];
-  for (const chunk of text.split(/\r?\n\r?\n/)) {
-    const data = chunk
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice("data:".length).replace(/^ /, ""))
-      .join("\n");
-    if (data.trim() !== "" && data.trim() !== "[DONE]") events.push(JSON.parse(data));
-  }
-  return events;
+  return sseData(text).map((data) => JSON.parse(data));
 }
 
 const Event = z.looseObject({ type: z.string() });
@@ -935,7 +952,7 @@ export function responseMessage(response: unknown): ReplyMessage {
 
 /** The gateway at `options.baseUrl`. Throws when an option is out of range. */
 export function createGateway(options: GatewayOptions): Gateway {
-  const { keyFile, concurrency, timeoutMs, budgetUsd } = options;
+  const { keyFile, concurrency, timeoutMs, budgetUsd, spendRecorder } = options;
   let url: URL;
   try {
     url = new URL(options.baseUrl);
@@ -1032,6 +1049,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       const inFlight = running;
       onSent?.({ at: sentAt, inFlight });
       const started = performance.now();
+      const recorded = { model: body.model, sessionId: gatewaySessionId(body) };
       const answer = await postMessages({
         url: baseUrl,
         ...(responses ? { path: "/v1/responses", auth: "bearer" as const } : {}),
@@ -1042,6 +1060,12 @@ export function createGateway(options: GatewayOptions): Gateway {
         sleep,
         tries: GATEWAY_TRIES,
         timeoutMs,
+        ...(spendRecorder === null
+          ? {}
+          : {
+              onAnswer: (reply: string, times: AnswerTimes) =>
+                spendRecorder.record(reply, { ...recorded, ...times }),
+            }),
         accept: (reply, response) => {
           try {
             return {

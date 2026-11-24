@@ -5,6 +5,7 @@ import path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
 import {
   EnvoyApiError,
+  type KeyTakenResult,
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
@@ -64,7 +65,10 @@ async function child(environment: Record<string, string>): Promise<number> {
   spawned.push(running);
   // The pid is live the moment `spawn` returns, but the kernel carries the process and its
   // environment a moment later. What is awaited is that reading, not a guessed delay: this case
-  // is about a real process tree, so there is no clock to fake.
+  // is about a real process tree, so there is no clock to fake. The command awaited is the one
+  // `exec` leaves, `sleep 300` exactly: the shell's own line, `sh -c exec sleep 300`, names it
+  // too and is read first (252 of 300 spawns, measured), and a reading taken while `exec` runs
+  // has no argv at all, so the case would read the process as `[sh]`.
   await until(async () => {
     const scan = await readStallProcesses();
     if (!scan.read) return false;
@@ -72,7 +76,7 @@ async function child(environment: Record<string, string>): Promise<number> {
     return (
       found !== undefined &&
       found.environment.PI_TOOL_CALL_ID === environment.PI_TOOL_CALL_ID &&
-      found.command.includes("sleep 300")
+      found.command === "sleep 300"
     );
   });
   return running.pid;
@@ -272,7 +276,11 @@ test("an argument far longer than the bound is cut to it rather than written who
 
 /** What the rig's listener answers one publish: a string makes the publish throw that message,
  * and an `EnvoyApiError` is thrown as the transport throws it. */
-type RigAnswer = Pick<PublishResult, "kept" | "keptUntil"> | string | EnvoyApiError;
+type RigAnswer =
+  | Pick<PublishResult, "kept" | "keptUntil">
+  | KeyTakenResult
+  | string
+  | EnvoyApiError;
 
 interface TellerRig {
   readonly teller: StallWatchdogTeller;
@@ -330,9 +338,9 @@ function tellerRig(
       },
     claim: () => ("claim" in options ? options.claim : claimOf()),
     project: options.project ?? "legion",
-    readState: async () => {
+    readRecord: async (issue) => {
       if (typeof state.state === "string") throw new Error(state.state);
-      return state.state;
+      return state.state.issues[issue];
     },
     publisher: () => (state.envoy ? publish : undefined),
     appendEntry: (customType, data) => {
@@ -482,6 +490,29 @@ test("a session never publishes to the role its own session holds", async () => 
     kind: "none",
     why: "the controller's own session is the owner, so its evidence is its transcript and its log",
   });
+});
+
+// A listener answers a notice whose key another sender's message already holds with that
+// message's ids alone, which the client reads as key taken: nothing reached the owner, so the
+// notice is a refusal the log names, and the owner is not told. The control is a delivered
+// answer, which tells the owner.
+test("a stall notice whose key another sender's message holds tells no owner", async () => {
+  const taken = tellerRig();
+  taken.publishAnswer = {
+    keyTaken: { eventId: "event-other", topic: "notifications.role.x", issuedAt: 1 },
+    delivered: false,
+  };
+  expect(await taken.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+  expect(taken.warnings.map((line) => line.message)).toContain(
+    "legion: the owner was not told about this session's stuck tool call"
+  );
+
+  const told = tellerRig();
+  told.publishAnswer = {};
+  expect(await told.teller.tellOverdue(evidenceOf())).toMatchObject({ ownerTold: true });
 });
 
 test("a refused publish and a session with Envoy off leave a line in the log", async () => {

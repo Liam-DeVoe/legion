@@ -183,7 +183,7 @@ import {
   URL_TARGET,
   wholeReadTarget,
 } from "./cases";
-import { ompText } from "./common";
+import { ompText, splitFrontmatter } from "./common";
 import type { Arm as ScoreArm } from "./score";
 
 /** The name of an arm, as run records carry it. */
@@ -1487,22 +1487,16 @@ function formatPrompt(content: string): string {
   return result.join("\n");
 }
 
-/** The body of a SKILL.md's text as Oh My Pi reads it for an autoloaded block
- *  (`loadSkillPromptBody`: `parseFrontmatter` with `repair: false`, packages/utils/src/
- *  frontmatter.ts lines 148-163 at the pin): CRLF as LF, the text after the first `\n---` past
- *  an opening `---` (the whole text when it opens with none, or has no such line), trimmed. */
-function skillBody(content: string): string {
-  const text = content.replace(/\r\n?/g, "\n");
-  const end = text.startsWith("---") ? text.indexOf("\n---", 3) : -1;
-  return (end === -1 ? text : text.slice(end + 4)).trim();
-}
-
 /** The text of Oh My Pi's autoloaded block of the SKILL.md in `skillDir`, naming `file` as its
  *  path: prompts/skills/autoload.md rendered with no arguments (`<body>`, a blank line, `---`, a
  *  blank line, `Skill: <file>`), put through `formatPrompt` and trimmed. The file is read as Oh My
- *  Pi reads it (common.ts's `ompText`: a leading byte order mark dropped). */
+ *  Pi reads it (common.ts's `ompText`: a leading byte order mark dropped), and its body as
+ *  `loadSkillPromptBody` reads it: `parseFrontmatter` with `repair: false`, its body trimmed
+ *  (packages/utils/src/frontmatter.ts lines 148-163 at the pin), which is common.ts's
+ *  `splitFrontmatter` with no `repair`, so no leading HTML comment is dropped. */
 export function autoloadedText(skillDir: string, file: string): string {
-  const body = skillBody(ompText(readFileSync(path.join(skillDir, "SKILL.md"))));
+  const text = ompText(readFileSync(path.join(skillDir, "SKILL.md")));
+  const body = splitFrontmatter(text, false).body.trim();
   return formatPrompt(`${body}\n\n---\n\nSkill: ${file}\n`).trim();
 }
 

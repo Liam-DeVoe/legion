@@ -274,10 +274,12 @@ import {
 import { Case, listedName, Profile, ProfileSkill, type Thinking } from "./cases";
 import {
   json,
+  ompSkillName,
   ompText,
   parseJson,
   pastLimit,
   Refused,
+  readFrontmatter,
   Stopped,
   schemaFaults,
   textOf,
@@ -295,7 +297,6 @@ import {
   LOCAL_SKILL_REPO,
   NoSuchFile,
   type RepoSource,
-  readFrontmatter,
   skillFrontmatter,
   skillTextFrontmatter,
   subagentDefinition,
@@ -979,20 +980,12 @@ async function injectedRefusal(
     : `${own} cannot be load tested in the context of each profile, since a plugin or an agent definition puts it into the session there: ${faults.join("; ")}`;
 }
 
-/** The frontmatter `name` of the skill in `dir`, read as Oh My Pi reads a skill's frontmatter
- *  (common.ts's `ompText`, which drops a leading byte order mark, then context.ts's
- *  `readFrontmatter`, which repairs a plain value that holds `: `), or the directory's own name
- *  when it gives none (`skillNameOf`). */
+/** The name Oh My Pi gives the skill in `dir` (common.ts's `ompSkillName`: its frontmatter
+ *  `name`, trimmed, read as Oh My Pi reads a skill's frontmatter with common.ts's `ompText` and
+ *  `readFrontmatter`; else the directory's own name). */
 export function skillName(dir: string): string {
-  return skillNameOf(readFrontmatter(ompText(readFileSync(path.join(dir, "SKILL.md")))), dir);
-}
-
-/** The name of the skill in `dir` whose SKILL.md's frontmatter is `frontmatter`: its `name`,
- *  trimmed, or the directory's own name when it gives none or a blank one. cli.ts's readers name a
- *  skill by it too, so one directory has one name. */
-export function skillNameOf(frontmatter: Readonly<Record<string, unknown>>, dir: string): string {
-  const name = frontmatter.name;
-  return typeof name === "string" && name.trim() !== "" ? name.trim() : path.basename(dir);
+  const text = ompText(readFileSync(path.join(dir, "SKILL.md")));
+  return ompSkillName(readFrontmatter(text), path.basename(dir));
 }
 
 /**

@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // The frame type names, verbatim from the shipped protocol.
@@ -67,6 +69,11 @@ const (
 	TypeLauncherBundle        = "launcher_bundle"
 	TypeLauncherBundleResult  = "launcher_bundle_result"
 	TypeLauncherRestored      = "launcher_restored"
+	// The workspace read: the daemon asking one role's shim whether the workspace every role of
+	// its issue shares holds work that no branch or tag on origin holds, and the shim's answer.
+	// It is a jj query and not a bundle, so the answer is small and crosses on one line.
+	TypeWorkspaceWork       = "workspace-work"
+	TypeWorkspaceWorkResult = "workspace-work-result"
 	// The launcher's memory guard reports each process it ended, unasked, so the daemon can tell
 	// that process's role why it is gone (INFRA-3557). The settings the guard runs by travel the
 	// other way, on the launcher_hello_ack (LauncherMemoryGuard).
@@ -173,8 +180,10 @@ type AgentSecretsTokenResult struct {
 }
 
 // LauncherHello authenticates a role launcher independently from its child shim. The daemon
-// minted Token belongs to exactly this pod UID, role and Secret epoch; LauncherID changes each
-// time Kubernetes restarts the launcher container.
+// minted Token for one role and Secret epoch, and accepts it only from the pod UID its Secret
+// binds: the pod a launch made, or a pod Agent Sandbox made again from the same Sandbox outside a
+// launch, which the daemon binds at its launchers' first hello. LauncherID changes each time
+// Kubernetes restarts the launcher container.
 //
 // LeakCheckTag is the launcher's own pin of the shared public leak check (its environment's
 // LEGION_LEAK_CHECK_TAG), empty when its environment names none: a hello that names a tag is a
@@ -184,6 +193,11 @@ type AgentSecretsTokenResult struct {
 // again; a launcher process that restarts says false and is pushed the check again. The hello
 // does not refuse a tag of another shape than LeakCheckTagPattern: the launcher connects, and the
 // daemon refuses that tag as the cause of the start it cannot serve the check for.
+//
+// ResumesBySession is this launcher saying it can look a session up by its id and resume the file
+// it finds (LauncherStart.ResumeSession). A launcher built before the member sends none, and the
+// daemon names a session only to a launcher that said resumesBySession: to any other it names no
+// session, and the agent's own command carries `--resume=<session id>` instead.
 type LauncherHello struct {
 	Token              string `json:"token"`
 	Sandbox            string `json:"sandbox"`
@@ -192,6 +206,7 @@ type LauncherHello struct {
 	LauncherID         string `json:"launcherId"`
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
+	ResumesBySession   bool   `json:"resumesBySession,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -214,20 +229,31 @@ type LauncherHelloAck struct {
 	VolumeTrim *LauncherVolumeTrim `json:"volumeTrim,omitempty"`
 	// KernelKills says the daemon reads a launcher_memory_kill whose cause is
 	// MemoryKillCauseKernel or MemoryKillCauseKernelProtected as the kernel's kill and tells its
-	// role so. The daemon sets it on every issue pod's acknowledgement, whether or not it sends
-	// MemoryGuard, and never on the controller's pod's. A microVM pod's launcher sends its kill
-	// reports only on a connection whose acknowledgement carries it, whatever MemoryGuard says, so
-	// a daemon built before it, which sends no member, never reads a kernel's kill with the guard's
-	// words. It is left out when false, so such an acknowledgement is the bytes an older daemon
-	// writes.
+	// role so, or the project's controller where the report is of the controller's pod. The
+	// daemon sets it on every launcher's acknowledgement, an issue pod's and the controller's pod's
+	// alike, whether or not it sends MemoryGuard, since the controller's pod runs in a microVM where
+	// the project's sandbox is one (INFRA-4567); a daemon of an earlier release sets it on the issue
+	// pods' alone. A microVM pod's launcher sends its kill reports only on a connection whose
+	// acknowledgement carries it, whatever MemoryGuard says, so a daemon built before it, which
+	// sends no member, never reads a kernel's kill with the guard's words; a gVisor pod's launcher
+	// ignores it and sends its guard's reports where MemoryGuard came. It is left out when false,
+	// so an acknowledgement without it is the bytes an older daemon writes.
 	KernelKills bool `json:"kernelKills,omitempty"`
 }
 
 // LauncherMemoryGuard is what a launcher's memory guard runs by: it reads the pod's anonymous
-// memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends the
-// largest process it may end, where those processes hold at least FloorPercent of the limit
-// between them; after a kill it waits up to WaitSeconds for the reading to fall before it ends
-// another.
+// memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends, of the
+// processes it may end, the process that grew the most over its last few reads, else the largest
+// one it has read at most once in its last two readings near the limit, else the one that grew the
+// most since the guard's first kill while the reading stays near the limit, else the largest, a
+// fork that still runs its parent's program counted by what it holds over its parent, where those
+// processes hold at least FloorPercent of the limit between them, and at or above the urgent
+// share, halfway from ActPercent to the limit, every other process that grew over its last few
+// reads at the same reading and, where a process it may end is not new to its stay near the
+// limit, every other one new to it that holds memory of its own; after the kills of a reading it
+// ends no other until every killed process has exited or WaitSeconds has passed, and it gives the
+// rise up once WaitSeconds has passed with the reading not fallen and nothing it may end grown
+// since the kills.
 //
 // It holds no `enabled` member: a deployment that turns the guard off sends no member at all,
 // which is the same absence a daemon that does not know the guard sends, so one rule in the
@@ -250,6 +276,22 @@ type LauncherMemoryGuard struct {
 // acknowledgement reaches it, and the daemon's configuration defaults, so a change to one moves
 // both. The act share's default is the one a measurement may move. Every minimum is above zero
 // because a guard cannot be armed with a zero interval or wait.
+//
+// MemoryGuardControllerWaitDefault is the controller pod's wait after a kill in place of
+// MemoryGuardWaitDefault, an issue pod's (INFRA-3531, R4): its guard's start
+// (memoryguard.ControllerDefaults) and the daemon's default for
+// `runtime.kubernetes.memory_guard.controller_pod`. It is below the 3.4 seconds this issue's tester
+// measured from a kill that freed nothing to the host's kill of a 4 GiB pod, so the controller's
+// guard decides on the next process before that kill comes.
+//
+// MemoryGuardConfigActMax is the highest act share the daemon's loader takes for either pod kind,
+// `runtime.kubernetes.memory_guard.issue_pods.act_percent` and `controller_pod.act_percent`
+// (INFRA-3531 R4 of spec version 43): the urgent share, the mark plus half the distance from the
+// mark to the limit, is then at most 95% of the limit and stays below the lowest kill point this
+// issue's tester measured at 4 GiB, 96.88% on 2026-11-18; at an act share of 95 the urgent share
+// would be 97.5%, at or above that kill point. Both kinds run the guard's one core, so both take
+// the same bound. The wire keeps MemoryGuardActMax, and Validate with it, so a launcher of this
+// release still takes the settings a daemon of an earlier release sends, which may name 91 to 95.
 const (
 	MemoryGuardActMin      = 50
 	MemoryGuardActMax      = 95
@@ -264,6 +306,9 @@ const (
 	MemoryGuardFloorDefault    = 10
 	MemoryGuardWaitDefault     = 5
 	MemoryGuardIntervalDefault = 100
+
+	MemoryGuardControllerWaitDefault = 1
+	MemoryGuardConfigActMax          = 90
 )
 
 // LauncherMemoryKill is one process of a role that was stopped because the pod was out of memory:
@@ -588,13 +633,28 @@ type LauncherState struct {
 // before the child starts, and removes the directory when the child ends — so a role started in a
 // running pod never waits on the kubelet to propagate a Secret. Argv and Env name those files by
 // path; no credential is ever in Argv, Env, or an error.
+//
+// ResumeFile is the session file the child resumes. ResumeSession is the id of a session the
+// child resumes where the daemon knows no file of it: the launcher looks the id up in the session
+// table and resumes the file it finds, as it resumes ResumeFile. An older launcher ignores
+// resumeSession and sends no resumesBySession in its hello, and the daemon names a session only to
+// a launcher that said resumesBySession (LauncherHello), so an older launcher is never sent one; an
+// older daemon sends no resumeSession.
 type LauncherStart struct {
-	ID         string            `json:"id"`
-	Generation uint64            `json:"generation"`
-	Argv       []string          `json:"argv"`
-	Env        []string          `json:"env"`
-	Files      map[string]string `json:"files,omitempty"`
-	ResumeFile string            `json:"resumeFile,omitempty"`
+	ID            string            `json:"id"`
+	Generation    uint64            `json:"generation"`
+	Argv          []string          `json:"argv"`
+	Env           []string          `json:"env"`
+	Files         map[string]string `json:"files,omitempty"`
+	ResumeFile    string            `json:"resumeFile,omitempty"`
+	ResumeSession string            `json:"resumeSession,omitempty"`
+	// AgentExecutable is the agent's executable as /proc/<pid>/exe reads it once any start
+	// wrapper has exec'd it: an absolute path, such as the image's /opt/omp/bin/omp. Argv cannot
+	// say it, because a deployment's setup wraps the agent in `/bin/sh -c <script> legion-start`.
+	// The daemon fills it for an Oh My Pi launch, and a launcher with a session writer token
+	// knows the agent's process by it (internal/launcher's sessionPeer). It is empty for a
+	// Claude Code launch, whose agent writes no session itself.
+	AgentExecutable string `json:"agentExecutable,omitempty"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's
@@ -677,11 +737,19 @@ type Prompt struct {
 
 // Response is OMP's answer to a request, carrying the request's own id. Data is the answer's
 // payload, left raw because its shape belongs to the command (worker-rpc.ts:369-377).
+//
+// Code is Oh My Pi's class of a refusal: a refused request's error response carries it at the
+// top level, right after Error (`RpcResponse` in packages/coding-agent/src/modes/rpc/rpc-types.ts
+// of cybermonklabs/oh-my-pi at the pinned tag). For a `prompt` or `abort_and_prompt` its one value
+// is `session_busy`: the prompt was refused, or failed, because the agent was busy (docs/rpc.md
+// there). Nothing in the daemon reads it; it is modelled so the frame survives this package
+// whole, as PromptError.Code is.
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`
 	Success bool            `json:"success"`
 	Error   string          `json:"error,omitempty"`
+	Code    string          `json:"code,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
@@ -742,25 +810,34 @@ type PromptResult struct {
 }
 
 // PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
-// provider?, model?, httpStatus?, retryable}`, the "failure detail of a `prompt_result` with
-// `status: \"error\"`". Oh My Pi writes it for a prompt whose last assistant message ended with
-// stopReason "error" — a provider request its own retries could not get through, where
-// Retryable says it may still succeed later — and for one it failed outright before any turn.
+// provider?, model?, httpStatus?, retryable, code?}`, the "failure detail of a `prompt_result`
+// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts,
+// and docs/rpc.md, of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
+// whose last assistant message ended with stopReason "error" — a provider request its own retries
+// could not get through, where Retryable says it may still succeed later — and for one it failed
+// outright before any turn.
 //
-// Only Message is read, as the reason a failed prompt is recorded with (PromptResult.Reason).
-// The other members are modelled so the frame survives this package whole, the way every other
-// frame does: a decode that kept only what today's reader wants would quietly drop the provider,
-// the model and the status behind a failure from anything that re-encodes it.
+// Code is Oh My Pi's class of the failure, when it gives one, and it declares two values there:
+// `cost_cap`, the session reached `session.maxCost`, and `session_busy`, the agent was busy: the
+// prompt was refused, or it waited at least 30 s and another run still held the agent.
+//
+// Message is the reason a failed prompt is recorded with (PromptResult.Reason), and
+// internal/stream carries Retryable, HTTPStatus, Provider and Model onto its own PromptResult
+// event. Nothing in the daemon reads Code: it is modelled, as the other members are, so the frame
+// survives this package whole, the way every other frame does. A decode that kept only what
+// today's reader wants would quietly drop the class, the provider, the model and the status
+// behind a failure from anything that re-encodes it.
 type PromptError struct {
 	Message    string `json:"message"`
 	Provider   string `json:"provider,omitempty"`
 	Model      string `json:"model,omitempty"`
 	HTTPStatus int    `json:"httpStatus,omitempty"`
 	Retryable  bool   `json:"retryable"`
+	Code       string `json:"code,omitempty"`
 }
 
 // Reason is Oh My Pi's message for work that ended in an error, and the empty string for work
-// that did not: the one thing the daemon reads of the failure.
+// that did not: the reason a failed prompt is recorded with.
 func (f PromptResult) Reason() string {
 	if f.Error == nil {
 		return ""
@@ -848,6 +925,36 @@ type BundleWorkspaceResult struct {
 	Tips      []string          `json:"tips,omitempty"`
 	Bookmarks map[string]string `json:"bookmarks,omitempty"`
 	At        time.Time         `json:"at"`
+}
+
+// WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag
+// on origin holds: a read, which moves no bytes of the work and writes only jj's snapshot of the
+// working copy. The daemon names the issue whose workspace it asks about and the budget, never a
+// command or a path: the shim reads the one workspace its environment names, which is that
+// issue's, with the jj it already works with.
+type WorkspaceWork struct {
+	ID        string `json:"id"`
+	Issue     string `json:"issue"`
+	TimeoutMs int    `json:"timeoutMs"`
+}
+
+// MaxWorkspaceWorkCommits is the most work commits one WorkspaceWorkResult lists. Twenty ids are
+// enough for a person to find the work, and they keep the answer one short line whatever the
+// workspace holds; Count says how many there are in all.
+const MaxWorkspaceWorkCommits = 20
+
+// WorkspaceWorkResult answers WorkspaceWork: the commit the working copy sits on (Head), whether
+// that commit holds a change (Changed), the first MaxWorkspaceWorkCommits work commits and how
+// many there are in all (Count). It always fits one line, so it crosses the shim's lane with no
+// rpc_chunk sequence.
+type WorkspaceWorkResult struct {
+	ID      string   `json:"id"`
+	OK      bool     `json:"ok"`
+	Error   string   `json:"error,omitempty"`
+	Head    string   `json:"head,omitempty"`
+	Changed bool     `json:"changed"`
+	Commits []string `json:"commits,omitempty"`
+	Count   int      `json:"count"`
 }
 
 // LauncherBundle is one slice of a saved workspace bundle on its way to the launcher of the pod
@@ -992,6 +1099,8 @@ func (LauncherStop) FrameType() string                 { return TypeLauncherStop
 func (LauncherStopResult) FrameType() string           { return TypeLauncherStopResult }
 func (BundleWorkspace) FrameType() string              { return TypeBundleWorkspace }
 func (BundleWorkspaceResult) FrameType() string        { return TypeBundleWorkspaceResult }
+func (WorkspaceWork) FrameType() string                { return TypeWorkspaceWork }
+func (WorkspaceWorkResult) FrameType() string          { return TypeWorkspaceWorkResult }
 func (LauncherBundle) FrameType() string               { return TypeLauncherBundle }
 func (LauncherBundleResult) FrameType() string         { return TypeLauncherBundleResult }
 func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
@@ -1143,6 +1252,16 @@ func (f BundleWorkspaceResult) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeBundleWorkspaceResult, plain(f))
 }
 
+func (f WorkspaceWork) MarshalJSON() ([]byte, error) {
+	type plain WorkspaceWork
+	return marshalFrame(TypeWorkspaceWork, plain(f))
+}
+
+func (f WorkspaceWorkResult) MarshalJSON() ([]byte, error) {
+	type plain WorkspaceWorkResult
+	return marshalFrame(TypeWorkspaceWorkResult, plain(f))
+}
+
 func (f LauncherBundle) MarshalJSON() ([]byte, error) {
 	type plain LauncherBundle
 	return marshalFrame(TypeLauncherBundle, plain(f))
@@ -1222,9 +1341,10 @@ func (f Compact) Validate() error {
 	return nil
 }
 
-// issueKeyShape is a Dispatch issue key, the one shape an issue has. The shim puts the issue into
-// a revset (`remote_bookmarks(exact:"legion/<issue>")`), so a frame whose issue is not one is
-// refused here rather than quoted into a command.
+// issueKeyShape is a Dispatch issue key, the one shape an issue has. The shim puts a bundle's
+// issue into a revset (`remote_bookmarks(exact:"legion/<issue>")`), so a frame whose issue is not
+// one is refused here rather than quoted into a command; a workspace read's issue is held to the
+// same shape, since it names the issue whose workspace is read.
 var issueKeyShape = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
 
 // Validate refuses a bundle request the shim would refuse. The daemon is its only sender.
@@ -1254,6 +1374,38 @@ func (f BundleWorkspaceResult) Validate() error {
 		return fmt.Errorf("%w: bundle-workspace-result carries no head", ErrMalformedFrame)
 	case f.OK && f.SizeBytes != len(f.Bundle):
 		return fmt.Errorf("%w: bundle-workspace-result says %d bytes and carries %d", ErrMalformedFrame, f.SizeBytes, len(f.Bundle))
+	}
+	return nil
+}
+
+// Validate refuses a workspace read the shim would refuse. The daemon is its only sender.
+func (f WorkspaceWork) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: workspace-work carries no id", ErrMalformedFrame)
+	case !issueKeyShape.MatchString(f.Issue):
+		return fmt.Errorf("%w: workspace-work issue %q is not an issue key", ErrMalformedFrame, f.Issue)
+	case f.TimeoutMs <= 0:
+		return fmt.Errorf("%w: workspace-work timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
+	}
+	return nil
+}
+
+// Validate refuses a workspace read's answer the daemon could not act on: one answering no
+// request, a refusal with no reason, a reading with no working-copy commit, more commits than
+// MaxWorkspaceWorkCommits, or a count below the commits it lists.
+func (f WorkspaceWorkResult) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: workspace-work-result carries no id", ErrMalformedFrame)
+	case !f.OK && f.Error == "":
+		return fmt.Errorf("%w: workspace-work-result refuses without a reason", ErrMalformedFrame)
+	case f.OK && f.Head == "":
+		return fmt.Errorf("%w: workspace-work-result carries no head", ErrMalformedFrame)
+	case len(f.Commits) > MaxWorkspaceWorkCommits:
+		return fmt.Errorf("%w: workspace-work-result lists %d commits, limit %d", ErrMalformedFrame, len(f.Commits), MaxWorkspaceWorkCommits)
+	case f.Count < len(f.Commits):
+		return fmt.Errorf("%w: workspace-work-result counts %d commits and lists %d", ErrMalformedFrame, f.Count, len(f.Commits))
 	}
 	return nil
 }
@@ -1524,6 +1676,15 @@ func (f LauncherHello) Validate() error {
 	return nil
 }
 
+// Validate refuses a launcher start the launcher cannot act on: one with no id, no generation or
+// no argv, or with a file name that is not a plain file name. A start that names its session by
+// its id alone (ResumeSession) is refused too when it also names a file (ResumeFile), which is two
+// sessions to resume, when the id is not a single path element (it holds `/` or NUL), which no
+// session file name ends in, or when its argv does not hold exactly one element
+// `--resume=<ResumeSession>`: the launcher resumes the file it finds for the id by replacing that
+// one element with the file's path, and with none or two there is nothing certain to replace. The
+// daemon is the frame's only sender, so each of these is a bug of the daemon's, which the refusal
+// names.
 func (f LauncherStart) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1536,6 +1697,24 @@ func (f LauncherStart) Validate() error {
 	for name := range f.Files {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
 			return fmt.Errorf("%w: launcher_start file name %q is not a plain file name", ErrMalformedFrame, name)
+		}
+	}
+	if f.ResumeSession != "" {
+		if f.ResumeFile != "" {
+			return fmt.Errorf("%w: launcher_start names both resumeFile and resumeSession", ErrMalformedFrame)
+		}
+		if strings.ContainsAny(f.ResumeSession, "/\x00") {
+			return fmt.Errorf("%w: launcher_start resumeSession %q is not a single path element", ErrMalformedFrame, f.ResumeSession)
+		}
+		resume := "--resume=" + f.ResumeSession
+		held := 0
+		for _, arg := range f.Argv {
+			if arg == resume {
+				held++
+			}
+		}
+		if held != 1 {
+			return fmt.Errorf("%w: launcher_start argv holds %s %d times, want it exactly once for resumeSession", ErrMalformedFrame, resume, held)
 		}
 	}
 	return nil
@@ -1656,7 +1835,8 @@ func (f AgentSecretsToken) Validate() error {
 func Decode(line []byte) (Frame, error) {
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, fmt.Errorf("%w: %.80q", ErrNotAFrame, line)
+		// The line is the far side's: the URL rule reads it whole before it is cut (redact.Runes).
+		return nil, fmt.Errorf("%w: %q", ErrNotAFrame, redact.Runes(string(line), 80))
 	}
 	var head struct {
 		Type string `json:"type"`
@@ -1725,6 +1905,10 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[BundleWorkspace](trimmed)
 	case TypeBundleWorkspaceResult:
 		return decodeInto[BundleWorkspaceResult](trimmed)
+	case TypeWorkspaceWork:
+		return decodeInto[WorkspaceWork](trimmed)
+	case TypeWorkspaceWorkResult:
+		return decodeInto[WorkspaceWorkResult](trimmed)
 	case TypeLauncherBundle:
 		return decodeInto[LauncherBundle](trimmed)
 	case TypeLauncherBundleResult:

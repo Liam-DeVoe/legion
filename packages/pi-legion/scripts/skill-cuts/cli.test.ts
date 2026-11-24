@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   copyFileSync,
   cpSync,
   existsSync,
@@ -15,6 +16,8 @@ import {
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { postedSpan, startCollector } from "../skill-scenarios/collector-standin";
+import { createSpendRecorder, FLUSH_MS } from "../skill-scenarios/spend-record";
 import {
   SessionEntry,
   type SessionMessage,
@@ -75,22 +78,36 @@ import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
 // every GH_* and GITHUB_* variable taken out of its environment, against a stand-in gateway on
 // 127.0.0.1 built on recorder.ts, which answers in the stream shape of the F5 replies
-// (testdata/CAPTURE.md). The behaviour commands read their cases from a temporary directory, made
-// from F1 (an Oh My Pi 18.18.6 session of a scratch profile with the made-up skills alpha and
-// beta: 0 the user's prompt, 1 a read of skill://alpha, 2 its result, 3 a read of
-// skill://alpha/references/x.md, 4 its result, 5 a read of the missing skill://gamma, 6 its
-// result, 7 a `task` call), and replay bodies recorded from F2 (the request body Oh My Pi sends for
-// a replayed history, `omp -p --mode json --no-session --hook <replay hook>` against the recorder),
+// (testdata/CAPTURE.md), and with its usage spans posted to a stand-in collector on 127.0.0.1
+// (skill-scenarios/collector-standin.ts's `startCollector`), every other OTEL_* variable taken
+// out. The behaviour commands read their cases from a temporary directory, made from F1 (an Oh My
+// Pi 18.18.6 session
+// of a scratch profile with the made-up skills alpha and beta: 0 the user's prompt, 1 a read of
+// skill://alpha, 2 its result, 3 a read of skill://alpha/references/x.md, 4 its result, 5 a read
+// of the missing skill://gamma, 6 its result, 7 a `task` call), and replay bodies recorded from F2
+// (the request body Oh My Pi sends for a replayed history, `omp -p --mode json --no-session --hook
+// <replay hook>` against the recorder),
 // each with its arm's read result put in, saved where the capture step reads a capture back: no
 // Oh My Pi runs here. No test here reaches a network. Every skill, repository and store is made up.
 
 const CLI = path.join(import.meta.dir, "cli.ts");
 const scratch = temporaryDirectory("skill-cuts-cli", { real: true });
 
-/** The environment of each command: this one's, less every GH_* and GITHUB_* variable. */
-const ENV = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => !/^(GH|GITHUB)_/.test(name))
-);
+/** The stand-in spend collector each command's usage spans go to. */
+const collector = startCollector();
+afterAll(() => {
+  collector.close();
+});
+
+/** The environment of each command: this one's, less every GH_*, GITHUB_* and OTEL_* variable,
+ *  with the stand-in collector as its spend endpoint. */
+const ENV: Readonly<Record<string, string | undefined>> = {
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !/^(GH|GITHUB|OTEL)_/.test(name))
+  ),
+  OTEL_EXPORTER_OTLP_ENDPOINT: collector.url,
+  OTEL_RESOURCE_ATTRIBUTES: "theorem.project=skill-cuts-test",
+};
 
 /** What one command did. */
 interface Ran {
@@ -263,6 +280,70 @@ describe("read", () => {
     expect(log).not.toContain(key);
     expect(log).not.toContain("alpha checklist");
     expect(log).not.toContain("one line");
+  }, 30_000);
+
+  test("records one usage span of its model call, sent before it exits, whose request log line gives the same span", async () => {
+    const { config, keyFile } = setup();
+    const input = path.join(scratch, "spans-in.json");
+    writeFileSync(
+      input,
+      JSON.stringify({ skill: "alpha", files: [{ path: "SKILL.md", text: SKILL_MD }] })
+    );
+    answer = () => JSON.stringify({ findings: [] });
+    const out = path.join(scratch, "spans-out.json");
+    const from = recorder.requests.length;
+    const posted = collector.posts.length;
+    const ran = await cli([
+      "read",
+      "--config",
+      config,
+      "--key-file",
+      keyFile,
+      "--prompt",
+      "attack",
+      "--in",
+      input,
+      "--out",
+      out,
+    ]);
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const requests = requestsSince(from);
+    expect(requests).toHaveLength(1);
+    // The command flushed its usage spans before it exited: its one span is here already.
+    const spans = collector.posts.slice(posted);
+    expect(spans.map((post) => post.path)).toEqual(["/v1/traces"]);
+    const [post] = spans;
+    if (post === undefined) throw new Error("no span");
+    const live = postedSpan(post);
+    const { model } = loadPrompt("attack").settings;
+    expect(live.attributes).toMatchObject({
+      "gen_ai.provider.name": "anthropic",
+      "gen_ai.request.model": model,
+      "gen_ai.response.model": model,
+      "gen_ai.response.id": `msg_standin_${requests[0]?.n}`,
+      "gen_ai.usage.input_tokens": "10",
+      "gen_ai.usage.output_tokens": "3",
+      "omp.gen_ai.auth.kind": "api_key",
+    });
+    expect(JSON.parse(post.body).resourceSpans[0].resource.attributes).toEqual([
+      { key: "theorem.project", value: { stringValue: "skill-cuts-test" } },
+      { key: "service.name", value: { stringValue: "spend-record" } },
+      { key: "theorem.harness", value: { stringValue: "script" } },
+    ]);
+
+    // The request log's line of that call, sent through `recordLogged` as a backfill sends it,
+    // gives the same attributes, and a start no later than the live span's.
+    const [line] = readFileSync(`${out}.requests.jsonl`, "utf8").trim().split("\n");
+    const backfill = createSpendRecorder({ env: { OTEL_EXPORTER_OTLP_ENDPOINT: collector.url } });
+    backfill.recordLogged(JSON.parse(line ?? "{}"));
+    await backfill.flush();
+    const [again] = collector.posts.slice(posted + 1);
+    if (again === undefined) throw new Error("no span of the logged line");
+    const logged = postedSpan(again);
+    expect(logged.attributes).toEqual(live.attributes);
+    const apart =
+      BigInt(String(live.span.startTimeUnixNano)) - BigInt(String(logged.span.startTimeUnixNano));
+    expect(apart >= 0n && apart < 900_000_000_000n).toBe(true);
   }, 30_000);
 
   test("refuses an unknown prompt and an input its reader's schema refuses, before any call", async () => {
@@ -2882,14 +2963,20 @@ function plantedRun(
   };
 }
 
-/** A finished stage of case `caseId`, made with the texts of `s` (and by `runner`, when given),
- *  each arm of `passes` passing that many of the stage's judged runs. */
+/** This runner (cli.ts's `runnerDigest`), which each stage it starts and each run it makes
+ *  records. */
+const RUNNER = runnerDigest();
+
+/** A finished stage of case `caseId`, made with the texts of `s` and by `runner` (this runner by
+ *  default, as a stage command writes it), each arm of `passes` passing that many of the stage's
+ *  judged runs. Its runs name no runner, as a run made before runs recorded theirs, so each takes
+ *  its stage's. */
 function plantedStage(
   s: Scenario,
   caseId: string,
   stage: Stage,
   passes: Record<string, number>,
-  runner?: string
+  runner = RUNNER
 ): Record<string, unknown> {
   const runs = Object.entries(passes).flatMap(([arm, passed]) =>
     Array.from({ length: STAGE_RUNS[stage] }, (_, n) =>
@@ -2905,7 +2992,7 @@ function plantedStage(
     seeds: ["planted"],
     runs,
     usd: 0,
-    ...(runner === undefined ? {} : { runner }),
+    runner,
   };
 }
 
@@ -3417,6 +3504,45 @@ describe("refusals before any model call", () => {
     const reported = await cli(report(s).map((arg) => (arg === s.out ? inCheckout : arg)));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
   }, 60_000);
+
+  // Catches: build-cases and build-tasks through cli.ts waiting for the span queue twice, in
+  // build.ts's `main` and again in cli.ts's, so that a collector that hangs held the exit twice
+  // FLUSH_MS where README.md ("Usage records") says 2 s.
+  test("build-cases and build-tasks wait for the usage spans queued once: a collector that hangs holds the exit FLUSH_MS at most", async () => {
+    const hanging = startCollector();
+    hanging.delayMs = 60_000;
+    try {
+      for (const command of ["build-cases", "build-tasks"]) {
+        const spendRecorder = createSpendRecorder({
+          env: { OTEL_EXPORTER_OTLP_ENDPOINT: hanging.url },
+          warn: () => {},
+        });
+        // Three spans, each post held until POST_TIMEOUT_MS: the queue outlasts any one wait.
+        for (let n = 1; n <= 3; n++) {
+          spendRecorder.record({
+            id: `msg_queued_${n}`,
+            model: "claude-sonnet-5-5",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          });
+        }
+        const err: string[] = [];
+        const started = performance.now();
+        const code = await main([command], {
+          out: () => {},
+          err: (line) => err.push(line),
+          peakRssBytes: () => 0,
+          spendRecorder,
+        });
+        const took = performance.now() - started;
+        expect({ command, code }).toEqual({ command, code: 2 });
+        expect(err.join("\n")).toContain(`${command}: `);
+        expect(took).toBeGreaterThanOrEqual(FLUSH_MS - 50);
+        expect(took).toBeLessThan(FLUSH_MS + 500);
+      }
+    } finally {
+      hanging.close();
+    }
+  }, 30_000);
 });
 
 // The architect, 2026-11-22T07:48:46Z: "Count, per report, the cases resting on the assumption,
@@ -5612,6 +5738,319 @@ describe("behaviour: a case the provider refuses on every replay", () => {
       `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 2 unscreened, 0 not run`
     );
   }, 60_000);
+});
+
+// The runner of each run (a tree whose runner is built on this one found a screen that skipped
+// screens another runner made as its own, and a report that pooled them with no word): each run
+// names the runner that made it; a stage command takes no saved stage of another runner as done;
+// and report refuses results of more than one runner unless told to report them together.
+describe("behaviour: the runner of each run", () => {
+  /** Digests no runner of this tree has: two other runners'. */
+  const OTHER = "0123456789abcdef";
+  const ANOTHER = "fedcba9876543210";
+
+  // Catches: a run that does not name the runner that made it, and a report that does not say
+  // which runners made the results it counts.
+  test("each run records this runner, and report of one runner's results names it with its case stages and runs", async () => {
+    const s = scenario("runner-one", LOSS_SKILL(), [{ id: "c04" }, { id: "c05" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    const screen = await cli(behaviour("screen", s));
+    expect({ code: screen.code, stderr: screen.stderr }).toEqual({ code: 0, stderr: "" });
+    for (const id of ["c04", "c05"]) {
+      const runs = result(s.out, id).stages.screen?.runs ?? [];
+      expect(runs).toHaveLength(3 * SCREEN_RUNS);
+      expect(new Set(runs.map((run) => run.runner))).toEqual(new Set([RUNNER]));
+    }
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout.split("\n")[1]).toBe(
+      `runners: screen: ${RUNNER} (2 case stages, 60 runs); confirm: none; control: none`
+    );
+  }, 120_000);
+
+  // Catches: a report that pools the stages of two runners with no word, and one that counts a
+  // stage whose runs two runners made as one runner's.
+  test("report refuses results two runners made, naming each with its case stages and runs, and with --allow-runners naming both reports them and says so", async () => {
+    const s = scenario("runner-two", LOSS_SKILL(), [{ id: "c01" }, { id: "c02" }]);
+    plantResult(s, "c01", { stages: { screen: plantedStage(s, "c01", "screen", KEPT, OTHER) } });
+    plantResult(s, "c02", {
+      stages: { screen: plantedStage(s, "c02", "screen", FLAGGED, ANOTHER) },
+    });
+    const byStage = `screen: ${OTHER} (1 case stage, 30 runs), ${ANOTHER} (1 case stage, 30 runs); confirm: none; control: none`;
+
+    const refused = await cli(report(s));
+    expect({ code: refused.code, stdout: refused.stdout }).toEqual({ code: 2, stdout: "" });
+    expect(refused.stderr).toContain(
+      `the case results in ${path.join(s.out, "cases")} were made by 2 runners, so report counts none of them: ${byStage}; no --allow-runners is given. Give --allow-runners ${OTHER},${ANOTHER} to report them together`
+    );
+    const one = await cli([...report(s), "--allow-runners", OTHER]);
+    expect({ code: one.code, stdout: one.stdout }).toEqual({ code: 2, stdout: "" });
+    expect(one.stderr).toContain(`; --allow-runners does not name ${ANOTHER}. `);
+
+    const allowed = await cli([...report(s), "--allow-runners", `${ANOTHER},${OTHER}`]);
+    expect({ code: allowed.code, stderr: allowed.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = allowed.stdout.split("\n");
+    const both =
+      "2 runners, each allowed by --allow-runners, so their results are reported together";
+    expect(lines[1]).toBe(`runners: ${byStage}; ${both}`);
+    expect(lines).toContain(
+      "case c02: screen: old 10/10, new 0/10, none 0/10: informative, flagged"
+    );
+
+    // OTHER started c02's screen, and ANOTHER went on with it: its first 15 runs name no runner,
+    // so they are its stage's, OTHER's, and the other 15 name ANOTHER. The stage counts under each.
+    const started = plantedStage(s, "c02", "screen", FLAGGED, OTHER);
+    const runs = (started.runs as Record<string, unknown>[]).map((run, n) =>
+      n < 15 ? run : { ...run, runner: ANOTHER }
+    );
+    plantResult(s, "c02", { stages: { screen: { ...started, runs } } });
+    const byRun = `screen: ${OTHER} (2 case stages, 45 runs), ${ANOTHER} (1 case stage, 15 runs); confirm: none; control: none`;
+    const mixed = await cli(report(s));
+    expect(mixed.code).toBe(2);
+    expect(mixed.stderr).toContain(`report counts none of them: ${byRun}; `);
+    const named = await cli([...report(s), "--allow-runners", `${OTHER},${ANOTHER}`]);
+    expect({ code: named.code, stderr: named.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(named.stdout.split("\n")[1]).toBe(`runners: ${byRun}; ${both}`);
+  }, 60_000);
+
+  // Catches: a screen that skips a screen another runner made as screened before, or goes on with
+  // one it started, with no word.
+  test("screen refuses saved screens another runner made, naming each case, its runner and this runner, before any model call; with --allow-runners naming it, skips the finished one as done and goes on with the running one, whose new runs name this runner", async () => {
+    const s = scenario("runner-screen", LOSS_SKILL(), [{ id: "c04" }, { id: "c05" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    answer = behaviourStandIn;
+    usage = { input: 10, output: 3 };
+    plantResult(s, "c04", { stages: { screen: plantedStage(s, "c04", "screen", FLAGGED, OTHER) } });
+    // c05's screen, which OTHER started, holds its old arm's runs only.
+    const running = plantedStage(s, "c05", "screen", { old: SCREEN_RUNS }, OTHER);
+    plantResult(s, "c05", { stages: { screen: { ...running, state: "running" } } });
+
+    let from = recorder.requests.length;
+    const refused = await cli(behaviour("screen", s));
+    expect(refused.code).toBe(2);
+    expect(refused.stderr).toContain(
+      `case c04's screen in ${caseResultFile(s.out, "c04")} was made by runner ${OTHER}; case c05's screen in ${caseResultFile(s.out, "c05")} was made by runner ${OTHER}, and this runner is ${RUNNER}: `
+    );
+    expect(refused.stderr).toContain(
+      `Give --allow-runners ${OTHER} to take those stages as they are, or use another --out`
+    );
+    expect(refused.stdout).not.toContain("screened before, skipped");
+    expect(requestsSince(from)).toHaveLength(0);
+
+    from = recorder.requests.length;
+    const allowed = await cli(behaviour("screen", s, "--allow-runners", OTHER));
+    expect({ code: allowed.code, stderr: allowed.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(allowed.stdout).toContain("case c04: screened before, skipped");
+    // c05's judge controls, then 10 replays of new and of none, and their judgements.
+    expect(requestsSince(from)).toHaveLength(3 + 2 * 2 * SCREEN_RUNS);
+    const c05 = result(s.out, "c05").stages.screen;
+    expect(c05?.state).toBe("counted");
+    expect(c05?.runs).toHaveLength(3 * SCREEN_RUNS);
+    expect(new Set(c05?.runs.map((run) => `${run.arm} ${run.runner ?? "its stage's"}`))).toEqual(
+      new Set(["old its stage's", `new ${RUNNER}`, `none ${RUNNER}`])
+    );
+
+    // Its runs are now two runners', so report reports them only with both named.
+    expect((await cli(report(s))).code).toBe(2);
+    const reported = await cli([...report(s), "--allow-runners", `${OTHER},${RUNNER}`]);
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout.split("\n")[1]).toBe(
+      `runners: screen: ${OTHER} (2 case stages, 40 runs), ${RUNNER} (1 case stage, 20 runs); confirm: none; control: none; 2 runners, each allowed by --allow-runners, so their results are reported together`
+    );
+  }, 120_000);
+});
+
+// The report's spend (the same tree found a report whose spend matched neither its
+// screen command's line nor its request log): the report says what its sum is made of, part by
+// part, and sets it against the request log.
+describe("behaviour: the report's spend", () => {
+  /** The dollars of each call `spent` records. */
+  const usdSum = (spent: readonly { usd: number }[]) =>
+    spent.reduce((sum, each) => sum + each.usd, 0);
+  /** The calls no run records, as the report names them. */
+  const UNRECORDED =
+    "its captures' hint calls, the rounds a replay that then failed had answered, replies whose judgement the budget refused";
+
+  // Catches: a spend that does not say what it sums, and one that leaves out the calls of a stage
+  // no run records (a failed replay's answered round, a capture's hint calls).
+  test("report's spend is the sum of the parts its case results record, each named: the judge controls, the replays and judgements of the runs (a run with no verdict, run again, among them), and the calls no run records (a failed replay's answered round, a capture's hint call)", async () => {
+    const s = scenario("spend-parts", LOSS_SKILL(), [{ id: "c04" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    // 100,000 prompt tokens and no output a reply: $0.40 a judgement at claude-opus-5-5's list
+    // price, $0.20 a replay call at claude-sonnet-5-5's.
+    usage = { input: 100_000, output: 0 };
+    // The first run of the old arm sent (its body holds the case's line) reads alpha's reference
+    // first, which the replay answers; its next call is refused (400), so the run gets no verdict
+    // and is run again, and its first call was paid.
+    let failing: string | undefined;
+    let failingCalls = 0;
+    answer = (body) => {
+      if (isJudgement(body)) return behaviourStandIn(body);
+      const id = String(Object(body.metadata).user_id);
+      if (failing === undefined && JSON.stringify(body.messages).includes(LINE)) failing = id;
+      if (id !== failing) return behaviourStandIn(body);
+      failingCalls += 1;
+      return failingCalls === 1
+        ? sseResponse(
+            messageSse({
+              id: "msg_standin_spend_read",
+              model: "claude-sonnet-5-5",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "toolu_standin_spend_read",
+                  name: "read",
+                  input: { path: "skill://alpha/references/x.md" },
+                },
+              ],
+              stopReason: "tool_use",
+              inputTokens: usage.input,
+              outputTokens: usage.output,
+            })
+          )
+        : Response.json(
+            {
+              type: "error",
+              error: { type: "invalid_request_error", message: "the stand-in refuses this body" },
+            },
+            { status: 400 }
+          );
+    };
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(failingCalls).toBe(2);
+
+    // A capture made in the stage adds its hint run's calls to the stage's dollars, and a `hint`
+    // line each to the request log (capture.ts's gatewayHints, through the log); no Oh My Pi runs
+    // here, so one hint call of $0.0500 is added to the saved stage and to the log as such a
+    // capture adds it.
+    const HINT = 0.05;
+    const log = path.join(s.out, "requests.jsonl");
+    const saved = result(s.out, "c04");
+    const screened = saved.stages.screen;
+    if (screened === undefined) throw new Error("c04 has no screen");
+    writeFileSync(
+      caseResultFile(s.out, "c04"),
+      JSON.stringify({
+        ...saved,
+        stages: { ...saved.stages, screen: { ...screened, usd: screened.usd + HINT } },
+      })
+    );
+    appendFileSync(
+      log,
+      `${JSON.stringify({ kind: "hint", model: "claude-sonnet-5-5", usd: HINT })}\n`
+    );
+
+    // The parts, from the records: the run with no verdict records no replay call, and the log
+    // holds its one paid call under its session id.
+    const c = result(s.out, "c04");
+    const runs = c.stages.screen?.runs ?? [];
+    const failed = runs.filter((run) => run.verdict === null);
+    expect(runs).toHaveLength(3 * SCREEN_RUNS + 1);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.reason).toStartWith("the replay failed: ");
+    expect(failed[0]?.replaySpent).toEqual([]);
+    const logged = readFileSync(log, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const answered = logged.filter(
+      (line) => line.kind === "replay" && line.userId === failed[0]?.userId && line.usd > 0
+    );
+    expect(answered).toHaveLength(1);
+    const controls = c.controls?.usd ?? 0;
+    const replays = runs.reduce((sum, run) => sum + usdSum(run.replaySpent), 0);
+    const judgements = runs.reduce((sum, run) => sum + usdSum(run.judgeSpent), 0);
+    const unrecorded = (c.stages.screen?.usd ?? 0) - replays - judgements;
+    expect(unrecorded).toBeCloseTo(answered[0].usd + HINT, 10);
+    // Three judge controls; 30 judged runs' replay calls and judgements; the failed run's call and
+    // the hint call.
+    expect([controls, replays, judgements, unrecorded].map((usd) => usd.toFixed(4))).toEqual([
+      "1.2000",
+      "6.0000",
+      "12.0000",
+      "0.2500",
+    ]);
+    const total = controls + replays + judgements + unrecorded;
+
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    const at = lines.findIndex((line) => line.startsWith("spend at list price: "));
+    expect(lines.slice(at, at + 5)).toEqual([
+      `spend at list price: $${total.toFixed(4)}, the sum of what the case results in ${path.join(s.out, "cases")} record their calls cost (judge controls $${controls.toFixed(4)}, screen $${(replays + judgements + unrecorded).toFixed(4)}, confirm $0.0000, control $0.0000):`,
+      `  judge controls: $${controls.toFixed(4)}, the judge controls of 1 case`,
+      `  screen: $${(replays + judgements + unrecorded).toFixed(4)} over 1 case stage: $${replays.toFixed(4)} for the replays and $${judgements.toFixed(4)} for the judgements of their 31 runs (1 with no verdict), and $${unrecorded.toFixed(4)} for the calls no run records (${UNRECORDED})`,
+      `  confirm: $0.0000 over 0 case stages: $0.0000 for the replays and $0.0000 for the judgements of their 0 runs (0 with no verdict), and $0.0000 for the calls no run records (${UNRECORDED})`,
+      `  control: $0.0000 over 0 case stages: $0.0000 for the replays and $0.0000 for the judgements of their 0 runs (0 with no verdict), and $0.0000 for the calls no run records (${UNRECORDED})`,
+    ]);
+    expect(total.toFixed(4)).toBe("19.4500");
+    // The log holds each of those calls once: its total is the report's.
+    const judgeCalls = logged.filter((line) => line.kind === "judge");
+    const replayCalls = logged.filter((line) => line.kind === "replay");
+    expect(lines[at + 5]).toBe(
+      `request log ${log}: $${total.toFixed(4)} over ${logged.length} calls (judge ${judgeCalls.length} calls $${(controls + judgements).toFixed(4)}, replay ${replayCalls.length} calls $${(replays + answered[0].usd).toFixed(4)}, hint 1 call $${HINT.toFixed(4)}), the same as the spend the case results record; by kind of call:`
+    );
+  }, 120_000);
+
+  // Catches: a report whose spend differs from its request log with no word of why, as a run whose
+  // results were taken out by hand does.
+  test("report sets its spend against the request log: the log's total, its difference, and each part of the difference with its cause, where a case's result was taken out of the directory; and against a log that holds none of its calls, and none", async () => {
+    const s = scenario("spend-log", LOSS_SKILL(), [{ id: "c04" }, { id: "c05" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    usage = { input: 100_000, output: 0 };
+    answer = behaviourStandIn;
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const log = path.join(s.out, "requests.jsonl");
+    const cases = path.join(s.out, "cases");
+    // c05's result is taken out by hand; its calls stay in the log. And the log ends in the start
+    // of a line, as one a process was stopped in the middle of writing.
+    const gone = result(s.out, "c05");
+    rmSync(caseResultFile(s.out, "c05"));
+    appendFileSync(log, '{"at":"2026-11-24T00:00:00.000Z","kind":"rep');
+    const kept = result(s.out, "c04");
+    const runsOf = (r: CaseResult) => r.stages.screen?.runs ?? [];
+    const judged = (r: CaseResult) =>
+      (r.controls?.usd ?? 0) + runsOf(r).reduce((sum, run) => sum + usdSum(run.judgeSpent), 0);
+    const replayed = (r: CaseResult) =>
+      runsOf(r).reduce((sum, run) => sum + usdSum(run.replaySpent), 0);
+    const total = (r: CaseResult) => (r.controls?.usd ?? 0) + (r.stages.screen?.usd ?? 0);
+    expect([total(kept), judged(gone), replayed(gone)].map((usd) => usd.toFixed(4))).toEqual([
+      "19.2000",
+      "13.2000",
+      "6.0000",
+    ]);
+
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = reported.stdout.split("\n");
+    const at = lines.findIndex((line) => line.startsWith(`request log ${log}: `));
+    expect(lines.slice(at, at + 3)).toEqual([
+      `request log ${log}: $${(total(kept) + total(gone)).toFixed(4)} over 126 calls (judge 66 calls $${(judged(kept) + judged(gone)).toFixed(4)}, replay 60 calls $${(replayed(kept) + replayed(gone)).toFixed(4)}), 1 line that is no JSON left out, $${total(gone).toFixed(4)} more than the spend the case results record; by kind of call:`,
+      `  judge (the results' judge controls and judgements): $${(judged(kept) + judged(gone)).toFixed(4)} in the log, $${judged(kept).toFixed(4)} in the results, $${judged(gone).toFixed(4)} more in the log: judge calls no saved result records: the judge controls or judgements of a case stopped before they were saved, or of a result no longer in ${cases}`,
+      `  replay and hint (the results' replays and the calls no run records): $${(replayed(kept) + replayed(gone)).toFixed(4)} in the log, $${replayed(kept).toFixed(4)} in the results, $${replayed(gone).toFixed(4)} more in the log: calls no saved stage records: a round stopped before it was saved, a result no longer in ${cases}, or the hint calls of a capture that failed; 30 replay calls of the log, $${replayed(gone).toFixed(4)}, went with a session id no run of the results holds: runs of a round stopped before it was saved, of a result no longer in ${cases}, or replies whose judgement the budget refused`,
+    ]);
+
+    // A log that holds none of the results' calls: the results record them, and their runs' session
+    // ids are in no line of it.
+    const other = path.join(s.dir, "other-requests.jsonl");
+    writeFileSync(other, "");
+    const against = await cli([...report(s), "--request-log", other]);
+    expect({ code: against.code, stderr: against.stderr }).toEqual({ code: 0, stderr: "" });
+    const elsewhere = "results made with another --request-log, or brought from another --out";
+    expect(against.stdout).toContain(
+      `request log ${other}: $0.0000 over 0 calls (none), $${total(kept).toFixed(4)} less than the spend the case results record; by kind of call:\n  judge (the results' judge controls and judgements): $0.0000 in the log, $${judged(kept).toFixed(4)} in the results, $${judged(kept).toFixed(4)} less in the log: the results record calls this log does not hold: ${elsewhere}\n  replay and hint (the results' replays and the calls no run records): $0.0000 in the log, $${replayed(kept).toFixed(4)} in the results, $${replayed(kept).toFixed(4)} less in the log: the results record calls this log does not hold: ${elsewhere}; 30 runs of the results, $${(replayed(kept) + judged(kept) - (kept.controls?.usd ?? 0)).toFixed(4)}, went with a session id no replay call of the log holds: ${elsewhere}\n`
+    );
+    const none = path.join(s.dir, "no-requests.jsonl");
+    const absent = await cli([...report(s), "--request-log", none]);
+    expect({ code: absent.code, stderr: absent.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(absent.stdout.split("\n")).toContain(
+      `request log: none at ${none}, so the spend is set against none`
+    );
+  }, 120_000);
 });
 
 // Catches: the --after-case command run with no limit, so one that never exits held the

@@ -26,7 +26,13 @@
  *   followed by `, on each of <n> tries` when every try failed, and whose `status` is the HTTP
  *   status of the last try's answer (its headers came, even when its body then failed), or
  *   undefined when the last try got no answer. `accept` gets the body whole as text: a streamed
- *   (SSE) reply is read to its end before it.
+ *   (SSE) reply is read to its end before it. Each ok answer, its body read whole, is first given
+ *   to `call.onAnswer` with when its try was sent and when its body ended (spend-record.ts
+ *   records its usage there), whether `accept` then takes it or not: the provider billed it
+ *   either way. A try whose body failed, and an answer that is not ok, give it nothing.
+ * - `sseData(text, wanted)`: the `data` of each event of an SSE stream, in order, an event's
+ *   `data` lines joined by newlines; an event with no data, the `[DONE]` that closes a Responses
+ *   stream, and an event whose text `wanted` (when given) does not match are none.
  */
 import { messageFor } from "@legion/envoy-client/errors";
 import { backoffMs, type Fetch, type Sleep, transient } from "./production-dispatch";
@@ -110,6 +116,34 @@ export interface MessagesCall<T> {
   readonly timeoutMs: number;
   /** Takes an ok answer, its body read whole. A throw fails the try, and the call goes again. */
   readonly accept: (text: string, response: Response) => T | Promise<T>;
+  /** Told of each ok answer, its body read whole, before `accept` takes it: its text, when its
+   *  try was sent and when its body ended (epoch milliseconds). spend-record.ts's recorder records
+   *  the answer's usage here; it never throws and never waits. None when absent. */
+  readonly onAnswer?: (answer: string, times: AnswerTimes) => void;
+}
+
+/** When one try was sent and when its answer's body ended, in epoch milliseconds. */
+export interface AnswerTimes {
+  readonly startedAt: number;
+  readonly endedAt: number;
+}
+
+/** The `data` of each event of the SSE stream `text`, in order: an event's `data` lines joined
+ *  by newlines. An event with no data, and the `[DONE]` that closes the gateway's Responses
+ *  stream, are none; so is each event whose text `wanted` does not match, when it is given. */
+export function sseData(text: string, wanted?: RegExp): string[] {
+  const data: string[] = [];
+  for (const chunk of text.split(/\r?\n\r?\n/)) {
+    if (wanted !== undefined && !wanted.test(chunk)) continue;
+    const joined = chunk
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice("data:".length).replace(/^ /, ""))
+      .join("\n");
+    const trimmed = joined.trim();
+    if (trimmed !== "" && trimmed !== "[DONE]") data.push(joined);
+  }
+  return data;
 }
 
 /** What `accept` makes of the first ok answer it takes. Throws `MessagesApiError`. */
@@ -123,8 +157,11 @@ export async function postMessages<T>(call: MessagesCall<T>): Promise<T> {
     status = undefined;
     let response: Response;
     let text: string;
+    let startedAt: number;
+    let endedAt: number;
     try {
       const key = await call.key();
+      startedAt = Date.now();
       response = await call.fetch(`${call.url}${call.path ?? "/v1/messages"}`, {
         method: "POST",
         headers: {
@@ -142,6 +179,7 @@ export async function postMessages<T>(call: MessagesCall<T>): Promise<T> {
       status = response.status;
       // A connection that fails while the body arrives is a failed call, as one before the headers.
       text = await response.text();
+      endedAt = Date.now();
     } catch (error) {
       last = `the model call failed: ${messageFor(error)}`;
       continue;
@@ -154,6 +192,8 @@ export async function postMessages<T>(call: MessagesCall<T>): Promise<T> {
       }
       throw new MessagesApiError(last, status);
     }
+    // Outside the tries' catch, so nothing `onAnswer` does can send the call again.
+    call.onAnswer?.(text, { startedAt, endedAt });
     try {
       return await call.accept(text, response);
     } catch (error) {

@@ -3,7 +3,9 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { isYes, main, QUESTIONS } from "./label-comments";
+import { postedSpan, startCollector } from "./collector-standin";
+import { isYes, MODEL, main, QUESTIONS } from "./label-comments";
+import { createSpendRecorder } from "./spend-record";
 
 const scratch = temporaryDirectory("label-comments", { real: true });
 
@@ -25,10 +27,13 @@ interface CommentFixture {
   readonly created_at: string;
   readonly body: string;
   readonly quote?: string;
+  /** Set on a comment its author deleted, which Dispatch serves with an empty body. */
+  readonly deleted_at?: string;
 }
 
-/** Three issues, one of them closed, and seven comments: two by sessions, one by a person at
- * exactly --until, and four by people inside the window, one of them on the closed issue. */
+/** Three issues, one of them closed, and eight comments: two by sessions, one by a person at
+ * exactly --until, four by people inside the window, one of them on the closed issue, and one by
+ * a person inside the window that its author deleted. */
 const COMMENTS: Record<string, CommentFixture[]> = {
   "ACME-1": [
     {
@@ -62,6 +67,13 @@ const COMMENTS: Record<string, CommentFixture[]> = {
       author: person("bob@example.com"),
       created_at: "2026-10-18T12:00:00Z",
       body: "You asked this already.",
+    },
+    {
+      id: "c8",
+      author: person("bob@example.com"),
+      created_at: "2026-10-21T08:00:00Z",
+      body: "",
+      deleted_at: "2026-10-21T09:00:00Z",
     },
   ],
 };
@@ -144,6 +156,9 @@ function world(model: (comment: string, attempt: number) => Response = answerWit
                   orphaned: false,
                 },
           created_at: comment.created_at,
+          ...(comment.deleted_at === undefined
+            ? {}
+            : { deleted_at: comment.deleted_at, deleted_by: comment.author }),
         }))
       );
     }
@@ -205,6 +220,7 @@ const EXPECTED_SYSTEM_BLOCKS = [
 
 const EXPECTED_SUMMARY = [
   "comments: 4",
+  "deleted comments left out: 1 (Dispatch serves a deleted comment with no body, so there is nothing of it to label)",
   "first created_at: 2026-10-16T00:00:00Z",
   "last created_at: 2026-10-22T23:59:59.999999Z",
   "writing complaints (about_doc_writing yes): 2 of 4 (50.0%)",
@@ -338,6 +354,31 @@ test("it labels the people's comments in the window, and only those, and prints 
   expect(run.stdout.join("\n")).toBe(EXPECTED_SUMMARY.join("\n"));
 });
 
+// Dispatch serves a comment its author deleted with an empty body. Labelled, it would count as a
+// person's comment that raised none of the eleven complaints, so it is left out of what the judge
+// reads, and stdout says how many were left out and why.
+test("a deleted comment reaches no model call and no row, and stdout counts it as left out", async () => {
+  const out = path.join(dir("deleted"), "labels");
+  const { fetch, sent } = world();
+  const run = io(fetch);
+  expect(
+    await main(["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()], run.io)
+  ).toBe(0);
+  const states = sent
+    .filter(({ url }) => url.host !== "dispatch.test")
+    .map(({ init }) => JSON.parse(String(init.body)).messages[0].content as string);
+  expect(states).toHaveLength(4);
+  expect(states.some((state) => state.includes("<comment></comment>"))).toBe(false);
+  const ids = readFileSync(path.join(out, "labels.jsonl"), "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line).comment_id);
+  expect(ids).not.toContain("c8");
+  expect(run.stdout).toContain(
+    "deleted comments left out: 1 (Dispatch serves a deleted comment with no body, so there is nothing of it to label)"
+  );
+});
+
 test("the gateway route posts to <gateway>/v1/messages with the key the key command prints", async () => {
   const command = path.join(dir("gateway"), "key-command");
   writeFileSync(command, "#!/bin/sh\necho gateway-key\n");
@@ -404,6 +445,72 @@ test("a 429, a 5xx or a reply that skips a question is asked again", async () =>
     "jargon",
     "needless_ask",
   ]);
+});
+
+test("each model answer, one asked for again among them, records one usage span, sent before main returns; a 429 records none", async () => {
+  // A stand-in spend collector on 127.0.0.1, named by the recorder's own environment.
+  const collector = startCollector();
+  try {
+    const warnings: string[] = [];
+    const spendRecorder = createSpendRecorder({
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: collector.url },
+      warn: (line) => warnings.push(line),
+    });
+    // Each answer carries an id and a usage, as the Messages API's does.
+    const answered: string[] = [];
+    const answer = (text: string) => {
+      const id = `msg_label_${answered.length + 1}`;
+      answered.push(id);
+      return json({
+        id,
+        type: "message",
+        model: MODEL,
+        content: [{ type: "text", text }],
+        stop_reason: "end_turn",
+        usage: { input_tokens: 100, cache_read_input_tokens: 40, output_tokens: 20 },
+      });
+    };
+    const { fetch } = world((comment, attempt) => {
+      if (comment === "Too long." && attempt === 1) return new Response("slow", { status: 429 });
+      // The first answer to this one answers one question only: it is asked again.
+      if (comment === "That is wrong." && attempt === 1) return answer("wrong_fact: yes");
+      const yes = YES[comment] ?? [];
+      return answer(
+        QUESTIONS.map(({ key }) => `${key}: ${yes.includes(key) ? "yes" : "no"}`).join("\n")
+      );
+    });
+    const run = io(fetch);
+    const out = path.join(dir("spans"), "labels");
+    const code = await main(
+      ["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()],
+      { ...run.io, spendRecorder }
+    );
+    expect({ code, stderr: run.stderr, warnings }).toEqual({ code: 0, stderr: [], warnings: [] });
+    // Four comments and the one answer asked for again: five answers, five spans, already sent.
+    expect(answered).toHaveLength(5);
+    expect(collector.posts.map((post) => post.path)).toEqual(Array(5).fill("/v1/traces"));
+    const spans = collector.posts.map((post) => ({
+      resource: JSON.parse(post.body).resourceSpans[0].resource.attributes,
+      attributes: postedSpan(post).attributes,
+    }));
+    expect(spans.map(({ attributes }) => attributes["gen_ai.response.id"]).sort()).toEqual(
+      answered.toSorted()
+    );
+    for (const { resource, attributes } of spans) {
+      expect(resource).toContainEqual({ key: "theorem.harness", value: { stringValue: "script" } });
+      expect(attributes).toMatchObject({
+        "gen_ai.provider.name": "anthropic",
+        "gen_ai.request.model": MODEL,
+        "gen_ai.response.model": MODEL,
+        "gen_ai.usage.input_tokens": "140",
+        "gen_ai.usage.cache_read.input_tokens": "40",
+        "gen_ai.usage.output_tokens": "20",
+        "omp.gen_ai.auth.kind": "api_key",
+      });
+    }
+  } finally {
+    collector.close();
+  }
 });
 
 test("a comment with no label fails the run, and an earlier labels.jsonl keeps its bytes", async () => {

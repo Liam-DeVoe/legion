@@ -110,6 +110,7 @@ function world(...answers: unknown[]) {
     keyFile,
     concurrency: 1,
     timeoutMs: 5_000,
+    spendRecorder: null,
     fetch: async (_url, init) => {
       bodies.push(JSON.parse(String(init.body)) as MessagesBody);
       const answer = answers[Math.min(bodies.length, answers.length) - 1];

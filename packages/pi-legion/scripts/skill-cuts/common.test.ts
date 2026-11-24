@@ -5,6 +5,7 @@ import {
   MAX_RATE_RETRIES,
   MAX_RATE_WAIT_MS,
   type ResetIo,
+  splitFrontmatter,
   type TimeLimit,
   transientReason,
   untilInstallationReset,
@@ -258,6 +259,37 @@ describe("GhRetries", () => {
     ]);
     expect(transientReason(cut)).toBe("body cut short");
   });
+
+  // Catches: a gh read whose HTTP/2 stream GitHub's end reset (`stream error: stream ID 1;
+  // CANCEL; received from peer`, gh's own stderr: the same recursive tree of 17,568,329 bytes,
+  // 2026-11-24) failing on its first try, as no transient failure, and stopping a screen.
+  test("a gh call whose answer's stream GitHub's end reset is sent again as a transient failure, stream reset, and its next try's answer is taken", async () => {
+    const reset = "stream error: stream ID 1; CANCEL; received from peer";
+    const slept: number[] = [];
+    const said: string[] = [];
+    const retries = new GhRetries(
+      { sleep: async (ms) => void slept.push(ms), err: (line) => void said.push(line) },
+      "behaviour screen"
+    );
+    let tries = 0;
+    const result = await retries.send(async () => {
+      tries += 1;
+      return tries === 1 ? { code: 1, stderr: `${reset}\n` } : { code: 0, stderr: "" };
+    });
+    expect({ tries, code: result.code, slept, record: retries.record() }).toEqual({
+      tries: 2,
+      code: 0,
+      slept: [5_000],
+      record: { "stream reset": 1 },
+    });
+    expect(said).toEqual([
+      `behaviour screen: a gh call failed (${reset}); sending it again in 5 s, retry 1 of 4`,
+    ]);
+    // Another stream and another code read the same.
+    expect(transientReason("stream error: stream ID 7; INTERNAL_ERROR; received from peer")).toBe(
+      "stream reset"
+    );
+  });
 });
 
 describe("eachChunk", () => {
@@ -307,5 +339,35 @@ describe("eachChunk", () => {
       fire();
     });
     expect(taken).toEqual([2]);
+  });
+});
+
+// Catches: one split of a SKILL.md's text for both of Oh My Pi's reads where they differ: the
+// skill loader's (`repair`: leading HTML comments dropped, the body that `resolveCollision`
+// compares) and an autoloaded block's (no `repair`: a leading comment stays, arms.ts's
+// `autoloadedText`), each as `parseFrontmatter` splits at the pinned tag.
+describe("splitFrontmatter", () => {
+  const TEXT = "<!-- a made-up note -->\r\n---\r\nname: alpha\r\n---\r\n\r\n# Alpha\r\n\r\n";
+
+  test("with repair, the comments before the opening --- are dropped, CRLF read as LF, and the body trimmed", () => {
+    expect(splitFrontmatter(TEXT, true)).toEqual({ block: "name: alpha", body: "# Alpha" });
+  });
+
+  test("without repair, a text that opens with a comment has no block, and its body is the whole text, untrimmed", () => {
+    expect(splitFrontmatter(TEXT, false)).toEqual({
+      block: undefined,
+      body: TEXT.replaceAll("\r\n", "\n"),
+    });
+  });
+
+  test("the rest of the closing line is the body's, and a text with no closing line has no block", () => {
+    expect(splitFrontmatter("---\nname: beta\n----\nBody.", true)).toEqual({
+      block: "name: beta",
+      body: "-\nBody.",
+    });
+    expect(splitFrontmatter("---\nname: beta\n", true)).toEqual({
+      block: undefined,
+      body: "---\nname: beta\n",
+    });
   });
 });

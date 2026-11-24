@@ -2,9 +2,11 @@
  * What the skill-cuts commands share: a whole-file write, a read of a file's bytes at an offset,
  * JSON text, a SHA-256 in hex, a zod error's faults on one line, one line of text as a schema,
  * strict option parsing, the configuration as a refusal, the two errors a command's `main` turns
- * into its exit status (`Refused` 2, `Stopped` 3), the one rule by which a gh call that failed is
- * sent again (`GhRetries`), and a read started beside others (`started`). It imports no other
- * command's file, so every one of them can import it.
+ * into its exit status (`Refused` 2, `Stopped` 3), a SKILL.md's text as Oh My Pi reads, splits
+ * and names it (`ompText`, `splitFrontmatter`, `readFrontmatter`, `ompSkillName`: the runner's one
+ * frontmatter reader), the one rule by which a gh call that failed is sent again (`GhRetries`),
+ * and a read started beside others (`started`). It imports no other command's file, so every one
+ * of them can import it.
  */
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
@@ -144,6 +146,160 @@ export function ompText(raw: Uint8Array | string): string {
   return typeof raw === "string" ? raw.replace(/^\uFEFF/, "") : new TextDecoder().decode(raw);
 }
 
+/**
+ * A SKILL.md's text split as Oh My Pi's `parseFrontmatter` splits it (packages/utils/src/
+ * frontmatter.ts of cybermonklabs/oh-my-pi at the tag v18.18.6-sami.20261119-162325, the build
+ * the runner pins, arms.ts; the file is the same at rig.sh's v18.18.6-sami.20261117-013345):
+ * CRLF read as LF; with `repair` (its default, which the skill loader's parse takes), the HTML
+ * comments before an opening `---` dropped, with the white space after them
+ * (`stripLeadingHtmlComments`); then the frontmatter block, from after that `---` to the next line
+ * that starts `---`, and the body, the text after that `\n---`, trimmed. A text that opens with no
+ * `---`, or has no such line, has no block (`undefined`), and its body is the whole text,
+ * untrimmed. `frontmatterFields` reads the block; the body is what Oh My Pi's `resolveCollision`
+ * compares (`repair`, capture.ts's `listedSkills`) and what an autoloaded block holds (no
+ * `repair`, arms.ts's `autoloadedText`).
+ */
+export function splitFrontmatter(
+  content: string,
+  repair: boolean
+): { readonly block: string | undefined; readonly body: string } {
+  let text = content.replace(/\r\n?/g, "\n");
+  const comments = repair ? /^(?:(?:\s*<!--[\s\S]*?-->)+)/.exec(text) : null;
+  if (comments && /^\s*---/.test(text.slice(comments[0].length))) {
+    text = text.slice(comments[0].length).replace(/^\s+/, "");
+  }
+  const end = text.startsWith("---") ? text.indexOf("\n---", 3) : -1;
+  if (end === -1) return { block: undefined, body: text };
+  return { block: text.slice(4, end), body: text.slice(end + 4).trim() };
+}
+
+/** An ambiguous plain scalar of a frontmatter line, as Oh My Pi finds one. */
+const PLAIN_SCALAR_KEY_VALUE = /^(\s*[A-Za-z_][\w-]*:\s+)(\S.*?)(\s*)$/;
+/** The first characters of a value that is no plain scalar. */
+const FLOW_OR_EXPLICIT_VALUE_START = new Set(['"', "'", "[", "{", "|", ">", "!", "&", "*", "#"]);
+
+/** `text`'s frontmatter block parsed as one YAML mapping, tabs read as two spaces, or null. */
+function yamlRecord(text: string): Record<string, unknown> | null {
+  const loaded: unknown = Bun.YAML.parse(text.replaceAll("\t", "  "));
+  if (typeof loaded !== "object" || loaded === null || Array.isArray(loaded)) return null;
+  return { ...loaded };
+}
+
+/**
+ * `text` with each `<!--` … `-->` span dropped, as one pass of Oh My Pi's
+ * `replace(/<!--[\s\S]*?-->/g, "")` drops them in packages/utils/src/frontmatter.ts at the pin,
+ * so the runner reads the description Oh My Pi reads: a span runs from a `<!--` to the first
+ * `-->` that starts after it, and the scan goes on after that `-->`, so the text a drop joins
+ * together is not read again (`<!<!---->--` gives `<!--`, as Oh My Pi's pass does). A `<!--` with
+ * no `-->` after it stays. This is no sanitizer: its output is frontmatter text for a YAML parse
+ * and is never rendered as HTML.
+ */
+function dropComments(text: string): string {
+  let kept = "";
+  let at = 0;
+  for (;;) {
+    const open = text.indexOf("<!--", at);
+    if (open === -1) break;
+    const close = text.indexOf("-->", open + 4);
+    if (close === -1) break;
+    kept += text.slice(at, open);
+    at = close + 3;
+  }
+  return kept + text.slice(at);
+}
+
+/** `value` with each kebab-case key of each mapping in it, at every depth, in camelCase (`foo-bar`
+ *  as `fooBar`; a key it then shares takes the later value), as Oh My Pi's
+ *  `normalizeFrontmatterKeys` gives a skill's frontmatter (packages/utils/src/frontmatter.ts at
+ *  the pin). A YAML parse gives plain mappings, lists and scalars alone. */
+function camelKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(camelKeys);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, inner]) => [
+      key.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase()),
+      camelKeys(inner),
+    ])
+  );
+}
+
+/**
+ * The fields of a frontmatter block (`splitFrontmatter`'s, with `repair`), read as Oh My Pi's
+ * `parseFrontmatter` reads a skill's with its defaults (packages/utils/src/frontmatter.ts of
+ * cybermonklabs/oh-my-pi at the tag v18.18.6-sami.20261119-162325, the build the runner pins, the
+ * same file as at v18.18.6-sami.20261117-013345): the comments inside it dropped; parsed as YAML
+ * with each tab replaced by two spaces, a block that is no mapping giving none (`{}`); when that
+ * fails, parsed again with each plain scalar that holds `: ` quoted
+ * (`quoteAmbiguousPlainScalars`); when that fails too, each `key: value` line read on its own, a
+ * value that does not parse as YAML kept as its text. Kebab-case keys become camelCase, at every
+ * depth (`camelKeys`).
+ */
+export function frontmatterFields(raw: string): Record<string, unknown> {
+  const block = dropComments(raw);
+  let read: Record<string, unknown> | null | undefined;
+  try {
+    read = yamlRecord(block);
+  } catch {
+    let quoted = false;
+    const repaired = block
+      .split("\n")
+      .map((line) => {
+        const match = PLAIN_SCALAR_KEY_VALUE.exec(line);
+        const value = match?.[2]?.trimEnd() ?? "";
+        if (!value.includes(": ") || FLOW_OR_EXPLICIT_VALUE_START.has(value[0] ?? "")) return line;
+        quoted = true;
+        return `${match?.[1]}${JSON.stringify(value)}${match?.[3]}`;
+      })
+      .join("\n");
+    try {
+      read = quoted ? yamlRecord(repaired) : undefined;
+    } catch {
+      read = undefined;
+    }
+    if (read === undefined) {
+      read = {};
+      for (const line of block.split("\n")) {
+        const match = /^([\w-]+):\s*(.*)$/.exec(line);
+        if (match?.[1] === undefined) continue;
+        const text = (match[2] ?? "").trim();
+        let value: unknown = text;
+        if (text !== "") {
+          try {
+            const parsed: unknown = Bun.YAML.parse(text);
+            if ((parsed !== null && typeof parsed !== "object") || Array.isArray(parsed)) {
+              value = parsed;
+            }
+          } catch {
+            // The value's own text stands.
+          }
+        }
+        read[match[1]] = value;
+      }
+    }
+  }
+  return camelKeys(read ?? {}) as Record<string, unknown>;
+}
+
+/** The frontmatter of a SKILL.md's (or an agent definition's) text as Oh My Pi reads it: the
+ *  block `splitFrontmatter` finds with `repair` (CRLF as LF, leading HTML comments before the
+ *  opening `---` dropped), read by `frontmatterFields`. A text with no block has none (`{}`). */
+export function readFrontmatter(content: string): Record<string, unknown> {
+  const { block } = splitFrontmatter(content, true);
+  return block === undefined ? {} : frontmatterFields(block);
+}
+
+/** The name Oh My Pi gives a skill whose frontmatter is `frontmatter` and whose directory is
+ *  named `dirName` (discovery/helpers.ts:546-548 at the pin), which it lists the skill under and
+ *  finds a collision by (extensibility/skills.ts:172, :459-462): the frontmatter's `name`,
+ *  trimmed, when it is a string that trims to something; else `dirName`. */
+export function ompSkillName(
+  frontmatter: Readonly<Record<string, unknown>>,
+  dirName: string
+): string {
+  const name = frontmatter.name;
+  return typeof name === "string" && name.trim() !== "" ? name.trim() : dirName;
+}
+
 /** A rate limit, primary or secondary, as gh reports it. */
 export const RATE_LIMITED = /rate limit|HTTP 429/i;
 /** The most times one call GitHub refused for its rate limit is sent again. */
@@ -152,7 +308,9 @@ export const MAX_RATE_RETRIES = 5;
  *  the two lists the runner had before it shared one rule, copies.ts's and context.ts's. The
  *  connection timed out, was reset or refused, or ended early; gh's answer ended early, so gh
  *  could not parse it (`unexpected end of JSON input`: gh read a large body, such as a recursive
- *  tree of 17 MB, cut short, and the same call gives it whole again); GitHub's front end answered
+ *  tree of 17 MB, cut short, and the same call gives it whole again); GitHub's end reset the
+ *  HTTP/2 stream of gh's answer (`stream error: stream ID <n>; <code>; received from peer`, gh's
+ *  words: the same tree's read ended so on 2026-11-24); GitHub's front end answered
  *  a 5xx, or the npm registry a 429 (`HTTP 429 (too many requests)`, the words of build.ts's
  *  registry read alone: GitHub's 429 is a rate limit, RATE_LIMITED, waited out at most
  *  MAX_RATE_RETRIES times and then not sent again); the gh process ran past the time limit its
@@ -166,6 +324,7 @@ const TRANSIENT_FAILURES: readonly (readonly [reason: string, pattern: RegExp])[
   ["connection refused", /connection refused|ECONNREFUSED/i],
   ["unexpected EOF", /unexpected EOF/i],
   ["body cut short", /unexpected end of JSON input/i],
+  ["stream reset", /stream error: stream ID \d+; [A-Z_]+; received from peer/],
   ["i/o timeout", /i\/o timeout/i],
   ["HTTP 502", /HTTP 502\b/],
   ["HTTP 503", /HTTP 503\b/],
