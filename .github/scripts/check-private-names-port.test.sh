@@ -67,13 +67,17 @@ tee_pid=$!
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
+# The engine's build prints go's own lines, a module proxy's reply among them, inside a
+# ci-log-guard.sh block, where they cannot become workflow commands.
+# shellcheck source=.github/scripts/ci-log-guard.sh
+. "$script_dir/ci-log-guard.sh"
 
 command -v git > /dev/null || { echo "  FAIL: git is required" >&2; exit 1; }
 command -v go > /dev/null || { echo "  FAIL: go is required: this test builds the legion binary" >&2; exit 1; }
 
 echo "building the engine: the legion binary of this head, once for the whole run"
 engine="$work/legion"
-(cd "$repo_root/packages/daemon" && go build -o "$engine" ./cmd/legion) || {
+(cd "$repo_root/packages/daemon" && ci_log_guard go build -o "$engine" ./cmd/legion) || {
   echo "  FAIL: the legion binary did not build, so there is no port to compare with" >&2
   exit 1
 }

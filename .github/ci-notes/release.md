@@ -359,6 +359,19 @@ an artifact that is not exactly that one regular file, and prints the tag. The "
 take the name's stem and spell the `.tgz` themselves, so each reads as the publish of a
 tarball (check-release-credentials.sh allows `npm publish` of nothing else).
 
+## The inline stop-commands block
+
+Four steps of this workflow define `ci_log_guard_stderr` inline: the publish job's "pi-envoy:
+Publish to npm", "pi-legion: Publish to npm" and "claude-envoy: Publish to npm", and
+worker_image_release's "Tag the worker image with the legion version". Each runs in a job that
+holds release credentials, and .github/scripts/check-release-credentials.sh keeps such a job from
+running any script of this repository, so the step cannot source .github/scripts/ci-log-guard.sh.
+The inline copy writes the same block as that library: a fresh token from /dev/urandom, both
+markers on stderr, and the end marker on a line of its own after the command exits. So the
+registry's reply that npm copies to the log, and the registry's error that imagetools prints, stay
+text. .github/scripts/ci-log-guard.test.sh reads each inline definition out of
+.github/workflows/release.yaml and drives it with the forms a server can plant.
+
 ## Why the deploy key reaches the Envoy plugin's tag push alone
 
 The deploy key reaches this step alone of this package's. release-push.sh push-tag writes

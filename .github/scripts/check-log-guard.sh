@@ -1,33 +1,47 @@
 #!/usr/bin/env bash
-# Every network client a workflow step or a composite action runs at a command position goes
-# through .github/scripts/ci-log-guard.sh, or is on .github/log-guard-allow.tsv with the reason it
-# needs nothing.
+# Every network client a workflow step or a composite action runs at a command position, itself or
+# in a script it runs, goes through .github/scripts/ci-log-guard.sh, or is on
+# .github/log-guard-allow.tsv with the reason it needs nothing.
 #
 # A client that copies a server's reply into the job log lets the server write workflow commands
 # there (`\r::warning::…`, `\t::error::…`, `… ##[warning]…`), and only a stop-commands block around
-# that output stops them (ci-log-guard.sh says how the runner reads the log). So a new step that
-# runs go, gh, curl, git fetch, docker pull or another client of NETWORK below, unguarded, fails
-# here by name, rather than reading green until a server's text acts in a log.
+# that output stops them (ci-log-guard.sh says how the runner reads the log). So a new step or a new
+# script line that runs go, gh, curl, git fetch, docker pull or another client of NETWORK below,
+# unguarded, fails here by name, rather than reading green until a server's text acts in a log.
 #
 # What it reads: each `run:` of every file of .github/workflows and of each composite action under
-# .github/actions, split into simple commands by .github/scripts/shell_commands.py's scanner (quote
-# aware, a `$(…)` its own command, `${{ … }}` read as a word). A command is routed when its first
+# .github/actions, and each shell script of this repository such a step runs, split into simple
+# commands by .github/scripts/shell_commands.py's scanner (quote aware, a `$(…)` its own command,
+# a here-document's body no command, `${{ … }}` read as a word). A command is routed when its first
 # word, past `VAR=value` assignments and keywords, is one of WRAPPERS, or when its line is the
 # guarded pipeline group `{ …; } 2>&1 | ci_log_guard cat`. A command that is not routed is a
 # finding when its command word (or, through `sh -c`, `bash -c` and `eval`, the word it runs) is a
 # client of NETWORK running a subcommand that reaches a server.
 #
-# It refuses, naming the file, the job, the step and the command:
+# A script a step runs is the command word of a command it does not route (through a runner, an
+# interpreter such as `bash x.sh` or `. x.sh`, or eval) that names a file of this repository ending
+# in .sh or starting with a `#!` line naming sh, bash or dash: `$GITHUB_WORKSPACE/` (or
+# `${{ github.workspace }}/`) at its start names the repository root, `$GITHUB_ACTION_PATH/` (or
+# `${{ github.action_path }}/`) the composite action's own directory, and any other relative path
+# is read from the step's working directory. The script is read as a step is, and so is each script
+# it runs, its relative paths read from the repository root, where the steps run. A script's
+# finding is the script's own: a row names it as (the script, `-`, `-`, client), whichever steps run
+# it.
+#
+# It refuses, naming the file, the job, the step and the command (for a script, the script and the
+# first step that runs it):
 #   1. a finding no row of the allow list names (file, job, step, client), and
 #   2. a row of the allow list that names no finding, or that gives no reason: a row outliving its
 #      step would let the next step of that name through unread.
 #
-# It does not read: a step under a shell other than bash or sh, a script a step runs (a script that
-# runs a client routes it itself, as pg-connection-ceiling.sh does), a command a variable names, and
-# a client run under a wrapper this check does not name.
+# It does not read: a step under a shell other than bash or sh, a script named through a variable
+# or a `$(…)` (`"$(dirname "$0")/x.sh"`, `"$here/x.sh"`), a program in another language, a command a
+# variable names, a client run under a wrapper this check does not name, and a here-document's
+# body, which runs no command unless a shell reads it on its standard input.
 #
 #   .github/scripts/check-log-guard.sh          check
 #   .github/scripts/check-log-guard.sh list     print every finding as an allow-list row with no reason
+#   .github/scripts/check-log-guard.sh scripts  print every script it reads, one path a line
 #
 # CI runs it in ci.yaml's ci-filters job and in .github/workflows/workflow-files.yaml; its tests,
 # check-log-guard.test.sh, in ci.yaml's test job.
@@ -37,12 +51,14 @@ scripts=$(dirname "$(readlink -f "$0")")
 cd "$(dirname "$0")/../.."
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" python3 - "${1:-check}" <<'PY'
+import os
 import re
 import sys
 from pathlib import Path
 
 import yaml
-from shell_commands import ASSIGNMENT, EXPRESSION, INTERPRETERS, SKIP_WORDS, Scanner, command_of
+from shell_commands import (ASSIGNMENT, EXPRESSION, INTERPRETERS, SKIP_WORDS, Scanner, command_of,
+                            quoted_line_starts, without_heredocs)
 
 MODE = sys.argv[1]
 ALLOW = Path(".github/log-guard-allow.tsv")
@@ -56,6 +72,12 @@ GROUP = re.compile(r"\{[ \t]*([^{}]*);[ \t]*\}[ \t]*2>&1[ \t]*\|[ \t]*ci_log_gua
 # first unquoted `;`, `&&`, `||`, `|`, `&` or newline, redirects its stdout (stdout_safe).
 STDERR_CALL = re.compile(r"(?<![\w-])ci_log_guard_stderr[ \t]+")
 SHELLS = {None, "bash", "sh"}
+# The first line of a script this check reads that does not end in .sh.
+SHEBANG = re.compile(r"#![^\n]*\b(?:ba|da)?sh\b")
+# The two expressions a step names the repository root and a composite action's own directory
+# with, read as the variables they equal before every other expression is elided.
+DIRECTORY_EXPRESSIONS = ((re.compile(r"\$\{\{\s*github\.workspace\s*\}\}"), "$GITHUB_WORKSPACE"),
+                         (re.compile(r"\$\{\{\s*github\.action_path\s*\}\}"), "$GITHUB_ACTION_PATH"))
 
 # client -> the subcommands that reach a server, or None for every use of the client. bun and bunx
 # are not here: the audit's probe of bun 1.4.4 (`bun install`, `bunx`) against a server answering
@@ -278,16 +300,26 @@ def stdout_safe(line: str, start: int, frames: list) -> bool:
 def loose_stderr_guards(run: str) -> list:
     """Each ci_log_guard_stderr call whose stdout is neither captured nor kept out of the log:
     that command's stdout reaches the log outside the block. Read by the line, a
-    backslash-continued line joined to the next first, and each call by its own command alone."""
+    backslash-continued line joined to the next first, each line from the quote it starts inside
+    (a string a line before opened), and each call by its own command alone. A call inside a quoted
+    string is text: a harness's expected output, or a script string that `sh -c` or eval runs,
+    whose client the finding rule reads as not routed."""
     loose = []
-    for line in EXPRESSION.sub("EXPR", run).replace("\\\n", " ").split("\n"):
-        if line.lstrip(" \t").startswith("#"):
+    text = EXPRESSION.sub("EXPR", run).replace("\\\n", " ")
+    starts = quoted_line_starts(text)
+    for number, line in enumerate(text.split("\n")):
+        opened = starts.get(number, "").lstrip("$")  # _scan reads `$'` as `'`
+        if not opened and line.lstrip(" \t").startswith("#"):
             continue
-        for call in STDERR_CALL.finditer(line):
-            frames = frames_at(line, call.start())
+        read = opened + line
+        for call in STDERR_CALL.finditer(read):
+            stack, quote, escaped = _scan(read, call.start())
+            if quote or escaped:
+                continue
+            frames = [(kind, pos) for kind, pos, _ in stack]
             if any(kind in ("capture", "`") for kind, _ in frames):
                 continue
-            if not stdout_safe(line, call.end(), frames):
+            if not stdout_safe(read, call.end(), frames):
                 loose.append(line.strip(" \t"))
     return loose
 
@@ -318,14 +350,16 @@ RUNNERS = {
 FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
 
 
-def network_client(words: list) -> str:
-    """The client of NETWORK the words run against a server, or ''."""
+def run_commands(words: list) -> list:
+    """The commands the words run, each as its words: past each of RUNNERS with its options, through
+    a shell's `-c` script or the script it is handed and eval's words (shell_commands' command_of
+    reads through the interpreter and its flags), and behind find's -exec."""
     words = list(words)
     while words and words[0].rsplit("/", 1)[-1] in RUNNERS:
         runner = words.pop(0).rsplit("/", 1)[-1]
         valued, plain = RUNNERS[runner]
         if runner == "command" and words and words[0] in ("-v", "-V"):
-            return ""
+            return []
         while words and words[0].startswith("-") and words[0] != "-":
             flag = words.pop(0)
             if flag in valued and words:
@@ -334,37 +368,33 @@ def network_client(words: list) -> str:
             words.pop(0)
         del words[:plain]
     if not words:
-        return ""
-    # A shell's `-c` script, or eval's words, after a runner: each of its commands is read the same
-    # way (shell_commands' command_of reads through the interpreter and its flags).
+        return []
     if words[0].rsplit("/", 1)[-1] in INTERPRETERS or words[0] == "eval":
-        for inner in command_of(list(words)):
-            if inner != words:
-                client = network_client(inner)
-                if client:
-                    return client
-        return ""
+        return [run for inner in command_of(list(words)) if inner != words for run in run_commands(inner)]
     if words[0].rsplit("/", 1)[-1] == "find":
-        for i, word in enumerate(words):
-            if word in FIND_EXEC:
-                client = network_client(words[i + 1:])
-                if client:
-                    return client
-        return ""
-    if words[0].rsplit("/", 1)[-1] in ("bunx", "npx") and len(words) > 1 and words[1].startswith("playwright"):
-        words = ["playwright"] + words[2:]
-    client = words[0].rsplit("/", 1)[-1]
-    if client not in NETWORK:
-        return ""
-    subcommands = NETWORK[client]
-    if subcommands is None:
-        return client
-    rest = words[1:]
-    while rest and rest[0].startswith("-"):
-        flag = rest.pop(0)
-        if flag in VALUED.get(client, ()) and rest:
-            rest.pop(0)
-    return client if rest and rest[0] in subcommands else ""
+        return [run for i, word in enumerate(words) if word in FIND_EXEC for run in run_commands(words[i + 1:])]
+    return [words]
+
+
+def network_client(words: list) -> str:
+    """The client of NETWORK the words run against a server, or ''."""
+    for run in run_commands(words):
+        if run[0].rsplit("/", 1)[-1] in ("bunx", "npx") and len(run) > 1 and run[1].startswith("playwright"):
+            run = ["playwright"] + run[2:]
+        client = run[0].rsplit("/", 1)[-1]
+        if client not in NETWORK:
+            continue
+        subcommands = NETWORK[client]
+        if subcommands is None:
+            return client
+        rest = run[1:]
+        while rest and rest[0].startswith("-"):
+            flag = rest.pop(0)
+            if flag in VALUED.get(client, ()) and rest:
+                rest.pop(0)
+        if rest and rest[0] in subcommands:
+            return client
+    return ""
 
 
 def shell_of(document: dict, holder: dict, step: dict):
@@ -373,16 +403,78 @@ def shell_of(document: dict, holder: dict, step: dict):
     return str(shell).split()[0].rsplit("/", 1)[-1] if shell else None
 
 
+def workdir_of(document: dict, holder: dict, step: dict):
+    """The directory a step runs in, from the repository root, or None where an expression names it."""
+    given = str(step.get("working-directory") or ((holder.get("defaults") or {}).get("run") or {}).get(
+        "working-directory") or ((document.get("defaults") or {}).get("run") or {}).get("working-directory") or ".")
+    return None if "${{" in given else given
+
+
+def script_path(word: str, workdir, action) -> str:
+    """The shell script of this repository a command's first word names, as a path from the
+    repository root, or '': `$GITHUB_WORKSPACE/` names the root and `$GITHUB_ACTION_PATH/` the
+    composite action's directory (`action`, None outside one); any other relative path is read from
+    `workdir` (None: not known), and a word holding any other variable, a substitution or a glob
+    names nothing this check can read."""
+    for prefix, base in (("$GITHUB_WORKSPACE/", "."), ("${GITHUB_WORKSPACE}/", "."),
+                         ("$GITHUB_ACTION_PATH/", action), ("${GITHUB_ACTION_PATH}/", action)):
+        if word.startswith(prefix):
+            word, workdir = word[len(prefix):], base
+            break
+    if workdir is None or not word or any(c in word for c in "$`*?[~") or word.startswith("/"):
+        return ""
+    if "/" not in word and not word.endswith(".sh"):
+        return ""  # a bare name is looked up on PATH
+    path = os.path.normpath(os.path.join(workdir, word))
+    if path.startswith("..") or os.path.isabs(path) or not os.path.isfile(path):
+        return ""
+    if path.endswith(".sh"):
+        return path
+    with open(path, errors="replace") as script:
+        return path if SHEBANG.match(script.readline()) else ""
+
+
+def subject(file: str, job: str, label: str) -> str:
+    """How a problem names where its command is: a step, or a script and the first step that runs it."""
+    if (job, label) != ("-", "-"):
+        return f"job {job} step \"{label}\""
+    by_file, by_job, by_label = scripts[file]
+    return f"the script {file} (job {by_job} step \"{by_label}\" of {by_file} runs it)"
+
+
+def read(text: str, key: tuple, workdir, action, runner: tuple) -> None:
+    """Notes the findings of a step's run: or a script's text, under `key` (file, job, step), and
+    reads each script it runs that this check has not read: from the repository root, with the
+    composite action's directory `action` and `runner`, the step that ran the first of them."""
+    text = without_heredocs(EXPRESSION.sub("EXPR", text))
+    for routed, words in commands(text):
+        if routed:
+            continue
+        client = network_client(words)
+        if client:
+            findings.setdefault(key + (client,), []).append(" ".join(words))
+        for run in run_commands(words):
+            script = script_path(run[0], workdir, action)
+            if script and script not in scripts:
+                scripts[script] = runner
+                with open(script, errors="replace") as handle:
+                    read(handle.read(), (script, "-", "-"), ".", action, runner)
+    loose.extend(key + (line,) for line in loose_stderr_guards(text))
+
+
 files = sorted(p for p in Path(".github/workflows").iterdir() if p.suffix in (".yaml", ".yml"))
 files += sorted(p for p in Path(".github/actions").glob("*/action.y*ml"))
-findings = {}  # (file, job, step, client) -> [command text]
+findings = {}  # (file, job, step, client) -> [command text]; a script's job and step are `-`
 loose = []  # (file, job, step, line): a ci_log_guard_stderr whose stdout reaches the log
+scripts = {}  # each script read -> (file, job, step) of the first step that runs it
 unread = 0
 for path in files:
     document = yaml.safe_load(path.read_text()) or {}
     holders = [(job_id, job) for job_id, job in (document.get("jobs") or {}).items() if isinstance(job, dict)]
+    action = None
     if isinstance(document.get("runs"), dict):
         holders.append(("-", document["runs"]))
+        action = str(path.parent)
     for job_id, holder in holders:
         for index, step in enumerate(holder.get("steps") or []):
             if not isinstance(step, dict) or not isinstance(step.get("run"), str):
@@ -391,11 +483,11 @@ for path in files:
                 unread += 1
                 continue
             label = str(step.get("name") or step.get("id") or f"step {index + 1}")
-            for routed, words in commands(step["run"]):
-                client = "" if routed else network_client(words)
-                if client:
-                    findings.setdefault((str(path), str(job_id), label, client), []).append(" ".join(words))
-            loose += [(str(path), str(job_id), label, line) for line in loose_stderr_guards(step["run"])]
+            run = step["run"]
+            for expression, variable in DIRECTORY_EXPRESSIONS:
+                run = expression.sub(lambda _: variable, run)
+            key = (str(path), str(job_id), label)
+            read(run, key, workdir_of(document, holder, step), action, key)
 
 if not files:
     print("::error::check-log-guard: read no workflow file and no composite action, so it checked nothing")
@@ -405,9 +497,12 @@ if MODE == "list":
     for key in sorted(findings):
         print("\t".join(key) + "\t")
     sys.exit(0)
+if MODE == "scripts":
+    print("\n".join(sorted(scripts)))
+    sys.exit(0)
 
 rows = {}
-problems = [f"::error file={file}::job {job} step \"{label}\" runs `{line}`: ci_log_guard_stderr blocks only "
+problems = [f"::error file={file}::{subject(file, job, label)} runs `{line}`: ci_log_guard_stderr blocks only "
             f"stderr, and this command's stdout is neither captured in $(…) nor redirected, so it reaches the "
             f"log outside the block; run it as `ci_log_guard …`, or capture or redirect its stdout"
             for file, job, label, line in loose]
@@ -424,7 +519,7 @@ for number, line in enumerate(ALLOW.read_text().split("\n"), 1):
 for key in sorted(findings):
     if key not in rows:
         file, job, label, client = key
-        problems += [f"::error file={file}::job {job} step \"{label}\" runs `{command}`, a {client} "
+        problems += [f"::error file={file}::{subject(file, job, label)} runs `{command}`, a {client} "
                      f"command that can copy a server's reply into the log, outside "
                      f".github/scripts/ci-log-guard.sh: run it as `ci_log_guard …` (output to the log) or "
                      f"`ci_log_guard_stderr …` (stdout captured), or add a row to {ALLOW} saying why it needs "
@@ -432,13 +527,16 @@ for key in sorted(findings):
 for key, number in sorted(rows.items(), key=lambda item: item[1]):
     if key not in findings:
         file, job, label, client = key
-        problems.append(f"::error file={ALLOW},line={number}::row {number} names job {job} step \"{label}\" of "
-                        f"{file} running {client} unguarded, and no such step does: remove the row")
+        problems.append(f"::error file={ALLOW},line={number}::row {number} names "
+                        + (f"the script {file} running {client} unguarded, and no script a step runs does"
+                           if (job, label) == ("-", "-") else
+                           f"job {job} step \"{label}\" of {file} running {client} unguarded, and no such step "
+                           f"does") + ": remove the row")
 
 for problem in problems:
     print(problem)
-print(f"check-log-guard: {len(files)} files, {len(findings)} unguarded network commands, every one on {ALLOW}; "
-      f"{unread} steps under another shell not read" if not problems
+print(f"check-log-guard: {len(files)} files and {len(scripts)} scripts, {len(findings)} unguarded network commands, "
+      f"every one on {ALLOW}; {unread} steps under another shell not read" if not problems
       else f"::error::check-log-guard: {len(problems)} problem(s)")
 sys.exit(1 if problems else 0)
 PY

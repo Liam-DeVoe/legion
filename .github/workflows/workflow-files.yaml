@@ -23,9 +23,13 @@ jobs:
     # why: .github/ci-notes/workflow-files.md#why-the-job-holds-no-scope
     permissions: {}
     steps:
+      # why: .github/ci-notes/workflow-files.md#what-the-sparse-checkout-holds
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: .github
+          sparse-checkout: |
+            /.github/
+            *.sh
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       # why: .github/ci-notes/workflow-files.md#what-the-check-step-measures-and-with-which-copy-of-the-check

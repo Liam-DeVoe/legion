@@ -2744,7 +2744,7 @@ check "and still reads the step as its runs, not as everything" \
 
 # .github/scripts/ci-log-guard.sh's wrapper changes nothing a go command compiles, so a guarded step
 # reads as the commands behind it: its pin holds, its runs' closure is what it reads, and the file
-# it sources is a read of its job, so the computed filter takes it (log_guard_read).
+# it sources is a read of its job, so the computed filter takes it (reads_log_guard).
 echo "case: a step that sources ci-log-guard.sh and runs its go command under the wrapper reads as its pin"
 root=$(fixture exact-step-guarded)
 exact_step_table "$root"
@@ -2765,6 +2765,26 @@ replace "$root/.github/workflows/ci.yaml" 'ci_log_guard go test -count=1 "$pkg"'
 run_check "$root"
 check "still holds the command behind the wrapper to the pin" \
   "$(contains "$out" 'its line 2 reads `  go test -count=2 ".pkg"` where the pinned text.s reads `  go test -count=1 ".pkg"`')"
+
+# A job can run the guard through a local composite action a step of which sources it, as the jobs
+# that pull their test images through .github/actions/pull-test-images do: that job's gate reads
+# the guard too (guarded_action).
+echo "case: a job that runs a local composite action sourcing ci-log-guard.sh reads the guard"
+root=$(fixture guard-action)
+ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
+mkdir -p "$root/.github/actions/pull"
+printf 'name: Pull\ndescription: Pull.\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: |\n        echo pulling\n' \
+  >"$root/.github/actions/pull/action.yml"
+replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+  $'      - name: Pull\n        uses: ./.github/actions/pull\n      - name: Test the app'
+run_generate "$root"
+check "control: computed, with no guard in the action, the filter takes no ci-log-guard.sh" \
+  "$(is "$(contains "$(head -1 <<<"$generated")" '^# FAIL-OPEN: ')$(contains "$(filter_of app)" '^\.github/scripts/ci-log-guard\.sh$')" falsefalse)"
+replace "$root/.github/actions/pull/action.yml" "        echo pulling" \
+  $'        . .github/scripts/ci-log-guard.sh\n        ci_log_guard echo pulling'
+run_generate "$root"
+check "with the guard sourced in the action, the computed filter takes it" \
+  "$(is "$(contains "$(head -1 <<<"$generated")" '^# FAIL-OPEN: ')$(contains "$(filter_of app)" '^\.github/scripts/ci-log-guard\.sh$')" falsetrue)"
 
 echo "case: a step pinned whole that runs in another directory is refused, naming both"
 root=$(fixture exact-step-moved)

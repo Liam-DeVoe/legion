@@ -721,11 +721,7 @@ jobs:
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
           STEM: ${{ steps.pi_envoy_handed.outputs.stem }}
         run: |
-          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline because this
-          # job holds the release credentials and runs no script of this repository
-          # (.github/scripts/check-release-credentials.sh): the same format, a fresh token from
-          # /dev/urandom, both markers on stderr, the end marker on a line of its own after the
-          # command exits. The registry's reply that npm copies to the log stays text.
+          # why: .github/ci-notes/release.md#the-inline-stop-commands-block
           ci_log_guard_stderr() {
             local t s=0
             t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
@@ -822,11 +818,7 @@ jobs:
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
           STEM: ${{ steps.pi_legion_handed.outputs.stem }}
         run: |
-          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline because this
-          # job holds the release credentials and runs no script of this repository
-          # (.github/scripts/check-release-credentials.sh): the same format, a fresh token from
-          # /dev/urandom, both markers on stderr, the end marker on a line of its own after the
-          # command exits. The registry's reply that npm copies to the log stays text.
+          # why: .github/ci-notes/release.md#the-inline-stop-commands-block
           ci_log_guard_stderr() {
             local t s=0
             t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
@@ -922,11 +914,7 @@ jobs:
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
           STEM: ${{ steps.claude_envoy_handed.outputs.stem }}
         run: |
-          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline because this
-          # job holds the release credentials and runs no script of this repository
-          # (.github/scripts/check-release-credentials.sh): the same format, a fresh token from
-          # /dev/urandom, both markers on stderr, the end marker on a line of its own after the
-          # command exits. The registry's reply that npm copies to the log stays text.
+          # why: .github/ci-notes/release.md#the-inline-stop-commands-block
           ci_log_guard_stderr() {
             local t s=0
             t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
@@ -1271,11 +1259,7 @@ jobs:
       # why: .github/ci-notes/release.md#why-the-version-tag-is-a-carbon-copy-of-the-manifest-the-build-pushed
       - name: Tag the worker image with the legion version
         run: |
-          # The stop-commands block of .github/scripts/ci-log-guard.sh, written inline because this
-          # job holds release credentials and runs no script of this repository
-          # (.github/scripts/check-release-credentials.sh): a fresh token from /dev/urandom, both
-          # markers on stderr, the end marker on a line of its own after the command exits. The
-          # registry's error that imagetools prints stays text.
+          # why: .github/ci-notes/release.md#the-inline-stop-commands-block
           ci_log_guard_stderr() {
             local t s=0
             t=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')

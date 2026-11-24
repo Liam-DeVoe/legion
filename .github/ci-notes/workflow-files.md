@@ -52,6 +52,15 @@ and GitHub serves a public repository's git data to any valid token, as
 .github/workflows/main-bypass-check.yaml records of its own checkout; the check reads files
 of the tree and writes nothing, here or anywhere.
 
+## What the sparse checkout holds
+
+`.github` and every `*.sh` file of the tree, as non-cone patterns (`/.github/` and `*.sh`, with
+`sparse-checkout-cone-mode: false`; cone mode takes directories alone). check-workflow-files.sh
+reads `.github/workflows` only, but .github/scripts/check-log-guard.sh reads each shell script a
+step runs, under `packages/` and `scripts/` as under `.github/scripts`, and a row of
+.github/log-guard-allow.tsv that names a script this checkout lacked would read as a row no
+command matches. Every script that check reads ends in `.sh`; its `scripts` mode lists them.
+
 ## What the check step measures, and with which copy of the check
 
 A pull request's merge ref is this run's checkout, so a pull request that changes the

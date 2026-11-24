@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Tests for check-log-guard.sh: a network client a step runs outside ci-log-guard.sh fails by name
-# unless .github/log-guard-allow.tsv names it with a reason; a routed one passes; a row naming no
-# command, or giving no reason, fails; and a tree with no workflow fails rather than passes.
+# Tests for check-log-guard.sh: a network client a step runs outside ci-log-guard.sh, itself or in a
+# script it runs, fails by name unless .github/log-guard-allow.tsv names it with a reason; a routed
+# one passes; a row naming no command, or giving no reason, fails; and a tree with no workflow fails
+# rather than passes.
 #
-# The first two cases run over a copy of this repository's own .github: unplanted it passes, and
-# with one unguarded step planted it fails naming that step. The rest run over fixture trees.
+# The first cases run over a copy of this repository's own .github and of the scripts its steps
+# run: unplanted it passes, with one unguarded step planted it fails naming that step, and with
+# ci-filters-generate.sh's base fetch put back unguarded it fails naming that script. The rest run
+# over fixture trees; the reader's forms that run no command are each run under bash too.
 #
 # Run from anywhere: .github/scripts/check-log-guard.test.sh
 # CI runs it in ci.yaml's test job.
@@ -42,11 +45,22 @@ fixture() {
 
 echo "case: this repository's own tree passes, and an unguarded step planted in it fails by name"
 repo=$(cd "$script_dir/../.." && pwd)
-mkdir -p "$work/repo"
-cp -r "$repo/.github" "$work/repo/"
+# copy_repo <dir>: this repository's .github and every other script the check reads, as the
+# check's own `scripts` mode lists them, into <dir>.
+copy_repo() {
+  mkdir -p "$1"
+  cp -r "$repo/.github" "$1/"
+  local listed
+  listed=$(cd "$repo" && .github/scripts/check-log-guard.sh scripts)
+  while IFS= read -r script; do
+    (cd "$repo" && cp --parents -- "$script" "$1")
+  done <<<"$listed"
+}
+copy_repo "$work/repo"
 run_check "$work/repo"
 check "the tree as it is passes" "$(is "$status" 0)"
 check "and says how many commands it read" "$(contains "$out" 'unguarded network commands, every one on')"
+check "and that it read the scripts the steps run" "$(contains "$out" ' files and [1-9][0-9]* scripts, ')"
 cat >>"$work/repo/.github/workflows/ci-job-test.yaml" <<'YAML'
   planted:
     runs-on: ubuntu-24.04
@@ -58,6 +72,123 @@ run_check "$work/repo"
 check "a planted go test outside the guard fails" "$(is "$status" 1)"
 check "naming the file, the job, the step and the command" \
   "$(contains "$out" '::error file=.github/workflows/ci-job-test.yaml::job planted step "Planted test step" runs .go test ./....')"
+
+# The fetch this check could not see while it read only `run:` text: ci-filters-generate.sh's
+# fetch of the base commit, which ci.yaml's changes job runs on every pull request and merge group.
+echo "case: ci-filters-generate.sh's base fetch put back unguarded fails by name"
+copy_repo "$work/repo-fetch"
+generate="$work/repo-fetch/.github/scripts/ci-filters-generate.sh"
+guarded='  { timeout -k 5 60 git fetch -q --no-tags --depth=1 origin "$base" 2>&1 | tail -3; } 2>&1 | ci_log_guard cat'
+check "the copy holds the guarded fetch once" "$(is "$(grep -c -x -F -- "$guarded" "$generate")" 1)"
+python3 - "$generate" "$guarded" <<'PY'
+import sys
+path, guarded = sys.argv[1:]
+text = open(path).read()
+open(path, "w").write(text.replace(guarded + "\n", '  timeout -k 5 60 git fetch -q --no-tags --depth=1 origin "$base" 2>&1 | tail -3\n'))
+PY
+run_check "$work/repo-fetch"
+check "fails" "$(is "$status" 1)"
+check "naming the script, the step that runs it and the fetch" \
+  "$(contains "$out" '^::error file=.github/scripts/ci-filters-generate.sh::the script .github/scripts/ci-filters-generate.sh (job changes step "[^"]*" of .github/workflows/ci.yaml runs it) runs .timeout -k 5 60 git fetch -q --no-tags --depth=1 origin \$base 2., a git command')"
+check "and counts that one problem" "$(contains "$out" '^::error::check-log-guard: 1 problem(s)$')"
+
+# A script is the first word of a command the step does not route, read through an interpreter,
+# a runner or `.`, from the repository root ($GITHUB_WORKSPACE, ${{ github.workspace }}), the step's
+# working directory, or a composite action's own ($GITHUB_ACTION_PATH); a script it runs is read
+# too, and a script run under the guard is not.
+echo "case: each script a step runs, and each script such a script runs, is read as a step is"
+root=$(fixture scripts "$(cat <<'SH'
+.github/scripts/fetch.sh
+bash scripts/by-interpreter.sh
+"$GITHUB_WORKSPACE/scripts/by-workspace.sh" x
+timeout 60 ./scripts/behind-runner.sh
+. scripts/sourced.sh
+${{ github.workspace }}/scripts/by-expression.sh
+ci_log_guard scripts/guarded-whole.sh
+SH
+)")
+mkdir -p "$root/scripts" "$root/sub" "$root/.github/actions/act"
+printf '#!/usr/bin/env bash\ngit fetch origin main\nscripts/nested.sh\n' >"$root/.github/scripts/fetch.sh"
+printf 'curl -sS https://example.com/a\n' >"$root/scripts/by-interpreter.sh"
+printf 'gh api repos/o/r\n' >"$root/scripts/by-workspace.sh"
+printf 'go build ./x\n' >"$root/scripts/behind-runner.sh"
+printf 'docker pull ghcr.io/o/i\n' >"$root/scripts/sourced.sh"
+printf 'crane copy a b\n' >"$root/scripts/by-expression.sh"
+printf 'go vet ./...\n' >"$root/scripts/guarded-whole.sh"
+printf '#!/bin/sh\ngo test ./...\n' >"$root/scripts/nested.sh"
+printf 'sudo apt-get install -y x\n' >"$root/sub/tool.sh"
+printf 'npm install\n' >"$root/.github/scripts/action-script.sh"
+printf 'on: push\njobs:\n  wd:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Tool\n        working-directory: sub\n        run: ./tool.sh\n' \
+  >"$root/.github/workflows/wd.yaml"
+printf 'runs:\n  using: composite\n  steps:\n    - name: Run\n      shell: bash\n      run: "\\"$GITHUB_ACTION_PATH/../../scripts/action-script.sh\\""\n' \
+  >"$root/.github/actions/act/action.yml"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+by_fetch='(job app step "Fetch" of .github/workflows/app.yaml runs it)'
+for found in ".github/scripts/fetch.sh $by_fetch runs .git fetch origin main." \
+  "scripts/nested.sh $by_fetch runs .go test ./..." \
+  "scripts/by-interpreter.sh $by_fetch runs .curl -sS https://example.com/a." \
+  "scripts/by-workspace.sh $by_fetch runs .gh api repos/o/r." \
+  "scripts/behind-runner.sh $by_fetch runs .go build ./x." \
+  "scripts/sourced.sh $by_fetch runs .docker pull ghcr.io/o/i." \
+  "scripts/by-expression.sh $by_fetch runs .crane copy a b." \
+  'sub/tool.sh (job wd step "Tool" of .github/workflows/wd.yaml runs it) runs .sudo apt-get install -y x.' \
+  '.github/scripts/action-script.sh (job - step "Run" of .github/actions/act/action.yml runs it) runs .npm install.'; do
+  check "names \`${found%% *}\`" "$(contains "$out" "::the script $found")"
+done
+check "reads no script the step runs under the guard" "$(is "$(contains "$out" 'guarded-whole')" false)"
+check "and counts nine problems" "$(contains "$out" '^::error::check-log-guard: 9 problem(s)$')"
+
+echo "case: a row naming a script allows its command, and a row naming a client the script runs not fails"
+root=$(fixture script-rows '.github/scripts/fetch.sh' \
+  "$(printf '.github/scripts/fetch.sh\t-\t-\tgit\tit fetches a repository the job made on disk\n.github/scripts/fetch.sh\t-\t-\tcurl\tits curl is gone')")
+printf 'git fetch origin main\n' >"$root/.github/scripts/fetch.sh"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the row of the client the script does not run" \
+  "$(contains "$out" 'row 3 names the script .github/scripts/fetch.sh running curl unguarded, and no script a step runs does: remove the row')"
+check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 1 problem(s)$')"
+
+# The reader's forms that run no command, each proved against bash: the body runs under bash with
+# a stand-in for each client on PATH that logs its name, and the check names exactly the clients
+# bash ran. An ANSI-C string, a word after a `$(…)`, a case pattern, a here-document's body, the
+# name of a function `()` defines and arithmetic's `<<` run nothing; the command inside the case
+# item does, and so does `command curl`, which skips the function. A ci_log_guard_stderr call in a
+# string that a line before opened is text, and one after the string closes is a call.
+echo "case: the forms that run no command read as none, as bash runs them"
+cat >"$work/forms.sh" <<'SH'
+v=$'curl -sS https://example.com/a \' still quoted'
+v=curl
+echo "$(printf x)" gh api repos/o/r
+case "$v" in
+  curl | jq) gh api repos/o/s ;;
+  *) ;;
+esac
+cat <<'EOF' >/dev/null
+curl -sS https://example.com/b
+EOF
+curl() { echo "the function named curl"; }
+n=$(( 1 << 2 ))
+msg="a string a line opens
+ci_log_guard_stderr gh api repos/o/t" ; ci_log_guard_stderr gh api repos/o/u
+command curl -sS https://example.com/c
+SH
+mkdir -p "$work/bin"
+for client in curl gh jq; do
+  printf '#!/bin/sh\necho %s >>"%s/ran"\n' "$client" "$work" >"$work/bin/$client"
+  chmod +x "$work/bin/$client"
+done
+: >"$work/ran"
+(cd "$work" && PATH="$work/bin:$PATH" bash -c ". '$script_dir/ci-log-guard.sh'; . ./forms.sh" >/dev/null 2>&1)
+check "bash runs gh twice and curl once" "$(is "$(tr '\n' ' ' <"$work/ran")" "gh gh curl ")"
+root=$(fixture forms "$(cat "$work/forms.sh")")
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the case item's gh" "$(contains "$out" 'step "Fetch" runs .gh api repos/o/s.')"
+check "names the command curl" "$(contains "$out" 'step "Fetch" runs .command curl -sS https://example.com/c.')"
+check "names the stderr guard after the string, and not the one inside it" \
+  "$(contains "$out" 'runs .ci_log_guard_stderr gh api repos/o/t" ; ci_log_guard_stderr gh api repos/o/u.: ci_log_guard_stderr blocks only stderr')"
+check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 3 problem(s)$')"
 
 echo "case: each routed form passes"
 root=$(fixture routed "$(cat <<'SH'
