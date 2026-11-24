@@ -1061,7 +1061,7 @@ const assignmentPlanContract = 220
 // moves that constant, and the contract the key and the two answers arrived at stays where it is.
 const intakeGiveUpsContract = 228
 
-// projectReleaseContract is the daemon contract that added the project release (version.go's 240,
+// projectReleaseContract is the daemon contract that added the project release (version.go's 241,
 // dispatch://INFRA-3583). It added keys to two answers a plugin parses: `projectRelease`, the
 // project's newest project release and its result, to the state, and `heldPods`, each pod a pause
 // still holds, to a refusal (api.PauseFailure, which the release's own route answers while a pause
@@ -1074,7 +1074,7 @@ const intakeGiveUpsContract = 228
 // push and end their turn on that same body. repositoriesLiveContract stands below it, and the two
 // rows of stateNarrowings between the two are assignmentPlanContract's, which takes each
 // assignment's `plan` off below 220, and intakeGiveUpsContract's, which takes `intakeGiveUps` off
-// below 228, so a caller at or above repositoriesLiveContract and below this contract, 202 to 239,
+// below 228, so a caller at or above repositoriesLiveContract and below this contract, 202 to 240,
 // is served the `live` block and not `projectRelease`. The release's six enumerated fields
 // (answers.go's releaseOutcomes and the rows beside it) arrived with the key at this contract and
 // ride its band, so no value strip is owed. The release's own two routes answer the `legion`
@@ -1086,7 +1086,7 @@ const intakeGiveUpsContract = 228
 // the number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
 // answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason, as it names cachesSourceContract.
-const projectReleaseContract = 240
+const projectReleaseContract = 241
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

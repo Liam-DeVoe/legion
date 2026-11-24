@@ -1177,7 +1177,7 @@
     "values": [
       {
         "value": "boot",
-        "since": 240
+        "since": 241
       }
     ]
   },
@@ -1187,23 +1187,23 @@
     "values": [
       {
         "value": "cache",
-        "since": 240
+        "since": 241
       },
       {
         "value": "controller",
-        "since": 240
+        "since": 241
       },
       {
         "value": "issue",
-        "since": 240
+        "since": 241
       },
       {
         "value": "probe",
-        "since": 240
+        "since": 241
       },
       {
         "value": "unknown",
-        "since": 240
+        "since": 241
       }
     ]
   },
@@ -1213,31 +1213,31 @@
     "values": [
       {
         "value": "deleted",
-        "since": 240
+        "since": 241
       },
       {
         "value": "deleted_clean",
-        "since": 240
+        "since": 241
       },
       {
         "value": "deleted_lost",
-        "since": 240
+        "since": 241
       },
       {
         "value": "deleted_read_refused",
-        "since": 240
+        "since": 241
       },
       {
         "value": "deleted_unread",
-        "since": 240
+        "since": 241
       },
       {
         "value": "left",
-        "since": 240
+        "since": 241
       },
       {
         "value": "waiting",
-        "since": 240
+        "since": 241
       }
     ]
   },
@@ -1247,27 +1247,27 @@
     "values": [
       {
         "value": "architect",
-        "since": 240
+        "since": 241
       },
       {
         "value": "implementer",
-        "since": 240
+        "since": 241
       },
       {
         "value": "merger",
-        "since": 240
+        "since": 241
       },
       {
         "value": "planner",
-        "since": 240
+        "since": 241
       },
       {
         "value": "reviewer",
-        "since": 240
+        "since": 241
       },
       {
         "value": "tester",
-        "since": 240
+        "since": 241
       }
     ]
   },
@@ -1277,31 +1277,31 @@
     "values": [
       {
         "value": "architect",
-        "since": 240
+        "since": 241
       },
       {
         "value": "controller",
-        "since": 240
+        "since": 241
       },
       {
         "value": "implementer",
-        "since": 240
+        "since": 241
       },
       {
         "value": "merger",
-        "since": 240
+        "since": 241
       },
       {
         "value": "planner",
-        "since": 240
+        "since": 241
       },
       {
         "value": "reviewer",
-        "since": 240
+        "since": 241
       },
       {
         "value": "tester",
-        "since": 240
+        "since": 241
       }
     ]
   },
@@ -1311,71 +1311,71 @@
     "values": [
       {
         "value": "daemon",
-        "since": 240
+        "since": 241
       },
       {
         "value": "exit",
-        "since": 240
+        "since": 241
       },
       {
         "value": "failed",
-        "since": 240
+        "since": 241
       },
       {
         "value": "idle",
-        "since": 240
+        "since": 241
       },
       {
         "value": "launch_uncertain",
-        "since": 240
+        "since": 241
       },
       {
         "value": "launching",
-        "since": 240
+        "since": 241
       },
       {
         "value": "operator",
-        "since": 240
+        "since": 241
       },
       {
         "value": "project_release",
-        "since": 240
+        "since": 241
       },
       {
         "value": "queued",
-        "since": 240
+        "since": 241
       },
       {
         "value": "ready",
-        "since": 240
+        "since": 241
       },
       {
         "value": "registered",
-        "since": 240
+        "since": 241
       },
       {
         "value": "released",
-        "since": 240
+        "since": 241
       },
       {
         "value": "retired",
-        "since": 240
+        "since": 241
       },
       {
         "value": "shim_connected",
-        "since": 240
+        "since": 241
       },
       {
         "value": "unknown",
-        "since": 240
+        "since": 241
       },
       {
         "value": "unrecorded",
-        "since": 240
+        "since": 241
       },
       {
         "value": "working",
-        "since": 240
+        "since": 241
       }
     ]
   },

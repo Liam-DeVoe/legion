@@ -154,7 +154,7 @@ const schemas: Record<string, z.ZodType> = {
   // pushed everything it wants kept and its process may be replaced.
   "ready-for-update.json": LegionReadyForUpdateRequest,
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
-  // refused turns the claim now ends with and whether this report failed it.
+  // refused turns the claim now ends with (`LegionTurnOutcomeResponse` says what `failed` holds).
   "turn-outcome.json": LegionTurnOutcomeResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
@@ -190,7 +190,7 @@ const schemas: Record<string, z.ZodType> = {
   // the others name something beside the sentence: the setting that turns the pause off (none
   // from a daemon that runs no workflow), the pause that stands for a second pause and for a turn
   // refused while the project is paused, and the last pause for a resume of a project that runs.
-  // Contract 240 adds the two refusals between the pause and the project release: a pause while a
+  // Contract 241 adds the two refusals between the pause and the project release: a pause while a
   // release runs (`PROJECT_RELEASING`, which names nothing beside its sentence) and a release while
   // a pause holds the project (`PROJECT_PAUSED`, naming the pause and each pod a pause holds).
   "project-pause.json": LegionProjectPauseResponse,
@@ -2802,7 +2802,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // fixture does not hold. Four bands stand above 199: the repositories block's at 202, contract
   // 220's, which takes `plan` off each assignment, so the golden's rows are compared without it,
   // the intake's give-ups' at 228, so the narrowing leaves `intakeGiveUps` off, and the project
-  // release's at 240, which takes the state's `projectRelease` off for every caller below it
+  // release's at 241, which takes the state's `projectRelease` off for every caller below it
   // (`withoutProjectRelease`). One value strip stands above 199 as well: `caches`, the source of
   // the repository-cache-room row, arrived at contract 213, so that row is served here without
   // its `source`, every other field of it and every other row as the state golden holds them.
@@ -3196,7 +3196,7 @@ test("the state goldens carry the pause that stands and the last pause, and both
 // session the read set names at every path that reaches it. Each refusal names what its code
 // names beside its sentence, and nothing else: the setting that turns the pause off, the pause
 // that stands, or the last pause. The daemon client reads a refusal through the plain refusal
-// shape, which keeps the code and the sentence of every one of them. Contract 240's two refusals
+// shape, which keeps the code and the sentence of every one of them. Contract 241's two refusals
 // between the pause and the project release are among them: a pause while a release runs names
 // nothing beside its sentence, and a release while a pause holds the project names the pause that
 // stands and each pod a pause still holds, with the claims of it stored suspended by `released`;
