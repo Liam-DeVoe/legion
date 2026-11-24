@@ -145,7 +145,13 @@ const WORLD_REQUEST = {
       phase: null,
     },
   ],
-  gate: { issue: "DEMO-1", step: "spec", version: 2, approved: true },
+  gate: {
+    issue: "DEMO-1",
+    step: "spec",
+    version: 2,
+    approved: true,
+    artifactId: "spec-demo-1",
+  },
   subject: "DEMO-2",
   plan: PLAN,
   earlier: [
@@ -268,6 +274,28 @@ test("a world request with a plan and no task id does not parse", () => {
       "a plan with an empty task id": [
         WorldRequest,
         { ...WORLD_REQUEST, plan: { ...PLAN, task: "" } },
+      ],
+    })
+  ).toEqual([]);
+});
+
+test("a world request whose gate has no artifactId does not parse", () => {
+  const gate = WORLD_REQUEST.gate as Record<string, unknown>;
+  expect(
+    parsing({
+      "a gate with its artifactId": [WorldRequest, WORLD_REQUEST],
+      "no gate": [WorldRequest, { ...WORLD_REQUEST, gate: null }],
+    })
+  ).toEqual(["a gate with its artifactId", "no gate"]);
+  expect(
+    parsing({
+      "a gate with no artifactId": [
+        WorldRequest,
+        { ...WORLD_REQUEST, gate: without(gate, "artifactId") },
+      ],
+      "a gate with an empty artifactId": [
+        WorldRequest,
+        { ...WORLD_REQUEST, gate: { ...gate, artifactId: "" } },
       ],
     })
   ).toEqual([]);
