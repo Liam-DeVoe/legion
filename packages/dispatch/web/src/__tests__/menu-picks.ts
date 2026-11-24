@@ -1,34 +1,29 @@
 import { screen, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
-import { controlledBy } from "./list-picks";
+import { panelOf } from "./list-picks";
 
-/** The open menu `trigger` names in `aria-controls`: only its choices count, never a control of
- *  the page behind it or of another menu. */
-function menuOf(trigger: HTMLElement): HTMLElement {
-  return controlledBy(trigger, "the trigger names no open menu");
-}
-
-/** The choice of `trigger`'s open menu that `name` names: an action (`menuitem`) or a value
- *  (`menuitemradio`). */
+/** The choice of the open list `trigger` opened that `name` names (`option`): only that list's
+ *  choices count, never a control of the page behind it or of another list. The snooze, the
+ *  priority and the status are single picks in a menu's place (`MultiSelect`'s `menu`). */
 export function choiceOf(trigger: HTMLElement, name: string): HTMLElement {
-  const menu = within(menuOf(trigger));
-  return menu.queryByRole("menuitemradio", { name }) ?? menu.getByRole("menuitem", { name });
+  return within(panelOf(trigger)).getByRole("option", { name });
 }
 
-/** The names of the choices `trigger`'s menu offers, in order, read with the menu opened by a
- *  press on the trigger and closed again by Escape. */
+/** The names of the choices `trigger`'s list offers, in order - each choice's words, without the
+ *  mark of the picked one or the digit drawn beside it - read with the list opened by a press on
+ *  the trigger and closed again by Escape. */
 export async function choicesOf(user: UserEvent, trigger: HTMLElement): Promise<string[]> {
   await user.click(trigger);
-  const names = [
-    ...menuOf(trigger).querySelectorAll('[role="menuitem"], [role="menuitemradio"]'),
-  ].map((choice) => choice.querySelector(":scope > span:not([aria-hidden])")?.textContent ?? "");
+  const names = [...panelOf(trigger).querySelectorAll('[role="option"]')].map(
+    (choice) => choice.querySelector(":scope > span:not([aria-hidden])")?.textContent ?? ""
+  );
   await user.keyboard("{Escape}");
   return names;
 }
 
-/** Picks `name` from the menu `trigger` opens, as a reader's two presses do: one on the
- *  trigger, one on the choice (`ChoiceMenu`: the snooze, the priority, the status). */
+/** Picks `name` from the list `trigger` opens, as a reader's two presses do: one on the trigger,
+ *  one on the choice. */
 export async function pickFromMenu(
   user: UserEvent,
   trigger: HTMLElement,
@@ -38,7 +33,7 @@ export async function pickFromMenu(
   await user.click(choiceOf(trigger, name));
 }
 
-/** Whether a menu is open anywhere on the page. */
+/** Whether a list is open anywhere on the page. */
 export function menuOpen(): boolean {
-  return screen.queryByRole("menu") !== null;
+  return screen.queryByRole("listbox") !== null;
 }

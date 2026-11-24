@@ -140,7 +140,7 @@ export function AnchoredPanel({
   onDismiss: (how: PanelDismissal) => void;
   /** Where Escape and Tab out of the panel put the focus, read as they do: the anchor where
    *  this answers null or is not given. A menu answers the element that had the focus before
-   *  it opened (`ChoiceMenu`). */
+   *  it opened (`ChoiceMenu`, and a single pick in a menu's place, `MultiSelect`'s `menu`). */
   returnFocus?: () => HTMLElement | null;
   role?: "dialog" | "menu";
 }): ReactNode {

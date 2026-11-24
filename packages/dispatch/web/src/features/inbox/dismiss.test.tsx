@@ -444,7 +444,7 @@ test("the bulk bar offers Snooze for the asks among the selection and Dismiss fo
   await screen.findByText("2 selected");
   expect(screen.getByRole("button", { name: "Snooze selected asks" })).toHaveAttribute(
     "aria-haspopup",
-    "menu"
+    "listbox"
   );
 
   await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));

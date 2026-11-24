@@ -22,11 +22,20 @@ export function listOf(box: Element): HTMLElement {
   return controlledBy(box, "the text box names no list");
 }
 
+/** An option's text, less the digit a choice of a single pick in a menu's place draws beside its
+ *  words for the eye (`kbd`, `MultiSelect`'s `menu`): the tick of the picked one, then its label. */
+function optionText(option: Element): string {
+  const copy = option.cloneNode(true) as Element;
+  for (const digit of copy.querySelectorAll("kbd")) digit.remove();
+  return copy.textContent ?? "";
+}
+
 /** The row a list's text box `box` highlights (`aria-activedescendant`), as its text without the
  *  tick of the picked one; undefined while the box highlights none, or there is no box. */
 export function highlightedRow(box: Element | null): string | undefined {
   const id = box?.getAttribute("aria-activedescendant");
-  return document.getElementById(id ?? "")?.textContent?.replace("✓", "");
+  const row = document.getElementById(id ?? "");
+  return row === null ? undefined : optionText(row).replace("✓", "");
 }
 
 /** The panel of the list `trigger` opened: the list is portalled to the body, outside the
@@ -51,9 +60,7 @@ export async function openList(user: UserEvent, label: string): Promise<HTMLElem
 
 /** The open list's rows, each as its whole text: the tick of the picked one, then its label. */
 export function rows(list: HTMLElement): string[] {
-  return within(list)
-    .getAllByRole("option")
-    .map((option) => option.textContent ?? "");
+  return within(list).getAllByRole("option").map(optionText);
 }
 
 /** Opens the single pick labelled `label` and picks the row named `name` once it is listed. */

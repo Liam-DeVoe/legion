@@ -582,8 +582,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   };
 
   // Opening starts a fresh search on the value a single pick holds - or on what the key that
-  // opened it says: the character typed on the closed trigger in the text box, or the row a move
-  // key steps to (`keysOnTrigger`); the panel hands the focus to the search unless the host hands
+  // opened it says: the character typed on the closed trigger in the text box, with its first
+  // match highlighted as typing into the box highlights it, or the row a move key steps to
+  // (`keysOnTrigger`); the panel hands the focus to the search unless the host hands
   // it in itself (`focusOnOpen`), and a menu opened on a coarse pointer gives it to its list
   // rather than to the box. Closing gives the focus back - to the trigger, or where a menu's goes
   // - when the close left it nowhere - the list that held it is gone - and leaves a focus that is
@@ -598,7 +599,11 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       openedBy.current = undefined;
       setQuery(by?.query ?? "");
       setActiveValue(
-        by?.key === undefined ? opensOn.current : stepTo(by.key, opensWith.current, opensOn.current)
+        by === undefined
+          ? opensOn.current
+          : by.key === undefined
+            ? undefined
+            : stepTo(by.key, opensWith.current, opensOn.current)
       );
       if (opensBare.current) listboxRef.current?.focus();
     } else if (wasOpen.current) {

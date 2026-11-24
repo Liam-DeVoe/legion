@@ -403,11 +403,11 @@ test("the header keeps state actions available while approval awaits", async () 
     const stateActions = screen.getByTestId("issue-state-actions");
     expect(within(stateActions).getByRole("button", { name: pickNamed("Status") })).toHaveAttribute(
       "aria-haspopup",
-      "menu"
+      "listbox"
     );
     expect(
       within(stateActions).getByRole("button", { name: pickNamed("Priority of CORE-1") })
-    ).toHaveAttribute("aria-haspopup", "menu");
+    ).toHaveAttribute("aria-haspopup", "listbox");
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
     // Close is an action, not a property, so it sits behind row one's one actions control.
@@ -891,11 +891,8 @@ test("the header lets a human move a Todo issue to In progress", async () => {
     ]);
 
     await user.click(status);
-    expect(screen.getByRole("menuitemradio", { name: "Todo" })).toHaveAttribute(
-      "aria-checked",
-      "true"
-    );
-    await user.click(screen.getByRole("menuitemradio", { name: "In progress" }));
+    expect(screen.getByRole("option", { name: "Todo" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("option", { name: "In progress" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );

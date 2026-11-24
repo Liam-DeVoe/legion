@@ -400,7 +400,11 @@ function DrawnBar({
   const ownRef = useRef<HTMLElement>(null);
   const ref = barRef ?? ownRef;
   // What inside the bar took the focus last, the bar's own element included, until the reader
-  // moves the focus off it: a focus event bubbles up to the bar from every control in it.
+  // moves the focus off it: a focus event bubbles up to the bar from every control in it. Only a
+  // control in the bar's own element counts. React also bubbles the focus of a list a control of
+  // the bar opened (the Snooze's text box, portalled out of the bar), and that list gives the
+  // focus back itself as it closes, to where it was as it opened - the page itself where nothing
+  // had it (`MultiSelect`'s `menu`) - which the bar must not take for a control of its own gone.
   const focused = useRef<Element | null>(null);
   // The cleanup runs before React takes the element out of the page, the one moment the focus
   // can still be read inside it: the removal itself drops it onto the body.
@@ -431,7 +435,7 @@ function DrawnBar({
       className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-col gap-2 rounded-2xl border text-sm shadow-xl outline-none focus-visible:ring-2 sm:top-auto sm:bottom-4 ${BAR_BOX[size]} ${card} ${textPrimaryOnCanvas} ${focusVisibleRing}`}
       data-control={CONTROL.selectionBar}
       onFocus={(event) => {
-        focused.current = event.target;
+        if (event.currentTarget.contains(event.target)) focused.current = event.target;
       }}
       // The element is always this one, so a caller holding a ref to the bar as an `HTMLElement`
       // - all a keymap needs to focus it - is handed exactly what it asked for.

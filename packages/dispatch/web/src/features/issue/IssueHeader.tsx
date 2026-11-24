@@ -24,9 +24,9 @@ import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery, whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
-import { ChoiceMenu } from "../../components/ChoiceMenu";
 import { focusOnMount } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
+import { type ListMarks, type ListMenu, MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -66,7 +66,12 @@ import { ApprovalChip } from "../doc/ApprovalChip";
 import { outsideAskCard } from "../inbox/ask-card";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
-import { issueStatuses, openIssueStatuses, statusLabel, statusText } from "../project/board-model";
+import {
+  isIssueStatus,
+  issueStatuses,
+  openIssueStatuses,
+  statusText,
+} from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
@@ -104,6 +109,14 @@ const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
  *  one the reader is on that turn, not on the header, so the header's Approve and Request
  *  changes keys stand down. */
 const CONVERSATION_TURN = `#issue-conversation-panel :is(${TURN_ROW})`;
+
+/** The status list's trigger mark, which the page's `s` finds it by (`IssuePage.tsx`). */
+const STATUS_MARKS: ListMarks = { trigger: { "data-status-menu": "" } };
+
+/** D5's rules for the status (`ListMenu`): the list opens on the status held and takes no digit,
+ *  and every close gives the focus back where it was as the list opened - the page or the
+ *  element `s` was pressed on, or the trigger a press opened it from. */
+const STATUS_MENU: ListMenu = { keys: {}, opensOn: "value" };
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and
@@ -255,9 +268,11 @@ export function IssueHeader({
   ]);
   const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
   const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
-  // What the status menu's trigger shows: the status a pick is saving, else the issue's.
-  const statusShown = statusText(pendingStatus ?? issue.status);
+  // What the status list's trigger shows: the status a pick is saving, else the issue's.
+  const statusValue = pendingStatus ?? issue.status;
+  const statusShown = statusText(statusValue);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
+  const [statusOpen, setStatusOpen] = useState(false);
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
@@ -550,30 +565,41 @@ export function IssueHeader({
           className="flex w-full min-w-0 flex-wrap items-center gap-2 md:w-auto"
           data-testid="issue-state-actions"
         >
-          {/* The status menu: on an open issue every open status, since Close issue is an open
+          {/* The status list: on an open issue every open status, since Close issue is an open
               issue's one way into Done; on a closed issue every status, its own Done among them,
-              and disabled, since its way back is Reopen. The current status is checked. Held
-              while a write is out, so the focus a status pick hands back to it stays there. */}
-          <ChoiceMenu
-            checked={pendingStatus ?? issue.status}
-            choices={selectableStatuses.map((status) => ({
-              label: statusLabel(status),
-              value: status,
-            }))}
+              and disabled, since its way back is Reopen. The current status is picked. Held
+              while a write is out, so the focus a status pick hands back stays where it went.
+              It takes D5's rules (`STATUS_MENU`): the issue page's `s` opens it on the status
+              held, and every close gives the focus back where it was as the list opened. */}
+          <MultiSelect
+            ariaDisabled={fieldHeld}
+            chevron={false}
             disabled={isClosed}
-            face={statusShown}
-            held={fieldHeld}
+            emptyMessage="No status matches that."
             label="Status"
-            marks={{ "data-status-menu": "" }}
-            onChoose={drafts.requestStatusSubmit}
+            marks={STATUS_MARKS}
+            menu={STATUS_MENU}
+            mode="single"
+            onOpenChange={(next) => setStatusOpen(next && !fieldHeld)}
+            onPick={(picked) => {
+              if (fieldHeld || picked === statusValue || !isIssueStatus(picked)) return;
+              drafts.requestStatusSubmit(picked);
+            }}
+            open={statusOpen}
+            optionLabel={statusText}
+            options={selectableStatuses}
+            searchLabel="Search statuses"
             triggerClassName={`flex min-h-11 shrink-0 cursor-pointer items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide outline-none focus-visible:ring-2 refused:cursor-not-allowed refused:opacity-50 sm:px-3 md:min-h-8 xl:px-2 ${focusVisibleRing} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+            value={statusValue}
           >
-            <span
-              aria-hidden="true"
-              className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
-            />
-            {statusShown}
-          </ChoiceMenu>
+            <span className="flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
+              />
+              {statusShown}
+            </span>
+          </MultiSelect>
           <PriorityEditor
             disabled={isClosed}
             held={fieldHeld}

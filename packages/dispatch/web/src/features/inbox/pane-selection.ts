@@ -73,6 +73,17 @@ export interface InboxHandOff {
 export const InboxHandOffContext = createContext<InboxHandOff | undefined>(undefined);
 
 /**
+ * A press of a write on a short row beside the reading column that is not the item in hand: its
+ * Snooze, its Assign to me or its hand-on, which the row draws only while that write is out or
+ * refused (`AskShortRow`). R8 hands the reader on from the item in hand alone, so such a press
+ * hands nobody on, and this runs at the press, before the write: a focus the press left in that
+ * row, which the write may take out of the list, goes first, with no scroll, to the item being
+ * read, as a Dismiss on such a row sends it (`Inbox.tsx`, `asideFromRow`). Undefined everywhere
+ * else - on the item in hand, in a card, outside an Inbox - where a press is the item in hand's.
+ */
+export const RowAsideContext = createContext<(() => void) | undefined>(undefined);
+
+/**
  * The row the reader goes to after acting on the rows `acted` (R8), in `drawn`, the rows as the
  * reader sees them: the first row after the last acted one, else the nearest row before it that
  * was not acted on, else none. A row the action is on is never the answer, so a bulk action's
@@ -526,12 +537,12 @@ export function usePaneSelection({
 
   // The hand-off's focus, after every commit: the row the reader's action sends them to, or the
   // list's empty message, takes the keyboard focus once the page draws it, and is scrolled into
-  // view as the rescue's landing is (`focusIntoView`), since WebKit scrolls a focused element into
-  // view only a frame later. After every commit, because the acted row and the control that held
-  // the focus leave in their own commits - a closing dialog's own return of the focus
-  // (`useDialog`), the column's card swapped for the next one, a row taken off the list - and a
-  // passive effect runs after their cleanups, so the target wins over each of them and over the
-  // page's rescue, which waits a frame and a task.
+  // view where the reader cannot see the whole of it (`focusIntoView`), since WebKit scrolls a
+  // focused element into view only a frame later; a row in sight moves nothing. After every
+  // commit, because the acted row and the control that held the focus leave in their own commits
+  // - a closing dialog's own return of the focus (`useDialog`), the column's card swapped for the
+  // next one, a row taken off the list - and a passive effect runs after their cleanups, so the
+  // target wins over each of them and over the page's rescue, which waits a frame and a task.
   // The empty message is drawn only once the acted rows have gone, so the hand-off waits for it
   // while they are still drawn, and is spent once they have gone without it.
   //

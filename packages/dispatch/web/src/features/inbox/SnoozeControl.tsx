@@ -1,14 +1,19 @@
 import { createContext, type ReactNode, useContext, useState } from "react";
 import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
-import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
+import {
+  type ListMarks,
+  type ListMenu,
+  type MenuDigit,
+  MultiSelect,
+} from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectTrigger, badgeSelectWrapper } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
 import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { inboxActionMark } from "./inbox-action-mark";
-import { InboxHandOffContext } from "./pane-selection";
-import { isIndefinite, SNOOZE_PRESETS } from "./snooze";
+import { InboxHandOffContext, RowAsideContext } from "./pane-selection";
+import { isIndefinite, snoozeChoices, snoozeOf } from "./snooze";
 import { type AskSnoozePress, type SnoozeSettled, useAskSnooze } from "./useAskSnooze";
 
 /** No ask: a control drawn outside an Inbox has no selection bar over it. */
@@ -24,8 +29,28 @@ const NO_BULK_SNOOZING: ReadonlySet<string> = new Set();
  */
 export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BULK_SNOOZING);
 
-/** The presets' ids, in the order the list offers them. */
-const PRESET_IDS: readonly string[] = SNOOZE_PRESETS.map((preset) => preset.id);
+/** Every choice the list can offer - the presets, and Un-snooze on a snoozed item - which the
+ *  list's digits and words are read from. */
+const ALL_CHOICES = snoozeChoices(true);
+
+/** The list's options, in the order it offers them: on an item not snoozed, and on one that is. */
+const OPTIONS = {
+  plain: snoozeChoices(false).map(({ value }) => value),
+  snoozed: ALL_CHOICES.map(({ value }) => value),
+} as const;
+
+/** The value each digit writes: the presets' `1` to `4`, and Un-snooze's `0`. */
+function digitKeys(): Partial<Record<MenuDigit, string>> {
+  const keys: Partial<Record<MenuDigit, string>> = {};
+  for (const { digit, value } of ALL_CHOICES) keys[digit] = value;
+  return keys;
+}
+
+/** D5's rules (`ListMenu`): the list opens on its first choice, the presets are its `1` to `4`
+ *  and Un-snooze its `0`, a digit the list does not offer - Un-snooze on an item not snoozed -
+ *  writing nothing. Every close gives the focus back where it was as the list opened: the row or
+ *  the checkbox a key pressed the trigger from, or the trigger a press opened it from. */
+const SNOOZE_MENU: ListMenu = { keys: digitKeys(), opensOn: "first" };
 
 const ROW_SNOOZE_ATTRIBUTE = "data-inbox-snooze";
 const ROW_SNOOZE_MARKS: ListMarks = { trigger: { [ROW_SNOOZE_ATTRIBUTE]: "" } };
@@ -43,14 +68,19 @@ export const BULK_PICKER_SELECTOR = `[${BULK_PICKER_ATTRIBUTE}]`;
 
 /**
  * The Snooze badge and the list it opens: the badge is the trigger of the shared list's single
- * pick (`MultiSelect`) of `snooze.ts`'s presets, and the list's text box narrows them as the
+ * pick (`MultiSelect`) of `snooze.ts`'s choices, and the list's text box narrows them as the
  * reader types. A row's own Snooze (`SnoozeControl`) and the selection bar's (`Inbox.tsx`) are
  * this control, and the Inbox's `b` and `h` press its trigger, which the host finds by `marks`.
+ * It takes D5's rules (`SNOOZE_MENU`): it opens on Later today, each preset is picked by its
+ * digit as well as by Enter or a click, and every close hands the focus back where it was as the
+ * list opened - so a snooze whose write takes the item away takes the focus from the row the key
+ * was pressed on, which the Inbox's hand-off reads (R8).
  * The badge shows `badge` for the eye alone (`aria-hidden`), so the trigger's name is `label`
  * alone, whatever the badge says. A pick hands `onPick` the moment its preset names, computed at
- * the pick, not when the page rendered. While `held` - a write is out that the pick would race -
- * the trigger is `aria-disabled`, never `disabled`, so it keeps the reader's focus: a press of it
- * opens no list, and a pick from a list that stood open as the hold began writes nothing.
+ * the pick, not when the page rendered, and Un-snooze, offered where `onUnsnooze` is given, calls
+ * that. While `held` - a write is out that the pick would race - the trigger is `aria-disabled`,
+ * never `disabled`, so it keeps the reader's focus: a press of it opens no list, and a pick from
+ * a list that stood open as the hold began writes nothing.
  */
 export function SnoozePick({
   badge,
@@ -59,6 +89,7 @@ export function SnoozePick({
   marks,
   onPick,
   onTriggerFocus,
+  onUnsnooze,
   shortcutKeys,
 }: {
   badge: string;
@@ -69,6 +100,9 @@ export function SnoozePick({
   onPick: (until: string) => void;
   /** The focus arriving on the trigger from outside the list (`MultiSelect`'s). */
   onTriggerFocus?: (from: Element | null) => void;
+  /** Ends the snooze of an item already snoozed: given, the list offers Un-snooze, on `0`. The
+   *  selection bar's list, and a row not snoozed, offer none. */
+  onUnsnooze?: () => void;
   /** The keys that open the list, where the host draws them on the trigger (the reading pane's
    *  head: `b` and `h`, or the person's own). */
   shortcutKeys?: readonly string[];
@@ -82,17 +116,19 @@ export function SnoozePick({
         emptyMessage="No snooze time matches that."
         label={label}
         marks={marks}
+        menu={SNOOZE_MENU}
         mode="single"
         onOpenChange={(next) => setOpen(next && !held)}
-        onPick={(id) => {
+        onPick={(choice) => {
           if (held) return;
-          const preset = SNOOZE_PRESETS.find((option) => option.id === id);
-          if (preset !== undefined) onPick(preset.until(new Date()));
+          const until = snoozeOf(choice, new Date());
+          if (until === null) onUnsnooze?.();
+          else onPick(until);
         }}
         onTriggerFocus={onTriggerFocus}
         open={open}
-        optionLabel={(id) => SNOOZE_PRESETS.find((preset) => preset.id === id)?.label}
-        options={PRESET_IDS}
+        optionLabel={(choice) => ALL_CHOICES.find(({ value }) => value === choice)?.label}
+        options={onUnsnooze === undefined ? OPTIONS.plain : OPTIONS.snoozed}
         searchLabel="Search snooze times"
         shortcutKeys={shortcutKeys}
         triggerClassName={badgeSelectTrigger}
@@ -106,12 +142,13 @@ export function SnoozePick({
 }
 
 /**
- * The per-row defer control. It is the "Snooze" badge and the list of `snooze.ts`'s presets it
+ * The per-row defer control. It is the "Snooze" badge and the list of `snooze.ts`'s choices it
  * opens (`SnoozePick`), whose text box narrows them as the reader types; the Inbox's `b` and `h`
  * press its trigger (`ROW_SNOOZE_SELECTOR`). On a row already inside its window it also shows the
- * return time and, before the list, the one button that ends the snooze early - nothing else
- * does, which is the point: an agent answering a deferred ask leaves it deferred. The list stays
- * at its one place in both states, so `b` and `h` open it on a snoozed item too.
+ * return time and, before the list, the one button that ends the snooze early, which the list
+ * offers too, as Un-snooze on `0` - nothing else does, which is the point: an agent answering a
+ * deferred ask leaves it deferred. The list stays at its one place in both states, so `b` and `h`
+ * open it on a snoozed item too.
  *
  * A snooze moves its row into Later, which starts folded, and an un-snooze moves it out, either
  * of which would unmount this control. So the write is not this control's: the Inbox holds it,
@@ -148,7 +185,9 @@ export function SnoozePick({
  * the Inbox selects it beside the column and gives its row the focus, over the rescue and the
  * column's own hand-off. The hand-off begins at the press, off the list as the reader saw it, and
  * a snooze the server refuses or the reader stops drops it and leaves the reader on the row.
- * Un-snooze moves nobody.
+ * Un-snooze moves nobody, and neither does a snooze pressed on a short row beside the column that
+ * is not the item in hand (`RowAsideContext`): R8 is the item in hand's, so that press only takes
+ * a focus it left in the row to the item being read first.
  *
  * The selection bar's Snooze over the rows the reader marked holds the control the same way while
  * that write is out over this ask (`BulkSnoozingContext`): the optimistic moment would draw
@@ -185,6 +224,7 @@ export function SnoozeControl({
 }): ReactNode {
   const write = useAskSnooze(askId);
   const handOff = useContext(InboxHandOffContext);
+  const aside = useContext(RowAsideContext);
   const bulkSnoozing = useContext(BulkSnoozingContext).has(askId);
   // A snooze out over this row: its own pick's write, whose variable is a moment where an
   // un-snooze's is null, or the bar's.
@@ -197,9 +237,15 @@ export function SnoozeControl({
    *  refusal or a stop drops it. The hand-off is of the press's own ask, which a Retry keeps
    *  whichever ask the control is drawn for by then. The Inbox holds the write, so it hears the
    *  settling whether or not this control is still drawn. An un-snooze, and a control outside an
-   *  Inbox, hand nothing on. */
+   *  Inbox, hand nothing on; a snooze on a row that is not the item in hand hands nobody on and
+   *  moves a focus it left in the row first (`RowAsideContext`). */
   const handingOn = (press: AskSnoozePress | undefined): SnoozeSettled | undefined => {
-    if (handOff === undefined || press === undefined || press.until === null) return undefined;
+    if (press === undefined || press.until === null) return undefined;
+    if (aside !== undefined) {
+      aside();
+      return undefined;
+    }
+    if (handOff === undefined) return undefined;
     const acted = press.askId;
     handOff.beginHandOff([acted]);
     return (landed) => {
@@ -269,6 +315,7 @@ export function SnoozeControl({
         label={`Snooze ${label}`}
         marks={ROW_SNOOZE_MARKS}
         onPick={(until) => write.submit(until, handingOn({ askId, until }))}
+        onUnsnooze={snoozedUntil === null ? undefined : () => write.submit(null)}
         shortcutKeys={shortcutKeys}
       />
       {failure}

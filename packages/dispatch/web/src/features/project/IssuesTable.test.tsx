@@ -231,7 +231,7 @@ test("rows keep parent links, unread marks, asks, progress and route reach, with
   expect(within(row).getByTitle("Unread")).toBeDefined();
   expect(
     within(row).getByRole("button", { name: pickNamed("Priority of CORE-1") })
-  ).toHaveAttribute("aria-haspopup", "menu");
+  ).toHaveAttribute("aria-haspopup", "listbox");
 });
 
 test("j and k focus table issues and o and Enter open the issue rather than its parent", async () => {

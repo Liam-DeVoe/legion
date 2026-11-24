@@ -12,6 +12,7 @@ import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyHintOf } from "../../__tests__/key-hints";
+import { pickNamed } from "../../__tests__/list-picks";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -1254,7 +1255,7 @@ test("the head draws its controls in a row of their own and the title whole unde
     expect(owner.textContent).toBe(`CORE-1${title}`);
     expect(heading.querySelector(".truncate")).toBeNull();
     const open = screen.getByRole("link", { name: "Open page" });
-    const priority = screen.getByRole("button", { name: "Priority of CORE-1" });
+    const priority = screen.getByRole("button", { name: pickNamed("Priority of CORE-1") });
     const assign = screen.getByRole("button", { name: "Assign CORE-1 to me" });
     const snooze = screen.getByRole("button", { name: "Snooze CORE-1: Which approach?" });
     const copy = screen.getByRole("button", { name: /^Copy reference / });

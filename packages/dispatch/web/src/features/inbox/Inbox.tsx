@@ -122,7 +122,12 @@ import {
   useOutstandingAnswerWrites,
 } from "./outstanding-answers";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
-import { InboxHandOffContext, type PlacedRow, usePaneSelection } from "./pane-selection";
+import {
+  InboxHandOffContext,
+  type PlacedRow,
+  RowAsideContext,
+  usePaneSelection,
+} from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
 import { questionLine } from "./question-line";
 import { ReadingPane } from "./ReadingPane";
@@ -458,6 +463,7 @@ function AskShortRow({
   ask,
   group: groupKey,
   marked,
+  onAside,
   onMark,
   onRelease,
   onSelect,
@@ -469,6 +475,8 @@ function AskShortRow({
 }: InboxRowProps &
   ShortRowProps & {
     ask: InboxRow;
+    /** A write pressed on this row while it is not the item in hand (`RowAsideContext`). */
+    onAside: (id: string) => void;
     /** The signed-in person's lowercase email; "Assign to me" writes it. */
     viewer: string;
   }): ReactNode {
@@ -497,31 +505,36 @@ function AskShortRow({
           ask can be out or failed while the column shows another question: the reader moved the
           selection after pressing it in the head. The row draws the control then, so its
           `Snoozing…` or `Assigning…`, its refusal and its Retry stay on the row they are
-          about. */}
-      {selected || !(snooze.pending || snooze.failed) ? null : (
-        <div className="flex max-w-full flex-wrap items-center gap-1 pl-6">
-          <SnoozeControl
-            askId={ask.id}
-            label={name}
-            snoozedUntil={isSnoozed(ask) ? ask.snoozed_until : null}
-          />
-        </div>
-      )}
-      {selected || ask.issue_key === null || !(assign.pending || assign.failed) ? null : (
-        <div className="flex max-w-full flex-wrap items-center gap-1 pl-6">
-          <AssignToMe askId={ask.id} issueKey={ask.issue_key} viewer={viewer} />
-        </div>
-      )}
-      {/* The same for the column's card, which draws the hand-on, the answer, the decline and
-          the question back of the question the column shows: each can be out or failed while
-          the column shows another question. The row draws the hand-on control then, with its
-          `Handing on…`, its refusal and its Retry, and a line for an answer, a decline or a
-          question back, which says it is out or why it failed. That Retry is the card's, once
-          the column shows the question again. */}
-      {selected || !(handOn.pending || handOn.failed) ? null : (
-        <div className="pl-6">
-          <AskHandOn ask={ask} assignee={ask.issue?.assignee ?? null} />
-        </div>
+          about. The same for the column's card, which draws the hand-on, the answer, the
+          decline and the question back of the question the column shows: each can be out or
+          failed while the column shows another question. The row draws the hand-on control
+          then, with its `Handing on…`, its refusal and its Retry, and a line for an answer, a
+          decline or a question back, which says it is out or why it failed. That Retry is the
+          card's, once the column shows the question again. The row is not the item in hand
+          while it draws them, so a press of any of them hands nobody on (R8 is the item in
+          hand's) and takes a focus it left in the row to the item being read first. */}
+      {selected ? null : (
+        <RowAsideContext value={() => onAside(ask.id)}>
+          {!(snooze.pending || snooze.failed) ? null : (
+            <div className="flex max-w-full flex-wrap items-center gap-1 pl-6">
+              <SnoozeControl
+                askId={ask.id}
+                label={name}
+                snoozedUntil={isSnoozed(ask) ? ask.snoozed_until : null}
+              />
+            </div>
+          )}
+          {ask.issue_key === null || !(assign.pending || assign.failed) ? null : (
+            <div className="flex max-w-full flex-wrap items-center gap-1 pl-6">
+              <AssignToMe askId={ask.id} issueKey={ask.issue_key} viewer={viewer} />
+            </div>
+          )}
+          {!(handOn.pending || handOn.failed) ? null : (
+            <div className="pl-6">
+              <AskHandOn ask={ask} assignee={ask.issue?.assignee ?? null} />
+            </div>
+          )}
+        </RowAsideContext>
       )}
       {selected ? null : (
         <>
@@ -1286,12 +1299,21 @@ function InboxBody({
    *  (`useFocusRescue`), where Enter would dismiss that row too. */
   const dismissFromRow = (named: InboxDismissRow) => {
     if (paneShown && named.id !== paneSelection.id) {
-      if (rowIn(listRef.current, named.id)?.contains(document.activeElement) === true) {
-        (paneSelection.selectedRow() ?? paneScroller())?.focus({ preventScroll: true });
-      }
+      asideFromRow(named.id);
       dismissRows([named]);
     } else {
       dismissNow([named]);
+    }
+  };
+  /** A press on the row `id` beside the column while it is not the item in hand, which hands
+   *  nobody on: a row's own Dismiss, and the Snooze, the Assign to me and the hand-on a short row
+   *  draws while that write is out or refused (`RowAsideContext`). A focus the press left in the
+   *  row, which the write may take out of the list, goes first, with no scroll, to the item being
+   *  read - its row, else the column's scroller, as `dismissFromRow` says - and not to a control of
+   *  the row that moves up into its place. */
+  const asideFromRow = (id: string) => {
+    if (rowIn(listRef.current, id)?.contains(document.activeElement) === true) {
+      (paneSelection.selectedRow() ?? paneScroller())?.focus({ preventScroll: true });
     }
   };
 
@@ -1804,9 +1826,10 @@ function InboxBody({
         // answer can settle after the live one's and overwrite what the reader was told. It is
         // held by `aria-disabled` rather than `disabled` because the browser takes focus off a
         // control that disables itself under it - dropping the reader on the document mid-write,
-        // with no Escape to leave and no way back to the bar. The focus arriving on it records
-        // the row it came from, for Escape to go back to; the list handing the focus back to it
-        // records nothing, so the row outlives a pick (`onTriggerFocus`, `useInboxKeymap`).
+        // with no Escape to leave and no way back to the bar. The focus arriving on it, or `b`
+        // and `h` pressing it, records the row the reader came from, for Escape from it to go
+        // back to; the list handing the focus back records nothing, so the row outlives a pick
+        // (`onTriggerFocus`, `useInboxKeymap`).
         <SnoozePick
           badge="Snooze"
           held={bulkSnoozing.size !== 0}
@@ -2093,6 +2116,7 @@ function InboxBody({
           {...shared}
           ask={row.ask}
           key={id}
+          onAside={asideFromRow}
           onSelect={paneSelection.select}
           selected={id === paneSelection.id}
           viewer={viewer}

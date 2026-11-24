@@ -477,9 +477,9 @@ test("IssuePage ignores a same-task duplicate status save", async () => {
 
   try {
     await user.click(await screen.findByRole("button", { name: pickNamed("Status") }));
-    const backlog = screen.getByRole("menuitemradio", { name: "Backlog" });
+    const backlog = screen.getByRole("option", { name: "Backlog" });
     // The same choice pressed twice in one task is what the guard under test ignores: the
-    // menu closes on the first press, and a second press in the same task comes before it has.
+    // list closes on the first press, and a second press in the same task comes before it has.
     act(() => {
       backlog.click();
       backlog.click();

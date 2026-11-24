@@ -5,9 +5,9 @@ import { createRef, type ReactNode, useRef, useState } from "react";
 
 import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { drawAt, drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
-import { ChoiceMenu } from "./ChoiceMenu";
 import type { ControlSize } from "./control-names";
 import { useFocusRescue } from "./focus-place";
+import { MultiSelect } from "./MultiSelect";
 import { ROW_MARKER } from "./row-marker";
 import { SelectionBar, useLastMarkedPlace } from "./SelectionBar";
 
@@ -426,11 +426,12 @@ test("the bar emptied by the reader's Clear selection hands the focus to what re
   }
 });
 
-// INFRA-2160: the bar's Snooze is a menu, portalled out of the bar, and a pick in it hands the focus
-// back to the bar's trigger before its write takes the bar away. The pick is the reader's press in
-// the bar, though it landed in the menu, so the bar hands the focus on to what the page names. The
-// trigger is held while the write is out, as the Inbox holds it, which keeps the press the cause
-// until the write lands (`answerPress`).
+// INFRA-2160: the bar's Snooze is a single pick in a menu's place (D5), its list portalled out of
+// the bar, and a pick in it hands the focus back to where the list was opened from - here the
+// bar's trigger, which Enter pressed - before its write takes the bar away. The pick is the
+// reader's press in the bar, though it landed in the list, so the bar hands the focus on to what
+// the page names. The trigger is held while the write is out, as the Inbox holds it, which keeps
+// the press the cause until the write lands (`answerPress`).
 test("the bar emptied by a pick in a menu its own trigger opened hands the focus to what returnFocus names", async () => {
   const rescue = renderHook(() => useFocusRescue({ current: null }));
   const user = userEvent.setup();
@@ -442,6 +443,7 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
   const picked: string[] = [];
   function Bar({ count }: { count: number }): ReactNode {
     const [held, setHeld] = useState(false);
+    const [open, setOpen] = useState(false);
     return (
       <>
         {["CORE-1", "CORE-2"].map((key) => (
@@ -450,20 +452,25 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
           </div>
         ))}
         <SelectionBar count={count} label="Selected rows" returnFocus={returnFocus}>
-          <ChoiceMenu
-            choices={[{ digit: "1", label: "Later today", value: "later" }]}
-            face="Snooze"
-            held={held}
+          <MultiSelect
+            ariaDisabled={held}
+            chevron={false}
+            emptyMessage="No snooze time matches that."
             label="Snooze selected asks"
-            marks={{}}
-            onChoose={(value) => {
+            menu={{ keys: { "1": "later" }, opensOn: "first" }}
+            mode="single"
+            onOpenChange={setOpen}
+            onPick={(value) => {
               picked.push(value);
               setHeld(true);
             }}
-            triggerClassName=""
+            open={open}
+            optionLabel={() => "Later today"}
+            options={["later"]}
+            searchLabel="Search snooze times"
           >
-            Snooze
-          </ChoiceMenu>
+            <span aria-hidden="true">Snooze</span>
+          </MultiSelect>
         </SelectionBar>
       </>
     );
@@ -473,7 +480,12 @@ test("the bar emptied by a pick in a menu its own trigger opened hands the focus
     const trigger = screen.getByRole("button", { name: "Snooze selected asks" });
     act(() => trigger.focus());
     await user.keyboard("{Enter}");
-    expect(screen.getByRole("menuitem", { name: "Later today" })).toHaveFocus();
+    const box = screen.getByRole("combobox", { name: "Search snooze times" });
+    expect(box).toHaveFocus();
+    expect(box).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: "Later today" }).id
+    );
     await user.keyboard("{Enter}");
     expect(picked).toEqual(["later"]);
     expect(trigger).toHaveFocus();

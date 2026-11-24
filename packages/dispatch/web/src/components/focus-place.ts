@@ -416,15 +416,20 @@ export function focusLost(): boolean {
   return focused === null || focused === document.body || !focused.isConnected;
 }
 
-/** Focuses `element` and, once it holds the focus, scrolls it into view: WebKit scrolls a focused
- *  control into view only a frame later, by when a list's own scroll keeping may have moved the
- *  page again. Answers whether it took the focus. The Inbox's hand-off after the reader's action
- *  (`pane-selection.ts`), which brings the item it focuses into view wherever it stood; the
- *  rescue's own landing scrolls a control only where the reader sees a part of it (`land`). */
+/** Focuses `element` with no scroll of the engine's own and, once it holds the focus, scrolls it
+ *  to its nearest edge unless the reader can see the whole of it: WebKit scrolls a focused control
+ *  into view only a frame later, by when a list's own scroll keeping may have moved the page
+ *  again, and Chromium and Firefox centre a control that is not wholly in view. The Inbox's
+ *  hand-off after the reader's action (`pane-selection.ts`), which brings the item it focuses into
+ *  view wherever it stood, and scrolls nothing for a row the reader already sees whole - the row
+ *  that moves up into the place of the rows a press took away, which the list's own scroll
+ *  keeping holds where the reader saw it (`ViewportAnchor`). The rescue's own landing scrolls a
+ *  control only where the reader sees a part of it (`land`). Answers whether it took the focus. */
 export function focusIntoView(element: HTMLElement): boolean {
-  element.focus();
-  if (document.activeElement !== element) return false;
-  element.scrollIntoView({ block: "nearest", inline: "nearest" });
+  if (!focusNoScroll(element)) return false;
+  if (!inSightWhole(element, new Map())) {
+    element.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
   return true;
 }
 

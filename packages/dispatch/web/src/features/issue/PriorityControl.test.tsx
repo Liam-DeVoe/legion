@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import {
   type Commits,
   drawnPick,
@@ -20,7 +20,7 @@ import { choiceOf, choicesOf } from "../../__tests__/menu-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { NetworkError } from "../../api/client";
+import { ApiError, NetworkError } from "../../api/client";
 import type { InboxRow, Issue, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { issuePriority } from "./issue-priority";
@@ -234,9 +234,12 @@ test("PriorityControl shows the issue's priority and offers Unset and P0-P3, the
     expect(trigger()).toHaveAttribute("data-priority-menu");
     expect(await choicesOf(user, trigger())).toEqual(["Unset", "P0", "P1", "P2", "P3"]);
     await user.click(trigger());
-    expect(choiceOf(trigger(), "P1")).toHaveAttribute("aria-checked", "true");
-    expect(choiceOf(trigger(), "P1")).toHaveFocus();
-    expect(choiceOf(trigger(), "Unset")).toHaveAttribute("aria-checked", "false");
+    expect(choiceOf(trigger(), "P1")).toHaveAttribute("aria-selected", "true");
+    expect(
+      screen.getByRole("combobox", { name: "Search priorities" }),
+      "the list opens on the priority held"
+    ).toHaveAttribute("aria-activedescendant", choiceOf(trigger(), "P1").id);
+    expect(choiceOf(trigger(), "Unset")).toHaveAttribute("aria-selected", "false");
     // Unset has no digit; P0 to P3 write on 0 to 3.
     expect(choiceOf(trigger(), "Unset")).not.toHaveAttribute("aria-keyshortcuts");
     expect(choiceOf(trigger(), "P3")).toHaveAttribute("aria-keyshortcuts", "3");
@@ -246,9 +249,11 @@ test("PriorityControl shows the issue's priority and offers Unset and P0-P3, the
 });
 
 // INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
-// options." The priority is such a list. Opened, it holds a text box of its own, `P1` typed into
-// it leaves only P1, and a pick writes that priority and puts the focus back on the control.
-test("the priority list holds a text box that narrows its options to the typed P1, and a pick writes P1", async () => {
+// options." The priority is such a list. Opened, it holds a text box of its own, and `P` typed
+// into it leaves P0 to P3. A digit is the list's own key (dispatch://INFRA-2160, D5): `1` typed
+// after it writes P1 at once, whatever the box has narrowed, and puts the focus back on the
+// control.
+test("the priority list holds a text box that narrows its options to the typed P, and the 1 typed after it writes P1", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 1 });
   const { unmount, user } = renderControl({ priority: 3 });
   try {
@@ -258,9 +263,14 @@ test("the priority list holds a text box that narrows its options to the typed P
     expect(own, "the priority list holds no text box of its own").toHaveLength(1);
     const list = listOf(own[0] as HTMLElement);
     expect(rows(list)).toEqual(["Unset", "P0", "P1", "P2", "✓P3"]);
-    await user.type(own[0] as HTMLElement, "P1");
-    expect(rows(list), `"P1" leaves other options than P1 in the priority list`).toEqual(["P1"]);
-    await user.click(within(list).getByRole("option", { name: "P1" }));
+    await user.type(own[0] as HTMLElement, "P");
+    expect(rows(list), `"P" leaves other options than P0-P3 in the priority list`).toEqual([
+      "P0",
+      "P1",
+      "P2",
+      "✓P3",
+    ]);
+    await user.keyboard("1");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 1 }, keyedAttempt)
     );
@@ -604,7 +614,12 @@ test("the host's disabled holds the priority's trigger by aria-disabled: it keep
   try {
     const list = await openList(user, PRIORITY);
     view.rerender(control(true));
+    // A pick made while the hold is on writes nothing and leaves the list open (D5); Escape gives
+    // the focus back to the trigger the press opened it from.
     await user.click(within(list).getByRole("option", { name: "P2" }));
+    expect(openPriorityList(), "a pick under the hold closed the list").not.toBeNull();
+    await user.keyboard("{Escape}");
+    expect(openPriorityList()).toBeNull();
     expect(trigger()).toHaveFocus();
 
     expect(heldNotDisabled(trigger(), "the priority's trigger")).toBe(true);
@@ -651,6 +666,184 @@ test("a priority the reader stopped says Retry asks again under its key, not tha
     realClock();
     unmount();
     queryClient.clear();
+    patchIssue.mockRestore();
+  }
+});
+
+// dispatch://INFRA-2160, plan task t21: the priority takes D5's rules, so every close of its list
+// gives the focus back where it was as the list opened - the table "Where the focus goes back, by
+// opener", and the state table's host rows for a priority that lands and one that is refused.
+
+/** Makes the reader's primary pointer a coarse one, a finger on a phone's screen, until what it
+ *  answers is called. */
+function onCoarsePointer(): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: query === "(pointer: coarse)",
+      media: query,
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
+}
+
+/** A row's `p`, which presses the priority's trigger as the page's binding does: a click with no
+ *  pointer, with the focus still on the row. */
+function pressPriorityOnP(event: ReactKeyboardEvent<HTMLElement>): void {
+  if (event.key !== "p") return;
+  event.preventDefault();
+  document.querySelector<HTMLElement>("[data-priority-menu]")?.click();
+}
+
+/** The priority as a row's surface draws it, from the issue it reads from the cache. */
+function CachedPriority(): ReactNode {
+  const cached = useCachedIssue();
+  return cached === undefined ? null : (
+    <PriorityControl issueKey={cached.key} priority={issuePriority(cached.priority)} />
+  );
+}
+
+/** The priority drawn beside a row the reader is on, whose `p` opens its list, as the Inbox's,
+ *  the Board's and the issue page's keys do. */
+function renderBesideRow() {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  queryClient.setQueryData(detailKey, details);
+  queryClient.setQueryData(listKey, [summary, otherSummary]);
+  queryClient.setQueryData(inboxKey, [inboxRow]);
+  const user = userEvent.setup();
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <button onKeyDown={pressPriorityOnP} type="button">
+        CORE-1 row
+      </button>
+      <CachedPriority />
+    </QueryClientProvider>
+  );
+  return { row: screen.getByRole("button", { name: "CORE-1 row" }), unmount: view.unmount, user };
+}
+
+test("Enter or Space on the trigger returns to the trigger", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 2 });
+  const { unmount, user } = renderControl();
+  try {
+    act(() => trigger().focus());
+    for (const key of ["{Enter}", " "]) {
+      await user.keyboard(key);
+      expect(openPriorityList(), `${key} opens the list`).not.toBeNull();
+      await user.keyboard("{Escape}");
+      expect(openPriorityList()).toBeNull();
+      expect(trigger(), `the list ${key} opened gives the focus back to the trigger`).toHaveFocus();
+    }
+    await user.keyboard("{Enter}");
+    await user.keyboard("2");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    expect(trigger(), "a pick gives the focus back to the trigger").toHaveFocus();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a click on the trigger returns to the trigger", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 0 });
+  const { row, unmount, user } = renderBesideRow();
+  try {
+    // A pointer's press is on the trigger, whatever held the focus before it.
+    act(() => row.focus());
+    await user.click(trigger());
+    expect(openPriorityList()).not.toBeNull();
+    await user.keyboard("{Escape}");
+    expect(trigger()).toHaveFocus();
+    act(() => row.focus());
+    await user.click(trigger());
+    await user.click(within(openPriorityList() as HTMLElement).getByRole("option", { name: "P0" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
+    );
+    expect(trigger()).toHaveFocus();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a tap returns to the trigger", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 3 });
+  const coarse = onCoarsePointer();
+  const { row, unmount, user } = renderBesideRow();
+  try {
+    act(() => row.focus());
+    await user.pointer({ keys: "[TouchA]", target: trigger() });
+    const list = openPriorityList();
+    expect(list).not.toBeNull();
+    // No text box takes the focus on a phone, so no on-screen keyboard covers the choices.
+    expect(list).toHaveFocus();
+    await user.pointer({
+      keys: "[TouchA]",
+      target: within(list as HTMLElement).getByRole("option", { name: "P3" }),
+    });
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 3 }, keyedAttempt)
+    );
+    expect(openPriorityList()).toBeNull();
+    expect(trigger()).toHaveFocus();
+  } finally {
+    unmount();
+    coarse();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a priority that lands keeps the focus on the target", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { row, unmount, user } = renderBesideRow();
+  try {
+    act(() => row.focus());
+    await user.keyboard("p");
+    expect(openPriorityList()).not.toBeNull();
+    await user.keyboard("0");
+    expect(row, "the pick gives the focus back to the row p was pressed on").toHaveFocus();
+    await act(async () => {
+      save.resolve({ ...issue, priority: 0 });
+      await save.promise;
+    });
+    expect(trigger()).toHaveAccessibleName(`${PRIORITY} P0`);
+    expect(row, "the landing leaves the focus on the row").toHaveFocus();
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+test("a refused pick keeps the focus and shows the refusal", async () => {
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed; reopen it first" })
+  );
+  const { row, unmount, user } = renderBesideRow();
+  try {
+    act(() => row.focus());
+    await user.keyboard("p");
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(row).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(trigger()).toHaveAccessibleName(`${PRIORITY} P1`);
+    expect(row, "the refusal leaves the focus on the row").toHaveFocus();
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
     patchIssue.mockRestore();
   }
 });

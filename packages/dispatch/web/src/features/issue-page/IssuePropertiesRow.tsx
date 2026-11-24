@@ -9,7 +9,7 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
-import { ChoiceMenu } from "../../components/ChoiceMenu";
+import { type ListMarks, type ListMenu, MultiSelect } from "../../components/MultiSelect";
 import { approvalPillClassName } from "../../components/Pill";
 import {
   focusVisibleRing,
@@ -33,7 +33,7 @@ import { gatedStepEntries, isProjectRoot } from "../issue/gated-steps";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
-import { issueStatuses, openIssueStatuses, statusLabel, statusText } from "../project/board-model";
+import { issueStatuses, openIssueStatuses, statusText } from "../project/board-model";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { wordsOf } from "../refs/tree-fragment";
 import { APPROVAL_CHIP } from "./approval-chip-box";
@@ -47,6 +47,14 @@ import { treeContext } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { issueCommentsQuery } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
+
+/** The status list's trigger mark, which the header's `s` finds it by (`useHeaderKeys.ts`). */
+const STATUS_MARKS: ListMarks = { trigger: { "data-status-menu": "" } };
+
+/** D5's rules for the status (`ListMenu`): the list opens on the status held and takes no digit,
+ *  and every close gives the focus back where it was as the list opened - the page or the
+ *  element `s` was pressed on, or the trigger a press opened it from. */
+const STATUS_MENU: ListMenu = { keys: {}, opensOn: "value" };
 
 /**
  * The header's one properties line (the prototype's `#hdr-props`): the status, the priority,
@@ -82,11 +90,12 @@ export function IssuePropertiesRow({
   // the press on this control caused, or an earlier pick of the status still being saved - is
   // held by the header's writes (`pickStatus`: a keyed write in the issue's line, sent after the
   // write in flight), so the press lands on the control as it does with nothing edited, and the
-  // header and Details read one status, the newest one held. No write holds the status menu, not
+  // header and Details read one status, the newest one held. No write holds the status list, not
   // even its own: only a closed issue disables it.
   const status = writes.pendingStatus ?? issue.status;
-  // What the status menu's trigger shows: the status a pick is saving, else the issue's.
+  // What the status list's trigger shows: the status a pick is saving, else the issue's.
   const statusShown = statusText(status);
+  const [statusOpen, setStatusOpen] = useState(false);
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the decisions, the coverage's statements, the comments a Change is written
@@ -185,27 +194,36 @@ export function IssuePropertiesRow({
       ref={line}
     >
       {/* The prototype's `.pill`: the status's shape and word inside a rule of its colour, which
-          is the status menu's trigger (`ChoiceMenu`), 24 px tall at every width, the least a
-          target may be (WCAG 2.5.8). Its menu holds every open status on an open issue, and
-          every status on a closed one, whose trigger is disabled, since its way back is Reopen;
-          the status shown is checked. The shape is an svg and not text, since the page's
-          typeface lacks ◐; it hides itself from assistive technology and holds no words. */}
-      <ChoiceMenu
-        checked={status}
-        choices={selectableStatuses.map((choice) => ({
-          label: statusLabel(choice),
-          value: choice,
-        }))}
+          is the status list's trigger (the shared single pick, with D5's rules: `STATUS_MENU`),
+          24 px tall at every width, the least a target may be (WCAG 2.5.8). Its list holds every
+          open status on an open issue, and every status on a closed one, whose trigger is
+          disabled, since its way back is Reopen; the status shown is picked. The shape is an
+          svg and not text, since the page's typeface lacks ◐; it hides itself from assistive
+          technology and holds no words. */}
+      <MultiSelect
+        chevron={false}
         disabled={isClosed}
-        face={statusShown}
+        emptyMessage="No status matches that."
         label={PROPERTY_LABELS.status}
-        marks={{ "data-status-menu": "" }}
-        onChoose={writes.pickStatus}
+        marks={STATUS_MARKS}
+        menu={STATUS_MENU}
+        mode="single"
+        onOpenChange={setStatusOpen}
+        onPick={(picked) => {
+          if (picked !== status) writes.pickStatus(picked);
+        }}
+        open={statusOpen}
+        optionLabel={statusText}
+        options={selectableStatuses}
+        searchLabel="Search statuses"
         triggerClassName={`inline-flex min-h-6 shrink-0 cursor-pointer items-center gap-1 rounded-full px-2 text-xs leading-[18px] font-semibold shadow-[inset_0_0_0_1px_currentColor] outline-none focus-visible:ring-2 refused:cursor-not-allowed refused:opacity-50 ${statusTone(status)} ${focusVisibleRing}`}
+        value={status}
       >
-        <StatusGlyph glyph={statusGlyph(status)} />
-        <span {...pageChrome}>{statusShown}</span>
-      </ChoiceMenu>
+        <span className="inline-flex items-center gap-1">
+          <StatusGlyph glyph={statusGlyph(status)} />
+          <span {...pageChrome}>{statusShown}</span>
+        </span>
+      </MultiSelect>
       {/* The priority and the assignee stay enabled while another write is in flight and queue a
           pick behind it, as the status does and as their own controls say: a press straight out
           of the title's editor lands on them. */}

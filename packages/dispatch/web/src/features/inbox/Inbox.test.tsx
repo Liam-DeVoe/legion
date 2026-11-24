@@ -21,7 +21,13 @@ import { heldNotDisabled } from "../../__tests__/held-press";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
-import { rows as listRows, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
+import {
+  highlightedRow,
+  rows as listRows,
+  panelOf,
+  pickNamed,
+  textBoxes,
+} from "../../__tests__/list-picks";
 import { choiceOf } from "../../__tests__/menu-picks";
 import {
   answerAskSnoozes,
@@ -1758,8 +1764,10 @@ test("a priority pick that takes the row under the reader's hand out of the prio
 
 // Grouped by priority, a pick of P0 on the one P2 row moves it out of a band no other row is in.
 // The reader's hand is on the row - the focus is in its priority list, and the pick gives it back
-// to the list's trigger - so the row is kept where they saw it, and its band is drawn with it:
-// the row, its trigger and the focus on it stay, through the save and the read after it.
+// to the list's trigger, which the press opened it from - so the row is kept where they saw it,
+// and its band is drawn with it: the row, its trigger and the focus on it stay, through the save
+// and the read after it. `0` is the list's digit for P0 (dispatch://INFRA-2160, D5), which writes
+// it at once whatever the box has narrowed.
 test("a priority pick that moves the row under the reader's hand out of a band it was alone in keeps the row, its band and the focus on its trigger", async () => {
   const user = userEvent.setup();
   const alone = inboxIssue("ask-p2", "CORE-1", "Ship it at P2?", { priority: 2 });
@@ -1775,7 +1783,6 @@ test("a priority pick that moves the row under the reader's hand out of a band i
     const trigger = within(row).getByRole("button", { name: pickNamed("Priority of CORE-1") });
     await user.click(trigger);
     await user.keyboard("p0");
-    await user.keyboard("{Enter}");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
@@ -3782,8 +3789,9 @@ test("the bar's Snooze keeps its rows in their band until its write lands", asyn
 });
 
 // The bar's Snooze deep in a long list folds the two rows marked into Later, the row marked last
-// among them. The row after them moves up into its place, where the reader can see it, and its
-// mark takes the focus with no scroll. The list's first row, nine rows above the window, would
+// among them. The row after them moves up into its place, where the reader can see it, and the row
+// takes the focus (R8: the item after the last of the rows acted on is selected and its row has
+// the keyboard focus), with no scroll. The list's first row, nine rows above the window, would
 // scroll the list back to its top and throw the reader's place away.
 test("a bulk Snooze deep in a long list hands the focus to the row that moves up into the place of the row marked last, with no scroll", async () => {
   const user = userEvent.setup();
@@ -3809,14 +3817,21 @@ test("a bulk Snooze deep in a long list hands the focus to the row that moves up
     await user.click(within(rowOf(marked)).getByRole("checkbox", { name: /^Select / }));
     await user.click(within(rowOf(last)).getByRole("checkbox", { name: /^Select / }));
     await screen.findByText("2 selected");
-    const landing = within(rowOf(next)).getByRole("checkbox", { name: /^Select / });
+    const landing = rowOf(next);
     const picker = screen.getByLabelText("Snooze selected asks");
     await pickIn(user, () => picker, "Tomorrow");
     await waitFor(() => expect(rowIds()).not.toContain(last));
     expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument();
     await waitFor(() => expect(landing).toHaveFocus());
     expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
-    expect(moves.scrolled).toEqual([]);
+    // The bar's list kept its highlighted choice in sight inside its own panel as it opened
+    // (`MultiSelect`); nothing else is scrolled. Each is read by its words, so a failure prints
+    // words and not a DOM element.
+    expect(
+      moves.scrolled
+        .filter((element) => element.getAttribute("role") !== "option")
+        .map((element) => element.outerHTML.slice(0, 120))
+    ).toEqual([]);
   } finally {
     unmount();
     moves.restore();
@@ -3883,6 +3898,14 @@ function markOf(id: string): HTMLElement {
   return mark;
 }
 
+/** The row `id` names, as the list draws it now: where R8's hand-off after a bulk action puts the
+ *  focus. */
+function laidRowOf(id: string): HTMLElement {
+  const row = document.querySelector<HTMLElement>(`[data-inbox-row="${id}"]`);
+  if (row === null) throw new Error(`${id} row missing`);
+  return row;
+}
+
 /** Lists `count` comment threads in the Inbox, and `asks`, each card's issue, comments and thread
  *  answered, which no case here asserts. Answers the function that puts the reads back. */
 function listThreads(count: number, asks: readonly InboxRow[] = []): () => void {
@@ -3905,10 +3928,11 @@ function listThreads(count: number, asks: readonly InboxRow[] = []): () => void 
   };
 }
 
-// The bar's Dismiss deep in the list, over a thread the reader can see. The bar's hand-off puts
-// the focus on the mark of the row after it while the thread is still drawn. The thread goes, and
-// that row moves up into its place: the window stays where the reader put it, and is not scrolled
-// to hold the focused row where it stood.
+// The bar's Dismiss deep in the list, over a thread the reader can see. The row after it takes the
+// focus (R8: the item after the last of the rows acted on is selected and its row has the keyboard
+// focus) while the thread is still drawn. The thread goes, and that row moves up into its place:
+// the window stays where the reader put it, and is not scrolled to hold the focused row where it
+// stood.
 test("a bulk Dismiss of a marked thread above the focused row leaves the window's scroll and the list's scrollTop as they were", async () => {
   const user = userEvent.setup();
   const reads = listThreads(12);
@@ -3930,7 +3954,7 @@ test("a bulk Dismiss of a marked thread above the focused row leaves the window'
 
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
     await waitFor(() => expect(rowIds()).not.toContain(marked));
-    const landing = markOf(after);
+    const landing = laidRowOf(after);
     await waitFor(() => expect(landing).toHaveFocus());
     expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
     expect(landing.getBoundingClientRect().top).toBe(place);
@@ -3950,10 +3974,12 @@ test("a bulk Dismiss of a marked thread above the focused row leaves the window'
 
 // The bar's Dismiss over two threads the reader marked and then scrolled above the window. Their
 // whole space goes, so every row after them moves up by it: the row now at the place of the row
-// marked last, and the next one, end wholly above the window. The bar's hand-off reads each row
-// where it will stand once the threads have gone, and puts the focus on the mark of the nearest
-// row after that place that will stand in sight, with no scroll. The window stays where it was.
-test("a bulk Dismiss of marked threads that all stood above the view hands the focus to the nearest row after their place that ends in sight, and scrolls nothing", async () => {
+// marked last, and the next one, end wholly above the window. The row after the threads is the
+// item the reader goes to (R8: the item after the last of the rows acted on is selected and its
+// row has the keyboard focus), though it ends above the window: it takes the focus with no scroll
+// of the engine's own, and is then scrolled to its nearest edge, into the reader's sight
+// (`focusIntoView`). The list's own scroll keeping moves the window nowhere.
+test("a bulk Dismiss of marked threads that all stood above the view hands the focus to the row after them, and brings that row into view", async () => {
   const user = userEvent.setup();
   const reads = listThreads(12);
   const settle = Promise.withResolvers<{ dismissed: number }>();
@@ -3973,15 +3999,14 @@ test("a bulk Dismiss of marked threads that all stood above the view hands the f
 
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
     await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
-    // The two rows after the marked ones end above the window, and the third ends at its top
-    // edge and shows none of itself: the fourth, which will stand at the window's top, is the
-    // nearest the reader will see.
-    const landing = markOf(order[7] as string);
+    const landing = laidRowOf(order[4] as string);
     await waitFor(() => expect(landing).toHaveFocus());
+    expect(moves.focused.at(-1)?.target).toBe(landing);
     expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
-    expect(landing.getBoundingClientRect().top).toBe(0);
+    expect(landing.getBoundingClientRect().bottom).toBeLessThanOrEqual(0);
+    expect(moves.scrolled.length).toBe(1);
+    expect(moves.scrolled[0]).toBe(landing);
     expect(window.scrollY).toBe(5 * LAID_ROW_PX);
-    expect(moves.scrolled.length).toBe(0);
   } finally {
     await act(async () => {
       settle.resolve({ dismissed: 2 });
@@ -4032,7 +4057,7 @@ test("a bulk Dismiss of the last unread threads, whose going takes Mark all read
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
     await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
     expect(document.querySelector("[data-inbox-mark-all]")).toBeNull();
-    const landing = markOf(order[8] as string);
+    const landing = laidRowOf(order[8] as string);
     await waitFor(() => expect(landing).toHaveFocus());
     expect(window.scrollY).toBe(5 * LAID_ROW_PX - MARK_ALL_LINE);
     expect(landing.getBoundingClientRect().top).toBe(place);
@@ -4436,7 +4461,8 @@ test("a refused bar Snooze leaves its refused row where it was, with its own Sno
 // away is no place to land: it folds into Later once the write lands, no press of the reader's
 // live by then, and the focus would fall to the body with it. With only marked rows on the page
 // there is no other row, so Escape leaves the picker for the bar, and Escape from the bar clears
-// the selection while the write is still out.
+// the selection while the write is still out. The pick itself gives the focus back to the mark
+// `h` was pressed on (dispatch://INFRA-2160, D5), so the reader goes back to the picker first.
 test("Escape from the bulk picker while its snooze is out passes over the rows it is taking away to the bar, and a second Escape clears the selection", async () => {
   const user = userEvent.setup();
   const rows = [
@@ -4467,7 +4493,9 @@ test("Escape from the bulk picker while its snooze is out passes over the rows i
     // Out, both marked rows are still drawn where the reader saw them, and both are leaving.
     expect(screen.getByText("Snoozing 2…")).toBeTruthy();
     expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    expect(mark("ask-b"), "the pick gives the focus back where h was pressed").toHaveFocus();
 
+    act(() => picker.focus());
     await user.keyboard("{Escape}");
     expect(screen.getByRole("toolbar", { name: "Selected rows" })).toHaveFocus();
     await user.keyboard("{Escape}");
@@ -4495,6 +4523,8 @@ test("Escape from the bulk picker while its snooze is out passes over the rows i
 // second pick marks the first row left, `h` is pressed on that row, and Escape passes over it to
 // the row after it. Each part is its own pick: while a write is out with Later folded, the marked
 // rows are out of the selection's count, so `h` opens the row's own Snooze and not the bar's.
+// Each pick gives the focus back where `h` was pressed (dispatch://INFRA-2160, D5), and the
+// reader then goes back to the bar's picker, whose list the held write keeps shut, for Escape.
 test("Escape from the bar's Snooze list while its write is out goes to the row h was pressed on, else to the first row the write is not taking away", async () => {
   const user = userEvent.setup();
   const rows = [
@@ -4515,12 +4545,20 @@ test("Escape from the bar's Snooze list while its write is out goes to the row h
   const getAsk = mockAskReads(rows);
   const { unmount } = renderInbox("/?group=waiting-on");
   const mark = (askId: string) => within(rowOf(askId)).getByRole("checkbox", { name: /^Select / });
-  /** Opens the bar's Snooze list with `h` from where the focus stands, and picks a moment. */
+  /** Opens the bar's Snooze list with `h` from where the focus stands, picks a moment, and checks
+   *  the pick gave the focus back there. */
   const snoozeFromHere = async () => {
+    const from = document.activeElement;
     await user.keyboard("h");
     const picker = screen.getByLabelText("Snooze selected asks");
     expect(picker).toHaveAttribute("aria-expanded", "true");
     await pickIn(user, () => picker, "Tomorrow");
+    expect(document.activeElement, "the pick gives the focus back where h was pressed").toBe(from);
+  };
+  /** Escape from the bar's picker, held while the write is out. */
+  const escapeFromPicker = async () => {
+    act(() => screen.getByLabelText("Snooze selected asks").focus());
+    await user.keyboard("{Escape}");
   };
   const land = async () => {
     await act(async () => {
@@ -4540,7 +4578,7 @@ test("Escape from the bar's Snooze list while its write is out goes to the row h
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
     expect(screen.getByText("Snoozing 2…")).toBeTruthy();
     expect(rowIds()).toEqual(["ask-a", "ask-b", "ask-c", "ask-d"]);
-    await user.keyboard("{Escape}");
+    await escapeFromPicker();
     expect(rowOf("ask-d")).toHaveFocus();
     await land();
     await waitFor(() => expect(rowIds()).toEqual(["ask-c", "ask-d"]));
@@ -4553,7 +4591,7 @@ test("Escape from the bar's Snooze list while its write is out goes to the row h
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(3));
     expect(screen.getByText("Snoozing 1…")).toBeTruthy();
     expect(rowIds()).toEqual(["ask-c", "ask-d"]);
-    await user.keyboard("{Escape}");
+    await escapeFromPicker();
     expect(rowOf("ask-d")).toHaveFocus();
     await land();
     await waitFor(() => expect(rowIds()).toEqual(["ask-d"]));
@@ -4967,7 +5005,8 @@ test("the bar's Snooze list opens with a text box, a typed word narrows the pres
 // One bar pick at a time: while its write is out the bar's Snooze is held. It is held by
 // `aria-disabled`, never `disabled`, so it keeps the reader's focus, and no press of it opens its
 // list - Enter, Space, an arrow, a typed character or a click - so no second pick is made and
-// nothing more is sent.
+// nothing more is sent. The pick itself gives the focus back to the mark `h` was pressed on
+// (dispatch://INFRA-2160, D5), and the reader then goes to the held trigger.
 test("the bar's Snooze, held while its write is out, keeps the focus and sends nothing", async () => {
   const user = userEvent.setup();
   const rows = [
@@ -4994,8 +5033,11 @@ test("the bar's Snooze, held while its write is out, keeps the focus and sends n
     await user.keyboard("h");
     const trigger = screen.getByRole("button", { name: "Snooze selected asks" });
     expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const mark = within(rowOf("ask-b")).getByRole("checkbox", { name: /^Select / });
     await pickIn(user, () => trigger, "Tomorrow");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    expect(mark, "the pick gives the focus back where h was pressed").toHaveFocus();
+    act(() => trigger.focus());
     expect(trigger).toHaveFocus();
     expect(heldNotDisabled(trigger as HTMLButtonElement, "the bar's Snooze")).toBe(true);
 
@@ -5930,12 +5972,13 @@ test("in the reading column, j from the page after a control went from the colum
 
 // The reader's Snooze pick in the column's head, with the page's focus rescue mounted as the app
 // shell mounts it (`RescuedMain`). The write lands, the deferred question leaves the list, and the
-// column is drawn again for the next one, whose answer is a text box. The column's question went,
-// so the Inbox hands the focus to the new column's own focus stop, with no scroll, and the rescue
-// does not take the next question's controls for what the press drew in the Snooze's place: its
-// answer box there would take the reader's next `j` as text. From the stop `j` and `k` step the
-// selection and Enter opens the selected question's answer box, as they do from the page.
-test("a Snooze pick in the column's head hands the focus to the next question's focus stop, and j, k and Enter answer from there", async () => {
+// column is drawn again for the next one, whose answer is a text box. The snooze hands the reader
+// on to the next question (R8: the item after the snoozed one is selected and its row has the
+// keyboard focus), with no scroll of anything but the list's rows, and the rescue does not take
+// the next question's controls for what the press drew in the Snooze's place: its answer box
+// there would take the reader's next `j` as text. From the row `j` and `k` step the selection,
+// and from the column's stop Enter opens the selected question's answer box.
+test("a Snooze pick in the column's head hands the focus to the next question's row, and j, k and Enter answer from there", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
   const rows = [
@@ -5989,8 +6032,19 @@ test("a Snooze pick in the column's head hands the focus to the next question's 
     await afterRescue();
 
     const scroller = () => screen.getByTestId("inbox-pane-scroller");
-    expect(scroller()).toHaveFocus();
-    expect(scrolled.filter((element) => element.closest("[data-inbox-row]") === null)).toEqual([]);
+    expect(shortRow("ask-b")).toHaveFocus();
+    // Nothing but the list's rows scrolled: the Snooze list kept its highlighted choice in sight
+    // inside its own panel as it opened (`MultiSelect`), which is the list's and no scroll of the
+    // page. Each is read by its words, so a failure here prints words and not a DOM element.
+    expect(
+      scrolled
+        .filter(
+          (element) =>
+            element.closest("[data-inbox-row]") === null &&
+            element.getAttribute("role") !== "option"
+        )
+        .map((element) => element.outerHTML.slice(0, 120))
+    ).toEqual([]);
 
     await user.keyboard("j");
     await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
@@ -6111,15 +6165,17 @@ test("the keys act on the selected row and the pane: Enter, 1-9, x, h and Escape
     await user.keyboard("{Escape}");
     expect(shortRow("ask-a")).toHaveFocus();
 
-    // `h` with nothing checked opens the pane head's Snooze menu, which the short row no longer
+    // `h` with nothing checked opens the pane head's Snooze list, which the short row no longer
     // carries, on its first choice; Escape closes it, writes nothing, and puts the focus back on
     // the row `h` was pressed on.
     await user.keyboard("h");
-    const snoozeMenu = screen.getByRole("menu", { name: /^Snooze CORE-1/ });
-    expect(within(snoozeMenu).getByRole("menuitem", { name: "Later today" })).toHaveFocus();
+    expect(screen.getByRole("listbox", { name: /^Snooze CORE-1/ })).toBeInTheDocument();
+    expect(highlightedRow(screen.getByRole("combobox", { name: "Search snooze times" }))).toBe(
+      "Later today"
+    );
     expect(pane.querySelector("[data-inbox-snooze]")).toHaveAttribute("aria-expanded", "true");
     await user.keyboard("{Escape}");
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     expect(shortRow("ask-a")).toHaveFocus();
 
     // `x` checks the selected row, which is what the bulk bar then counts.
@@ -6158,12 +6214,11 @@ test("p opens the priority menu of an ask of an issue, keeps the focus on its ro
     act(() => issueRow.focus());
     expect(offered("priority")).toBe(true);
     await user.keyboard("p");
-    const menu = screen.getByRole("menu", { name: "Priority of CORE-1" });
-    const checked = within(menu).getByRole("menuitemradio", { name: "P2" });
-    expect(checked).toHaveAttribute("aria-checked", "true");
-    expect(checked).toHaveFocus();
+    const trigger = within(issueRow).getByRole("button", { name: pickNamed("Priority of CORE-1") });
+    expect(choiceOf(trigger, "P2")).toHaveAttribute("aria-selected", "true");
+    expect(highlightedRow(screen.getByRole("combobox", { name: "Search priorities" }))).toBe("P2");
     await user.keyboard("{ArrowUp}{Escape}");
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     expect(issueRow).toHaveFocus();
     expect(patchIssue).not.toHaveBeenCalled();
 
@@ -6183,9 +6238,9 @@ test("p opens the priority menu of an ask of an issue, keeps the focus on its ro
     );
     expect(rowOf("ask-a")).toBe(issueRow);
     expect(issueRow).toHaveFocus();
-    // The focus is still on the row, so the next `p` opens its menu again, on P0.
+    // The focus is still on the row, so the next `p` opens its list again, on P0.
     await user.keyboard("p");
-    expect(screen.getByRole("menuitemradio", { name: "P0" })).toHaveFocus();
+    expect(highlightedRow(screen.getByRole("combobox", { name: "Search priorities" }))).toBe("P0");
     await user.keyboard("{Escape}");
     expect(issueRow).toHaveFocus();
 
@@ -6193,7 +6248,7 @@ test("p opens the priority menu of an ask of an issue, keeps the focus on its ro
     act(() => rowOf("ask-1").focus());
     expect(offered("priority")).toBe(false);
     await user.keyboard("p");
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
   } finally {
     unmount();
     getAsk.mockRestore();
@@ -6224,7 +6279,7 @@ test("a priority picked from the column's head keeps the column on its ask, thou
     const row = shortRow("ask-a");
     act(() => row.focus());
     await user.keyboard("p");
-    expect(screen.getByRole("menuitemradio", { name: "P2" })).toHaveFocus();
+    expect(highlightedRow(screen.getByRole("combobox", { name: "Search priorities" }))).toBe("P2");
     await user.keyboard("0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
@@ -6964,7 +7019,7 @@ test("a snooze under h drops the record: Escape lands on the question the column
     await user.keyboard("l");
     expect(scroller()).toHaveFocus();
 
-    // `h` opens the column's own Snooze menu, and `2` picks Tomorrow in it. The menu stands over
+    // `h` opens the column's own Snooze list, and `2` picks Tomorrow in it. The list stands over
     // the page, but it opens from the column and hands the focus back into it, so it keeps the
     // record. The deferral is what ends it, and both of the drops that keep the record's
     // question true cover that between them: the row folds into Later for a commit with nothing
@@ -6972,7 +7027,7 @@ test("a snooze under h drops the record: Escape lands on the question the column
     // column is handed next is the change the layout effect reads. This row pins where Escape
     // goes, which the two of them agree on; it does not tell them apart.
     await user.keyboard("h");
-    expect(screen.getByRole("menu", { name: /^Snooze CORE-2/ })).toBeInTheDocument();
+    expect(screen.getByRole("listbox", { name: /^Snooze CORE-2/ })).toBeInTheDocument();
     await user.keyboard("2");
     expect(snoozeAsk).toHaveBeenCalledTimes(1);
 
@@ -7126,7 +7181,7 @@ test("the focus moving inside the column keeps the record: Escape still returns 
     await user.keyboard("l");
     expect(scroller()).toHaveFocus();
 
-    // `h` opens the column's own Snooze menu: it stands over the page, portalled out of the
+    // `h` opens the column's own Snooze list: it stands over the page, portalled out of the
     // column, but it opens from a control inside the column, and the focus moving into it and
     // through its choices names targets the column counts as its own. Escape closes it and hands
     // the focus back to the scroller, the question it shows has not changed - so the record
@@ -7134,7 +7189,9 @@ test("the focus moving inside the column keeps the record: Escape still returns 
     // keep branch of the blur rule, the drop above it being the one the search box and a row
     // take.
     await user.keyboard("h");
-    const menu = screen.getByRole("menu", { name: /^Snooze CORE-2/ });
+    const menu = panelOf(
+      within(screen.getByTestId("inbox-pane")).getByRole("button", { name: /^Snooze CORE-2/ })
+    );
     expect(menu).toContainElement(document.activeElement as HTMLElement);
     await user.keyboard("{ArrowDown}");
     expect(menu).toContainElement(document.activeElement as HTMLElement);
@@ -7593,6 +7650,60 @@ test("r puts the caret in the reply box of the thread in hand, and does nothing 
   } finally {
     unmount();
     narrow();
+    listMyReplies.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// R18, and R11 for the answered question's Reply (#3729): an answered question's thread is a
+// Reply row whose card is the question's own card, its reply box under its record, and `r` puts
+// the caret in that box from its row below the column's width as beside it (the row above). So
+// the card's Reply is the box's own submit, reached from where `r` leaves the reader, as a
+// thread's Send is: the action "Reply in the thread of the item in hand".
+test("below the column's width r puts the caret in the reply box under an answered question's record", async () => {
+  const user = userEvent.setup();
+  const answered = issueAsk({
+    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "alice" },
+    id: "ask-done",
+    issue: { assignee: "alice", key: "CORE-2", title: "Build question" },
+    issue_key: "CORE-2",
+    question: "Which build?",
+    state: "answered",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const getAsk = mockAskReads([answered]);
+  const getIssue = mockIssueReads();
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: [
+      replyRow("ask-done", {
+        issue: { key: "CORE-2", title: "Build question" },
+        kind: "ask",
+        ref: "/issues/CORE-2/asks/ask-done",
+        subject: "Which build?",
+      }),
+    ],
+    total: 1,
+  });
+  const { unmount } = renderInbox();
+
+  try {
+    const row = await waitFor(() => shortRow("reply:ask-done"));
+    const box = await waitFor(() => {
+      const found = row.querySelector<HTMLElement>("[data-inbox-thread-body] [data-reply-box]");
+      if (found === null) throw new Error("the answered question's card drew no reply box");
+      return found;
+    });
+    expect(within(row).getByRole("button", { name: "Reply" })).toBeTruthy();
+    act(() => row.focus());
+    await user.keyboard("r");
+    expect(box).toHaveFocus();
+  } finally {
+    unmount();
     listMyReplies.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
@@ -8323,33 +8434,38 @@ test("a bulk snooze keeps the list and the picker while it is out, and hands the
     await user.keyboard("j");
     await user.keyboard("x");
     await screen.findByText("2 selected");
-    // With the focus on nothing, the menu hands it back to its own trigger as it closes.
+    // Beside the column `j` and `x` move the selection and mark rows with the focus on nothing,
+    // and the list `h` opens hands it back there, to the page itself, as it closes
+    // (dispatch://INFRA-2160, D5); the bar leaves that hand-back alone, its list being no control
+    // of the bar's own (`SelectionBar`).
+    expect(document.activeElement).toBe(document.body);
     await user.keyboard("h");
     const list = screen.getByTestId("inbox-list");
     const picker = screen.getByRole("button", { name: "Snooze selected asks" });
-    const menu = screen.getByRole("menu", { name: "Snooze selected asks" });
-    // The bar snoozes only, so its menu offers no Un-snooze.
-    expect(within(menu).queryByRole("menuitem", { name: "Un-snooze" })).not.toBeInTheDocument();
+    const menu = screen.getByRole("listbox", { name: "Snooze selected asks options" });
+    // The bar snoozes only, so its list offers no Un-snooze.
+    expect(within(menu).queryByRole("option", { name: "Un-snooze" })).not.toBeInTheDocument();
 
     await user.keyboard("2");
-    // Every marked row folds into Later at once, so the selection - the row the column was
-    // showing among them - goes to the row after the last of them, as the pick said.
-    await waitFor(() => expect(rowIds()).toEqual(["ask-c"]));
-    await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
-    // The list and the trigger are the same nodes: the list stayed, and the keyboard is still in
-    // the bar it was in, on a trigger held while its write is out.
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    // While the write is out the marked rows stay in their band where the reader saw them (as
+    // "the bar's Snooze keeps its rows in their band until its write lands" reads), and the list
+    // and the trigger are the same nodes: the list stayed, and the trigger is held.
+    expect(screen.getByText("Snoozing 2…")).toBeTruthy();
+    expect(rowIds()).toEqual(["ask-a", "ask-b", "ask-c"]);
     expect(screen.getByTestId("inbox-list")).toBe(list);
     expect(screen.getByRole("button", { name: "Snooze selected asks" })).toBe(picker);
-    expect(picker).toHaveFocus();
     expect(picker).toHaveAttribute("aria-disabled", "true");
+    expect(document.activeElement, "the pick gives the focus back to the page").toBe(document.body);
 
     await act(async () => {
       landing.resolve();
       await Promise.resolve();
     });
     await waitFor(() => expect(screen.queryByText("Snoozing 2…")).not.toBeInTheDocument());
-    // The pick has landed: the bar goes, and the picker no longer keeps the focus - the row
-    // after the last snoozed one has it (R8), selected.
+    // The pick has landed: every marked row folds into Later, the bar goes, and the row after
+    // the last snoozed one is selected and has the focus (R8), as the pick said.
+    await waitFor(() => expect(rowIds()).toEqual(["ask-c"]));
     await waitFor(() => expect(shortRow("ask-c")).toHaveFocus());
     expect(selectedIds()).toEqual(["ask-c"]);
   } finally {
@@ -9376,8 +9492,10 @@ test("below the column's width a snooze gives the next row the focus, and an ans
 
 // WebKit scrolls a focused element into view only a frame later, by when the list's own scroll
 // keeping may have moved the page again, so the hand-off scrolls the row it focuses into view
-// itself, as the page's focus rescue does (`focusIntoView`): at a phone's width the row after a
-// snoozed one is in the reader's sight the moment it has the focus.
+// itself where the reader cannot see the whole of it (`focusIntoView`): at a phone's width the row
+// after a snoozed one is in the reader's sight the moment it has the focus. The rows are laid out
+// below the window here; a row the reader already sees whole scrolls nothing (the bar's hand-off
+// rows, "a bulk Snooze deep in a long list ...").
 test("the row a hand-off gives the focus to is scrolled into view once it holds the focus", async () => {
   const user = userEvent.setup();
   const rows = [
@@ -9404,6 +9522,8 @@ test("the row a hand-off gives the focus to is scrolled into view once it holds 
       row: this.getAttribute("data-inbox-row"),
     });
   });
+  // Every row a thousand pixels and more down the page, out of the reader's sight.
+  const laidOut = layRowsOut("[data-inbox-row]", -10);
   const { unmount } = renderInbox();
 
   try {
@@ -9419,6 +9539,7 @@ test("the row a hand-off gives the focus to is scrolled into view once it holds 
     });
   } finally {
     unmount();
+    laidOut();
     scrolls.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
@@ -9904,6 +10025,243 @@ test("beside the column a Dismiss holding the focus on another row, while a sear
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
+  }
+});
+
+/** The Inbox with the page's focus rescue mounted as the app shell mounts it (`RescuedMain`), at
+ *  `route`, its address read by `RouteProbe`. */
+function renderRescuedInbox(route: string) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  return render(
+    <MemoryRouter initialEntries={[route]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RouteProbe />
+          <RescuedMain>
+            <Inbox />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// Tester round 4's finding on k-next-item, for the Snooze a short row draws beside the column
+// while that row's snooze is refused and another question is in hand. R8 hands the reader on from
+// the item in hand alone, so a Retry there hands nobody on: the selection and the address stay on
+// the item being read. The press left the focus in the row the landing folds into Later; it goes
+// first, with no scroll, to the selected row, as a Dismiss there sends it (`dismissFromRow`), and
+// not to a control of the row that moves up into the snoozed one's place.
+test("beside the column a Snooze Retry on a row that is not selected hands nobody on, and the focus it held goes to the selected row", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const refusal = Promise.withResolvers<never>();
+  const snoozeAsk = answerAskSnoozes()
+    .mockImplementationOnce(() => refusal.promise)
+    .mockImplementationOnce(async (id, { snoozed_until: until }) => {
+      served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+      return { snoozed_until: until };
+    });
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const moves = watchMoves();
+  const view = renderRescuedInbox("/");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    await pickIn(
+      user,
+      () => within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
+      "Tomorrow"
+    );
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+    await user.click(shortRow("ask-c"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
+    await act(async () => {
+      refusal.reject(
+        new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until must be in the future" })
+      );
+      await refusal.promise.catch(() => undefined);
+    });
+
+    const retry = await waitFor(() =>
+      within(shortRow("ask-a")).getByRole("button", { name: "Retry" })
+    );
+    await user.click(retry);
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b", "ask-c"]));
+    await afterRescue();
+
+    expect(selectedIds()).toEqual(["ask-c"]);
+    expect(address()).toBe("/?item=ask-c");
+    expect(shortRow("ask-c")).toHaveFocus();
+    expect(moves.focused.at(-1)?.target).toBe(shortRow("ask-c"));
+    expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
+    expect(shortRow("ask-b").contains(document.activeElement)).toBe(false);
+  } finally {
+    view.unmount();
+    moves.restore();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The same rule for the hand-on a short row draws while that row's hand-on is refused: handing the
+// question back to bob takes it out of alice's list once it lands. A Retry there moves no
+// selection, and the focus the press left in the row goes first to the selected row, not to a
+// control of the row that moves up into the handed-on row's place.
+test("beside the column a hand-on Retry on a row that is not selected leaves the selection, and the focus it held goes to the selected row", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  // Handed to alice on an issue bob holds, so handing it back to bob takes it out of her list.
+  const mine = inboxIssue("ask-a", "CORE-1", "Which approach?", {
+    asked_of: "alice",
+    issue: { assignee: "bob", key: "CORE-1", title: "Bob's issue" },
+  });
+  const rows = [
+    mine,
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  const handedBack: InboxRow = { ...mine, asked_of: null, waiting_on_person: "bob" };
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const people = mockPeople();
+  const refusal = Promise.withResolvers<InboxRow>();
+  const handAskTo = spyOn(api, "handAskTo")
+    .mockImplementationOnce(() => refusal.promise)
+    .mockImplementationOnce(async () => {
+      served = [handedBack, ...rows.slice(1)];
+      return handedBack;
+    });
+  const view = renderRescuedInbox("/");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    await handOnTo(user, pane, "bob");
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledTimes(1));
+    await user.click(shortRow("ask-c"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
+    await act(async () => {
+      refusal.reject(
+        new ApiError(409, {
+          code: "ASK_NOT_OPEN",
+          error: "only open asks may be handed to another person",
+        })
+      );
+      await refusal.promise.catch(() => undefined);
+    });
+
+    const retry = await waitFor(() =>
+      within(shortRow("ask-a")).getByRole("button", { name: "Retry" })
+    );
+    await user.click(retry);
+    await waitFor(() => expect(handAskTo).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b", "ask-c"]));
+    await afterRescue();
+
+    expect(selectedIds()).toEqual(["ask-c"]);
+    expect(address()).toBe("/?item=ask-c");
+    expect(shortRow("ask-c")).toHaveFocus();
+    expect(shortRow("ask-b").contains(document.activeElement)).toBe(false);
+  } finally {
+    view.unmount();
+    narrow();
+    handAskTo.mockRestore();
+    people.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// The same rule for the Assign to me a short row draws while that row's Assign to me is refused,
+// under the Unassigned filter, which an assignee takes the row out of once it lands. A Retry there
+// moves no selection, and the focus the press left in the row goes first to the selected row, not
+// to a control of the row that moves up into the assigned row's place.
+test("beside the column an Assign to me Retry on a row that is not selected leaves the selection, and the focus it held goes to the selected row", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const unheld = (id: string, key: string, question: string) =>
+    issueAsk(
+      { id, issue: { assignee: null, key, title: "Nobody's issue" }, issue_key: key, question },
+      null
+    );
+  const rows = [
+    unheld("ask-a", "CORE-1", "Which approach?"),
+    unheld("ask-b", "CORE-2", "Which format?"),
+    unheld("ask-c", "CORE-3", "Which owner?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const refusal = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => refusal.promise)
+    .mockImplementationOnce(async () => {
+      const [first, ...rest] = rows as [InboxRow, ...InboxRow[]];
+      served = [
+        {
+          ...first,
+          issue: { assignee: "alice", key: "CORE-1", title: "Nobody's issue" },
+          waiting_on_person: "alice",
+        },
+        ...rest,
+      ];
+      return narrowIssueOf(first, "alice");
+    });
+  const view = renderRescuedInbox("/?assignee=unassigned");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    await user.click(within(pane).getByRole("button", { name: "Assign CORE-1 to me" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await user.click(shortRow("ask-c"));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
+    await act(async () => {
+      refusal.reject(
+        new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed; reopen it first" })
+      );
+      await refusal.promise.catch(() => undefined);
+    });
+
+    const retry = await waitFor(() =>
+      within(shortRow("ask-a")).getByRole("button", { name: "Retry" })
+    );
+    await user.click(retry);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b", "ask-c"]));
+    await afterRescue();
+
+    expect(selectedIds()).toEqual(["ask-c"]);
+    expect(address()).toBe("/?item=ask-c&assignee=unassigned");
+    expect(shortRow("ask-c")).toHaveFocus();
+    expect(shortRow("ask-b").contains(document.activeElement)).toBe(false);
+  } finally {
+    view.unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    patchIssue.mockRestore();
   }
 });
 

@@ -787,9 +787,10 @@ export function useInboxKeymap({
     },
     {
       // One action for both: with rows marked it is the whole selection, otherwise the row in
-      // hand. The key presses the list's trigger, which opens the list with the focus in its text
-      // box, and the list hands the focus back to its trigger as it closes (`MultiSelect`); from
-      // the bar's trigger Escape goes back to the row (`back-from-bulk`).
+      // hand. The key presses the list's trigger, a press with no pointer, so the list (D5,
+      // `MultiSelect`'s `menu`) opens with the focus in its text box and takes the element the
+      // key was pressed on - the row, or the checkbox the reader just ticked - as where each close
+      // gives the focus back; a snooze that lands then hands the reader on from there (R8).
       action: "inbox.snooze",
       run: () => {
         if (selectedAsks.length === 0) {
@@ -798,11 +799,11 @@ export function useInboxKeymap({
           inHand(ROW_SNOOZE_SELECTOR)?.click();
           return;
         }
-        // The focus arrives on the bar's trigger first, so the trigger records the row it came
-        // from (`notePickerOrigin`) for Escape from the bar to go back to.
-        const picker = bulkPicker();
-        picker?.focus();
-        picker?.click();
+        // The row the key was pressed on, for Escape from the bar's trigger to go back to
+        // (`back-from-bulk`), as a focus arriving on the trigger notes it (`notePickerOrigin`):
+        // the press leaves the focus where it is, for the list to give it back to.
+        pickerOrigin.current = rowAround(document.activeElement)?.dataset.inboxRow ?? null;
+        bulkPicker()?.click();
       },
       // The selection's key works from wherever marking leaves the reader - a row, the checkbox
       // they just ticked, the bar - but not from inside an ask they are answering: an option

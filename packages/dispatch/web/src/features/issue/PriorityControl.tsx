@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from "react";
 
 import type { IssuePriority } from "../../api/types";
-import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
+import { type ListMarks, type ListMenu, MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
 import {
@@ -31,6 +31,15 @@ const UNSET = "";
 /** The options in the order the list offers them: Unset, then P0 to P3 by their digits. */
 const PRIORITY_OPTIONS: readonly string[] = [UNSET, "0", "1", "2", "3"];
 
+/** D5's rules (`ListMenu`): the list opens on the priority the issue holds, P0 to P3 are its `0`
+ *  to `3` and Unset has no digit, and every close gives the focus back where it was as the list
+ *  opened - the row, the card or the page a key pressed the trigger from, or the trigger a press
+ *  opened it from - so a priority that lands leaves the reader where they were. */
+const PRIORITY_MENU: ListMenu = {
+  keys: { "0": "0", "1": "1", "2": "2", "3": "3" },
+  opensOn: "value",
+};
+
 const PRIORITY_TRIGGER_ATTRIBUTE = "data-priority-menu";
 const PRIORITY_MARKS: ListMarks = { trigger: { [PRIORITY_TRIGGER_ATTRIBUTE]: "" } };
 /** The priority list's trigger, which the Inbox's, the Board's and the issue page's `p`, and the
@@ -50,7 +59,7 @@ export function PriorityControl({
   disabled?: boolean;
   issueKey: string;
   priority: IssuePriority | null;
-  /** The keys that open the menu, where the host draws them on the trigger (the Inbox's reading
+  /** The keys that open the list, where the host draws them on the trigger (the Inbox's reading
    *  pane's head: `p`, or the person's own). */
   shortcutKeys?: readonly string[];
 }): ReactNode {
@@ -68,7 +77,9 @@ export function PriorityControl({
 /**
  * The single priority editor: shows the issue's priority as the `P0`–`P3` badge (a muted
  * "Priority" tag when unset), and the badge is the trigger of the shared list's single pick
- * (`MultiSelect`) of Unset and P0–P3, whose text box narrows them as the reader types. It is the
+ * (`MultiSelect`) of Unset and P0–P3, whose text box narrows them as the reader types. It takes
+ * D5's rules (`PRIORITY_MENU`): it opens on the priority held, `0` to `3` write P0 to P3 at once,
+ * and every close gives the focus back where it was as the list opened. It is the
  * same list on desktop and iPhone. The trigger fills the wrapper's tap target, 44 px (32 px from
  * `md`), while the badge keeps its size, and the wrapper draws the keyboard focus ring. The
  * trigger is named `Priority of <KEY>` and then the badge's words, and it carries the mark
@@ -147,6 +158,7 @@ export function PriorityEditor({
           emptyMessage="No priority matches that."
           label={`Priority of ${issueKey}`}
           marks={PRIORITY_MARKS}
+          menu={PRIORITY_MENU}
           mode="single"
           onOpenChange={(next) => setOpen(next && !refused)}
           onPick={(picked) => {

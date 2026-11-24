@@ -27,6 +27,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { inboxActionMark } from "./inbox-action-mark";
 import { askWaitingOnPerson } from "./list-row";
+import { RowAsideContext } from "./pane-selection";
 import { type AskHandOnWrite, AskHandOnWritesContext, useAskHandOn } from "./useAskHandOn";
 
 /**
@@ -99,6 +100,10 @@ function HandOnControl({
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const [open, setOpen] = useState(false);
   const page = usePageWords();
+  // On a short row beside the column that is not the item in hand, a press - a pick or Retry -
+  // first takes a focus it left in the row, which the hand-on may take out of the list, to the
+  // item being read (`RowAsideContext`).
+  const aside = useContext(RowAsideContext);
   // The trigger is held (`aria-disabled`, which keeps the focus on it) from the pick until the
   // commit after the write's answer (`useHeldThroughAnswer`). Inside an Inbox the write's
   // `pending` and the Inbox's hold on the row come from the same state, so the Inbox lets go of
@@ -162,7 +167,9 @@ function HandOnControl({
           mode="single"
           onOpenChange={(next) => setOpen(next && !held)}
           onPick={(login) => {
-            if (login !== waitingOn) write.submit(login);
+            if (login === waitingOn) return;
+            aside?.();
+            write.submit(login);
           }}
           open={open}
           optionLabel={(login) => (login === assignee ? `${login} (the issue's assignee)` : login)}
@@ -195,7 +202,10 @@ function HandOnControl({
         <span className="basis-full">
           <QueryError
             message={write.error ?? "Could not hand this question on."}
-            onRetry={write.retry}
+            onRetry={() => {
+              aside?.();
+              write.retry();
+            }}
             retrying={write.pending}
           />
         </span>

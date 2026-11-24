@@ -3,6 +3,7 @@ import {
   type ReactNode,
   type RefObject,
   useCallback,
+  useContext,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -20,6 +21,7 @@ import { type IssueAssigneeWrite, useIssueAssignee } from "../issue/useIssueAssi
 import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { useInboxWrites } from "./ask-writes";
 import { inboxActionMark } from "./inbox-action-mark";
+import { RowAsideContext } from "./pane-selection";
 
 /** What one ask's Assign to me write is doing, as every control drawn for the ask shows it: the
  *  write's own `error`, `failed` and `pending`, and whether the refused save may be made again
@@ -260,7 +262,9 @@ function AssignWrite({
  *  rollback puts the issue back with nobody holding it, and the next read of the Inbox places the
  *  row. The button is held (`heldPress`) from the press until the commit after its write's
  *  answer (`useHeldThroughAnswer`); the Inbox lets go of the row in the answer's own commit, so a
- *  row the landing takes out of the list takes this button away while it is still held.
+ *  row the landing takes out of the list takes this button away while it is still held. On a
+ *  short row beside the column that is not the item in hand, a press - the button or its Retry -
+ *  first takes a focus it left in the row to the item being read (`RowAsideContext`).
  *
  *  Its own module rather than `Inbox.tsx`'s, because the Inbox's reading pane draws it too
  *  (`ReadingPaneHead`): the Inbox mounts the pane, so a control the pane's head imports from the
@@ -286,6 +290,8 @@ export function AssignToMe({
   useLayoutEffect(() => draw(askId, issueKey), [askId, draw, issueKey]);
   const write = writes.of(askId);
   const held = useHeldThroughAnswer(write.pending);
+  const aside = useContext(RowAsideContext);
+  const retry = write.retry;
   return (
     <>
       <button
@@ -293,7 +299,10 @@ export function AssignToMe({
         aria-label={`Assign ${issueKey} to me`}
         className={`min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
         {...inboxActionMark("inbox.assign-to-me")}
-        {...heldPress(held, () => write.submit(viewer))}
+        {...heldPress(held, () => {
+          aside?.();
+          write.submit(viewer);
+        })}
         type="button"
       >
         {write.pending ? "Assigning…" : "Assign to me"}
@@ -303,7 +312,14 @@ export function AssignToMe({
         <div className="basis-full">
           <QueryError
             message={write.error ?? `Could not assign ${issueKey} to you.`}
-            onRetry={write.retry}
+            onRetry={
+              retry === undefined
+                ? undefined
+                : () => {
+                    aside?.();
+                    retry();
+                  }
+            }
             retrying={write.pending}
           />
         </div>

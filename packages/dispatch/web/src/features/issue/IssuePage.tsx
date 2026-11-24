@@ -260,6 +260,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   useKeymapScope("issue");
   useKeymap("issue", [
     {
+      // `s` and `p` press their list's trigger, a press with no pointer, so the list (D5,
+      // `MultiSelect`'s `menu`) takes the element the key was pressed on - the page itself where
+      // nothing had the focus - as where each close, a pick's too, gives the focus back.
       action: "issue.status",
       run: () => usableControl(STATUS_MENU)?.click(),
       when: () => usableControl(STATUS_MENU) !== null,

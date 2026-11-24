@@ -19,7 +19,7 @@ import { installCountingStorage } from "../../__tests__/counting-storage";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { pickNamed } from "../../__tests__/list-picks";
+import { panelOf, pickNamed } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -160,7 +160,7 @@ test("the whole card is the drag activator: no Reorder button, no status pill, s
     expect(within(card).getByRole("link", { name: /CORE-1/ })).toBeDefined();
     expect(
       within(card).getByRole("button", { name: pickNamed("Priority of CORE-1") })
-    ).toHaveAttribute("aria-haspopup", "menu");
+    ).toHaveAttribute("aria-haspopup", "listbox");
   } finally {
     cleanup();
   }
@@ -728,13 +728,17 @@ test("Enter and o open the focused card once, p opens its priority menu, Escape 
     act(() => alpha.focus());
 
     await user.keyboard("p");
-    const menu = screen.getByRole("menu", { name: "Priority of CORE-1" });
+    const trigger = within(alpha).getByRole("button", { name: pickNamed("Priority of CORE-1") });
+    expect(screen.getByRole("listbox", { name: "Priority of CORE-1 options" })).toBeTruthy();
+    const menu = panelOf(trigger);
     expect(menu).toContainElement(document.activeElement as HTMLElement);
-    // The menu's keys are its own: a single letter there moves no card.
+    // The list's keys are its own: a single letter there moves no card.
     await user.keyboard("j");
     expect(menu).toContainElement(document.activeElement as HTMLElement);
     await user.keyboard("{Escape}");
-    expect(screen.queryByRole("menu", { name: "Priority of CORE-1" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("listbox", { name: "Priority of CORE-1 options" })
+    ).not.toBeInTheDocument();
     expect(alpha).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(document.body).toHaveFocus();

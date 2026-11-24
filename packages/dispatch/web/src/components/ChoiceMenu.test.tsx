@@ -12,45 +12,33 @@ import { ChoiceMenu, type MenuChoice } from "./ChoiceMenu";
 import { causedByReader, useFocusRescue } from "./focus-place";
 
 const CHOICES: readonly MenuChoice<string>[] = [
-  { digit: "1", label: "Later today", value: "later" },
-  { digit: "2", label: "Tomorrow", value: "tomorrow" },
-  { digit: "3", label: "Next week", value: "week" },
+  { label: "Later today", value: "later" },
+  { label: "Tomorrow", value: "tomorrow" },
+  { label: "Next week", value: "week" },
 ];
 
-/** A page with keys of its own on the keys a menu takes - the arrows, `j`, and a `2` that fires
- *  even in a text field - a row a key presses the trigger from, a control and some prose beside
- *  it, and the menu. Every key the page takes, and every value the menu writes, is noted. */
-function Page({
-  checked,
-  chosen,
-  held,
-  taken,
-}: {
-  checked?: string;
-  chosen: string[];
-  held?: boolean;
-  taken: string[];
-}) {
+/** A page with keys of its own on the keys a menu takes - the arrows and `j` - a row a key
+ *  presses the trigger from, a control and some prose beside it, and the menu. Every key the page
+ *  takes, and every value the menu writes, is noted. */
+function Page({ chosen, held, taken }: { chosen: string[]; held?: boolean; taken: string[] }) {
   useKeymapScope("inbox");
   useKeymap("inbox", [
     { action: "inbox.next", run: (event) => taken.push(event.key) },
     { action: "inbox.arrows", run: (event) => taken.push(event.key) },
-    { id: "two", inEditable: true, keys: "2", label: "Two", run: (event) => taken.push(event.key) },
   ]);
   return (
     <>
       <button type="button">Row</button>
       <ChoiceMenu
-        checked={checked}
         choices={CHOICES}
-        face={checked ?? "Snooze"}
+        face="Snooze"
         held={held}
         label="Snooze CORE-1"
         marks={{ "data-snooze-menu": "" }}
         onChoose={(value) => chosen.push(value)}
         triggerClassName=""
       >
-        <span>{checked ?? "Snooze"}</span>
+        <span>Snooze</span>
       </ChoiceMenu>
       <button type="button">Elsewhere</button>
       <p>Some prose beside the menu.</p>
@@ -58,7 +46,7 @@ function Page({
   );
 }
 
-function renderPage(props: { checked?: string; held?: boolean } = {}) {
+function renderPage(props: { held?: boolean } = {}) {
   const chosen: string[] = [];
   const taken: string[] = [];
   const user = userEvent.setup();
@@ -75,7 +63,7 @@ function renderPage(props: { checked?: string; held?: boolean } = {}) {
 const menu = () => screen.queryByRole("menu", { name: "Snooze CORE-1" });
 const item = (name: string) => screen.getByRole("menuitem", { name });
 
-test("a press on the trigger opens a menu of its choices on the first, each with its digit and the menu's keys below", async () => {
+test("a press on the trigger opens a menu of its choices on the first, with the menu's keys below", async () => {
   const { chosen, trigger, unmount, user } = renderPage();
   try {
     expect(trigger).toHaveAttribute("aria-haspopup", "menu");
@@ -89,21 +77,13 @@ test("a press on the trigger opens a menu of its choices on the first, each with
     expect(trigger).toHaveAttribute("aria-controls", opened?.id ?? "");
     const items = within(opened as HTMLElement).getAllByRole("menuitem");
     expect(items.map((choice) => choice.textContent)).toEqual([
-      "Later today1",
-      "Tomorrow2",
-      "Next week3",
-    ]);
-    // The digit is drawn for the eye and named to assistive tech as the item's shortcut.
-    expect(items.map((choice) => choice.getAttribute("aria-keyshortcuts"))).toEqual([
-      "1",
-      "2",
-      "3",
+      "Later today",
+      "Tomorrow",
+      "Next week",
     ]);
     expect(item("Later today")).toHaveFocus();
     expect(items.map((choice) => choice.tabIndex)).toEqual([0, -1, -1]);
-    expect(opened).toHaveTextContent(
-      "↑ ↓ Home End to move · Enter or 1–3 to choose · Esc to close"
-    );
+    expect(opened).toHaveTextContent("↑ ↓ Home End to move · Enter to choose · Esc to close");
     expect(chosen).toEqual([]);
   } finally {
     unmount();
@@ -165,24 +145,6 @@ test("a click writes the choice it hits once", async () => {
   }
 });
 
-test("a digit writes its choice at once, and no page key that takes the digit fires", async () => {
-  const { chosen, taken, trigger, unmount, user } = renderPage();
-  try {
-    await user.click(trigger);
-    await user.keyboard("2");
-    expect(chosen).toEqual(["tomorrow"]);
-    expect(taken).toEqual([]);
-    expect(menu()).not.toBeInTheDocument();
-    // A digit no choice carries does nothing in the menu.
-    await user.click(trigger);
-    await user.keyboard("7");
-    expect(menu()).toBeInTheDocument();
-    expect(chosen).toEqual(["tomorrow"]);
-  } finally {
-    unmount();
-  }
-});
-
 test("Escape, Tab, Shift+Tab and a press outside close the menu and write nothing", async () => {
   const { chosen, trigger, unmount, user } = renderPage();
   try {
@@ -233,7 +195,7 @@ test("the focus goes back to the row a key pressed the trigger from, and to the 
     expect(row).toHaveFocus();
 
     act(() => trigger.click());
-    await user.keyboard("3");
+    await user.keyboard("{End}{Enter}");
     expect(chosen).toEqual(["week"]);
     expect(row).toHaveFocus();
 
@@ -261,34 +223,6 @@ test("the focus goes back to the row a key pressed the trigger from, and to the 
     await user.click(trigger);
     await user.keyboard("{Escape}");
     expect(trigger).toHaveFocus();
-    expect(chosen).toEqual(["week"]);
-  } finally {
-    unmount();
-  }
-});
-
-test("a menu of values draws radios with the current one checked, opens on it, and writes nothing when it is chosen again", async () => {
-  const { chosen, trigger, unmount, user } = renderPage({ checked: "tomorrow" });
-  try {
-    // The trigger is named for its menu and then for what it draws: the value it holds.
-    expect(trigger).toHaveAccessibleName("Snooze CORE-1 tomorrow");
-    expect(trigger).not.toHaveAttribute("aria-describedby");
-    expect(trigger).toHaveTextContent(/^tomorrow$/);
-    await user.click(trigger);
-    const radios = screen.getAllByRole("menuitemradio");
-    expect(radios.map((radio) => radio.getAttribute("aria-checked"))).toEqual([
-      "false",
-      "true",
-      "false",
-    ]);
-    expect(screen.queryAllByRole("menuitem")).toEqual([]);
-    expect(screen.getByRole("menuitemradio", { name: "Tomorrow" })).toHaveFocus();
-    await user.keyboard("{Enter}");
-    expect(menu()).not.toBeInTheDocument();
-    expect(chosen).toEqual([]);
-
-    await user.click(trigger);
-    await user.keyboard("{ArrowDown}{Enter}");
     expect(chosen).toEqual(["week"]);
   } finally {
     unmount();
@@ -401,7 +335,7 @@ test("a pick in the menu is the reader's own press on its trigger and the row it
     const other = screen.getByRole("button", { name: "Other row" });
     act(() => trigger.focus());
     await user.keyboard("{Enter}");
-    await user.keyboard("2");
+    await user.keyboard("{ArrowDown}{Enter}");
     expect(causedByReader(trigger)).toBe(true);
     // A row the press was not in, nor the menu it landed in, is not the reader's doing.
     expect(causedByReader(other)).toBe(false);
@@ -433,7 +367,7 @@ test("the element a pick hands the focus back to is kept in view as the write mo
         x: 0,
         y: trigger.closest("li")?.previousElementSibling === null ? 10 : 5000,
       });
-    await user.keyboard("2");
+    await user.keyboard("{ArrowDown}{Enter}");
     expect(
       [...document.querySelectorAll("[data-inbox-row]")].map((row) =>
         row.getAttribute("data-inbox-row")
@@ -457,7 +391,6 @@ test("the element a pick hands the focus back to is kept in view as the write mo
 test("a trigger given its keys names them all and draws the first, outside its name and its text", () => {
   const view = render(
     <ChoiceMenu
-      checked="P2"
       choices={[{ label: "P2", value: "P2" }]}
       face="P2"
       label="Priority of CORE-1"

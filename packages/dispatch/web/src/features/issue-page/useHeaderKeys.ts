@@ -116,13 +116,14 @@ function outsideInputsAndAskCards(): boolean {
 
 /**
  * The header's keys: the ones today's header binds, each with its target on the new header (`s`
- * opens the status menu and `p` the priority list, `0` to `3` set the priority, `e` puts the
+ * opens the status list and `p` the priority list, `0` to `3` set the priority, `e` puts the
  * caret in the title, `Shift+P` pins and unpins), and `a` and `Shift+R`, which approve and open
  * Request changes on the focused approval chip or entry. Each is the catalogue's action of
  * today's page (`keymap-catalogue.ts`), so its label and its keys are the ones the person sees
- * and sets there. A menu's or a list's keys are its own while it is open, Escape among them,
- * which closes it: the status menu gives the focus back where the key was pressed
- * (`ChoiceMenu`), and the priority list to its trigger (`MultiSelect`).
+ * and sets there. A list's keys are its own while it is open, Escape among them, which closes
+ * it: the status and the priority lists take D5's rules (`MultiSelect`'s `menu`), so a key that
+ * presses a trigger leaves it the element the focus was on as the place every close gives the
+ * focus back to - the page itself where nothing had it, so the next key is the page's.
  *
  * They register into the `issue` scope the view row pushes (`useIssueKeymap.ts`); this hook
  * pushes none. The digits go through the header's one priority write, the one its list and the

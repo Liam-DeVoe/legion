@@ -884,6 +884,48 @@ test("IssuePage's `e` opens the title's editor through the Edit title button", a
   }
 });
 
+// dispatch://INFRA-2160, plan task t21, "Where the focus goes back, by opener": the page's `s` and
+// `p` press their list's trigger from where the reader is, so every close of the list - Escape,
+// or a pick - gives the focus back there: here the page itself, where nothing had it, so the next
+// key is the page's and not a letter typed on a trigger.
+test("the issue page's s and p return to where they were", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, status: "in_progress" });
+  const view = renderIssuePage();
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await screen.findByRole("button", { name: pickNamed("Status") });
+    expect(document.activeElement).toBe(document.body);
+    for (const [key, list] of [
+      ["s", "Status options"],
+      ["p", "Priority of CORE-1 options"],
+    ] as const) {
+      await user.keyboard(key);
+      expect(screen.getByRole("listbox", { name: list }), `${key} opens its list`).toBeTruthy();
+      expect(screen.getByRole("combobox")).toHaveFocus();
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("listbox")).toBeNull();
+      expect(document.activeElement, `the list ${key} opened gives the focus back`).toBe(
+        document.body
+      );
+    }
+    // The status list opens on Todo, the status held; In progress is the next.
+    await user.keyboard("s");
+    await user.keyboard("{ArrowDown}{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
+    );
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(document.activeElement, "a pick gives the focus back too").toBe(document.body);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
 // The issue header's Assignee is an option list's trigger, which takes the keys a select takes.
 // It opens the list on a typed character, with that character as the list's search, so a digit
 // or a letter of a page binding typed on the closed trigger does nothing else on the page: no
@@ -2445,11 +2487,11 @@ test("IssuePage keeps state actions available while approval awaits", async () =
     const stateActions = screen.getByTestId("issue-state-actions");
     expect(within(stateActions).getByRole("button", { name: pickNamed("Status") })).toHaveAttribute(
       "aria-haspopup",
-      "menu"
+      "listbox"
     );
     expect(
       within(stateActions).getByRole("button", { name: pickNamed("Priority of CORE-1") })
-    ).toHaveAttribute("aria-haspopup", "menu");
+    ).toHaveAttribute("aria-haspopup", "listbox");
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Close issue" })).not.toBeNull();
@@ -2932,11 +2974,8 @@ test("IssuePage lets a human move a Todo issue to In progress", async () => {
       "Retro",
     ]);
     await user.click(status);
-    expect(screen.getByRole("menuitemradio", { name: "Todo" })).toHaveAttribute(
-      "aria-checked",
-      "true"
-    );
-    await user.click(screen.getByRole("menuitemradio", { name: "In progress" }));
+    expect(screen.getByRole("option", { name: "Todo" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("option", { name: "In progress" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );
