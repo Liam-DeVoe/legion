@@ -36,6 +36,15 @@ func WithKeepInterval(interval time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.keepInterval = interval })
 }
 
+// withKeeperStepGuard sets the hang guard of each step of the keeper's passes in place of
+// startHangGuard. It is a seam for this package's tests whose own work runs inside a step: a test
+// that holds the keeper's update until its own read of the stream has come back
+// (holdKeeperUpdates) gives the step what is left of its deadline, so the guard does not count the
+// test's hold. No program sets it.
+func withKeeperStepGuard(guard time.Duration) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.keeperStepGuard = guard })
+}
+
 // startKeeper starts the keeper of a client whose start reconciled the stream with cfg
 // (ensureStreamWithConfig), which keeps buckets (WithKeptBuckets) at cfg's copies too: the
 // constructor's start once install has returned, and the first connection's on a client that
@@ -102,7 +111,7 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string, refused refu
 	js := c.JS()
 	var restored []string
 	if err == nil {
-		err = keeperStep(ctx, func(ctx context.Context) (err error) {
+		err = c.keeperStep(ctx, func(ctx context.Context) (err error) {
 			restored, err = keepStream(ctx, js, cfg, defaultsAnUnsetCap)
 			return err
 		})
@@ -121,11 +130,16 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string, refused refu
 // keeperStep is one step of a keeper pass. Each step's first read of the stream or a bucket, and
 // the read after an update that drew no answer, is sent again while the server leaves it
 // unanswered (readAgain, updateStream), and those reads end when the client stops (ctx) or the
-// step's hang guard passes, the one a start's step takes (startHangGuard). The step's update is
-// one send under the JetStream context's own wait, which the connection's close at a stop ends too
-// (awaitKeeper); the next pass, 30 s later, makes the step again either way.
-func keeperStep(ctx context.Context, run func(ctx context.Context) error) error {
-	ctx, cancel := hangGuard(ctx, startHangGuard)
+// step's hang guard passes, the one a start's step takes (startHangGuard), or a test's
+// (withKeeperStepGuard). The step's update is one send under the JetStream context's own wait,
+// which the connection's close at a stop ends too (awaitKeeper); the next pass, 30 s later, makes
+// the step again either way.
+func (c *Client) keeperStep(ctx context.Context, run func(ctx context.Context) error) error {
+	guard := startHangGuard
+	if c.keeperStepGuard > 0 {
+		guard = c.keeperStepGuard
+	}
+	ctx, cancel := hangGuard(ctx, guard)
 	defer cancel()
 	return run(ctx)
 }
@@ -164,7 +178,7 @@ func (c *Client) keepBuckets(ctx context.Context, js nats.JetStreamContext, buck
 		}
 		var info *nats.StreamInfo
 		var from int
-		err := keeperStep(ctx, func(ctx context.Context) (err error) {
+		err := c.keeperStep(ctx, func(ctx context.Context) (err error) {
 			if info, err = readBucketStream(ctx, js, bucket); err != nil {
 				return err
 			}
