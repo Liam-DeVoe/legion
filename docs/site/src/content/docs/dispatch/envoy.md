@@ -615,10 +615,13 @@ or `envoy nats keeper could not raise a bucket` and is tried again 30 seconds la
 stops the program. A bucket the program's NATS user may not read or update under its grant, such
 as `envoy_known_sessions` on a hub whose users' render predates its grant, is the exception: the
 keeper logs the refusal once at WARN, `envoy nats keeper may not raise a bucket under its grant;
-it asks again after the backoff` with `probe_again_in="10m0s"`, and asks about that bucket once
-every ten minutes rather than every pass, so neither the hub nor the program logs a permissions
-violation for it every 30 seconds. The ask that the server answers logs
-`envoy nats keeper's grant now covers a bucket the server refused it`; one that fails for another
+it asks again after the backoff`, with the refused request in `error` and
+`probe_again_in="10m0s"`, and asks about that bucket once every ten minutes rather than every
+pass, so neither the hub nor the program logs a permissions violation for it every 30 seconds. A
+refusal of the other request, the update after the read or the read after the update, is logged
+again. When the refused request itself is answered, the keeper logs
+`envoy nats keeper's grant now covers a bucket the server refused it`; a read that finds the bucket
+at its copies sends no update and so says nothing of a refused one. An ask that fails for another
 reason logs `envoy nats keeper could not raise a bucket` as usual.
 
 The consumer cap is the one of these the binary carries rather than reads from a setting: 24000,

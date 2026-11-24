@@ -42,7 +42,6 @@ type connectOpts struct {
 	streamMaxBytes              int64
 	keepInterval                time.Duration
 	keptBuckets                 []string
-	keeperClock                 func() time.Time
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
 	environment                 func(string) (string, bool)
@@ -506,9 +505,6 @@ type Client struct {
 	// nothing to restore logs nothing and sends no update, so the count is the one sign it ran. It
 	// says nothing of whether the pass did what it set out to; a failed pass logs that.
 	keepPasses atomic.Uint64
-	// keeperClock is the clock the keeper times a bucket's no-grant backoff on (withKeeperClock);
-	// nil, in every deployment, is time.Now.
-	keeperClock func() time.Time
 }
 
 // Dial opens a tuned core NATS connection using envoy's standard options (5s connect timeout,
@@ -625,7 +621,6 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		afterCoreSendFlush:          opts.afterCoreSendFlush,
 		streamMessageReads:          opts.streamMessageReads,
 		requestExpiry:               opts.requestExpiry,
-		keeperClock:                 opts.keeperClock,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()

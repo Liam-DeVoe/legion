@@ -4256,9 +4256,13 @@ It publishes to:
   The update is the raise a
   start, or the listener's keeper every 30 seconds after, sends when it finds a bucket with fewer
   copies than `ENVOY_NATS_REPLICAS` (for `envoy_known_sessions` the keeper alone, since a start
-  opens that bucket as it finds it); neither writes fewer copies than it found, and a grant without
-  it makes that raise time out after 10 seconds with
-  `raise KV_<bucket>: ENVOY_NATS_REPLICAS=<n>: context deadline exceeded`. A listener whose grant
+  opens that bucket as it finds it); neither writes fewer copies than it found. A grant without
+  it ends that raise at once with the server's refusal,
+  `raise KV_<bucket>: ENVOY_NATS_REPLICAS=<n>: bus: NATS denied the publish to "$JS.API.STREAM.UPDATE.KV_<bucket>": ...`:
+  a start stops on it, and the keeper logs it once at WARN,
+  `envoy nats keeper may not raise a bucket under its grant; it asks again after the backoff`,
+  and asks about that bucket again once every ten minutes rather than every pass, as it does for
+  a grant without the bucket's info. A listener whose grant
   lacks `legion_agents`, one whose image is newer than the release that applied its grant, serves
   everything else and answers 503 on the registry routes (`/v1/legion/agents`) while it retries
   the open in the background (1 s doubling to 1 min, and at once after each NATS reconnect), so
@@ -4269,7 +4273,8 @@ It publishes to:
   That WARN is the store's own line, not the whole log a missing grant leaves: the server refuses
   each open attempt's publish to `$JS.API.STREAM.INFO.KV_envoy_known_sessions`, which the
   connection reports as one `envoy nats async error` at ERROR per attempt (`options`' async error
-  callback, `internal/bus/connect.go`).
+  callback, `internal/bus/connect.go`), and the keeper's ask about the bucket, once every ten
+  minutes, adds one more, with the keeper's own WARN logged once.
   It retries the open in the background (1 s doubling to 5 min, and at once after each NATS
   reconnect), so it takes the grant without a restart;
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection

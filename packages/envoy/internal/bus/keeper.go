@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,23 +18,16 @@ import (
 // concurrent start or an operator lowered stays below the deployment's settings.
 const defaultKeepInterval = 30 * time.Second
 
-// keeperNoGrantBackoff is how long the keeper leaves a bucket alone once the server refused its
-// raise for want of a grant (refusedBuckets); the first pass after it asks once more. A listener
-// whose NATS user lacks a bucket's grant - the known-session bucket on a hub whose users' render
-// predates envoy-infra 10.33.0 - is refused every ask, and an ask each pass logged a permissions
-// violation on the hub and on this connection, and a failed raise here, twice a minute for an
-// answer the keeper already had. It is ten minutes, the listener's noGrantBackoff for session
-// consumers (cmd/listener), which spares those calls the same: a grant an operator adds is read
-// within it, and nothing is lost meanwhile, since a bucket the keeper may not read is one it could
-// not raise either.
+// keeperNoGrantBackoff is how long the keeper leaves a bucket alone once the server refused a
+// request of its raise for want of a grant (refusedBuckets); the first pass after it asks once
+// more. A listener whose NATS user lacks a bucket's grant - the known-session bucket on a hub whose
+// users' render predates envoy-infra 10.33.0 - is refused every ask, and an ask each pass logged a
+// permissions violation on the hub, an async error on this connection and a failed raise here,
+// twice a minute, for an answer the keeper already had. It is ten minutes, the listener's
+// noGrantBackoff for session consumers (cmd/listener), which spares those calls the same: a grant
+// an operator adds is read within it, and nothing is lost meanwhile, since the server refuses the
+// same request every time until the grant changes.
 const keeperNoGrantBackoff = 10 * time.Minute
-
-// withKeeperClock sets the clock the keeper times a bucket's no-grant backoff on (refusedBuckets)
-// in place of time.Now, so a test moves past keeperNoGrantBackoff without waiting it. Only this
-// package's tests set it.
-func withKeeperClock(now func() time.Time) ConnectOption {
-	return clientOption(func(o *connectOpts) { o.keeperClock = now })
-}
 
 // WithKeepInterval sets the keeper's period in place of defaultKeepInterval, so a test sees a
 // period pass without waiting one. It is exported for the tests of the programs that connect
@@ -76,11 +70,7 @@ func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []strin
 	defer close(done)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	now := c.keeperClock
-	if now == nil {
-		now = time.Now
-	}
-	refused := &refusedBuckets{now: now, until: map[string]time.Time{}}
+	refused := refusedBuckets{}
 	for {
 		select {
 		case <-c.stopCh:
@@ -106,7 +96,7 @@ func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []strin
 // until the client stops or natsversion.VersionWait passes keeps nothing of the stream that pass
 // and logs why, since an empty version is no reading of the server; a pass runs only while the
 // client is connected (keep).
-func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string, refused *refusedBuckets) {
+func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string, refused refusedBuckets) {
 	ctx, cancel := c.untilStopped()
 	defer cancel()
 	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(ctx, c.Connection())
@@ -146,19 +136,24 @@ func keeperStep(ctx context.Context, run func(ctx context.Context) error) error 
 // only for a feature it has not configured, is skipped without a line: the program creates it at
 // the deployment's copies when it opens it.
 //
-// A raise the server refuses for want of a grant (grantRefused) holds that bucket's next ask for
+// A request of a raise the server refuses for want of a grant (grantRefused), the read of the
+// bucket's stream or the update that raises it, holds that bucket's next ask for
 // keeperNoGrantBackoff (refusedBuckets), while every other bucket is asked each pass. The refusal
-// that starts an episode is logged, with the time to the next ask, and the refused asks that end
-// each backoff after it are not; the episode ends at the first ask the server answers, which logs
-// that the grant now covers the bucket, and then its raise's own line when it raised one. An ask
-// that fails for another reason, a lost answer say, logs its failure as any bucket's does and
-// leaves the episode running: it says nothing of the grant, and the next pass asks again.
-func (c *Client) keepBuckets(ctx context.Context, js nats.JetStreamContext, buckets []string, replicas int, refused *refusedBuckets) {
+// that starts an episode is logged, with the request it names and the time to the next ask, and so
+// is a refusal of another request than the episode's; the refused asks that end each backoff
+// after it are not. The episode ends when the request the server refused is answered, which logs
+// that the grant now covers the bucket, and then the raise's own line when it raised the bucket.
+// An ask that sends no such request leaves the episode as it is: a read answered with a bucket at
+// its copies, or no bucket, says nothing of a refused update, which a later lowering sends again.
+// An ask that fails for another reason, a lost answer say, logs its failure as any bucket's does
+// and leaves the episode as it is too: it says nothing of the grant, and the next pass asks again.
+// The episode's backoff is timed on the client's clock (now, WithReconnectErrClock).
+func (c *Client) keepBuckets(ctx context.Context, js nats.JetStreamContext, buckets []string, replicas int, refused refusedBuckets) {
 	for _, bucket := range buckets {
 		if c.stopped() {
 			return
 		}
-		if !refused.asksAgain(bucket) {
+		if !refused.asksAgain(bucket, c.now()) {
 			continue
 		}
 		var from int
@@ -170,66 +165,96 @@ func (c *Client) keepBuckets(ctx context.Context, js nats.JetStreamContext, buck
 		case err != nil && c.stopped():
 			return
 		case grantRefused(err):
-			if refused.refuse(bucket) {
+			if refused.refuse(bucket, refusedSubject(err), c.now()) {
 				slog.Warn("envoy nats keeper may not raise a bucket under its grant; it asks again after the backoff",
 					slog.String("name", c.name), slog.String("bucket", bucket), slog.String("error", err.Error()),
 					slog.String("probe_again_in", keeperNoGrantBackoff.String()))
 			}
-			continue
-		case err == nil || errors.Is(err, nats.ErrStreamNotFound):
-			if refused.answered(bucket) {
+		case err != nil && !errors.Is(err, nats.ErrStreamNotFound):
+			slog.Warn("envoy nats keeper could not raise a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("error", err.Error()))
+		default:
+			// The read was answered, and the update too when it raised the bucket: raiseReplicas
+			// returns from 0 with every error, and sends the update only when the read found fewer
+			// copies.
+			stream := "KV_" + bucket
+			answered := []string{jsAPI("STREAM.INFO", stream)}
+			if from > 0 {
+				answered = append(answered, jsAPI("STREAM.UPDATE", stream))
+			}
+			if refused.answered(bucket, answered) {
 				slog.Info("envoy nats keeper's grant now covers a bucket the server refused it", slog.String("name", c.name), slog.String("bucket", bucket))
 			}
-		}
-		switch {
-		case errors.Is(err, nats.ErrStreamNotFound):
-		case err != nil:
-			slog.Warn("envoy nats keeper could not raise a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("error", err.Error()))
-		case from > 0:
-			slog.Warn("envoy nats keeper raised a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("replicas", fmt.Sprintf("%d -> %d", from, replicas)))
+			if from > 0 {
+				slog.Warn("envoy nats keeper raised a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("replicas", fmt.Sprintf("%d -> %d", from, replicas)))
+			}
 		}
 	}
 }
 
 // grantRefused reports whether err is the server's refusal of a keeper request under the
-// connection's grant: ErrPublishDenied, the name a client gives the violation it recorded under
-// the request's own subject (deniedPublish, readAgain's one send of a refused read), or the
-// server's permissions violation itself.
+// connection's grant: the server's permissions violation. A client names a refusal it recorded
+// under the request's own subject ErrPublishDenied (deniedPublish, readAgain's one send of a
+// refused read), and deniedPublishError, the one spelling of that error, wraps the violation it is
+// given, which both of its callers take only as a nats.ErrPermissionViolation (publishDenial, and
+// deniedPublish through onAsyncError's record), so the one test covers both.
 func grantRefused(err error) bool {
-	return errors.Is(err, ErrPublishDenied) || errors.Is(err, nats.ErrPermissionViolation)
+	return errors.Is(err, nats.ErrPermissionViolation)
 }
 
-// refusedBuckets is the keeper's record of the buckets whose raise the server refused for want of
-// a grant (grantRefused): when each may be asked again, keeperNoGrantBackoff after its last
-// refusal. A bucket is in it from the refusal that starts its episode until an ask the server
-// answers (keepBuckets). Only the keeper's goroutine reads and writes it (keep), so it takes no
-// lock; now is the keeper's clock (withKeeperClock), time.Now in every deployment.
-type refusedBuckets struct {
-	now   func() time.Time
-	until map[string]time.Time
+// refusedSubject is the subject of the request err, a refusal grantRefused reads, says the server
+// refused (publishRefusal), or "" when its text names none.
+func refusedSubject(err error) string {
+	match := publishRefusal.FindStringSubmatch(err.Error())
+	if match == nil {
+		return ""
+	}
+	subject, unquoteErr := strconv.Unquote(match[1])
+	if unquoteErr != nil {
+		return ""
+	}
+	return subject
 }
 
-// asksAgain reports whether the keeper may ask about bucket now: when the server has refused it
-// nothing, or the backoff since its last refusal has passed.
-func (r *refusedBuckets) asksAgain(bucket string) bool {
-	until, refused := r.until[bucket]
-	return !refused || !r.now().Before(until)
+// refusedBuckets is the keeper's record of the buckets one of whose raise's requests the server
+// refused for want of a grant (grantRefused), each with the refused request's subject and when the
+// bucket may be asked about again, keeperNoGrantBackoff after its last refusal. A bucket is in it
+// from the refusal that starts its episode until the refused request is answered (keepBuckets).
+// Only the keeper's goroutine reads and writes it (keep), so it takes no lock.
+type refusedBuckets map[string]refusedRequest
+
+// refusedRequest is one bucket's episode: the subject of the request the server refused, "" when
+// its refusal named none (refusedSubject), and the time from which the bucket is asked about again.
+type refusedRequest struct {
+	subject string
+	until   time.Time
 }
 
-// refuse records the server's refusal of bucket for want of a grant, which holds its next ask for
-// keeperNoGrantBackoff, and reports whether the refusal starts an episode: the one refusal of the
-// episode that is logged.
-func (r *refusedBuckets) refuse(bucket string) (starts bool) {
-	_, refused := r.until[bucket]
-	r.until[bucket] = r.now().Add(keeperNoGrantBackoff)
-	return !refused
+// asksAgain reports whether the keeper may ask about bucket at now: when no episode runs for it,
+// or its backoff has passed.
+func (r refusedBuckets) asksAgain(bucket string, now time.Time) bool {
+	episode, refused := r[bucket]
+	return !refused || !now.Before(episode.until)
 }
 
-// answered ends bucket's episode, at an ask the server answered, and reports whether one ran.
-func (r *refusedBuckets) answered(bucket string) bool {
-	_, refused := r.until[bucket]
-	delete(r.until, bucket)
-	return refused
+// refuse records the server's refusal, at now, of the request of bucket's raise on subject, which
+// holds its next ask for keeperNoGrantBackoff, and reports whether the refusal is logged: one that
+// starts an episode, or one of another request than the episode's.
+func (r refusedBuckets) refuse(bucket, subject string, now time.Time) (logged bool) {
+	episode, refused := r[bucket]
+	r[bucket] = refusedRequest{subject: subject, until: now.Add(keeperNoGrantBackoff)}
+	return !refused || episode.subject != subject
+}
+
+// answered ends bucket's episode when the request its refusal named is among answered, the
+// subjects of the requests an ask about it sent and the server answered, and reports whether it
+// ended one. An episode whose refusal named no request ends at no answer.
+func (r refusedBuckets) answered(bucket string, answered []string) bool {
+	episode, refused := r[bucket]
+	if !refused || episode.subject == "" || !slices.Contains(answered, episode.subject) {
+		return false
+	}
+	delete(r, bucket)
+	return true
 }
 
 // awaitKeeper waits for the keeper of a stopped client to end, so it never outlives the client.
