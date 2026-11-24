@@ -24,7 +24,8 @@ description: >-
   A merge-group run's matrix alone holds this leg (ci.yaml's go-envoy-held job's `exclude`), so the
   group fails before the merge, its wall time does not grow, and a pull request's run (`full-ci`) or
   a dispatched run costs what it did. The leg runs on ubuntu-24.04, after ci.yaml's bounded
-  checkout of the whole history and its second attempt, on the job's Postgres
+  checkout of this commit alone, its second attempt and its fetch of main's history and the
+  release tags (.github/actions/go-envoy-held/dispatch-two-builds says why), on the job's Postgres
   (DISPATCH_TEST_DATABASE_URL, which the job gives every step).
 inputs:
   postgres:

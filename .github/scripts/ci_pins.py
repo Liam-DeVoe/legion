@@ -148,11 +148,13 @@ TIMED_STEPS = (
         (CI, "go-envoy-held", {"name": "Unit test envoy Go package"}, 45, 1),
         (".github/actions/go-envoy-held/envoy-go/action.yml", None,
          {"name": "Prove the hub behind the NATS auth service on the local stack (callout-check.sh)"}, 6, 1),
-        # dispatch-two-builds and dispatch-two-builds-same share these three steps of ci.yaml.
+        # dispatch-two-builds and dispatch-two-builds-same share these four steps of ci.yaml; main's
+        # #5301 added the fourth, the history fetch after a checkout of one commit.
         (CI, "go-envoy-held", {"id": "checkout"}, 2, 1),
         (CI, "go-envoy-held", {"name": "End the git processes and the workspace a first attempt cut at its budget leaves"},
          2, 1),
         (CI, "go-envoy-held", {"name": "Check out again, after a first attempt that did not complete"}, 2, 1),
+        (CI, "go-envoy-held", {"name": "Fetch main's history and the release tags, without their files"}, 2, 1),
         (".github/actions/go-envoy-held/dispatch-two-builds/action.yml", None, {"name": "Install Playwright Chromium"},
          4, 1),
         (".github/actions/go-envoy-held/dispatch-two-builds/action.yml", None,

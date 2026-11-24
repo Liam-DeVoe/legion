@@ -1,3 +1,4 @@
+import { beforeEach, describe as bunDescribe, test as bunTest } from "bun:test";
 import { isAbsolute } from "node:path";
 
 /** The path of the program on this host's `PATH`, or null when the host does not have it. */
@@ -74,13 +75,117 @@ function missingPrerequisite(what: string, job: string, warning: (where: string)
   return true;
 }
 
+/** What a host gate needs: programs and a reason under the CI rule, and programs never skipped for. */
+export interface HostGateNeeds {
+  /** Programs a missing one of which skips the gated tests outside CI and fails them in CI. */
+  readonly programs?: readonly string[];
+  /** A sentence of the caller's own that holds the same way, such as "This host has no libpq."; empty for none. */
+  readonly reason?: string;
+  /** Programs a missing one of which fails the gated tests on any host, never skipping them. */
+  readonly never?: readonly string[];
+}
+
+/** A gate's own `test` and `describe`, and whether anything it needs is missing. */
+export interface HostGate {
+  /** True when anything the gate needs is missing: a setup hook of the gated tests skips its work. */
+  readonly missing: boolean;
+  /** `test` under the gate. */
+  readonly test: (
+    name: string,
+    fn: Parameters<typeof bunTest>[1],
+    options?: Parameters<typeof bunTest>[2]
+  ) => void;
+  /** `describe` under the gate. */
+  readonly describe: (name: string, fn: () => void) => void;
+}
+
 /**
- * The file whose tests the gate decides: the outermost frame of the stack whose path is not this
- * module's. Without it the message says only what is missing, and a reader of a run of hundreds of
- * files cannot tell whose tests did not run. The outermost rather than the nearest, so a gate that
- * a shared fixture calls for its caller (`ompNatsGuard` in `packages/pi-shared/test/omp-harness.ts`)
- * names the test file that called the fixture: Bun evaluates a module's body with no frame of its
- * own below it, so at module scope the outermost frame is the file being loaded.
+ * The gate for tests that need host programs, under the repository's rule for a test a machine
+ * cannot run (skipOutsideCI in packages/daemon/internal/launcher/rolenamespace_test.go). Where
+ * nothing it needs is missing, its `test` and `describe` are bun's. Where something is missing,
+ * outside CI each gated test is skipped, with one warning naming what is missing and the file, as
+ * `skipWithout` does; under GITHUB_ACTIONS each gated test fails, by its own name, with an error
+ * naming what is missing, since the job that runs it is set up to run it and a skip there would
+ * be a green job with the proof gone. A run is CI only where GITHUB_ACTIONS is exactly `true`, as
+ * GitHub's runner sets it; any other value, or none, is a run outside CI. A missing program of
+ * `never` fails each gated test on any host. `reason` takes a host condition of the caller's own
+ * that no program names (a sudo that asks for a password, a kernel without the feature, another
+ * platform) under the same rule. Call it once, at module scope, and declare the gated tests with
+ * its `test` and `describe`.
+ */
+export function hostGate(needs: HostGateNeeds): HostGate {
+  const never = (needs.never ?? []).filter((name) => hostTool(name) === null);
+  const programs = (needs.programs ?? []).filter((name) => hostTool(name) === null);
+  const reasons = [
+    never.length === 0
+      ? ""
+      : `This host does not have: ${never.join(", ")}, which these tests never skip for.`,
+    programs.length === 0 ? "" : `This host does not have: ${programs.join(", ")}.`,
+    needs.reason ?? "",
+  ].filter((reason) => reason !== "");
+  const file = callerFile(new Error().stack);
+  const where = file === undefined ? "in this file" : `in ${file}`;
+  const fails =
+    never.length > 0 || (reasons.length > 0 && process.env["GITHUB_ACTIONS"] === "true");
+  const skips = reasons.length > 0 && !fails;
+  const failure =
+    `This test cannot run on this host. ${reasons.join(" ")} ` +
+    (never.length > 0
+      ? "It fails rather than skips."
+      : "Under GITHUB_ACTIONS a test this machine cannot run fails, never skips.");
+  if (skips) {
+    console.warn(
+      `Skipped the tests ${where}. ${reasons.join(" ")} Install what is missing and run the tests again.`
+    );
+  }
+  return {
+    missing: reasons.length > 0,
+    test: (name, fn, options) => {
+      if (skips) bunTest.skip(name, fn, options);
+      else if (fails)
+        bunTest(
+          name,
+          () => {
+            throw new Error(failure);
+          },
+          options
+        );
+      else bunTest(name, fn, options);
+    },
+    describe: (name, fn) => {
+      if (skips) bunDescribe.skip(name, fn);
+      else if (fails)
+        bunDescribe(name, () => {
+          beforeEach(() => {
+            throw new Error(failure);
+          });
+          fn();
+        });
+      else bunDescribe(name, fn);
+    },
+  };
+}
+
+/**
+ * For a test that never skips: throws, naming every program of `names` the host lacks, so the test
+ * fails by name rather than at whichever line first runs the program. Call it in the test's body.
+ */
+export function requireHostTools(...names: string[]): void {
+  const missing = names.filter((name) => hostTool(name) === null);
+  if (missing.length === 0) return;
+  throw new Error(
+    `This test needs ${missing.join(", ")} on PATH, which this host does not have; it fails rather than skips.`
+  );
+}
+
+/**
+ * The file whose tests a gate of this module decides: the outermost frame of the stack whose path
+ * is not this module's. Without it the message says only what is missing, and a reader of a run of
+ * hundreds of files cannot tell whose tests did not run. The outermost rather than the nearest, so
+ * a gate that a shared fixture calls for its caller (`ompNatsGuard` in
+ * `packages/pi-shared/test/omp-harness.ts`) names the test file that called the fixture: Bun
+ * evaluates a module's body with no frame of its own below it, so at module scope the outermost
+ * frame is the file being loaded.
  *
  * A frame is `at <name> (<path>:<line>:<col>)`, or `at <path>:<line>:<col>` where it has no name.
  * The path is read whole, from the parenthesis or from `at ` up to the last `:<line>:<col>` of the

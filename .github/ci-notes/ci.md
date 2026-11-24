@@ -81,13 +81,17 @@ suites' pull-request case is
 job's old name. The re-run term is on every job but `ci-ok` and
 `pr-title`: each of those two is named for a check main's ruleset requires, where a skip is a
 passing required check, so each refuses such an attempt in a step of its own instead.
-docs/solutions/github/join-a-job-to-the-ci-router.md walks through the layout before this one.
+A job split off another keeps its steps in that job's file instead: its caller passes
+`job: <its id>` and its steps' job carries `if: inputs.job == '<its id>'`
+(.github/ci-notes/ci.md#two-jobs-that-call-one-file).
+docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
-Caches: one step of the jobs this workflow calls saves an Actions cache entry itself,
-dispatch-two-builds' `Cache the previous build` (.github/actions/go-envoy-held/dispatch-two-builds), which keeps
-the build of the previous commit that job compares against; three actions its jobs call can
-save one too, and only in a dispatched run (setup-bun, and architecture-check and spec-check at
-this paragraph's end).
+Caches: no step of the jobs this workflow calls saves an Actions cache entry itself; three
+actions its jobs call can save one, and only in a dispatched run (setup-bun, and
+architecture-check and spec-check at this paragraph's end). dispatch-two-builds restores the two
+earlier Dispatch builds it runs (.github/actions/go-envoy-held/dispatch-two-builds) and builds one
+on a miss; ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below
+says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
 included). The jobs that cache Go restore, in steps of their own, one of seven families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
@@ -1230,14 +1234,29 @@ build only under the `twobuild` tag and are a job of their own for the reason
 dispatch-multiprocess is: a row waits out durable hand-overs and settings polls, tens of seconds
 each, and the earlier builds are built here first. Most rows run the previous build, the newest
 legion-envoy-v* release in the history of origin/main; build-dispatch-build.sh resolves it,
-which needs the whole history and the tags (fetch-depth 0), and builds it from `git archive`.
+which needs main's history and the release tags, and builds it from `git archive`. The job checks
+out its own commit alone and then fetches main and the release tags with their history but none
+of their files (`--filter=blob:none`), which `git archive` fetches for a commit when it builds it:
+the whole repository, 3,242 branches and 3,710 tags on 2026-11-23, took the checkout to its
+2-minute budget in three merge groups that day (.github/actions/go-envoy-held/dispatch-two-builds
+has the numbers).
 The first-rollout row runs the first-rollout build instead, the newest release before the first
 that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
 resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
 it the same way.
-Each build is cached by its commit and the script that built it, so a pull request builds each
-release once; its src/ is left out of the cache, since the test reads only the parts the script
-copies out of it. Each row's NATS runs in its own test process (internal/testnats), so the job
+Each build is cached by its commit and the hash of the script that built it, with its src/ left
+out, since the test reads only the parts the script copies out of it. The job restores each and
+saves neither: .github/workflows/ci-caches.yaml's dispatch-builds job builds both on a push to
+main, and again when release-envoy-listener.yaml has tagged a release (it dispatches
+ci-caches.yaml with `only: dispatch-builds`), and saves them in main's scope, which every pull
+request and merge group reads; its dispatch-builds-superseded job then deletes main's older
+entries of each build and every entry of it on any other ref. The job saved them itself before,
+in the scope of its run's own ref, where a merge group's entry is read by no later run and a pull
+request's by that pull request alone: on 2026-11-23 25 such entries held 12.2 GB of the
+repository's 25 GB cache and main held none, and on 2026-11-22 308 of 351 successful jobs built
+the previous release again (107 s at the median, against 11 s to restore it). A run that resolves
+a release main holds no entry of (one tagged minutes ago, or an older one a pull request's merge
+base still names) builds it. Each row's NATS runs in its own test process (internal/testnats), so the job
 needs no container runtime of its own. Then the browser half
 (packages/dispatch/e2e/cross-build.multiprocess.e2e.ts), which runs twice: the browser suite's
 two-process mode with Dispatch B run from the previous build's envoy-dispatch and web dist, then
@@ -1249,8 +1268,10 @@ build, beside this job and not after it (that job's comment says why).
 
 ## The two-build legs' checkouts
 
-The two-build legs check out the whole history, 2 minutes an attempt and a second after a first
-that did not succeed (.github/actions/go-envoy-held/dispatch-two-builds says why).
+The two-build legs check out this commit alone, 2 minutes an attempt and a second after a first
+that did not succeed, then fetch main's history and the release tags without their files
+(.github/scripts/fetch-release-history.sh), three attempts of 30 s
+(.github/actions/go-envoy-held/dispatch-two-builds says why).
 
 ## The server-change soak
 

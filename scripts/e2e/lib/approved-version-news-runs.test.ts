@@ -1,7 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   a4,
@@ -37,7 +37,9 @@ import { sourcedLibraries } from "./script-functions";
 // line by name.
 
 const scratch = temporaryDirectories("approved-version-news-run-test");
-const withoutTools = skipWithout(["git", "tar", "setsid"], "test");
+// Read once, at module scope: a host without git, tar or setsid skips the script's runs naming
+// what it lacks, and under GITHUB_ACTIONS fails each by its own name (hostGate).
+const host = hostGate({ programs: ["git", "tar", "setsid"] });
 
 /**
  * Runs the script with the variables PICK sets, and ARGS, over the stand-ins RUN asks for, from a
@@ -125,7 +127,7 @@ const onePlan = plan(
   1
 );
 
-describe.skipIf(withoutTools)("the script's run", () => {
+host.describe("the script's run", () => {
   test("reads PASS for a full run, which picks nothing", () => {
     const run = newsRun({}, { plans: { full: fullPlan }, sessions: fullRuns });
     expect(run.code).toBe(0);

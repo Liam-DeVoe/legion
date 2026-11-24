@@ -705,7 +705,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
         continue-on-error: true
-        with: {persist-credentials: false, fetch-depth: 0}
+        with: {persist-credentials: false}
       - name: End the git processes and the workspace a first attempt cut at its budget leaves
         if: startsWith(matrix.leg, 'dispatch-two-builds') && steps.checkout.outcome != 'success'
         timeout-minutes: 2
@@ -720,7 +720,11 @@ jobs:
         if: startsWith(matrix.leg, 'dispatch-two-builds') && steps.checkout.outcome != 'success'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 2
-        with: {persist-credentials: false, fetch-depth: 0}
+        with: {persist-credentials: false}
+      - name: Fetch main's history and the release tags, without their files
+        if: startsWith(matrix.leg, 'dispatch-two-builds')
+        timeout-minutes: 2
+        run: .github/scripts/fetch-release-history.sh
       - {name: envoy-go, if: matrix.suite == 'envoy-go', uses: ./.github/actions/go-envoy-held/envoy-go, with: {part: '${{ matrix.part }}', legs: 3, rest: '${{ matrix.rest }}', postgres: '${{ job.services.postgres.id }}'}}
       # why: .github/ci-notes/ci.md#the-envoy-go-unit-step-one-go-test-that-counts-the-brokers-skips
       - name: Unit test envoy Go package

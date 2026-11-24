@@ -31,6 +31,19 @@ runs:
       env:
         POSTGRES_CONTAINER: ${{ inputs.postgres }}
       run: .github/scripts/pg-connection-ceiling.sh "$POSTGRES_CONTAINER"
+    # The store package's tests run eight at once (storeTestParallelism, store_test.go), each with a
+    # database and pools of its own, beside the step's other packages, so this samples the service's
+    # client connections every 2 s while the next step runs and the step after its upload prints
+    # the peak against max_connections: a change that makes the tests open more at once shows here
+    # before it shows as a 53300 refusal. Postgres's own background processes are not counted. The
+    # loop runs in the background past its own step, until the runner ends the job.
+    - name: Sample the service's connections while the race tests run
+      shell: bash
+      env:
+        POSTGRES_CONTAINER: ${{ inputs.postgres }}
+      run: |
+        # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
+        nohup bash -c 'while :; do docker exec "$1" psql -U postgres -Atc "select count(*) from pg_stat_activity where backend_type = '"'"'client backend'"'"'" >> "$2" 2>/dev/null; sleep 2; done' _ "$POSTGRES_CONTAINER" "$RUNNER_TEMP/pg-connections.txt" >/dev/null 2>&1 &
     - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow
       shell: bash
       working-directory: packages/envoy
@@ -39,6 +52,18 @@ runs:
       uses: ./.github/actions/go-test-upload
       with:
         name: go-envoy-held-envoy-go-race-race
+    - name: Report the service's peak connections
+      if: always()
+      shell: bash
+      env:
+        POSTGRES_CONTAINER: ${{ inputs.postgres }}
+      run: |
+        allowed=$(docker exec "$POSTGRES_CONTAINER" psql -U postgres -Atc "show max_connections")
+        if [ -s "$RUNNER_TEMP/pg-connections.txt" ]; then
+          echo "pg connections: the peak of $(sort -n "$RUNNER_TEMP/pg-connections.txt" | tail -n 1) over $(wc -l < "$RUNNER_TEMP/pg-connections.txt") samples, max_connections ${allowed}"
+        else
+          echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed})"
+        fi
 
     # The forced-order tests (packages/envoy/scripts/forced-order.sh): every TestForcedOrder test
     # of the packages named, built with -tags odatrace and -race against a nats-server whose own

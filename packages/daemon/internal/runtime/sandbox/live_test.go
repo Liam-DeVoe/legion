@@ -329,6 +329,10 @@ type liveEnv struct {
 	// the checkout's agent-secrets binary, and the token file the harness logs in with as the
 	// daemon does.
 	agentSecretsURL, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
+	// agentSecretsAudience is the audience the broker verifies the cluster's tokens for and the run
+	// enrolls its pods for: the one the namespace's daemons use (deploymentBrokerAudience), which
+	// startLiveBroker reads from the namespace's ConfigMaps before it starts the broker.
+	agentSecretsAudience string
 	// sessionDSNLocalFile holds the URL of the rig's PostgreSQL as this process dials it, for the
 	// harness's own connection (writeSession), and sessionDBAddress is its address as the pods dial
 	// it, which the providers Secret's liveSessionsSecretKey holds a URL of.
@@ -340,16 +344,15 @@ type liveEnv struct {
 }
 
 // The run's names in the rig's cluster: its project, the ServiceAccount the runtime acts as and
-// the one every pod of the run runs as, the audience the operator fixture's projected token is
+// the one every pod of the run runs as, and the audience the operator fixture's projected token is
 // issued for and the model gateway its models.yml names, which no stub agent dials (RFC 2606's
-// .invalid), and the audience the pods' and the daemon's tokens carry to the broker.
+// .invalid).
 const (
-	liveProject              = "s4a-kind"
-	liveDaemonAccount        = "legion-daemon"
-	liveWorkerAccount        = "legion-worker"
-	liveModelAudience        = "legion-model-gateway"
-	liveModelBaseURL         = "https://model-gateway.invalid/anthropic"
-	liveAgentSecretsAudience = "agent-secrets"
+	liveProject       = "s4a-kind"
+	liveDaemonAccount = "legion-daemon"
+	liveWorkerAccount = "legion-worker"
+	liveModelAudience = "legion-model-gateway"
+	liveModelBaseURL  = "https://model-gateway.invalid/anthropic"
 	// liveApprovalOwner owns LEGION_E2E_APPROVAL, a human-tier secret no person signed in holds.
 	liveApprovalOwner = "stage4a-approver@example.com"
 )
@@ -504,18 +507,26 @@ func newKindLiveEnv(t *testing.T, rig *kindtest.Rig) liveEnv {
 
 // startLiveBroker starts this repository's own broker in this process (ciphertest), at the kind
 // network's gateway where the pods reach it, on the rig's PostgreSQL as this process dials it
-// (dsn), verifying the cluster's own tokens for liveAgentSecretsAudience: the daemon's login as
-// liveDaemonAccount, which logs in as the legion-daemon service, and the pods of liveWorkerAccount,
-// which that login enrols. It serves LEGION_E2E_AUTO, shared and agent-tier, which every session
-// gets at once, and LEGION_E2E_APPROVAL, human-tier under liveApprovalOwner alone. The daemon's
-// token file holds an hour's token, the longest the broker takes, minted again every half hour
-// while the test runs, as the kubelet rotates a daemon pod's.
+// (dsn), verifying the cluster's own tokens for the audience the namespace's daemons enroll their
+// pods for (deploymentBrokerAudience over the namespace's ConfigMaps; the rig's namespace holds no
+// daemon's legion.yaml, so it is the daemon's default): the daemon's login as liveDaemonAccount,
+// which logs in as the legion-daemon service, and the pods of liveWorkerAccount, which that login
+// enrols. It serves LEGION_E2E_AUTO, shared and agent-tier, which every session gets at once, and
+// LEGION_E2E_APPROVAL, human-tier under liveApprovalOwner alone. The daemon's token file holds an
+// hour's token, the longest the broker takes, minted again every half hour while the test runs, as
+// the kubelet rotates a daemon pod's.
 func startLiveBroker(t *testing.T, rig *kindtest.Rig, env *liveEnv, dsn string) {
 	t.Helper()
+	audience, err := deploymentBrokerAudience([]byte(rig.Kubectl(t, "-n", env.namespace, "get", "configmaps", "-o", "json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.agentSecretsAudience = audience
+	note("operator", "the namespace's daemons enroll their pods for the broker audience %s, and so does the run", audience)
 	t.Setenv("BROKER_TEST_DATABASE_URL", dsn)
 	account := func(name string) string { return "system:serviceaccount:" + env.namespace + ":" + name }
 	broker := ciphertest.NewRig(t, ciphertest.WithListen(net.JoinHostPort(rig.Gateway, "0")),
-		ciphertest.WithClusterIssuer(rig.Issuer, liveAgentSecretsAudience, rig.IssuerClient(t),
+		ciphertest.WithClusterIssuer(rig.Issuer, env.agentSecretsAudience, rig.IssuerClient(t),
 			map[string]string{account(liveDaemonAccount): "legion-daemon"}, map[string]string{account(liveWorkerAccount): "legion-daemon"}))
 	auto := randomHex(t, 16)
 	broker.PutSecret(t, "LEGION_E2E_AUTO", ciphertest.OwnerShared, ciphertest.TierAgent, auto)
@@ -524,7 +535,7 @@ func startLiveBroker(t *testing.T, rig *kindtest.Rig, env *liveEnv, dsn string) 
 	env.agentSecretsURL, env.agentSecretsAutoSHA = broker.URL, hex.EncodeToString(sum[:])
 	env.agentSecretsTokenFile = filepath.Join(env.scratch, "agent-secrets-token")
 	mint := func() error {
-		token, err := rig.ServiceAccountToken(env.namespace, liveDaemonAccount, liveAgentSecretsAudience, time.Hour)
+		token, err := rig.ServiceAccountToken(env.namespace, liveDaemonAccount, env.agentSecretsAudience, time.Hour)
 		if err != nil {
 			return err
 		}
@@ -1206,7 +1217,7 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		CacheRepositories:     r.cacheRepositories,
 		LeakCheck:             r.leakCheck,
 		LeakCheckSetting:      r.leakCheckSetting,
-		AgentSecrets:          &AgentSecrets{URL: r.env.agentSecretsURL, Audience: liveAgentSecretsAudience, TokenExpiry: time.Hour},
+		AgentSecrets:          &AgentSecrets{URL: r.env.agentSecretsURL, Audience: r.env.agentSecretsAudience, TokenExpiry: time.Hour},
 	}
 }
 
