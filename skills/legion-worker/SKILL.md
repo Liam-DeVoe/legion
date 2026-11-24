@@ -36,7 +36,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   - `HANDOFF_STALE_ENTRY`: end the turn without completing; the daemon sends the new entry's task by itself.
     Do what it asks at the head it names, with a handoff of its own.
 
-  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; nothing was recorded.
+  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; it moved nothing, and the same call again gets `HANDOFF_ALREADY_RECORDED`.
     Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head with a handoff that names it.
 
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; do not retry that completion.
