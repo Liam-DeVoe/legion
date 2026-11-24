@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -351,7 +352,9 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 // sweep later. The de-round pass reads the claims the boot restored, and the refresh pass reads
 // each claim as its machine last published it, which shows the round until that machine has
 // decided the end posted a moment before: both can read the round still standing, which is
-// exactly why the skip has to be by kind.
+// exactly why the skip has to be by kind. The live claim's feed holds its end until the refresh
+// pass has posted, so this test reads the round standing at both passes every time, the case the
+// skip by kind exists for, whatever the feed's goroutine would otherwise have decided first.
 //
 // The suspended claim is driven beside it because the boot posts for every claim in a round,
 // not only the live ones: its round is as durable as a live one's, and nothing but this end
@@ -360,8 +363,8 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 //
 // The negative controls are one each: the de-round pass dropped from supervision.start, which
 // leaves both rounds standing, and the refresh pass's skip put back to `c.UpdateRound != ""`,
-// which leaves the live claim unrefreshed at this boot whenever the pass reads it before its
-// machine has decided the end. Both are read where this test asks for the round and the resume.
+// which leaves the live claim unrefreshed at this boot. Both are read where this test asks for the
+// round and the resume.
 func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing.T) {
 	t.Parallel()
 	sup, rt := newPluginSupervisor(t, 24, true)
@@ -386,6 +389,17 @@ func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing
 		inRound(live, claim.RoleImplementer, supervise.StateIdle, pluginTestLocator(live)),
 		inRound(suspended, claim.RoleTester, supervise.StateSuspended, nil),
 	}
+	// The live claim's end waits on its feed until the refresh pass has posted, so that pass reads
+	// the round still standing on the claim as published (refreshStalePlugins, Published).
+	passed := make(chan struct{})
+	var passedOnce sync.Once
+	letEndsGo := func() { passedOnce.Do(func() { close(passed) }) }
+	t.Cleanup(letEndsGo)
+	sup.beforeDecision = func(token claim.Token, ev supervise.Event) {
+		if _, ends := ev.(supervise.PodUpdateEnded); ends && token == live {
+			<-passed
+		}
+	}
 	if _, err := sup.restore(context.Background(), claims); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
@@ -395,6 +409,7 @@ func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing
 
 	s.endPluginRounds(s.claims)
 	s.refreshStalePlugins(s.claims, "boot")
+	letEndsGo()
 
 	for _, token := range []claim.Token{live, suspended} {
 		m, ok := sup.Machine(token)

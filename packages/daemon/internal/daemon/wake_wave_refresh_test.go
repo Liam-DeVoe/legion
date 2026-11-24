@@ -63,15 +63,14 @@ const (
 	// ticker is: the sweep is what re-fills the gate, so a wave of fifteen minutes' refresh would
 	// otherwise take fifteen minutes of the test's own time.
 	//
-	// It is half a second rather than the tenth the rig next door uses, because the gate's
-	// correction rests on a sweep being long enough for the admissions of the pass before it to
-	// have reached the machines' published views: the floor it holds is the admissions granted
-	// since the previous correction, so a wake still unparked two corrections after it was
-	// admitted is counted by neither and the gate hands its credit out a second time (reading 6
-	// and decision P2 of dispatch://INFRA-2712/artifact/plan-md). On the shipped daemon that is
-	// a minute against the milliseconds a post takes; at a tenth of a second, over a hundred and
-	// thirty machines and the race detector, it is not, and the lane was measured holding the
-	// rate and one.
+	// It is half a second rather than the tenth the rig next door uses. It was set when the gate's
+	// correction floored its count at the admissions granted since the previous correction, so a
+	// wake still unparked two corrections after its admission was counted by neither, and at a
+	// tenth of a second the lane was measured holding the rate and one (reading 6 and decision P2
+	// of dispatch://INFRA-2712/artifact/plan-md). The gate now keeps every credit it granted until
+	// that credit comes back (supervise.RefreshGate.Correct), so that reason no longer stands; the
+	// half second is kept as the pace this row's measured runs used. Assertion 5 reads one sweep the
+	// test lets through (rt.gateSweeps), and no assertion here counts sweeps on the wall clock.
 	refreshWaveSweep = 500 * time.Millisecond
 	// refreshWaveRounds is the most rounds of the gate the drain of the fleet may take, a round
 	// being one sweep's worth of admissions run to their turns. The lane's own number is the

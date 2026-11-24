@@ -4653,7 +4653,13 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // retirement. Each has a pending delivery by the time it calls, which is what this reads. While a
 // pause's stop is owed, the two rows go through that stop's transaction instead (putStops,
 // Deps.PauseStopped), the delivery carried on the claim it is handed.
+//
+// It publishes the claim before it writes it, as putClaim does: a turn's start writes the claim
+// working here and then goes on to write its step record, and a reader of the published claim must
+// not read it ready while the store holds it working (Published, internal/daemon's
+// refreshStalePlugins).
 func (m *Machine) putClaimAndPending(ctx context.Context) error {
+	m.publish()
 	if len(m.owedStops()) > 0 {
 		c, pending := m.stored(), *m.claim.Pending
 		c.Pending = &pending

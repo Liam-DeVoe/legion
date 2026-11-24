@@ -1,9 +1,12 @@
 package supervise
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -153,4 +156,68 @@ func TestViewSaysAProcessIsStoppingOnlyWhenItsClaimDoesNotRunAgain(t *testing.T)
 			}
 		})
 	}
+}
+
+// A turn's start is published as the decision writes it, as a launch is (putClaim): the start
+// writes the claim working together with the task it carries, in one transaction
+// (confirmCarrying, putClaimAndPending), and then goes on to write the turn's step record. A
+// reader of the published claim reads it working from the moment the store holds it working, not
+// only once the decision ends. The daemon's refresh pass is such a reader: it posts a claim in a
+// turn no credit of the refresh gate, and one it read ready would be posted a credit its machine
+// gives back only when the turn's decision has ended (internal/daemon's refreshStalePlugins).
+//
+// The decision is held at the step record's write. The control is putClaimAndPending's publish
+// taken out: the claim then reads ready, as the delivery's decision left it, while the store holds
+// it working.
+func TestATurnsStartIsPublishedAsItIsWrittenWithTheTaskItCarries(t *testing.T) {
+	h := newBareHarness(t)
+	held := &stepHeldStore{memStore: h.store, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	h.deps.Store = held
+	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
+		t.Fatal(err)
+	}
+	h.start(queuedClaim())
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+
+	held.armed.Store(true)
+	started := make(chan error, 1)
+	go func() { started <- h.m.Handle(h.ctx, StreamTurnStart{Claim: h.token}) }()
+	select {
+	case <-held.entered:
+	case err := <-started:
+		t.Fatalf("the turn's start returned (%v) before it wrote its step record", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the turn's start never wrote its step record")
+	}
+	if stored := h.store.load(h.token); stored.State != StateWorking {
+		t.Fatalf("the store holds the claim %s while the turn's step is written, want %s", stored.State, StateWorking)
+	}
+	if published := h.m.Published(); published.State != StateWorking {
+		t.Fatalf("the claim is published %s while the store holds it %s, want it published as written", published.State, StateWorking)
+	}
+	close(held.release)
+	if err := <-started; err != nil {
+		t.Fatalf("the turn's start: %v", err)
+	}
+	if c := h.m.View(); c.State != StateWorking {
+		t.Fatalf("the claim reads %s once the turn's start ended, want %s", c.State, StateWorking)
+	}
+}
+
+// stepHeldStore holds the first step record written once it is armed until the test lets it
+// through.
+type stepHeldStore struct {
+	*memStore
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *stepHeldStore) PutClaimStep(ctx context.Context, token claim.Token, step StepRecord) (bool, error) {
+	if s.armed.CompareAndSwap(true, false) {
+		s.entered <- struct{}{}
+		<-s.release
+	}
+	return s.memStore.PutClaimStep(ctx, token, step)
 }
