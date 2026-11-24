@@ -499,7 +499,7 @@ export async function mintClaimGrant(
  * about two kilobytes where the whole-project body answers megabytes. The words for an issue
  * the daemon records nothing of are the ones `read_record` answered while it read the project.
  * Every other refusal of the route throws as it came. */
-async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<LegionIssue> {
+export async function recordFrom(daemon: LegionDaemonClient, issue: string): Promise<LegionIssue> {
   const record = await daemon.record(issue);
   if (record === undefined) throw new Error(`The daemon has no record for ${issue}`);
   return record;

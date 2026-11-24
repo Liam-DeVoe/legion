@@ -34,6 +34,7 @@ import {
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
+  recordFrom,
   unknownFieldsRefusal,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
@@ -947,8 +948,7 @@ export function createLegionTool(deps: {
             await retryWhileDaemonRestarts(
               "complete_step",
               async () => {
-                const record = await client.record(issue);
-                if (record === undefined) throw new Error(`The daemon has no record for ${issue}`);
+                const record = await recordFrom(client, issue);
                 // The report is of the place the issue stands at, as a completion's is; a phase
                 // that runs no step of the owner's asks for none, and the daemon says where the
                 // task stands (OWNER_STEP_NOT_RUNNING).
