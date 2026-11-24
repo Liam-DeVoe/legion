@@ -136,6 +136,9 @@ func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
 // A second hold in one boot, as a repository's recovery makes after the boot's own, is released by
 // the same consumer position that released the first: the poll's fact names the hold it releases,
 // so it is applied again rather than taken for the first release's duplicate, and the hold ends.
+// The second hold is made while every read of the position waits (park), so the test sees the
+// hold before the poll can act on it; the position the poll then reads is the same one that
+// released the first hold.
 func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -172,7 +175,9 @@ func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) 
 	testwait.Eventually(t, "the first hold released", func() bool { return !admission.Held() })
 	time.Sleep(50 * time.Millisecond)
 
+	release := reader.park()
 	hold(3)
+	release()
 	testwait.Eventually(t, "the second hold released by the same position", func() bool { return !admission.Held() })
 	cancel()
 	<-done
@@ -245,6 +250,24 @@ type failingPositionReader struct {
 	failures int
 	calls    int
 	position intake.DispatchConsumerPosition
+	// gate, while set, parks every read until it closes (park).
+	gate chan struct{}
+}
+
+// park has every later read wait until the returned release, so the poll, which reads the position
+// only while a hold stands, can act on no hold the test makes before the test has seen it. The
+// reading the poll gets after the release is the same position as before.
+func (f *failingPositionReader) park() (release func()) {
+	f.mu.Lock()
+	gate := make(chan struct{})
+	f.gate = gate
+	f.mu.Unlock()
+	return func() {
+		f.mu.Lock()
+		f.gate = nil
+		f.mu.Unlock()
+		close(gate)
+	}
 }
 
 // pilotDispatch answers ListIssues with a fixed summary list, as workflowRuntime.reconcile reads
@@ -514,7 +537,17 @@ func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing
 		t.Fatal("the backlog root was admitted, want only the todo root")
 	}
 }
-func (f *failingPositionReader) DispatchPosition(context.Context) (intake.DispatchConsumerPosition, error) {
+func (f *failingPositionReader) DispatchPosition(ctx context.Context) (intake.DispatchConsumerPosition, error) {
+	f.mu.Lock()
+	gate := f.gate
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return intake.DispatchConsumerPosition{}, ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
