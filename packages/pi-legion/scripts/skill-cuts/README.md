@@ -55,7 +55,8 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--after-case <command>] [--request-log <file>] \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
-  [--reading-models <file>] [--again <case id>]... [--confirm-flagged]
+  [--reading-models <file>] [--again <case id>]... [--confirm-flagged] \
+  [--allow-runners <digest>[,<digest>...]]
                                  (--again, --confirm-flagged: confirm only)
 ```
 
@@ -144,8 +145,24 @@ skill's cases (`cases.ts`), one JSON object per line.
   naming the case, by `report` and by every stage command (exit 1), not scored. A read that fails
   for another reason, after its retries, fails the command (exit 1), and the next run reads it
   again.
-- `report`: each case's passes per arm and stage; for a dropped case, the stage that dropped it,
-  why, and the passes of each stage it ran (its screen's old, new and none passes where the screen
+- The runner of each run. Each stage and each run records the runner that made it: a digest of the
+  runner's code (each file of this directory but its tests, its test data and this README; the
+  commit is not knowable in a copy of the directory with no git). A run saved before runs recorded
+  it takes its stage's runner, and a stage saved before stages recorded theirs is the runner
+  `unrecorded`. `screen`, `confirm` and `control` take a saved stage of their own kind (a case's
+  screen; a flagged case's last confirm; the control case's control) as done, or go on with one
+  still running, only when each of its runs, or the stage where it has none, is this runner's or
+  that of a runner `--allow-runners <digest>[,<digest>...]` names. A saved stage of another runner
+  is refused before any model call (exit 2), naming the case, its runner and this runner: it is
+  never skipped as done and never made again. Confirms are pooled on one runner at one set of
+  texts as above, whatever `--allow-runners` says.
+- `report`: for each stage kind (`screen`, `confirm` with earlier confirms, `control`), each
+  runner with its case stages and its runs (a stage whose runs two runners made counts as a case
+  stage of each); results whose runs more than one runner made are refused (exit 2), naming each
+  runner with its counts, unless `--allow-runners` names each, and the runners line then says
+  they were allowed. Then each case's passes per arm and stage; for a dropped case, the stage
+  that dropped it, why, and the passes of each stage it ran (its screen's old, new and none
+  passes where the screen
   ran); for a case with more than one confirm, each confirm numbered (one on another runner or at
   other texts marked not counted) and, for three pooled ones, their pooled passes, and a
   `pooled confirms` line naming each such case with its three results and the pooled numbers; the
@@ -163,8 +180,10 @@ skill's cases (`cases.ts`), one JSON object per line.
   chance at the cases run (exact binomial under identical old and new texts, the pass rates taken
   from each case's own screen; its assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, the spend
-  at list price, the peak memory, and how many captures' system-prompt digests differ from their
-  session's. It calls no model, and needs only `--config`, `--out`, `--old` and `--cases`. With
+  at list price (below), the peak memory, and how many captures' system-prompt digests differ
+  from their session's. It calls no model, and needs only `--config`, `--out`, `--old` and
+  `--cases`; `--request-log` names the log it sets the spend against, `<out>/requests.jsonl` by
+  default. With
   `--reading-models` it also prints each model of that file with its sessions and whether the
   gateway serves it, the sessions whose file names no model and those in no models query's rows,
   and the served models the screened cases ran on, each with its cases; a verdict then ends with
@@ -174,6 +193,24 @@ skill's cases (`cases.ts`), one JSON object per line.
   serve and on served models no screened case ran on. A skill too few of whose reading sessions
   are on served models gets no verdict. Without `--reading-models`, it says the reading sessions
   by model were not given, and the verdict names no models.
+
+The report's spend at list price is the sum of what the case results in `<out>/cases` record
+their calls cost, each call once, and the report prints each part of it: the judge controls (the
+gateway's spend over each case's three controls), and for each stage kind its stages' dollars
+(each stage's `usd`: the gateway's spend while the stage ran, in each process that ran it), split
+into the replays and the judgements its runs record (the runs with no verdict, which are run
+again, among them) and the calls no run records (its captures' hint calls, the rounds a replay
+that then failed had answered, replies whose judgement the budget refused). It is the spend of the
+results in `<out>/cases`, not of every command run on `--out`: the calls of a round stopped
+before it was saved, of a result taken out of `<out>/cases`, or of a capture that failed are in no
+result, and the `done` line of a stage command gives the calls of that command alone. So where
+the request log exists, the report prints the log's total by kind of call and its difference from
+the results' sum in two parts that sum to it, each with its cause: the judge calls against the
+results' judge controls and judgements, and the replay and hint calls against the results'
+replays and the calls no run records. With them it counts the replay calls of the log whose
+session id no run of the results holds (a run records the id its replay went with), and the runs
+of the results whose session id no replay call of the log holds (results made with another
+`--request-log`, or brought from another `--out`).
 
 `score.ts` holds the rules. Each case's results are one file, `<out>/cases/<case id>.json`,
 written whole after each round of runs, so a run started again goes on from what was saved and

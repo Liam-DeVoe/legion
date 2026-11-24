@@ -16,6 +16,7 @@
  *       [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>]
  *       [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>]
  *       [--reading-models <file>] [--again <case id>]... [--confirm-flagged] (both confirm only)
+ *       [--allow-runners <digest>[,<digest>...]]
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
@@ -121,8 +122,21 @@
  *   any model call, as `path-form: <arm>: <fault>`, and the rest of the file runs: build-cases
  *   checks the old text and only a `--new` it was given, so a case built before the cut had a
  *   text reaches the screen unchecked against it.
- * - `report` (no model call) prints each case's passes per arm and stage, and for a dropped case
- *   the stage that dropped it, why, and the passes of each stage it ran; each confirm of a case
+ * - Each stage and each run records the runner that made it (`runnerDigest`, the digest of this
+ *   directory's code: the commit is not knowable in a copy with no git): a run made before runs
+ *   recorded it takes its stage's runner, and a stage made before stages did is the runner
+ *   `unrecorded` (UNRECORDED_RUNNER). `screen`, `confirm` and `control` take a saved stage of their
+ *   kind as done, or go on with one still running, only when each of its runs (or, with no run,
+ *   the stage) is this runner's or that of a runner `--allow-runners <digest>[,<digest>...]` names;
+ *   a saved stage of another runner is refused before any model call (exit 2), naming the case,
+ *   its runner and this runner (`checkRunners`), never skipped and never made again. `confirm`
+ *   pools confirms on one runner at one set of texts as before (score.ts's `confirmScore`).
+ * - `report` (no model call) prints, for each stage kind, each runner with its case stages and
+ *   runs (a stage whose runs two runners made counts under each, `runnerCounts`), and refuses
+ *   (exit 2), naming each runner with its counts, results whose runs more than one runner made,
+ *   unless `--allow-runners` names each, and then prints them as allowed. It prints each case's
+ *   passes per arm and stage, and for a dropped case the stage that dropped it, why, and the
+ *   passes of each stage it ran; each confirm of a case
  *   with more than one, and the pooled passes of a case whose three confirms are pooled; the drops
  *   by the judge controls (and by each control), by `model-not-served`, `unreadable-directory`,
  *   `listing-misses`, `injection-unrebuildable` (by kind), `path-form` (by arm),
@@ -133,7 +147,10 @@
  *   many rest on the assumption that their session had Dispatch; the rule's
  *   sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7 and drops of 0.1 to 0.4), the
  *   estimated false-loss rate at the cases run (`falseLossChance`),
- *   the spend, the peak memory, how many captures' system-prompt digests differ from their
+ *   the spend (`spendLines`: the sum of what the case results record their calls cost, part by
+ *   part, and the request log's total and its difference from that sum, part by part, each part
+ *   with its cause, where the log exists), the peak memory, how many captures' system-prompt
+ *   digests differ from their
  *   session's, and how many cases carry the Envoy plugin's block of the skill, by where the answer
  *   that their session had Dispatch comes from (arms.ts's `dispatchOf`: a Legion role, the
  *   transcript, or the assumption; each capture that carries the block records it in its stage's
@@ -826,8 +843,13 @@ const Run = z.strictObject({
   /** The step's content (each answered round's read calls, then the reply after them, which for a
    *  run that read past the last round is the reply it ended on), or null when the replay failed. */
   reply: z.array(z.looseObject({ type: z.string() })).nullable(),
+  /** What the run's replay and its judgement used, each call's usage and dollars. A replay that
+   *  failed (`REPLAY_FAILED`) records none, though the rounds it had answered were paid. */
   replaySpent: z.array(SpentRecord),
   judgeSpent: z.array(SpentRecord),
+  /** The runner that made the run (`runnerDigest`); absent from a run made before runs recorded
+   *  it, which takes its stage's (`stageRunners`). */
+  runner: z.string().optional(),
 });
 type Run = z.infer<typeof Run>;
 
@@ -855,8 +877,12 @@ export const SENDS = "each run its own session id; a round's arms interleaved in
 /** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
  *  `texts` are the digests of `--old` and `--new` it ran with, and `plantedLine` the line `minus`
  *  left out in place of the case's (control only). `sends` is SENDS. `usd` is what its calls cost
- *  at list price. `runner` is the runner that started it (`runnerDigest`), absent in a stage
- *  started before the runner was recorded. `confirmFlagged` is true in a confirm that `behaviour
+ *  at list price: the gateway's spend while the stage ran, in each process that ran it, so its
+ *  runs' replays and judgements and the calls no run records (its captures' hint calls, the
+ *  rounds a replay that then failed had answered, a reply whose judgement the budget refused);
+ *  never the calls of a round stopped before it was saved. `runner` is the runner that started it
+ *  (`runnerDigest`), absent in a stage started before the runner was recorded; each of its runs
+ *  records its own. `confirmFlagged` is true in a confirm that `behaviour
  *  confirm --confirm-flagged` ran, in any of its rounds, and absent otherwise: report then gives
  *  no skill verdict (CONFIRM_FLAGGED_VERDICT). */
 const StageResult = z.strictObject({
@@ -957,16 +983,36 @@ export function textDigest(dir: string, keep: (file: string) => boolean = () => 
   return hash.digest("hex").slice(0, 16);
 }
 
-/** The runner's own code, as each stage it starts records it: textDigest of this directory less
- *  its tests (`*.test.ts`), its test data and README.md. Two confirms of one case are pooled only
- *  when one runner made both (score.ts's `confirmScore`), so a confirm made before a fix of the
- *  runner is not pooled with one made after it. */
+/** The runner's own code, as each stage it starts and each run it makes records it: textDigest of
+ *  this directory less its tests (`*.test.ts`), its test data and README.md. Two confirms of one
+ *  case are pooled only when one runner made both (score.ts's `confirmScore`), so a confirm made
+ *  before a fix of the runner is not pooled with one made after it; a stage command takes no
+ *  saved stage of another runner as its own (`checkRunners`), and report reports no results of
+ *  more than one runner unless told to (`runnerCounts`). */
 export function runnerDigest(): string {
   return textDigest(
     import.meta.dir,
     (file) =>
       !file.endsWith(".test.ts") && file !== "README.md" && file.split(path.sep)[0] !== "testdata"
   );
+}
+
+/** The runner of a stage made before stages recorded theirs, and of its runs, as the report and
+ *  the stage commands name it and as `--allow-runners` names it. */
+const UNRECORDED_RUNNER = "unrecorded";
+
+/** Each runner that made runs of `stage`, with how many it made: a run's own `runner`, else (a run
+ *  made before runs recorded it) its stage's, else UNRECORDED_RUNNER. A stage with no run counts
+ *  under its own runner, with 0 runs. */
+function stageRunners(stage: StageResult): Map<string, number> {
+  const own = stage.runner ?? UNRECORDED_RUNNER;
+  const runs = new Map<string, number>();
+  for (const run of stage.runs) {
+    const runner = run.runner ?? own;
+    runs.set(runner, (runs.get(runner) ?? 0) + 1);
+  }
+  if (runs.size === 0) runs.set(own, 0);
+  return runs;
 }
 
 /** Where the captures of `arm` are saved under `out`: one directory per arm and text. `texts` are
@@ -1071,7 +1117,9 @@ const SENSITIVITY = { old: [0.9, 0.7], drops: [0.1, 0.2, 0.3, 0.4], none: 0.1 } 
 
 /** A behaviour command's cases and where it writes. `servedModels` are the configuration's, and
  *  `readingModels` the skill's reading sessions by model that `--reading-models` names, with its
- *  file (undefined without it). */
+ *  file (undefined without it). `allowRunners` are the runners `--allow-runners` names, whose
+ *  saved stages a stage command takes as this runner's, and whose results report reports with
+ *  others' (none without it). */
 interface Behaviour {
   readonly io: CliIo;
   readonly command: string;
@@ -1080,14 +1128,16 @@ interface Behaviour {
   readonly cases: readonly Case[];
   readonly servedModels: readonly string[];
   readonly readingModels: { readonly file: string; readonly count: ModelCount } | undefined;
+  readonly allowRunners: readonly string[];
 }
 
 /** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
  *  send through it, each logged. `source` reads the context's repositories, and counts its GitHub
  *  reads; `cacheDir` holds the context's builds, among them each installed skill a replay answers
  *  a read of another skill from (context.ts's `installedCopies`). `runner` is this runner's code
- *  (`runnerDigest`), which each stage it starts records; `again` the cases `--again` names, and
- *  `confirmFlagged` whether `--confirm-flagged` is given (both confirm only). */
+ *  (`runnerDigest`), which each stage it starts and each run it makes records; `again` the cases
+ *  `--again` names, and `confirmFlagged` whether `--confirm-flagged` is given (both confirm
+ *  only). */
 interface Runner extends Behaviour {
   readonly dirs: ArmDirs;
   readonly texts: { readonly old: string; readonly new: string };
@@ -1485,6 +1535,32 @@ function stageDone(r: Runner, result: CaseResult | undefined, stage: Stage): boo
   return existing.state !== "running";
 }
 
+/** Refuses, before any model call, the saved `stage` of each of `results` some run of which (or
+ *  which, with no run) a runner made that is neither this runner (`r.runner`) nor one
+ *  `--allow-runners` names (`stageRunners`): a stage command takes a saved stage as done, or goes
+ *  on with one still running, only when this runner made it or the user named its runner, so a
+ *  stage of another runner is never skipped and never made again with no word. The refusal names
+ *  each such case, its runners, and this runner. */
+function checkRunners(r: Runner, results: Iterable<CaseResult>, stage: Stage): void {
+  const others = new Set<string>();
+  const foreign = [...results].flatMap((result) => {
+    const saved = result.stages[stage];
+    const theirs = [...(saved === undefined ? [] : stageRunners(saved).keys())].filter(
+      (runner) => runner !== r.runner && !r.allowRunners.includes(runner)
+    );
+    for (const runner of theirs) others.add(runner);
+    return theirs.length === 0
+      ? []
+      : [
+          `case ${result.caseId}'s ${stage} in ${caseResultFile(r.out, result.caseId)} was made by runner ${theirs.join(" and ")}`,
+        ];
+  });
+  if (foreign.length === 0) return;
+  throw new Refused(
+    `${foreign.join("; ")}, and this runner is ${r.runner}: a stage command takes a saved stage as done, or goes on with it, only when this runner made it or --allow-runners names its runner. Give --allow-runners ${[...others].join(",")} to take those stages as they are, or use another --out`
+  );
+}
+
 /** The judge controls of case `c`, kept in `result`, which is dropped when they do not hold: its
  *  drop names each control it failed. */
 async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise<CaseResult> {
@@ -1526,7 +1602,7 @@ const REPLAY_FAILED = "the replay failed";
  *  the last answered round still only reads skill files (replay.ts's ReadsPastLastRound: its
  *  reason begins READS_PAST_LAST_ROUND, and it keeps that run's reads, reply and spend); one the
  *  budget refused, or whose judgement the budget refused, is no run. The runs are numbered, within
- *  their arm, in the order they were sent. */
+ *  their arm, in the order they were sent, and each records this runner (`r.runner`). */
 async function runRound(
   r: Runner,
   c: Case,
@@ -1565,7 +1641,7 @@ async function runRound(
   const runs: Run[] = [];
   const numbered = new Map<ArmName, number>();
   for (const { arm, run: inArm, place: sendPlace, userId, outcome } of sent) {
-    const base = { caseId: c.id, arm, stage, round, sendPlace, userId };
+    const base = { caseId: c.id, arm, stage, round, sendPlace, userId, runner: r.runner };
     const next = () => {
       const run = (numbered.get(arm) ?? made.filter((each) => each.arm === arm).length) + 1;
       numbered.set(arm, run);
@@ -1813,7 +1889,8 @@ async function finishCase(
   return written;
 }
 
-/** `behaviour screen`. */
+/** `behaviour screen`. A saved screen of another runner refuses the command before any model call
+ *  (`checkRunners`). */
 async function screenCommand(r: Runner): Promise<void> {
   say(
     r,
@@ -1823,6 +1900,7 @@ async function screenCommand(r: Runner): Promise<void> {
   // <out>/cases/), for the score that says when screening stops: as the score reads it
   // (`forScore`), so no case's replies are held while the screen runs.
   const results = new Map([...readResults(r)].map(([id, result]) => [id, forScore(result)]));
+  checkRunners(r, results.values(), "screen");
   const finished = async (result: CaseResult, phases: Phases): Promise<void> => {
     results.set(result.caseId, forScore(await finishCase(r, result, "screen", phases)));
   };
@@ -1931,7 +2009,9 @@ function againRefusal(
  *  `confirmScore`); and one more of each case `--again` names, where `againRefusal` allows it.
  *  None runs while the skill can get no verdict (`noVerdict`), unless `--confirm-flagged` is given:
  *  then the same confirms run all the same, of flagged cases only, so a case run again alone can be
- *  confirmed, and report gives no skill verdict over them (CONFIRM_FLAGGED_VERDICT). */
+ *  confirmed, and report gives no skill verdict over them (CONFIRM_FLAGGED_VERDICT). A flagged
+ *  case's saved last confirm of another runner refuses the command before any model call
+ *  (`checkRunners`); earlier confirms are pooled by `confirmScore`'s rule. */
 async function confirmCommand(r: Runner): Promise<void> {
   const { results, score } = screened(r, (s) =>
     s.cases.filter((each) => each.flagged).map((each) => each.caseId)
@@ -1948,6 +2028,7 @@ async function confirmCommand(r: Runner): Promise<void> {
     say(r, `no confirm runs: the skill gets no verdict: ${why}`);
     return;
   }
+  checkRunners(r, results.values(), "confirm");
   const flagged = score.cases.filter((each) => each.flagged);
   const ids = flagged.map((each) => each.caseId);
   say(r, `${ids.length} flagged cases${ids.length === 0 ? "" : `: ${ids.join(", ")}`}`);
@@ -1984,7 +2065,8 @@ async function confirmCommand(r: Runner): Promise<void> {
   }
 }
 
-/** `behaviour control`. */
+/** `behaviour control`. The control case's saved control of another runner refuses the command
+ *  before any model call (`checkRunners`). */
 async function controlStageCommand(r: Runner): Promise<void> {
   const { results, score } = screened(r, (s) => [s.controlCase]);
   const tooFew = skillVerdict({
@@ -2008,6 +2090,7 @@ async function controlStageCommand(r: Runner): Promise<void> {
   const c = r.cases.find((each) => each.id === id);
   const result = id === undefined ? undefined : results.get(id);
   if (c === undefined || result === undefined) throw new Error(`no control case ${id}`);
+  checkRunners(r, [result], "control");
   const planted = r.dirs.plantedLine;
   say(
     r,
@@ -2398,13 +2481,268 @@ function verdictLine(
   return `loss: ${where.join("; ")}, and ${control}${speaksFor(b, score)}${listing}`;
 }
 
-/** `behaviour report`: prints each case's passes, the skill's verdict and the run's figures. A
- *  dropped case's line gives the stage that dropped it, why, and each stage it ran. */
-function reportCommand(b: Behaviour): void {
+/** Each stage `result` ran, its earlier confirms among them, with its kind. */
+function eachStage(result: CaseResult): [Stage, StageResult][] {
+  const stages: [Stage, StageResult][] = [];
+  for (const stage of Stage.options) {
+    const state = result.stages[stage];
+    if (state !== undefined) stages.push([stage, state]);
+  }
+  for (const state of result.earlierConfirms ?? []) stages.push(["confirm", state]);
+  return stages;
+}
+
+/** A runner's share of one stage kind: the case stages it made runs of, and those runs. */
+interface RunnerShare {
+  readonly stages: number;
+  readonly runs: number;
+}
+
+/** Each runner of each stage kind of `results`, earlier confirms among them, with its share
+ *  (`stageRunners`): a stage whose runs two runners made counts as a case stage of each. */
+function runnerCounts(results: Iterable<CaseResult>): Record<Stage, Map<string, RunnerShare>> {
+  const counts: Record<Stage, Map<string, RunnerShare>> = {
+    screen: new Map(),
+    confirm: new Map(),
+    control: new Map(),
+  };
+  for (const result of results) {
+    for (const [stage, state] of eachStage(result)) {
+      for (const [runner, runs] of stageRunners(state)) {
+        const share = counts[stage].get(runner) ?? { stages: 0, runs: 0 };
+        counts[stage].set(runner, { stages: share.stages + 1, runs: share.runs + runs });
+      }
+    }
+  }
+  return counts;
+}
+
+/** The report's line of the runners of `results`: for each stage kind, each runner with its case
+ *  stages and runs (`runnerCounts`). Refuses results whose runs more than one runner made unless
+ *  `--allow-runners` names each, naming each runner with its counts: a report of them pools runs
+ *  of different code, so it says so only when told to, and then says they were allowed. */
+function runnerLine(b: Behaviour, results: ReadonlyMap<string, CaseResult>): string {
+  const counts = runnerCounts(results.values());
+  const words = Stage.options
+    .map((stage) => {
+      const each = [...counts[stage]].map(
+        ([runner, share]) =>
+          `${runner} (${counted(share.stages, "case stage")}, ${counted(share.runs, "run")})`
+      );
+      return `${stage}: ${each.join(", ") || "none"}`;
+    })
+    .join("; ");
+  const runners = [...new Set(Stage.options.flatMap((stage) => [...counts[stage].keys()]))];
+  if (runners.length < 2) return `runners: ${words}`;
+  const unnamed = runners.filter((runner) => !b.allowRunners.includes(runner));
+  if (unnamed.length > 0) {
+    throw new Refused(
+      `the case results in ${path.join(b.out, "cases")} were made by ${runners.length} runners, so report counts none of them: ${words}; ${b.allowRunners.length === 0 ? "no --allow-runners is given" : `--allow-runners does not name ${unnamed.join(", ")}`}. Give --allow-runners ${runners.join(",")} to report them together`
+    );
+  }
+  return `runners: ${words}; ${runners.length} runners, each allowed by --allow-runners, so their results are reported together`;
+}
+
+/** Whether a sum of dollars is none to the four places the report prints. */
+const noDollars = (amount: number) => Math.abs(amount) < 0.00005;
+
+/** Dollars as the report prints them: `$1.2345`, never `$-0.0000`. */
+const dollars = (amount: number) => `$${(noDollars(amount) ? 0 : amount).toFixed(4)}`;
+
+/** What one stage kind's calls cost as the case results record it: its case stages and their
+ *  runs, the runs with no verdict among them (a run with no verdict is run again, and its calls
+ *  were paid), the dollars its runs record for their replays and for their judgements, and its
+ *  stages' dollars (StageResult's `usd`, the gateway's spend while each ran), whose rest no run
+ *  records. */
+interface StageSpend {
+  stages: number;
+  runs: number;
+  unjudged: number;
+  replays: number;
+  judgements: number;
+  usd: number;
+}
+
+/** What the case results record their calls cost: the judge controls and the cases that ran them,
+ *  each stage kind's (StageSpend), and the sum, which is the report's spend. */
+interface RecordedSpend {
+  controlled: number;
+  controls: number;
+  readonly stages: Record<Stage, StageSpend>;
+  total: number;
+}
+
+/** The spend `results` record (RecordedSpend): each result's judge controls (`controls.usd`, the
+ *  gateway's spend over them) and each stage it ran, earlier confirms among them, each call once,
+ *  since each process counts a call into the one stage or controls it was made for. */
+function recordedSpend(results: Iterable<CaseResult>): RecordedSpend {
+  const kind = (): StageSpend => ({
+    stages: 0,
+    runs: 0,
+    unjudged: 0,
+    replays: 0,
+    judgements: 0,
+    usd: 0,
+  });
+  const spend: RecordedSpend = {
+    controlled: 0,
+    controls: 0,
+    stages: { screen: kind(), confirm: kind(), control: kind() },
+    total: 0,
+  };
+  for (const result of results) {
+    if (result.controls !== null) {
+      spend.controlled += 1;
+      spend.controls += result.controls.usd;
+    }
+    for (const [stage, state] of eachStage(result)) {
+      const each = spend.stages[stage];
+      each.stages += 1;
+      each.runs += state.runs.length;
+      for (const run of state.runs) {
+        if (run.verdict === null) each.unjudged += 1;
+        each.replays += usdOf(run.replaySpent);
+        each.judgements += usdOf(run.judgeSpent);
+      }
+      each.usd += state.usd;
+    }
+  }
+  spend.total = Stage.options.reduce((sum, stage) => sum + spend.stages[stage].usd, spend.controls);
+  return spend;
+}
+
+/** The report's spend at list price: the sum of what the case results under `b.out` record their
+ *  calls cost (`recordedSpend`), and each part of it in words: the judge controls; and for each
+ *  stage kind its runs' replays and judgements, and the calls no run records (its stages' dollars
+ *  less its runs': its captures' hint calls, the rounds a replay that then failed had answered,
+ *  replies whose judgement the budget refused). */
+function spendLines(b: Behaviour, spend: RecordedSpend): string[] {
+  const { stages } = spend;
+  return [
+    `spend at list price: ${dollars(spend.total)}, the sum of what the case results in ${path.join(b.out, "cases")} record their calls cost (judge controls ${dollars(spend.controls)}, screen ${dollars(stages.screen.usd)}, confirm ${dollars(stages.confirm.usd)}, control ${dollars(stages.control.usd)}):`,
+    `  judge controls: ${dollars(spend.controls)}, the judge controls of ${counted(spend.controlled, "case")}`,
+    ...Stage.options.map((stage) => {
+      const each = stages[stage];
+      return `  ${stage}: ${dollars(each.usd)} over ${counted(each.stages, "case stage")}: ${dollars(each.replays)} for the replays and ${dollars(each.judgements)} for the judgements of their ${counted(each.runs, "run")} (${each.unjudged} with no verdict), and ${dollars(each.usd - each.replays - each.judgements)} for the calls no run records (its captures' hint calls, the rounds a replay that then failed had answered, replies whose judgement the budget refused)`;
+    }),
+  ];
+}
+
+/**
+ * The report's lines on the request log `file` (`loggedGateway`'s lines of `behaviour`: kinds
+ * `judge`, `replay` and `hint`), set against the spend the case results record (`spend`): the
+ * log's dollars and calls by kind, and its difference from the results' sum in two parts that sum
+ * to it, each with its cause: the judge calls against the results' judge controls and judgements,
+ * and the replay and hint calls against the results' replays and the calls no run records. A
+ * replay call goes with its run's session id, which the run records (`userId`), so the replay
+ * calls of runs no result holds, and the runs of the results no replay call of the log holds, are
+ * counted exactly; a judge or hint call names no run. A line that is no JSON (the end of a line a
+ * process was stopped in the middle of) is counted and left out. Where the file does not exist,
+ * one line says so.
+ */
+function requestLogLines(
+  file: string,
+  b: Behaviour,
+  results: ReadonlyMap<string, CaseResult>,
+  spend: RecordedSpend
+): string[] {
+  if (!existsSync(file)) return [`request log: none at ${file}, so the spend is set against none`];
+  const kinds = new Map<string, { calls: number; usd: number }>();
+  const replays: { userId: string | null; usd: number }[] = [];
+  let unreadable = 0;
+  for (const text of readFileSync(file, "utf8").split("\n")) {
+    if (text.trim() === "") continue;
+    let line: unknown;
+    try {
+      line = JSON.parse(text);
+    } catch {
+      unreadable += 1;
+      continue;
+    }
+    const kind = String(field(line, "kind"));
+    const usd = field(line, "usd");
+    const amount = typeof usd === "number" ? usd : 0;
+    const each = kinds.get(kind) ?? { calls: 0, usd: 0 };
+    kinds.set(kind, { calls: each.calls + 1, usd: each.usd + amount });
+    if (kind === "replay") {
+      const userId = field(line, "userId");
+      replays.push({ userId: typeof userId === "string" ? userId : null, usd: amount });
+    }
+  }
+  const runs = [...results.values()].flatMap((result) =>
+    eachStage(result).flatMap(([, state]) =>
+      state.runs.map((run) => ({
+        userId: run.userId,
+        usd: usdOf(run.replaySpent) + usdOf(run.judgeSpent),
+      }))
+    )
+  );
+  const runIds = new Set(runs.flatMap((run) => (run.userId === null ? [] : [run.userId])));
+  const logIds = new Set(replays.flatMap((each) => (each.userId === null ? [] : [each.userId])));
+  const strays = replays.filter((each) => each.userId === null || !runIds.has(each.userId));
+  const unlogged = runs.filter((run) => run.userId === null || !logIds.has(run.userId));
+  const sum = (items: readonly { usd: number }[]) => items.reduce((all, each) => all + each.usd, 0);
+
+  const total = sum([...kinds.values()]);
+  const calls = [...kinds.values()].reduce((all, each) => all + each.calls, 0);
+  const loggedJudge = kinds.get("judge")?.usd ?? 0;
+  const recordedJudge = Stage.options.reduce(
+    (all, stage) => all + spend.stages[stage].judgements,
+    spend.controls
+  );
+  const cases = path.join(b.out, "cases");
+  const elsewhere = "results made with another --request-log, or brought from another --out";
+  const less = `the results record calls this log does not hold: ${elsewhere}`;
+  /** One part of the difference: the log's dollars of `what` against the results'. */
+  const part = (what: string, logged: number, recorded: number, more: string): string => {
+    const difference = logged - recorded;
+    const words = noDollars(difference)
+      ? "the same in both"
+      : `${dollars(Math.abs(difference))} ${difference > 0 ? `more in the log: ${more}` : `less in the log: ${less}`}`;
+    return `  ${what}: ${dollars(logged)} in the log, ${dollars(recorded)} in the results, ${words}`;
+  };
+  const difference = total - spend.total;
+  const byKind = [...kinds]
+    .map(([kind, each]) => `${kind} ${counted(each.calls, "call")} ${dollars(each.usd)}`)
+    .join(", ");
+  const strayWords =
+    strays.length === 0
+      ? ""
+      : `; ${counted(strays.length, "replay call")} of the log, ${dollars(sum(strays))}, went with a session id no run of the results holds: runs of a round stopped before it was saved, of a result no longer in ${cases}, or replies whose judgement the budget refused`;
+  const unloggedWords =
+    unlogged.length === 0
+      ? ""
+      : `; ${counted(unlogged.length, "run")} of the results, ${dollars(sum(unlogged))}, went with a session id no replay call of the log holds: ${elsewhere}`;
+  return [
+    `request log ${file}: ${dollars(total)} over ${counted(calls, "call")} (${byKind || "none"})${unreadable === 0 ? "" : `, ${counted(unreadable, "line")} that is no JSON left out`}, ${noDollars(difference) ? "the same as" : `${dollars(Math.abs(difference))} ${difference > 0 ? "more" : "less"} than`} the spend the case results record; by kind of call:`,
+    part(
+      "judge (the results' judge controls and judgements)",
+      loggedJudge,
+      recordedJudge,
+      `judge calls no saved result records: the judge controls or judgements of a case stopped before they were saved, or of a result no longer in ${cases}`
+    ),
+    part(
+      "replay and hint (the results' replays and the calls no run records)",
+      total - loggedJudge,
+      spend.total - recordedJudge,
+      `calls no saved stage records: a round stopped before it was saved, a result no longer in ${cases}, or the hint calls of a capture that failed`
+    ) +
+      strayWords +
+      unloggedWords,
+  ];
+}
+
+/** `behaviour report`: prints the runners of the results (`runnerLine`, which refuses results of
+ *  more than one runner unless told), each case's passes, the skill's verdict and the run's
+ *  figures, its spend among them (`spendLines`, and `requestLogLines` for the request log
+ *  `requestLog`). A dropped case's line gives the stage that dropped it, why, and each stage it
+ *  ran. */
+function reportCommand(b: Behaviour, requestLog: string): void {
   const results = readResults(b);
+  const runners = runnerLine(b, results);
   const score = scored(b, results);
   const byCase = new Map(score.cases.map((each) => [each.caseId, each]));
-  const lines = [`skill ${b.cases[0]?.skill}: ${b.cases.length} cases in ${b.casesFile}`];
+  const lines = [`skill ${b.cases[0]?.skill}: ${b.cases.length} cases in ${b.casesFile}`, runners];
   for (const c of b.cases) {
     const result = results.get(c.id);
     const drop = byCase.get(c.id)?.drop;
@@ -2528,22 +2866,11 @@ function reportCommand(b: Behaviour): void {
   );
 
   const notes = new Map<string, z.infer<typeof CaptureNote>>();
-  let controlsUsd = 0;
-  const stageUsd: Record<Stage, number> = { screen: 0, confirm: 0, control: 0 };
   let peak = 0;
   for (const result of results.values()) {
-    controlsUsd += result.controls?.usd ?? 0;
     peak = Math.max(peak, result.peakRssBytes ?? 0);
-    const stages: [Stage, StageResult | undefined][] = [
-      ...Stage.options.map((stage): [Stage, StageResult | undefined] => [
-        stage,
-        result.stages[stage],
-      ]),
-      ...(result.earlierConfirms ?? []).map((state): [Stage, StageResult] => ["confirm", state]),
-    ];
-    for (const [stage, state] of stages) {
-      stageUsd[stage] += state?.usd ?? 0;
-      for (const note of Object.values(state?.captures ?? {})) notes.set(note.bodyFile, note);
+    for (const [, state] of eachStage(result)) {
+      for (const note of Object.values(state.captures)) notes.set(note.bodyFile, note);
     }
   }
   const differ = [...notes.values()].filter((note) => note.captureDigest !== note.sessionDigest);
@@ -2555,10 +2882,8 @@ function reportCommand(b: Behaviour): void {
   lines.push(
     `dispatch: ${answers.length} cases carry the Envoy plugin's block of the skill: ${from("assumed")} rest on the assumption that their session had Dispatch, ${from("legion-role")} take it from a Legion role, ${from("transcript")} from their transcript (arms.ts's dispatchOf)`
   );
-  const total = controlsUsd + stageUsd.screen + stageUsd.confirm + stageUsd.control;
-  lines.push(
-    `spend at list price: $${total.toFixed(4)} (judge controls $${controlsUsd.toFixed(4)}, screen $${stageUsd.screen.toFixed(4)}, confirm $${stageUsd.confirm.toFixed(4)}, control $${stageUsd.control.toFixed(4)})`
-  );
+  const spend = recordedSpend(results.values());
+  lines.push(...spendLines(b, spend), ...requestLogLines(requestLog, b, results, spend));
   lines.push(`peak resident memory: ${mib(peak)} MiB, the most at the end of a case`);
   b.io.out(`${lines.join("\n")}\n`);
 }
@@ -2574,7 +2899,8 @@ const BEHAVIOUR_USAGE = [
   "  [--reading-models <file>] (the skill's <cut id>/models/<skill>.json, written by attribute)",
   "  [--again <case id>]... (confirm only: one more confirm of that flagged case)",
   "  [--confirm-flagged] (confirm only: confirm each flagged case even where the skill can get no verdict; report then gives case results only)",
-  "  report needs only --config, --out, --old and --cases",
+  "  [--allow-runners <digest>[,<digest>...]] (take saved stages of these runners as this runner's; report: report results of these runners together)",
+  "  report needs only --config, --out, --old and --cases; its --request-log is the log it sets the spend against, <out>/requests.jsonl by default",
 ].join("\n");
 
 /** The reading sessions by model `file` holds: attribute.ts's `<cut id>/models/<skill>.json` of a
@@ -2615,6 +2941,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       "reading-models": { type: "string" },
       again: { type: "string", multiple: true },
       "confirm-flagged": { type: "boolean" },
+      "allow-runners": { type: "string" },
     },
     BEHAVIOUR_USAGE
   );
@@ -2624,6 +2951,12 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   if (values["confirm-flagged"] !== undefined && command !== "confirm") {
     throw new Refused(
       `--confirm-flagged goes with behaviour confirm only: report reads from the case results whether their confirms were made with it. ${BEHAVIOUR_USAGE}`
+    );
+  }
+  const allowRunners = values["allow-runners"]?.split(",").map((each) => each.trim()) ?? [];
+  if (allowRunners.includes("")) {
+    throw new Refused(
+      `--allow-runners ${JSON.stringify(values["allow-runners"])} names an empty runner: give each runner's digest, joined by commas. ${BEHAVIOUR_USAGE}`
     );
   }
   const report = command === "report";
@@ -2657,9 +2990,11 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       readingModels === undefined
         ? undefined
         : { file: readingModels, count: readReadingModels(readingModels) },
+    allowRunners,
   };
+  const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   if (report) {
-    reportCommand(behaviour);
+    reportCommand(behaviour, log);
     return EXIT.ok;
   }
   if (command === "screen" && behaviour.readingModels !== undefined) {
@@ -2700,7 +3035,6 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     concurrency: values.concurrency,
     spend: io.spend ?? null,
   });
-  const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   const scratch = values.scratch ?? path.join(tmpdir(), SCRATCH_DIR);
   const cacheDir = values["cache-dir"] ?? path.join(tmpdir(), CACHE_DIR);
   const plantedLine = values["planted-line"];
