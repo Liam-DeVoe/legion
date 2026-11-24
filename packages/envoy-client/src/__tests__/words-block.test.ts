@@ -72,6 +72,17 @@ describe("cutDrawn", () => {
     expect(cutDrawn(text, text.length)).toBe(text);
     expect(cutDrawn("one line with no block", 8)).toBe("one line");
   });
+
+  test("a cut puts rest before the block's own more, never inside a value that ends in ` more=`", () => {
+    const card = `${fields}\n${wordsBlocks(fields, [
+      { name: "answer", words: { text: "0123456789", by: "user:x more=", more: true } },
+    ])}`;
+    const cut = cutDrawn(card, card.indexOf("\n0123456789\n") + 1 + 4);
+    expect(cut).toEndWith('\n<answer by="user:x more=" rest="6" more="true">\n0123\n</answer>');
+    expect(
+      splitWordsBlocks(cut).blocks.map(({ text, by, rest, more }) => ({ text, by, rest, more }))
+    ).toEqual([{ text: "0123", by: "user:x more=", rest: 6, more: true }]);
+  });
 });
 
 describe("inFront", () => {

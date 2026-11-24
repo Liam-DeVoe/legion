@@ -99,9 +99,12 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
         ? item.ref
         : `${item.ref} · ${owner}`;
   // A title or a name is another author's words on one of the plugin's lines, so each run of
-  // white space in it, a new line included, is one space: a line it started could stand as an
-  // item's head line, or open a block that a list's draw (`inFront`) takes for one of the item's.
-  const before = [head.join(" · "), where].map((line) => line.replace(/\s+/g, " ")).join("\n");
+  // white space in it, a new line included (U+0085 too, which `\s` leaves out), is one space: a
+  // line it started could stand as an item's head line, or open a block that a list's draw
+  // (`inFront`) takes for one of the item's.
+  const before = [head.join(" · "), where]
+    .map((line) => line.replace(/[\s\u0085]+/g, " "))
+    .join("\n");
   const blocks: NamedWords[] = [];
   if (item.ask !== undefined) {
     // The question is the ask's, whoever asked it - the session, another session or a person -

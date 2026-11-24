@@ -283,7 +283,7 @@ export function shownPictureLine(
   mimeType: string,
   bytes: number
 ): string {
-  return `- image ${index}: ${address} (${name.replace(/\s+/g, " ")}, ${mimeType}, ${bytes.toLocaleString("en-US")} bytes)`;
+  return `- image ${index}: ${address} (${name.replace(/[\s\u0085]+/g, " ")}, ${mimeType}, ${bytes.toLocaleString("en-US")} bytes)`;
 }
 
 // `shownPictureLine` as it starts a line, its address a versioned Dispatch address.
@@ -405,7 +405,7 @@ export async function readPictures(
   const overBudget = `past this read's ${PICTURES_SHOWN_MAX_BYTES / 1024 / 1024} MiB of pictures; dispatch doc-read shows it`;
   for (const address of addresses) {
     const skip = (reason: string) =>
-      lines.push(`- not shown: ${address} (${reason.replace(/\s+/g, " ")})`);
+      lines.push(`- not shown: ${address} (${reason.replace(/[\s\u0085]+/g, " ")})`);
     if (shown?.has(address)) {
       skip("shown earlier this session; dispatch doc-read shows it again");
       continue;

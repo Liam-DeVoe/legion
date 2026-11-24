@@ -2023,9 +2023,8 @@ function headedMessage(message: Message): string {
       return `**system**: ${escaped(textOf(message.content), 2 * 1024)}`;
     case "custom":
     case "hookMessage": {
-      const text = textOf(message.content);
       if (message.display === false && message.customType !== "advisor") return "";
-      return `[${escaped(String(message.customType))}] ${escaped(text.replace(/\s+/g, " ").trim().slice(0, 120))}`;
+      return `[${escaped(String(message.customType))}] ${escaped(textOf(message.content).replace(/\s+/g, " ").trim().slice(0, 120))}`;
     }
     case "compactionSummary":
       return `[compaction] ${escaped(String(message.summary ?? ""), 8 * 1024)}`;

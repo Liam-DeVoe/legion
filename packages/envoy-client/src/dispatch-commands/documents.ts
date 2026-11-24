@@ -123,7 +123,7 @@ async function readUploadedFile(
       shown?.add(address);
       return {
         text:
-          `Picture ${artifact.name}: ${image.mimeType}, version ${number}${of}, ${size}.\n` +
+          `Picture ${artifact.name.replace(/[\s\u0085]+/g, " ")}: ${image.mimeType}, version ${number}${of}, ${size}.\n` +
           shownPictureLine(1, address, artifact.name, image.mimeType, file.bytes.length),
         details,
         images: [image],

@@ -179,11 +179,13 @@ export class TextInFront {
 
 /** One block of a text as `drawnBlocks` found it: where its opening line starts and where its
  *  closing tag ends, the name of the field that holds the words (its tag without the `-n` a step
- *  past held tags added), the attributes of its opening tag as written, and its words. */
+ *  past held tags added), its tag as written, the attributes of its opening tag as written, and
+ *  its words. */
 export interface DrawnBlock {
   readonly start: number;
   readonly end: number;
   readonly name: string;
+  readonly tag: string;
   readonly attributes: string;
   readonly text: string;
 }
@@ -212,7 +214,8 @@ export function drawnBlocks(text: string): DrawnBlock[] {
     const opening = OPENING.exec(text.slice(at, opened));
     if (opening === null) break;
     const name = opening[1] ?? "";
-    const closing = `\n</${opening[2] === undefined ? name : `${name}-${opening[2]}`}>`;
+    const tag = opening[2] === undefined ? name : `${name}-${opening[2]}`;
+    const closing = `\n</${tag}>`;
     const closed = text.indexOf(closing, opened + 1);
     if (closed < 0) break;
     const end = closed + closing.length;
@@ -221,6 +224,7 @@ export function drawnBlocks(text: string): DrawnBlock[] {
       start: at,
       end,
       name,
+      tag,
       attributes: opening[3] ?? "",
       text: text.slice(opened + 1, closed),
     });
@@ -245,19 +249,19 @@ export function cutDrawn(text: string, length: number): string {
   if (text.length <= length) return text;
   const block = drawnBlocks(text).find(({ start, end }) => start < length && length < end);
   if (block === undefined) return text.slice(0, length);
-  const words = text.indexOf("\n", block.start) + 1;
+  const words = lineEnd(text, block.start) + 1;
   const kept = block.text.slice(0, Math.max(0, length - words));
   if (kept.length === block.text.length) return text.slice(0, block.end);
   const { attributes } = block;
-  const tag = text.slice(block.start + 1, words - 2 - attributes.length);
   // The `rest` the block holds is counted on; else one goes where the rule's order puts it, after
-  // `by`, `at` and `field` and before `more`.
+  // `by`, `at` and `field` and before `more`. Each is found as an attribute (`ATTRIBUTE`), never
+  // inside another's value, which may end in ` more=`.
   const held = REST.exec(attributes);
-  const more = attributes.indexOf(' more="');
-  const at = held?.index ?? (more < 0 ? attributes.length : more);
+  const more = [...attributes.matchAll(ATTRIBUTE)].find(([, key]) => key === "more")?.index;
+  const at = held?.index ?? more ?? attributes.length;
   const rest = Number(held?.[1] ?? 0) + block.text.length - kept.length;
   const cutAttributes = `${attributes.slice(0, at)}${attribute("rest", String(rest))}${attributes.slice(at + (held?.[0].length ?? 0))}`;
-  return `${text.slice(0, block.start)}${drawBlock(tag, cutAttributes, kept)}`;
+  return `${text.slice(0, block.start)}${drawBlock(block.tag, cutAttributes, kept)}`;
 }
 
 /** The block of `text` under `tag`: the opening tag with `attributes` as written, a new line, the
