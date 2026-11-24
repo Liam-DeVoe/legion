@@ -760,8 +760,9 @@ The server-change soak (listener-server-change): `go test -tags serverchange
 ./cmd/listener`. The listener's own packages, and what its test binary compiles
 beyond them - the in-process NATS and Postgres helpers, the builder of the binary it
 starts, and the Dispatch packages cmd/listener's tests drive. A dependency's own
-testdata is no input of this job: the tests that read it are that package's, and
-this job runs cmd/listener's alone.
+testdata is no input of this job, but for what its code embeds: the tests that read
+it are that package's, and this job runs cmd/listener's alone. Of testnats' testdata
+it reads the two grant fixtures internal/testnats/grant.go embeds.
 
 ## listener_server_change: What cmd/listener's test binary compiles that `go list
 
@@ -776,8 +777,10 @@ The two-process and two-build tests (listener-multiprocess): `go test -tags mult
 tag, which adds only a file of internal/bus. The listener's own packages, and what its test
 binary compiles beyond them - the in-process NATS and Postgres helpers, the builder of the
 binaries it starts, and the Dispatch packages cmd/listener's tests drive. A dependency's own
-testdata is no input of this job, as for listener_server_change: the tests that read it are that
-package's, and this job runs cmd/listener's alone; testnats' is, since that package embeds it.
+testdata is no input of this job but for what its code embeds, as for listener_server_change: the
+tests that read it are that package's, and this job runs cmd/listener's alone. Of testnats' testdata it reads only the two grant
+fixtures internal/testnats/grant.go embeds, listener-permissions.json and host-permissions.json,
+through that package's //go:embed patterns; testdata/hooked is read by forced-order.sh alone.
 
 ## airlock_lean: The Lean model of the airlock and the Go code it covers
 

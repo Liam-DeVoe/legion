@@ -18,5 +18,4 @@ GATE = with_reads(GATE, [
     Read('packages/envoy/internal/dispatch/pmdoc/**', "filter envoy_infra_go held packages/envoy/internal/dispatch/pmdoc/** by hand before the filters were computed: it selected 278 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/contracts/**', "filter envoy_infra_go held packages/envoy/internal/contracts/** by hand before the filters were computed: it selected 3 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/infra/**', "filter envoy_infra_go holds packages/envoy/infra/** by hand: its gofmt step moved to envoy-infra-build, and the filter kept the module; it selects 19 file(s) no other read of this gate declares", but=('**/*_test.go',)),
-    Read('packages/envoy/internal/testnats/testdata/**', "filter envoy_infra_go held packages/envoy/internal/testnats/testdata/** by hand (the branch's edit) before the filters were computed: it selected 5 file(s) no other read of this gate declares"),
 ])

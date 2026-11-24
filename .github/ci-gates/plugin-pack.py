@@ -34,5 +34,4 @@ GATE = with_reads(GATE, [
     Read('packages/daemon/**', "filter plugin_pack held packages/daemon/** by hand before the filters were computed: it selected 865 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/dispatch/delivery/**', "filter plugin_pack held packages/envoy/internal/dispatch/delivery/** by hand before the filters were computed: it selected 2 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/dispatch/pmdoc/**', "filter plugin_pack held packages/envoy/internal/dispatch/pmdoc/** by hand before the filters were computed: it selected 277 file(s) no other read of this gate declares", but=('**/*_test.go',)),
-    Read('packages/envoy/internal/testnats/testdata/**', "filter plugin_pack held packages/envoy/internal/testnats/testdata/** by hand (the branch's edit) before the filters were computed: it selected 5 file(s) no other read of this gate declares"),
 ])

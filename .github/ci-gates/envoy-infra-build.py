@@ -20,6 +20,3 @@ GATE = gate("envoy_infra_build", "envoy-infra-build", runs=[
 ], reads=reads(
     (f"{INFRA}/**", f"{at('envoy-infra-build', 'Check Go formatting')}: gofmt -l . in packages/envoy/infra reads every .go file under it"),
 ) + setup_go("envoy-infra-build", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-build", INFRA_DARWIN_VET, INFRA))
-GATE = with_reads(GATE, [
-    Read('packages/envoy/internal/testnats/testdata/**', "filter envoy_infra_build held packages/envoy/internal/testnats/testdata/** by hand (the branch's edit) before the filters were computed: it selected 5 file(s) no other read of this gate declares"),
-])

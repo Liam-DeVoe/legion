@@ -11,5 +11,4 @@ GATE = with_reads(GATE, [
     Read('packages/envoy/internal/dispatch/delivery/**', "filter listener_server_change held packages/envoy/internal/dispatch/delivery/** by hand before the filters were computed: it selected 2 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/dispatch/pmdoc/**', "filter listener_server_change held packages/envoy/internal/dispatch/pmdoc/** by hand before the filters were computed: it selected 278 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/dispatch/text/**', "filter listener_server_change held packages/envoy/internal/dispatch/text/** by hand before the filters were computed: it selected 3 file(s) no other read of this gate declares", but=('**/*_test.go',)),
-    Read('packages/envoy/internal/testnats/testdata/**', "filter listener_server_change held packages/envoy/internal/testnats/testdata/** by hand (the branch's edit) before the filters were computed: it selected 5 file(s) no other read of this gate declares"),
 ])

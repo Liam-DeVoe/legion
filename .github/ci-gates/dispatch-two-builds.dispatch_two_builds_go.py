@@ -7,5 +7,4 @@ GATE = gate("dispatch_two_builds_go", TWO_BUILDS_JOB, step=TWO_BUILDS_STEP, runs
 GATE = with_reads(GATE, [
     Read('packages/envoy/internal/dispatch/**', "filter dispatch_two_builds_go held packages/envoy/internal/dispatch/** by hand before the filters were computed: it selected 687 file(s) no other read of this gate declares", but=('**/*_test.go',)),
     Read('packages/envoy/internal/contracts/**', "filter dispatch_two_builds_go held packages/envoy/internal/contracts/** by hand before the filters were computed: it selected 3 file(s) no other read of this gate declares", but=('**/*_test.go',)),
-    Read('packages/envoy/internal/testnats/testdata/**', "filter dispatch_two_builds_go held packages/envoy/internal/testnats/testdata/** by hand (the branch's edit) before the filters were computed: it selected 5 file(s) no other read of this gate declares"),
 ])
