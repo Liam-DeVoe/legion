@@ -13,9 +13,11 @@
 # job publishes beside the outputs
 # (.github/ci-notes/ci.md#the-paths-filters-own-verdict-for-every-filter
 # says why). It is what tells a job a pull request held back from one its paths never selected:
-# a slow suite's output is written `false` on a pull request without the label full-ci or the
-# job's own lane:<output> label whether the filter said yes or no, so the output alone reads the
-# same in both cases. Only a pull request can hold a job back that way - on every other event the
+# a slow suite's output is written `false` on a pull request without the label full-ci or one of
+# its own lane labels (main's names, which the output's own terms name: lane:test,
+# lane:daemon_go_tests, lane:envoy_go, …), and kind's, which no label lifts, on every pull request,
+# whether the filter said yes or no, so the output alone reads the same in both cases. Only a pull
+# request can hold a job back that way - on every other event the
 # label term of those expressions is already true, so the output is the filter's verdict and this
 # reading never fires. The verdict itself does not move: such a job was not selected, and ci-ok
 # accepts its skip exactly as before. `gated` marks it, so ci-ok.sh can name it apart from the
@@ -31,11 +33,13 @@ def hold_labels:
   (.jobs.changes.outputs // {})
   | with_entries(.value |= [tostring | match("contains\\(github\\.event\\.pull_request\\.labels\\.\\*\\.name, '([^']+)'\\)"; "g") | .captures[0].string]);
 
-# A held job's labels as the not-run line says them: "full-ci, lane:a or lane:b".
-def label_words($labels):
-  if ($labels | length) == 0 then "any label"
-  elif ($labels | length) == 1 then $labels[0]
-  else ($labels[:-1] | join(", ")) + " or " + $labels[-1] end;
+# Where a held job is held back, as the not-run line says it: "on a pull request without full-ci,
+# lane:a or lane:b", or "on every pull request" for an output no label lifts (kind's, which a merge
+# group and a dispatched run with kind-and-agent-harness alone turn on).
+def held_back($labels):
+  if ($labels | length) == 0 then "on every pull request"
+  elif ($labels | length) == 1 then "on a pull request without \($labels[0])"
+  else "on a pull request without " + ($labels[:-1] | join(", ")) + " or " + $labels[-1] end;
 
 def selection($job; $map; $out; $pr; $event; $holds):
   output_of($job; $map) as $output
@@ -45,7 +49,7 @@ def selection($job; $map; $out; $pr; $event; $holds):
   | if $value != "true" then
       if $event == "pull_request" and $verdicts[$output] == "true" then
         {selected: false, gated: true,
-         why: "selected by paths, held back on a pull request without \(label_words($holds[$output] // [])): runs in the merge queue"}
+         why: "selected by paths, held back \(held_back($holds[$output] // [])): runs in the merge queue"}
       else {selected: false, why: "needs.changes.outputs.\($output) is \($value)"}
       end
     elif $pr_only and $event != "pull_request" then

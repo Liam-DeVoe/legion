@@ -71,9 +71,10 @@
 #   PULL_REQUEST_ONLY  a JSON array of the jobs whose `if:` also admits only pull_request: one is
 #                      selected only when EVENT is pull_request too. (A job an event must hold
 #                      back otherwise needs no list: `changes` sets its output false there, as it
-#                      does for the slow suites on a pull request without the label full-ci or the
-#                      job's own lane:<output>, whose skip this verdict accepts and whose line says
-#                      the pull request held it back.)
+#                      does for the slow suites on a pull request without the label full-ci or
+#                      one of the job's own lane labels (main's names, lane:test and the like,
+#                      which its output's terms name), and for kind on every pull request; the
+#                      verdict accepts that skip, and its line says the pull request held it back.)
 #   ALWAYS_RUN         a JSON array of the jobs no `changes` output gates, `changes` among them:
 #                      each runs on every change, so ci-ok passes only when it succeeded, and a
 #                      skip, a cancellation or an absence fails. ci.yaml's env names them in
@@ -109,8 +110,9 @@
 # So after the verdict, pass or fail, each such job gets a line of its own, `not run at this head:
 # <job> (selected by paths, held back on a pull request without full-ci or lane:<a> or lane:<b>;
 # runs in the merge queue)`, naming each label the job's `changes` output tests (ci-ok.jq,
-# hold_labels, reads them off the workflow's own terms), and the job summary lists those lines
-# apart from the jobs that ran and passed. No job runs in part: each runs all its steps wherever
+# hold_labels, reads them off the workflow's own terms), or `held back on every pull request` for
+# an output no label lifts, and the job summary lists those lines apart from the jobs that ran and
+# passed. No job runs in part: each runs all its steps wherever
 # it runs, or its own output skips it, so a success is the whole job's. A run that held nothing
 # back writes no summary: only a pull request can hold a job back, so ci-ok-report.sh's
 # merge-group calls, inside other jobs, never write one.
@@ -120,7 +122,7 @@
 #     GH_TOKEN=... HEAD_SHA=... .github/scripts/ci-ok.sh
 # ci.yaml's ci-ok job runs it over every job's result, and ci-ok-report.sh over the results it
 # reads for the failing ci-ok it posts at once on a decided merge-group run; its tests are in
-# ci-ok.test.sh, which ci.yaml's scripts job runs.
+# ci-ok.test.sh, which ci.yaml's scripts-held job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -154,10 +156,12 @@ if ! jq -e 'type == "array" and all(.[]; type == "string") and any(. == "changes
 fi
 # Each check-run name a leg or a carrier of a job ci-ok judges gives through its `name:`, to that
 # job's id, read off the workflow itself (ci-ok.jq, check_run_jobs): runner-shutdown.sh reads a
-# job's check runs through it.
-if ! CHECK_RUN_JOBS=$(yq -o=json '.' "$workflow" | jq -c -L "$script_dir" --argjson judged "$(jq -c 'keys' <<<"$NEEDS")" \
-  'include "ci-ok"; check_run_jobs($judged)' 2>&1); then
-  echo "::error::ci-ok.sh cannot read the check-run names of $workflow's jobs: $CHECK_RUN_JOBS"
+# job's check runs through it. The workflow is read as JSON once, for this map and for the label
+# terms below.
+if ! workflow_json=$(yq -o=json '.' "$workflow") ||
+  ! CHECK_RUN_JOBS=$(jq -c -L "$script_dir" --argjson judged "$(jq -c 'keys' <<<"$NEEDS")" \
+    'include "ci-ok"; check_run_jobs($judged)' <<<"$workflow_json" 2>&1); then
+  echo "::error::ci-ok.sh cannot read the check-run names of $workflow's jobs: ${CHECK_RUN_JOBS-}"
   exit 1
 fi
 
@@ -226,7 +230,7 @@ include "ci-ok";
         (select($result == "failure" and missed_by_filters($job; $map; $out; $event))
          | ["note", "\($job) failed, and no pull request that changes this merge group's files runs it: the filters, given those files, do not select it (filter_verdicts gives \($output) false, and no changed file is one no filter names); read its filter for a file its tests read that the filter misses, and its test for a flake"]),
         (select($s.gated and $result == "skipped")
-         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request without \(label_words($holds[$output] // [])); runs in the merge queue)"]),
+         | ["not_run", "not run at this head: \($job) (selected by paths, held back \(held_back($holds[$output] // [])); runs in the merge queue)"]),
         if $result == "absent" then
           ["error", "\($job) is absent from NEEDS, but needs.changes.outputs.\($output) selects it; the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every job ci-ok judges a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then
@@ -243,7 +247,7 @@ include "ci-ok";
 JQ
 # The labels that lift each held output's hold, read off the changes job's own terms in the
 # workflow (ci-ok.jq, hold_labels), for the line naming a job a pull request held back.
-if ! holds=$(yq -o=json '.' "$workflow" | jq -c -L "$script_dir" 'include "ci-ok"; hold_labels' 2>&1); then
+if ! holds=$(jq -c -L "$script_dir" 'include "ci-ok"; hold_labels' <<<"$workflow_json" 2>&1); then
   echo "::error::ci-ok.sh cannot read the label terms of $workflow's changes outputs: $holds"
   exit 1
 fi
