@@ -571,7 +571,12 @@ test("a tester's fail sends return_to as returnTo", async () => {
 // daemon refuses such a completion with. Each is a name of the program, not a sentence.
 test("the description names return_to and each code the daemon refuses it with", () => {
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  for (const name of ["`return_to`", "RETURN_TO_NEEDS_FAIL", "INVALID_RETURN_TO", "RETURN_REFUSED"]) {
+  for (const name of [
+    "`return_to`",
+    "RETURN_TO_NEEDS_FAIL",
+    "INVALID_RETURN_TO",
+    "RETURN_REFUSED",
+  ]) {
     expect(description).toContain(name);
   }
 });
