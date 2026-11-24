@@ -15,7 +15,7 @@
 // of each card and every issue of a tree a card stands in. A board that computed them would read
 // the whole metrics population once per open page, which is what the stored rows exist to
 // prevent, and a board that served every row of the project would grow with every issue its
-// Legion work ever covered; a closed issue the board does not show is the eval items route's.
+// Legion work ever covered; a closed issue is in the answer only through a tree the board shows.
 //
 // Two disciplines, as in the metrics package:
 //
@@ -84,8 +84,7 @@ type legionBoardResponse struct {
 	// stands in (whose stored root is that card's tree), open or closed, whatever its hours are,
 	// the issues of such a tree that are on no card included, and an open issue on no card in no
 	// shown tree, a parked one, as well, since no other route serves an open issue's facts. A
-	// closed issue the board does not show carries no entry: the eval items route serves its facts
-	// by its close day (R22), so every issue has one source. An issue whose row is not written
+	// closed issue the board does not show carries no entry. An issue whose row is not written
 	// yet carries none either.
 	Issues map[string]legionBoardFacts `json:"issues"`
 	// Settings is the settings the daemon reports, which hold no secret: the daemon's own bytes,
@@ -233,12 +232,6 @@ type legionBoardCard struct {
 	Phase      string     `json:"phase"`
 	PhaseSince *time.Time `json:"phase_since"`
 	Slot       *int       `json:"slot"`
-	// TreeSlot is the slot of the issue's tree root, for an issue that holds none of its own: a
-	// slot belongs to the tree's root, and a child works under it. Null for a root, an issue
-	// holding its own slot, and a tree whose root holds none.
-	TreeSlot *int `json:"tree_slot"`
-	// SlotSince is when the issue was admitted to its own slot; null with no slot of its own.
-	SlotSince *time.Time `json:"slot_since"`
 	// WaitingPlace is the issue's place in the daemon's waiting line, from 1; null for an issue
 	// the line does not name.
 	WaitingPlace *int             `json:"waiting_place"`
@@ -365,10 +358,7 @@ type legionBoardIssue struct {
 	phase      string
 	phaseSince time.Time
 	slot       *int
-	// slotSince is when the newest slot observation was recorded, which is when the issue was
-	// admitted to that slot.
-	slotSince time.Time
-	waitingOn *legion.Wait
+	waitingOn  *legion.Wait
 	// roles are the roles of the issue whose claim state is `working`, sorted.
 	roles []string
 	// title and priority are Dispatch's, empty for an issue Dispatch does not hold; the parent
@@ -531,7 +521,7 @@ func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time)
 		issue.phase, issue.phaseSince = legion.JSONString(value), at
 	case field == legion.FieldSlot:
 		if slot, read := legion.ParseSlot(value); read {
-			issue.slot, issue.slotSince = slot, at
+			issue.slot = slot
 		}
 	case field == legion.FieldWaitingOn:
 		if wait, read := legion.ParseWait(value); read {
@@ -898,12 +888,6 @@ func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string
 	if wait := issue.waitingOn; wait != nil {
 		card.WaitingOn = &legionBoardWait{Kind: wait.Kind, Since: wait.Since, AnsweredAt: wait.AnsweredAt}
 	}
-	if card.Slot == nil && card.Tree != issue.key {
-		if root := p.issues[card.Tree]; root != nil && root.slot != nil {
-			slot := *root.slot
-			card.TreeSlot = &slot
-		}
-	}
 	if card.Roles == nil {
 		card.Roles = []string{}
 	}
@@ -913,10 +897,6 @@ func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string
 	if !issue.phaseSince.IsZero() {
 		since := issue.phaseSince.UTC()
 		card.PhaseSince = &since
-	}
-	if issue.slot != nil && !issue.slotSince.IsZero() {
-		since := issue.slotSince.UTC()
-		card.SlotSince = &since
 	}
 	return card
 }

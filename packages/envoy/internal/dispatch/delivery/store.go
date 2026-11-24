@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -702,13 +703,18 @@ func ScanJob(row pgx.Row) (DeliveryRunJob, error) {
 // itself the "it is fetchable after all" signal, the same way a successful UpsertPullRequest
 // clears unfetchable_at/unfetchable_reason.
 //
-// The run's bookkeeping and its job rows commit together, in one transaction: the run row first,
-// then every job in one statement (none for an empty listing). Every other writer of a
-// delivery_runs row is one statement that takes the row's lock and then, in its change trigger,
-// the change log's advisory lock (0100); this transaction takes them in that same order, so a run's
-// own completion written beside its jobs waits for one of them rather than deadlocking with it. The
-// advisory lock is taken by the jobs statement's trigger, or the run statement's when it clears an
-// unfetchable mark, and held from there to the commit: at most the two statements and the commit.
+// The run's bookkeeping and its job rows are written by one statement, the run row's update and
+// every job's upsert (none for an empty listing) in one data-modifying `with`, so they commit
+// together. Every other writer of a delivery_runs row is one statement too, which takes the row's
+// lock and then, in its change trigger, the change log's advisory lock (0100): this one takes its
+// jobs' row locks, then the run row's (the `with`, which runs after the insert), and the change
+// log's lock last, in the triggers that fire at the statement's end (lockChangesStatement), so a
+// run's own completion written beside its jobs waits for one of them rather than deadlocking with
+// it, and the change log's lock is held for that statement's triggers and its commit alone. It
+// takes the job rows in one order, their names' byte order, whatever order the listing gave them
+// in: the jobs are sorted before the statement, and the statement inserts them in that order too.
+// Two listings of one run that named its jobs in opposite orders would otherwise each lock a job
+// the other then waited for.
 func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64, jobs []DeliveryRunJob, complete bool) error {
 	if complete {
 		for _, job := range jobs {
@@ -747,48 +753,39 @@ func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int
 			folded[i] = row
 		}
 	}
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin jobs write for run %d: %w", runID, err)
+	slices.SortFunc(folded, func(a, b foldedJob) int { return strings.Compare(a.name, b.name) })
+	names := make([]string, len(folded))
+	started := make([]*time.Time, len(folded))
+	completed := make([]*time.Time, len(folded))
+	conclusions := make([]*string, len(folded))
+	steps := make([]*string, len(folded))
+	stepConclusions := make([]*string, len(folded))
+	for i, row := range folded {
+		names[i], started[i], completed[i], conclusions[i], steps[i], stepConclusions[i] =
+			row.name, row.startedAt, row.completedAt, row.conclusion, row.applyStep, row.applyStepConclusion
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
-		update delivery_runs
-		set jobs_unfetchable_at = null, jobs_unfetchable_reason = null, jobs_complete = delivery_runs.jobs_complete or $3
-		where repo = $1 and run_id = $2
-	`, repo, runID, complete); err != nil {
-		return fmt.Errorf("clear jobs-unfetchable mark for run %d: %w", runID, err)
-	}
-	// An empty listing (GitHub has not created a running run's jobs yet) writes the run row alone.
-	if len(folded) > 0 {
-		names := make([]string, len(folded))
-		started := make([]*time.Time, len(folded))
-		completed := make([]*time.Time, len(folded))
-		conclusions := make([]*string, len(folded))
-		steps := make([]*string, len(folded))
-		stepConclusions := make([]*string, len(folded))
-		for i, row := range folded {
-			names[i], started[i], completed[i], conclusions[i], steps[i], stepConclusions[i] =
-				row.name, row.startedAt, row.completedAt, row.conclusion, row.applyStep, row.applyStepConclusion
-		}
-		if _, err := tx.Exec(ctx, `
-			insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
-			select $1, $2, job.name, job.started_at, job.completed_at, job.conclusion, job.apply_step, job.apply_step_conclusion
-			from unnest($3::text[], $4::timestamptz[], $5::timestamptz[], $6::text[], $7::text[], $8::text[])
-				as job (name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
-			on conflict (repo, run_id, name) do update set
-				started_at = excluded.started_at,
-				completed_at = excluded.completed_at,
-				conclusion = excluded.conclusion,
-				apply_step = excluded.apply_step,
-				apply_step_conclusion = excluded.apply_step_conclusion
-			where delivery_run_jobs.completed_at is null or excluded.completed_at is not null
-		`, repo, runID, names, started, completed, conclusions, steps, stepConclusions); err != nil {
-			return fmt.Errorf("upsert the jobs of run %d: %w", runID, err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit jobs write for run %d: %w", runID, err)
+	// An empty listing (GitHub has not created a running run's jobs yet) writes the run row alone:
+	// its arrays are empty, and the jobs' upsert inserts nothing.
+	if _, err := pool.Exec(ctx, `
+		with run as (
+			update delivery_runs
+			set jobs_unfetchable_at = null, jobs_unfetchable_reason = null, jobs_complete = delivery_runs.jobs_complete or $9
+			where repo = $1 and run_id = $2
+		)
+		insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
+		select $1, $2, job.name, job.started_at, job.completed_at, job.conclusion, job.apply_step, job.apply_step_conclusion
+		from unnest($3::text[], $4::timestamptz[], $5::timestamptz[], $6::text[], $7::text[], $8::text[])
+			as job (name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
+		order by job.name collate "C"
+		on conflict (repo, run_id, name) do update set
+			started_at = excluded.started_at,
+			completed_at = excluded.completed_at,
+			conclusion = excluded.conclusion,
+			apply_step = excluded.apply_step,
+			apply_step_conclusion = excluded.apply_step_conclusion
+		where delivery_run_jobs.completed_at is null or excluded.completed_at is not null
+	`, repo, runID, names, started, completed, conclusions, steps, stepConclusions, complete); err != nil {
+		return fmt.Errorf("write the jobs of run %d: %w", runID, err)
 	}
 	return nil
 }

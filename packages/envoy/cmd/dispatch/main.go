@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -26,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -45,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -80,6 +84,34 @@ const (
 // and refuses anything but a full commit sha); every other build leaves it empty, and /healthz
 // then reports the commit as null rather than naming one it cannot vouch for.
 var buildCommit string
+
+// processBuild names the build this process is, for the Legion facts consumer's record of the
+// build that last read each project whole (legionfacts.Deps.Build). legionfacts/scope.go's
+// legionProjects says why a pass under a build that record does not name reads the project whole
+// again.
+//
+// It is buildCommit where the image build stamped one. Every process of one release then
+// answers that one commit, so the fleet reads each project whole once per release and after that
+// computes only the issues its feeds name.
+//
+// Every other build leaves buildCommit empty, and the string is then what buildversion answers
+// with a suffix this process drew at its start. buildversion answers the release tag where a
+// release stamped one, `devel (<commit>)` where go build read a checkout, and `devel` where it
+// read none, which is every image a local compose file builds. Each of those names a binary
+// rather than a run of it, so two runs of one unstamped binary would be one build without the
+// suffix. The suffix makes them two builds: a developer who edits the phase-work rule
+// (legion/session_title.go, legion.PhaseWorkKeys) and restarts has every project read whole
+// under the edited rule, where the record the run before it left would say each was read whole
+// already. What that read costs is in legionfacts/scope.go's legionProjects.
+//
+// It answers one string for as long as the process runs: the loop compares the string it
+// recorded, and a process that answered two would read every project whole on every pass.
+var processBuild = sync.OnceValue(func() string {
+	if buildCommit != "" {
+		return buildCommit
+	}
+	return buildversion.String() + " " + rand.Text()
+})
 
 type bootConfig struct {
 	DatabaseURL string
@@ -418,6 +450,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The change rows a Legion write recorded in the change log's outbox and never moved into
+	// delivery_changes, its process killed between its commit and its drain, are moved before
+	// this process serves (delivery.DrainPending, migration 20261117100001). While any process is
+	// alive, the next drain of any process moves them (delivery.DrainPending states the bound);
+	// this boot is what moves them when none was alive, and its drain's notification wakes every
+	// hub listening by then. A drain that fails is logged and the boot goes on: the hub drains
+	// before each read, and each Legion facts pass after its commit.
+	if moved, err := delivery.DrainPending(ctx, database.Pool); err != nil {
+		slog.Warn("dispatch: move the delivery changes left pending into the change log; the hub's and the facts consumer's drains move them", "error", err)
+	} else if moved > 0 {
+		slog.Info("dispatch: moved the delivery changes left pending into the change log", "moved", moved)
+	}
+
 	// The rename pairs are read once, here, before any part that reads them is built: the API,
 	// the delivery reconcile and intakes and the CI reconcile are each given this one value
 	// (refs.Renames). The delivery reconcile and the intakes share the one Attributor built of it
@@ -657,11 +702,15 @@ func main() {
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
-	//     suggestion outcomes (api.EventsChannel) and the delivery settings both intakes route by
-	//     (delivery.SettingsChannel). The two leased ones, reference-excerpts and edit-notices,
-	//     take their lease with no period (duty.RunWoken): a process that finds it held retries
-	//     until a pass of its own runs, since the other process's pass may have read before the
-	//     change that woke this one. The suggestion-outcome loop takes none: each of its pages
+	//     suggestion outcomes (api.EventsChannel), the delivery settings both intakes route by
+	//     (delivery.SettingsChannel) and the Legion facts (legionfacts.Run, whose due times are a
+	//     pass legionfacts.PassRetry after one that failed and one soon after one whose safe
+	//     horizon held an event back). The facts consumer holds no pass a change woke: it starts as
+	//     soon as the pass running when the change came ends. The three leased ones,
+	//     reference-excerpts, edit-notices and legion-facts, take their lease with no period
+	//     (duty.RunWoken): a process that finds it held retries until a pass of its own runs, since
+	//     the other process's pass may have read before the change that woke this one. The
+	//     suggestion-outcome loop takes none: each of its pages
 	//     runs in a transaction holding the suggestion_outcome_cursor row for update, which
 	//     serialises two processes woken by one commit, the first pass on a database included
 	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
@@ -732,9 +781,10 @@ func main() {
 	//     the other processes' writes and answers their room queries) and the document sockets'
 	//     schema re-check (it closes this process's own sockets).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
-	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and
-	//     renameRepositories above, and the embedding coverage pass (two processes' passes at
-	//     once leave what one leaves).
+	//     the drain of the delivery change log's outbox (two drains take turns on the change
+	//     log's lock and move each row once), retirePlainRefreshTokens, restoreDecidedWordings,
+	//     repairIssueAsks and renameRepositories above, and the embedding coverage pass (two
+	//     processes' passes at once leave what one leaves).
 	leaseCallers, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)
@@ -794,6 +844,9 @@ func main() {
 	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
 	// this process's count is the same whether or not any project names a daemon.
 	legionSamplerLeases := reserve("Legion sampler")
+	// The per-issue Legion facts (legionfacts.Run): a leased loop like the rest, reserved here so
+	// that this process's count is the same whatever work it finds.
+	legionFactsLeases := reserve("Legion facts")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -906,6 +959,12 @@ func main() {
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
 	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
 	eventsWake := listenerHub.Wake(api.EventsChannel)
+	// The Legion facts consumer reads three feeds, so it registers a wake of its own on each:
+	// the events it recomputes an issue from, the sampler's reads of a daemon, and the delivery
+	// changes that carry a pull request's merge time (legionfacts.Run).
+	factsEventsWake := listenerHub.Wake(api.EventsChannel)
+	factsStateWake := listenerHub.Wake(legion.StateChannel)
+	factsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
 	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
 	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
 	schemaWake := schemanodes.RegisterWake(listenerHub)
@@ -1235,6 +1294,25 @@ func main() {
 	// suggestion_outcome_cursor row for update, which is what keeps two processes from judging one
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
+	// dispatch://INFRA-2915: the per-issue Legion facts, computed once and stored as rows of
+	// issue_facts, so the board reads rows and computes nothing but the close of each open part
+	// at its own clock. The consumer recomputes an issue when one of its three feeds moves - the
+	// issue's events, the daemon's observations and a pull request's merge time - and at no other
+	// time: a row holds its facts closed at the newest input they read and how fast each grows
+	// after it, so no timer rewrites a row (legionfacts.Run). It takes the legion-facts lease: a
+	// pass reads its cursors, computes the rows and writes both in one transaction, so two
+	// processes woken by one commit must not run a pass at once. It reads the event log up to the
+	// safe horizon of the same events.Horizon the suggestion sweep above reads, for the same
+	// reason.
+	go legionfacts.Run(ctx, legionfacts.Deps{
+		Pool:         database.Pool,
+		Build:        processBuild(),
+		Horizon:      background.EventHorizon(),
+		Leases:       legionFactsLeases,
+		Events:       factsEventsWake,
+		Observations: factsStateWake,
+		Deliveries:   factsChangesWake,
+	})
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because

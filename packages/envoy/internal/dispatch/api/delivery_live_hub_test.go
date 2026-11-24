@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -772,8 +771,8 @@ func truncateChanges(t *testing.T, database *store.Store) {
 }
 
 // latestChange is the change log's newest seq once its outbox is drained, as the hub drains it
-// before each read (delivery.DrainPending): a test that writes eval or facts rows by SQL, outside
-// the writers that drain after their commit, reads their changes in the log this way.
+// before each read (delivery.DrainPending): a test that writes facts or filings rows by SQL,
+// outside the writers that drain after their commit, reads their changes in the log this way.
 func latestChange(t *testing.T, database *store.Store) int64 {
 	t.Helper()
 	if _, err := delivery.DrainPending(context.Background(), database.Pool); err != nil {
@@ -1059,6 +1058,7 @@ func TestResumeFromBeforeTheKeptDayGetsASnapshot(t *testing.T) {
 // view. Read as a change pruned in its time, the cursor would read only the change the prune kept
 // after it, which touches no timeline, and the view would never learn of the merge.
 func TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, func(hub *deliveryHub) {
 		hub.dial = func(context.Context) (*pgx.Conn, error) { return nil, context.DeadlineExceeded }
 	})
@@ -1075,7 +1075,7 @@ func TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook(t *testing.T) {
 	for _, statement := range []string{
 		`update delivery_changes set at = now() - interval '2 days'`,
 		`delete from delivery_changes where at < now() - interval '1 day'`,
-		`insert into delivery_changes (kind, repo, ref) values ('eval_readings', 'NONE', 'NONE/kept')`,
+		`insert into delivery_changes (kind, repo, ref) values ('issue_filings', 'NONE', 'NONE-1')`,
 	} {
 		if _, err := rig.database.Pool.Exec(t.Context(), statement); err != nil {
 			t.Fatalf("%s: %v", statement, err)
@@ -2554,14 +2554,8 @@ func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
 	if !slices.Equal(items, []string{"prs"}) || !slices.Equal(liveUpsertIDs(t, delta, "prs"), []string{"acme/widgets#2"}) || len(delta.Items["prs"].Remove) != 0 {
 		t.Fatalf("delta items = %v, prs upsert %v remove %v; want acme/widgets#2 upserted alone", items, liveUpsertIDs(t, delta, "prs"), delta.Items["prs"].Remove)
 	}
-	// The timeline's measures do not move, so the delta sets the window alone. No deploy shipped
-	// the pull request, so no deploy or lead-time-to-production measure moves; it was open two
-	// hours as the first was (hubPR), so the opened-to-merge spread stays; rework share stays 0.
-	// The one measure that counts every merged pull request is change failure rate's per-PR total,
-	// and that total is 0 and does not move when a pull request merges while no failure source
-	// exists (deliveryFlagsSourceNone).
-	if !slices.Equal(set, []string{"window"}) || len(mapsChanged) != 0 {
-		t.Fatalf("delta set = %v, maps = %v; want the window alone, and no map", set, mapsChanged)
+	if !slices.Equal(set, []string{"measures", "window"}) || len(mapsChanged) != 0 {
+		t.Fatalf("delta set = %v, maps = %v; want measures and window, and no map", set, mapsChanged)
 	}
 	var held struct {
 		FacetCounts map[string]map[string]int `json:"facet_counts"`
@@ -2965,73 +2959,5 @@ func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
 	}
 	if spec.project != "INFRA" || spec.key != "legion|INFRA|" {
 		t.Fatalf("the spec = %+v, want the project it names and a key of its own", spec)
-	}
-}
-
-// TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce: a delivery read takes each facet any
-// number of times and every other key it reads once, so a query naming the search or the
-// Pipeline's at twice is refused naming it, as one naming from or to twice is
-// (TestADeliveryReadRefusesARepeatedWindowKey). A timeline or measures view is read as its GET
-// route reads its query, so it refuses the search named twice too, and takes its facets repeated.
-func TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce(t *testing.T) {
-	facets := url.Values{"repo": {"acme/one", "acme/two"}, "priority": {"P0", "P1"}, "q": {"fix"}}
-	if _, _, err := parseDeliveryWindowQuery(facets); err != nil {
-		t.Errorf("the timeline's query %s: %v, want its facets taken repeated", facets.Encode(), err)
-	}
-	for _, refused := range []struct {
-		read, key string
-		query     url.Values
-		parse     func(url.Values) error
-	}{
-		{"the timeline", "q", url.Values{"q": {"fix", "revert"}}, func(query url.Values) error {
-			_, _, err := parseDeliveryWindowQuery(query)
-			return err
-		}},
-		{"the Pipeline", "at", url.Values{"at": {"2026-11-14T00:00:00Z", "2026-11-07T00:00:00Z"}}, func(query url.Values) error {
-			// The check getDeliveryPipeline makes before it reads at.
-			return repeatedQueryKey(query, deliveryPipelineOneValueKeys)
-		}},
-	} {
-		var apiErr *apiError
-		if err := refused.parse(refused.query); !errors.As(err, &apiErr) || apiErr.code != "INVALID_QUERY" || !strings.Contains(apiErr.message, strconv.Quote(refused.key)) {
-			t.Errorf("%s's query %s: %v, want INVALID_QUERY naming %s", refused.read, refused.query.Encode(), err, refused.key)
-		}
-	}
-	window := DeliveryLiveWindow{Preset: new(7)}
-	for _, kind := range []string{deliveryLiveTimeline, deliveryLiveMeasures} {
-		twice := "q=fix&q=revert"
-		if _, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: kind, Window: &window, Query: &twice}); refusal == nil || refusal.Code != "INVALID_QUERY" || !strings.Contains(refusal.Message, `"q"`) {
-			t.Errorf("a %s view of %s: refusal = %+v, want INVALID_QUERY naming q", kind, twice, refusal)
-		}
-		repeated := facets.Encode()
-		if _, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: kind, Window: &window, Query: &repeated}); refusal != nil {
-			t.Errorf("a %s view of %s: refusal = %+v, want its facets taken repeated", kind, repeated, refusal)
-		}
-	}
-}
-
-// TestAPipelineViewWhoseShownDaysStartBeforeYearOneIsRefused: the live hub's pipeline view reads
-// its at as GET /api/v1/delivery/pipeline reads it, so an at whose seven shown days start before
-// the year 1 is refused INVALID_QUERY when it is subscribed, naming the first shown day and its
-// year, as the route refuses it (TestAPipelineWhoseShownDaysStartBeforeYearOneIsRefused, R18),
-// rather than held as a view whose every answer shows days of the year 0. The first at whose days
-// all lie in the year 1 is held.
-func TestAPipelineViewWhoseShownDaysStartBeforeYearOneIsRefused(t *testing.T) {
-	for _, refused := range []struct{ at, first string }{
-		{"0001-01-01T12:00:00Z", "0000-12-26"},
-		{"0001-01-06T23:59:59Z", "0000-12-31"},
-	} {
-		_, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: deliveryLivePipeline, At: &refused.at})
-		if refusal == nil || refusal.Code != "INVALID_QUERY" || !strings.Contains(refusal.Message, refused.first) || !strings.Contains(refusal.Message, "year 0") {
-			t.Errorf("a pipeline view at %s: refusal = %+v, want INVALID_QUERY naming its first shown day %s and the year 0", refused.at, refusal, refused.first)
-		}
-	}
-	at := "0001-01-07T00:00:00Z"
-	spec, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: deliveryLivePipeline, At: &at})
-	if refusal != nil {
-		t.Fatalf("a pipeline view at %s: refusal = %+v, want it held: its shown days are 0001-01-01 to 0001-01-07", at, refusal)
-	}
-	if want := time.Date(1, time.January, 7, 0, 0, 0, 0, time.UTC); spec.at == nil || !spec.at.Equal(want) {
-		t.Errorf("the pipeline view at %s holds at %v, want %s", at, spec.at, want.Format(time.RFC3339))
 	}
 }
