@@ -9,7 +9,13 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
-import { connect, isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
+import {
+  connect,
+  connectWithoutEvents,
+  isLiveSocket,
+  type LiveSockets,
+  watchLiveSockets,
+} from "./live-socket-watch";
 import { navigateInApp } from "./sends";
 import {
   expect,
@@ -292,6 +298,14 @@ test("no request to Dispatch stays open while the page idles", async ({ browser,
 // reads long before its own window opened - 5 reads against 4, and job 127873213156 counted 6
 // against 4 the same way. So both windows now open only once that page's own first reads have
 // gone out and settled, and the two lists are compared read for read.
+// The feed is the whole workspace's, so a write another row commits between the page's sign-in
+// check and its first subscription would reach the first socket as an `event` and move the
+// page's cursor past that head, ending the state this row is about. The first socket is
+// therefore handed no `event` frame (`connectWithoutEvents`): its `events_start` arrives, its
+// close is the real rotation's, and whatever event Dispatch sent on it is dropped with it. The
+// order the row holds to: the first socket gets `events_start` and no event; the second, which
+// is Dispatch's own and unmodified, gets `events_start` and then the replay after the head,
+// which carries the comment, and its subscribe resumes from the very `since` the first one did.
 // SLOW(>=2s): the two quiet windows below, one on the control page and one on the rotating
 // page, are what "no extra read of the issue" is counted over. A count of what a page did not
 // do over a window is that window's own real time, and the two must stay equal for the counts
@@ -350,7 +364,7 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
         connect(route);
         return;
       }
-      connect(route);
+      connectWithoutEvents(route);
     });
     const first = page.waitForEvent("websocket", isLiveSocket);
     await page.goto(`/issues/${issue.key}/activity`);
@@ -363,7 +377,6 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
     await expect.poll(() => sockets.received.includes("events_start")).toBe(true);
     await untilIssueReadsSettle(reads, pending);
 
-    expect(sockets.received).not.toContain("event");
     holdReconnect = true;
     await rotateLiveSockets();
     await expect.poll(() => held !== undefined).toBe(true);
@@ -373,7 +386,24 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
     if (held === undefined) throw new Error("the reopened live socket was not held");
     const rotationWindow = reads.length;
     reconnectReleased.resolve();
-    await expect.poll(() => sockets.received).toContain("event");
+    // Dispatch's second connection starts, and the replay after its `events_start` is where the
+    // comment's event arrives. An event on the first connection is no part of this: it was held.
+    await expect
+      .poll(() => sockets.received.filter((type) => type === "events_start"))
+      .toHaveLength(2);
+    await expect
+      .poll(() => sockets.received.slice(sockets.received.lastIndexOf("events_start")))
+      .toContain("event");
+    // No event moved the page's cursor before the rotation: the second subscribe resumes from
+    // the head the first one did, so the replay covers everything committed since.
+    const eventResumes = () =>
+      sockets.sent.flatMap((frame) =>
+        frame.type === "subscribe" && frame.view.kind === "events" ? [frame.resume] : []
+      );
+    await expect.poll(eventResumes).toHaveLength(2);
+    const [opening, resumed] = eventResumes();
+    expect(opening).toEqual({ since: expect.stringMatching(/^\d+$/u) });
+    expect(resumed).toEqual(opening);
     await expect(
       page.locator(`a[href="/issues/${issue.key}/comments/${comment.id}"]`)
     ).toBeVisible();
