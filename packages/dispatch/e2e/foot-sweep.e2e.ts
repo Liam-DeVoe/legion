@@ -1,22 +1,32 @@
 /** The sweep of the foot of the screen (dispatch://INFRA-4731): Pending changes and the update
  *  banner float at the foot (`web/src/hooks/useFootInset.ts`), and wherever they show, every
- *  reading here is that the foot is clear, as the tester's probe reads it (`e2e/foot-probe.ts`):
+ *  reading here is that the foot is clear, as the check `c-foot-clear` says it and the probe reads
+ *  it, clause by clause (`e2e/foot-probe.ts`):
  *
  *  - no float's box meets another foot element's box;
  *  - no float covers the centre of a control;
- *  - each scroller's last content, read at its real end, lies wholly above every float's top;
+ *  - at each scroller's real end, no leaf element of its own content, as far as it lies inside
+ *    the scroller's box, meets a float's box on both axes;
  *  - the shell's Navigation stays on the screen at the end of a page;
- *  - a scroller that scrolls only sideways keeps its height under a float;
- *  - with no float shown, no scroller carries end room once the reader has scrolled out of it;
+ *  - a box that scrolls only sideways keeps its height under a float;
+ *  - when a float goes, only a scroller whose reader stands in the end room it would lose keeps
+ *    that room, no more than it held, and the document's scroller also while a box it holds
+ *    would be clamped without it, each until a scroll leaves it;
+ *  - with no float shown and every scroller at its start, no scroller carries end room;
  *  - a float that shows for a moment moves no content when it goes.
+ *
+ *  Each is read as a settled state: the same answer on two readings at least two animation
+ *  frames apart.
  *
  *  Three kinds of row read it. The rows by route group open every reviewed route of
  *  `e2e/review-routes.ts` against the review corpus (`e2e/review-seed.ts`) at three desktop
- *  sizes with both floats shown, then close both and read that no end room is left. The rows of
- *  the fixed surface open eight pages, one row each and three for the issues table (the selection
- *  bar hidden; shown with the update banner; shown with the banner dismissed), seeded so each
- *  page's scrollers reach the foot, and read every combination of the floats at seven sizes from
- *  a phone's up. And two rows hold three steps of their own: a float over a sticky column, a box
+ *  sizes with both floats shown, then close both and read the end room they leave: only room
+ *  the reader stands in, and none once every scroller is back at its start. The rows of the
+ *  fixed surface open eight pages, one row each, three for the issues table (the selection bar
+ *  hidden; shown with the update banner; shown with the banner dismissed) and two for the live
+ *  view (its four smaller sizes; its three desktop sizes), seeded so each page's scrollers reach
+ *  the foot, and read every combination of the floats at seven sizes from a phone's up. And two
+ *  rows hold three steps of their own: a float over a sticky column, a box
  *  that scrolls only sideways under a float, and a float that shows for a moment at the end of a
  *  scroll.
  *
@@ -55,9 +65,12 @@ import {
 import {
   expectFootClear,
   expectNoEndRoom,
+  FOOT_NAMES,
   type FootSelectors,
   footCellLine,
   readFootEnds,
+  readSidewaysBox,
+  type SidewaysReading,
   sampleFootRest,
 } from "./foot-probe";
 import { inboxPane, selectedRow } from "./inbox-pane";
@@ -115,13 +128,15 @@ const MOMENT_SIZES: readonly Size[] = [
  *  that matches it and no other element of these pages, and the Conversation's and the live
  *  view's `Jump to latest`. `readFootElements` leaves out each one a page does not show. The
  *  selection bar is the one toolbar with no name: the new issue page's view row is a toolbar
- *  named by its controls. */
+ *  named by its controls. The live view's rows - its row of pickers and its switch lines - stand
+ *  under its composer, outside `agent-composer`, in the box `AgentConversationPage` registers. */
 const FOOT_ELEMENTS: FootSelectors = {
   "the selection bar": '[role="toolbar"]:not([aria-label])',
   "the broadcast composer": 'section[aria-label="Broadcast"]',
   "the comment composer": 'form[aria-label="Comment composer"]',
   "the margin's sheet": 'aside[aria-label="Review panel"]',
   "the live view's composer": '[data-testid="agent-composer"]',
+  "the live view's rows": '[data-testid="agent-composer-footer"]',
   "Jump to latest": '[data-testid="jump-to-latest"]',
 };
 
@@ -150,7 +165,7 @@ async function expectStuckInPlace(page: Page, cell: string): Promise<void> {
     await expect
       .poll(
         async () => {
-          await page.evaluate(readFootEnds);
+          await page.evaluate(readFootEnds, FOOT_NAMES);
           problems = await page.evaluate(() => {
             const stuck = [
               ...(document.getElementById("main-content")?.querySelectorAll("*") ?? []),
@@ -182,20 +197,21 @@ async function expectStuckInPlace(page: Page, cell: string): Promise<void> {
   }
 }
 
-/** Reads `page`, named `name`, at every size of the fixed surface with `shown` at the foot: the
- *  foot clear where a float shows, and no end room where none does. Where `stuck`, each reading
- *  with a float shown is followed by `expectStuckInPlace`, as a cell of `<name>:stuck`. */
+/** Reads `page`, named `name`, at each of `sizes` with `shown` at the foot: the foot clear where
+ *  a float shows, and no end room where none does. Where `stuck`, each reading with a float shown
+ *  is followed by `expectStuckInPlace`, as a cell of `<name>:stuck`. */
 async function readEverySize(
   page: Page,
   name: string,
   shown: readonly Shown[],
-  stuck = false
+  stuck = false,
+  sizes: readonly Size[] = SURFACE_SIZES
 ): Promise<void> {
   if (shown.includes("pending")) await expect(pendingWrites(page)).toBeVisible();
   if (shown.includes("banner")) await expect(updateBanner(page)).toBeVisible();
   if (shown.includes("bar")) await expect(page.getByRole("toolbar")).toBeVisible();
   const floatShown = shown.includes("pending") || shown.includes("banner");
-  for (const size of SURFACE_SIZES) {
+  for (const size of sizes) {
     await page.setViewportSize(size);
     const cell = cellName(name, size, shown);
     if (floatShown) await expectFootClear(page, FOOT_ELEMENTS, cell);
@@ -296,20 +312,22 @@ for (const routes of routeRows()) {
 /** One page of the fixed surface: its name in a cell, the address it opens at, and what it has
  *  drawn once it is ready to read, after each load. `first` runs once, after the first load,
  *  before the page is read. Where `stuck`, each reading with a float shown is followed by
- *  `expectStuckInPlace`. */
+ *  `expectStuckInPlace`. `sizes` are the sizes it is read at, every size of the fixed surface
+ *  where it names none. */
 interface Surface {
   readonly name: string;
   readonly path: string;
   readonly ready: (page: Page) => Promise<void>;
   readonly first?: (page: Page) => Promise<void>;
   readonly stuck?: true;
+  readonly sizes?: readonly Size[];
 }
 
 /**
- * Reads `surface` at every size of the fixed surface with each combination of the floats: both,
- * Pending changes alone, the banner alone and neither. The banner, once dismissed, stays so for
- * the page's life, so the page is loaded afresh for the banner alone: Pending changes keeps the
- * refused change across the load, and is then discarded.
+ * Reads `surface` at its sizes with each combination of the floats: both, Pending changes alone,
+ * the banner alone and neither. The banner, once dismissed, stays so for the page's life, so the
+ * page is loaded afresh for the banner alone: Pending changes keeps the refused change across the
+ * load, and is then discarded.
  */
 async function sweepSurface(page: Page, refusedKey: string, surface: Surface): Promise<void> {
   await routeFloats(page, refusedKey);
@@ -317,15 +335,16 @@ async function sweepSurface(page: Page, refusedKey: string, surface: Surface): P
   await surface.first?.(page);
   await surface.ready(page);
   const stuck = surface.stuck === true;
-  await readEverySize(page, surface.name, ["pending", "banner"], stuck);
+  const sizes = surface.sizes ?? SURFACE_SIZES;
+  await readEverySize(page, surface.name, ["pending", "banner"], stuck, sizes);
   await dismissBanner(page);
-  await readEverySize(page, surface.name, ["pending"], stuck);
+  await readEverySize(page, surface.name, ["pending"], stuck, sizes);
   await reloadWithBanner(page, refusedKey, surface.path);
   await surface.ready(page);
   await discardPending(page);
-  await readEverySize(page, surface.name, ["banner"], stuck);
+  await readEverySize(page, surface.name, ["banner"], stuck, sizes);
   await dismissBanner(page);
-  await readEverySize(page, surface.name, []);
+  await readEverySize(page, surface.name, [], false, sizes);
 }
 
 /** The session that asks the margin's questions and writes the Conversation's messages. */
@@ -654,13 +673,11 @@ test("the floats leave the foot of the Inbox clear in every combination at seven
   }
 });
 
-// An agent's live view, its transcript at the stream's limit, as the live view row of
-// `e2e/issues-table.e2e.ts` seeds it.
-// SLOW(>=2s): a transcript at the stream's limit, and four combinations of the floats at seven
-// sizes, each a settled reading at the end of every scroller.
-test("the floats leave the foot of an agent's live view clear in every combination at seven sizes @foot", async ({
-  browser,
-}) => {
+/**
+ * Reads an agent's live view, its transcript at the stream's limit, as the live view row of
+ * `e2e/issues-table.e2e.ts` seeds it, at `sizes` (`sweepSurface`).
+ */
+async function sweepLiveView(browser: Browser, sizes: readonly Size[]): Promise<void> {
   /** A live session whose conversation is at the stream's limit. Its id is a UUID, which
    *  Dispatch's agent routes require. */
   const live: FakeSession = {
@@ -686,10 +703,31 @@ test("the floats leave the foot of an agent's live view clear in every combinati
       name: "live-view",
       path: `/agents/${live.session_id}/live`,
       ready: () => expectConversationInFront(page, live.session_id),
+      sizes,
     });
   } finally {
     await context.close();
   }
+}
+
+// An agent's live view, read in two rows by size, each in its own row budget: a transcript at the
+// stream's limit is seeded for each, and each resize lays it out again, which took the one row of
+// all seven sizes to 51 s to 60 s on an issue pod. This row reads the four smaller sizes.
+// SLOW(>=2s): a transcript at the stream's limit, and four combinations of the floats at four
+// sizes, each a settled reading at the end of every scroller.
+test("the floats leave the foot of an agent's live view clear in every combination at the four smaller sizes, 360x640 to 1024x500 @foot", async ({
+  browser,
+}) => {
+  await sweepLiveView(browser, SURFACE_SIZES.slice(0, 4));
+});
+
+// The live view's second row: the three desktop sizes.
+// SLOW(>=2s): a transcript at the stream's limit, and four combinations of the floats at three
+// sizes, each a settled reading at the end of every scroller.
+test("the floats leave the foot of an agent's live view clear in every combination at the three desktop sizes, 1280x720 to 1920x1080 @foot", async ({
+  browser,
+}) => {
+  await sweepLiveView(browser, SURFACE_SIZES.slice(4));
 });
 
 /** How many messages the Conversation row seeds: forty run the tab thousands of pixels past a
@@ -784,7 +822,7 @@ async function expectStickyClear(page: Page, cell: string): Promise<void> {
     await expect
       .poll(
         async () => {
-          const ends = await page.evaluate(readFootEnds);
+          const ends = await page.evaluate(readFootEnds, FOOT_NAMES);
           const read = await page.evaluate(
             ({ attribute, property }) => {
               const column = document.querySelector<HTMLElement>(
@@ -843,52 +881,10 @@ async function expectStickyClear(page: Page, cell: string): Promise<void> {
   }
 }
 
-/** The code block's computed overflow on both axes, its height, and the top of the paragraph
- *  after it in the document, which no scroll moves; and whether the update banner lies over the
- *  block. */
-interface SidewaysReading {
-  readonly overflow: string;
-  readonly height: number;
-  readonly after: number;
-  readonly under: boolean;
-}
-
-/** Reads the code block of `CODE_SPEC` on `page` (`SidewaysReading`). Where `toBanner`, scrolls
- *  the document first so the block's middle stands at the banner's. */
+/** Reads the code block of `CODE_SPEC` on `page` through the probe (`readSidewaysBox`). Where
+ *  `toBanner`, scrolls the document first so the block's middle stands at the banner's. */
 function readSideways(page: Page, toBanner: boolean): Promise<SidewaysReading> {
-  return page.evaluate(
-    ({ after, code, toBanner }) => {
-      const block = [...document.querySelectorAll("pre")].find((pre) =>
-        (pre.textContent ?? "").includes(code)
-      );
-      const next = [...document.querySelectorAll("p")].find(
-        (paragraph) => paragraph.textContent === after
-      );
-      if (block === undefined || next === undefined) {
-        return { after: Number.NaN, height: Number.NaN, overflow: "no block", under: false };
-      }
-      const banner = document.querySelector('[aria-label="A new version is available"]');
-      const bannerBox = banner?.getBoundingClientRect();
-      if (toBanner && bannerBox !== undefined) {
-        const box = block.getBoundingClientRect();
-        window.scrollBy(0, box.top + box.height / 2 - (bannerBox.top + bannerBox.height / 2));
-      }
-      const box = block.getBoundingClientRect();
-      const { overflowX, overflowY } = getComputedStyle(block);
-      const under =
-        bannerBox !== undefined &&
-        bannerBox.height > 0 &&
-        Math.min(box.right, bannerBox.right) - Math.max(box.left, bannerBox.left) > 1 &&
-        Math.min(box.bottom, bannerBox.bottom) - Math.max(box.top, bannerBox.top) > 1;
-      return {
-        after: Math.round(next.getBoundingClientRect().top + window.scrollY),
-        height: Math.round(box.height),
-        overflow: `${overflowX}/${overflowY}`,
-        under,
-      };
-    },
-    { after: AFTER_CODE, code: CODE_LINES[0], toBanner }
-  );
+  return page.evaluate(readSidewaysBox, { after: AFTER_CODE, code: CODE_LINES[0], toBanner });
 }
 
 // Two steps, each read as a settled state.
@@ -938,18 +934,18 @@ test("a float over a sticky column leaves body without end room and the Navigati
             await readSideways(page, true);
             // At rest: the foot's layers, the document's height, the scroll and every mark hold
             // one state for half a second, and the block is read after that.
-            rest = (await page.evaluate(sampleFootRest, 500)).length;
+            rest = (await page.evaluate(sampleFootRest, { ms: 500, names: FOOT_NAMES })).length;
             shown = await readSideways(page, false);
             return { ...shown, rest };
           },
           { message: `the code block under the banner, at rest, at ${at}` }
         )
-        .toMatchObject({ overflow: "auto/auto", rest: 1, under: true });
+        .toMatchObject({ overflow: "auto/auto", rest: 1, settled: true, under: true });
     } finally {
       console.log(
         footCellLine(
           `sideways-step ${at} banner`,
-          shown?.under === true && shown.overflow === "auto/auto" && rest === 1
+          shown?.under === true && shown.overflow === "auto/auto" && shown.settled && rest === 1
             ? []
             : [`the code block was read as ${JSON.stringify({ ...shown, rest })}`]
         )
@@ -962,16 +958,16 @@ test("a float over a sticky column leaves body without end room and the Navigati
         .poll(
           async () => {
             closed = await readSideways(page, false);
-            return { after: closed.after, height: closed.height };
+            return { after: closed.after, height: closed.height, settled: closed.settled };
           },
           { message: `the code block's height and the paragraph after it, banner closed, at ${at}` }
         )
-        .toEqual({ after: shown?.after, height: shown?.height });
+        .toEqual({ after: shown?.after, height: shown?.height, settled: true });
     } finally {
       console.log(
         footCellLine(
           `sideways-step ${at} none`,
-          closed?.height === shown?.height && closed?.after === shown?.after
+          closed?.height === shown?.height && closed?.after === shown?.after && closed?.settled
             ? []
             : [
                 `the code block is ${shown?.height}px under the banner and ${closed?.height}px ` +
