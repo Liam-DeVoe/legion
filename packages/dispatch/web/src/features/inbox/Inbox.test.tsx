@@ -4293,6 +4293,106 @@ test("a bulk Snooze that lands with the pointer on a row below the marked rows l
   }
 });
 
+/** How tall `layItemsDown` draws a band's heading. */
+const LAID_HEADING_PX = 40;
+
+/** Lays the items of the Inbox's list down a page the window scrolls, as happy-dom does not: each
+ *  row `LAID_ROW_PX` tall and every other item - a band's heading - `LAID_HEADING_PX`, stacked in
+ *  the order the list draws them from the page's top, less `window.scrollY`, and every element in
+ *  an item given that item's box. The list's own box (the anchor's root) holds them all, and a
+ *  point of the window names the item drawn there (`document.elementFromPoint`). `window.scrollY`
+ *  starts at `scrollY`, and `window.scrollBy` moves it, so a row the list's anchor holds in place
+ *  moves the window. Answers the function that gives happy-dom its own boxes, points and scroll
+ *  back. */
+function layItemsDown(scrollY: number): () => void {
+  const real = Element.prototype.getBoundingClientRect;
+  const scrollYWas = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const scrollByWas = window.scrollBy;
+  const scrollTo = (value: number) =>
+    Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
+  scrollTo(scrollY);
+  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
+    const by = typeof x === "number" ? y : x.top;
+    if (by !== undefined) scrollTo(window.scrollY + by);
+  }) as typeof window.scrollBy;
+  /** Each item of the list with its top and bottom on the page, in the list's order. */
+  const laid = () => {
+    let bottom = 0;
+    return [...document.querySelectorAll('[data-testid="inbox-list"] > * > ul > li')].map(
+      (item) => {
+        const top = bottom;
+        bottom += item.matches("[data-inbox-row]") ? LAID_ROW_PX : LAID_HEADING_PX;
+        return { bottom, item, top };
+      }
+    );
+  };
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const items = laid();
+    if (this.matches('[data-testid="inbox-list"] > *')) {
+      return new DOMRect(0, -window.scrollY, 200, items.at(-1)?.bottom ?? 0);
+    }
+    const at = items.find(({ item }) => item.contains(this));
+    if (at === undefined) return real.call(this);
+    return new DOMRect(0, at.top - window.scrollY, 200, at.bottom - at.top);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    const page = y + window.scrollY;
+    return laid().find(({ bottom, top }) => top <= page && page < bottom)?.item ?? null;
+  });
+  return () => {
+    rect.mockRestore();
+    point.mockRestore();
+    window.scrollBy = scrollByWas;
+    if (scrollYWas === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollYWas);
+    }
+  };
+}
+
+// The reader, scrolled down the list, folds the band whose toggle stands at the window's top. Its
+// rows stand between the toggle and the row nearest the list's centre, which the anchor holds when
+// no row is in hand. The reader's own press takes them away, so they free their space, by the
+// 11:4xZ rule of INFRA-3135: the rows after them move up into their place, and the window does not
+// scroll to hold the centre row against their going, which moved the toggle down by the band.
+test("a band the reader folds above the list's centre row frees its rows' space: the window does not scroll and the toggle stays where it stood", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    ...[1, 2].map((n) => inboxIssue(`ask-p0-${n}`, `CORE-${n}`, `Urgent ${n}?`, { priority: 0 })),
+    ...[3, 4].map((n) => inboxIssue(`ask-p1-${n}`, `CORE-${n}`, `Soon ${n}?`, { priority: 1 })),
+    ...[5, 6, 7, 8, 9, 10].map((n) =>
+      inboxIssue(`ask-p2-${n}`, `CORE-${n}`, `Later ${n}?`, { priority: 2 })
+    ),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  // P0's heading and two rows above the window, P1's heading at its top: P1's two rows below it,
+  // then P2's heading, and P2's second row across the window's centre, 384 px down it.
+  const laidOut = layItemsDown(LAID_HEADING_PX + 2 * LAID_ROW_PX);
+  const { unmount } = renderInbox();
+  try {
+    await screen.findByText("Later 10?");
+    expect(headings()).toEqual(["P0 (2)", "P1 (2)", "P2 (6)"]);
+    const toggle = screen.getByRole("button", { name: "P1 (2)" });
+    const stood = toggle.getBoundingClientRect().top;
+    expect(stood).toBe(0);
+
+    await user.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"));
+    expect(rowIds().filter((id) => id.startsWith("ask-p1-"))).toEqual([]);
+    expect(window.scrollY).toBe(LAID_HEADING_PX + 2 * LAID_ROW_PX);
+    expect(toggle.getBoundingClientRect().top).toBe(stood);
+  } finally {
+    unmount();
+    laidOut();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 // A row the bar's Snooze is saving is held as a row's own Snooze pick holds it: the optimistic
 // moment would draw Un-snooze, so the list stays drawn, held, with the moment being saved before
 // it and `Snoozing…` on its badge, and its status says what is being saved. The hold lasts through

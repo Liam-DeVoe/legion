@@ -1132,6 +1132,15 @@ function InboxBody({
     },
     [folded, toggleFold]
   );
+  /** The rows a press of the reader's on a band's fold toggle is folding shut, for the commit that
+   *  folds the band: the press takes them off the list, so the list's anchor frees their space
+   *  (`leaving` below) rather than hold the row at the list's centre against their going. Only
+   *  that press writes it - an address's `?item=` that opens a folded band (`openFoldedBand`)
+   *  takes no row away - and it is let go once the commit is in. */
+  const folding = useRef<ReadonlySet<string> | null>(null);
+  useLayoutEffect(() => {
+    folding.current = null;
+  });
   // What this list holds, and computed here rather than after the early returns so the bindings
   // below speak for exactly the rows on the page.
   const agent = filter.agent;
@@ -2625,8 +2634,9 @@ function InboxBody({
   // away (`leaving`): the rows after them move up into their place, as the reader asked. Those
   // are the rows a Dismiss or a Move to Inbox is taking off the view (`dismissedHere`), the rows
   // a snooze write, a row's own or the bar's, moves to another band in the commit that lets go of
-  // them, and the rows an Assign to me, a hand-on, an answer, a decline, a question back or a
-  // reply lets go of, which then leave the list where the read no longer lists them there.
+  // them, the rows an Assign to me, a hand-on, an answer, a decline, a question back or a reply
+  // lets go of, which then leave the list where the read no longer lists them there, and the rows
+  // of a band the reader's press on its toggle folds shut (`folding`), in the commit that folds it.
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
@@ -2648,7 +2658,8 @@ function InboxBody({
           snoozing.has(id) ||
           bulkSnoozing.has(id) ||
           askWriteOut(id) ||
-          replying.has(id)
+          replying.has(id) ||
+          folding.current?.has(id) === true
         }
         ref={viewport}
         rootRef={listRef}
@@ -2661,7 +2672,12 @@ function InboxBody({
               group: band,
               held: folded.has(band.key) ? 0 : band.rows.length - visible.length,
               onShowMore: showMore,
-              onToggleFold: toggleFold,
+              // Folding a band shut takes the rows it draws off the list, as the reader asked:
+              // they are named to the anchor as leaving for the commit that folds it.
+              onToggleFold: (key) => {
+                if (!folded.has(key)) folding.current = new Set(visible.map((row) => rowId(row)));
+                toggleFold(key);
+              },
               renderRow: (row) => renderRow(band.key, row),
               rows: visible,
             })
