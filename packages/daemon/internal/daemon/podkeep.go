@@ -1,6 +1,6 @@
 package daemon
 
-// podkeep.go is R7 of dispatch://INFRA-3271: an update round replaces a pod only over a clean read
+// podkeep.go is R7 of #5285: an update round replaces a pod only over a clean read
 // of its workspace, and a replacement that still takes a disk says what it took. The read itself
 // is readPodWorkspace (podupdate.go), made before every replacement a round makes; this file is
 // what the read decides, the record of a pod a round kept, the read that may end that record, and
@@ -30,8 +30,8 @@ import (
 // drift that breaks the pod (today a drift of the pod's service account, which the Sandbox
 // runtime's PodDrift marks where it decides it, spec v23) is replaced whatever the read found,
 // since no role can keep working in that pod, and the issue's architect is told what the
-// replacement took (roundReplaced). A round is read by the reasons it recorded at its open
-// (dispatch://INFRA-2981 R9): a drift that breaks the pod and comes while a round is open is the
+// replacement took (roundReplaced). A round is read by the reasons it recorded at its open: a
+// drift that breaks the pod and comes while a round is open is the
 // next round's, which the keep of this round's read holds back no more than any other
 // (podKeptForWork).
 func (s *supervision) roundKeeps(issue string, group []supervise.Claim, round, reasons string, read workspaceRead) bool {
@@ -76,7 +76,7 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // before the start of every turn that ran at the read: a turn group shows running, and a turn the
 // claims read again once the read is made show running with a start no later than read.at. Such a
 // turn may have changed the workspace after the read, and the read it owes comes once it has ended
-// (keptPodReadDue). A turn that started after read.at owes that read anyway (INFRA-341's
+// (keptPodReadDue). A turn that started after read.at owes that read anyway (the Legion
 // reviewer's point 1).
 //
 // The open phase's worker (workflow.OpenPhaseRole of issuePhase) is told, where its claim has a
@@ -155,7 +155,7 @@ func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Pha
 // such a drift does. A store that cannot be read keeps the pod for this sweep: a reading nobody
 // took may not open a round that deletes a disk.
 //
-// The read itself is no part of the walk (INFRA-341's reviewer's point 1): the sweep makes it after
+// The read itself is no part of the walk (the Legion reviewer's point 1): the sweep makes it after
 // the walk (podUpdateSweep.keptReads, readKeptPod), which reads the claims again, as their
 // machines hold them then, before it reads the workspace. A read made on the walk's snapshot would
 // miss a turn that started after the snapshot, and would hold every later issue of the walk for as
@@ -300,7 +300,7 @@ func turnsSince(group []supervise.Claim, at time.Time) []string {
 // the read found, that the round ended with no replacement and the role keeps working in the pod,
 // what the round was opened for, and that the pod waits for the push of the work. again is a read
 // that may end an earlier keep, made with no round (readKeptPod): it names no round, and the drift
-// the daemon reads of the pod in place of a round's reasons (INFRA-341's reviewer's point 10). The
+// the daemon reads of the pod in place of a round's reasons (the Legion reviewer's point 10). The
 // role reads it in its session and people read it in its history, so it follows ASD-STE100.
 func podKeptMessage(issue, pod, reasons string, work runtime.WorkspaceWork, again bool) string {
 	opening := fmt.Sprintf("The daemon did not replace this issue's pod (pod %s) for an update round. "+
@@ -358,7 +358,7 @@ func keptEnded(stays, reasons string, again bool) string {
 // (kept, read once the replacement is made). A round over a drift its roles can keep working
 // under replaced the pod only because its disk was a kept volume when the round read it
 // (roundKeeps); where the replacement then found the volume failed and marked it for a reset, kept
-// is false, and the notice says the next launch deletes the volume (INFRA-341's reviewer's point
+// is false, and the notice says the next launch deletes the volume (the Legion reviewer's point
 // 9). The architect reads it in its session and people read it in its history, so it follows
 // ASD-STE100. The read's error is the far side's text as the daemon keeps it (readError).
 func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.Claim, work runtime.WorkspaceWork, failed error, kept bool) string {

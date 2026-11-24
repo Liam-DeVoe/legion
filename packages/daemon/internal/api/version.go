@@ -3258,7 +3258,7 @@ package api
 // is a reading and never the rule: read main's own number and every open head again at the next
 // forward merge rather than from this line.)
 //
-// 238: dispatch://INFRA-3271 R6 -- the launcher reads the issue workspace. The release of a pod no
+// 238: #5285 R6 -- the launcher reads the issue workspace. The release of a pod no
 // claim owns and the close of a left pod with no live claim delete a disk only after a read of its
 // workspace found nothing that origin does not hold, and no role process runs in such a pod to read
 // through, so the pod's launcher makes the read (internal/launcher's readWorkspace,
@@ -3305,7 +3305,7 @@ package api
 // it, lets its outbox run dry of them first: `select count(*) from outbox where kind =
 // 'issue_bundle' and payload ? 'launcher'` prints 0.
 //
-// R7's review fixes (GPT-6.1 Sol's and INFRA-341's reviewer's reads of #5285 at 0259f8af, and
+// R7's review fixes (GPT-6.1 Sol's and the Legion reviewer's reads of #5285 at 0259f8af, and
 // spec v23) ride this entry too, and move no contract: none of them changes a shape a plugin,
 // a pane, a pod's init or launcher container, or the launcher wire reads. They add the store
 // table `pod_replacements` (migration 20261124041455), a record that only this daemon reads and

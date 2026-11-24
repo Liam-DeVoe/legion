@@ -104,7 +104,7 @@ func wantPodlessEnd(t *testing.T, rig *podUpdateRig, bounded bool, lost []claim.
 // field that says who made it, the sweep by issue ("byIssue") or a launch into the pod
 // ("atLaunch") — and says whether the bound made it, names each member in lost as one that had
 // not answered (unansweredMembers) and none in answered, and names the read the pod's launcher made
-// of the workspace before the replacement (R7 of dispatch://INFRA-3271), which found nothing here.
+// of the workspace before the replacement (R7 of #5285), which found nothing here.
 // A read that found nothing tells nobody: no message on the issue, and no notice to the architect.
 func wantRoundPodEnd(t *testing.T, rig *podUpdateRig, by string, bounded bool, lost []claim.Role, answered ...claim.Role) {
 	t.Helper()

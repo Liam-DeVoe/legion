@@ -1,6 +1,6 @@
 package daemon
 
-// INFRA-341's reviewer's point 1 on #5285 at 0259f8af (R7 of dispatch://INFRA-3271): the moment a
+// The Legion reviewer's point 1 on #5285 at 0259f8af (R7 of #5285): the moment a
 // keep of a pod records is the moment after which a turn of the issue owes a read, once that turn
 // has ended. A turn that started before the read, and that the reading the keep was decided on did
 // not show, must not fall before that moment: its work may not be in the read, and no later read
@@ -86,7 +86,7 @@ func TestAKeptPodIsReadAgainAfterATurnThatStartedAsItsRoundRead(t *testing.T) {
 	}
 }
 
-// INFRA-341's reviewer's point 12: a round's keep over a read that could not be made is read again
+// The Legion reviewer's point 12: a round's keep over a read that could not be made is read again
 // once pods.DeclineUnreadRetry has passed since that read, with no turn of the issue between, and
 // not before: one read at the hour, and none at the sweeps after it while it still fails.
 func TestAKeptPodWhoseReadFailedIsReadAgainAfterTheRetry(t *testing.T) {
@@ -113,7 +113,7 @@ func TestAKeptPodWhoseReadFailedIsReadAgainAfterTheRetry(t *testing.T) {
 	}
 }
 
-// INFRA-341's reviewer's point 12: the holder the boot binds (plan.launchRounds, daemon.run) and
+// The Legion reviewer's point 12: the holder the boot binds (plan.launchRounds, daemon.run) and
 // prepareSandbox hands the Sandbox runtime as its RoundPodEnds, LaunchTakes and LaunchTook forwards
 // each call to what it was bound to, and before it is bound keeps every pod, records nothing,
 // refuses nothing and tells nobody.

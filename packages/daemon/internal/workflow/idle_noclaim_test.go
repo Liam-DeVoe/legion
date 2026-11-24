@@ -174,7 +174,7 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 			// A claim of the issue ran a turn after the decline's last check, before it stopped:
 			// the turn can have pushed the work or made more, so the decline no longer speaks for
 			// the disk, and the release reads it again before it deletes anything (Read, below;
-			// INFRA-341's reviewer's point 2 on R6 of dispatch://INFRA-3271).
+			// the Legion reviewer's point 2 on R6 of #5285).
 			name: "a turn start after the decline's check ends it",
 			view: func() pods.IdleView {
 				v := unownedIssue()
@@ -437,7 +437,7 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 		},
 		{
 			// A role came back into the pod after that check and failed again: its process can
-			// have pushed the work, so the close reads the disk again (INFRA-341's reviewer's point
+			// have pushed the work, so the close reads the disk again (the Legion reviewer's point
 			// 2 on R6).
 			name: "no live claim, a decline that says the disk holds work, and a start since its check",
 			view: func() pods.IdleView {

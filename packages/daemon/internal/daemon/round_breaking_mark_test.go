@@ -1,14 +1,14 @@
 package daemon
 
-// Which rounds break their pod (R7 of dispatch://INFRA-3271, spec v23): INFRA-3118's architect
-// ruled at 04:00Z, on INFRA-341's reviewer's point 2, that a drift of the Kubernetes service
+// Which rounds break their pod (R7 of #5285, spec v23): the spec's architect
+// ruled at 04:00Z, on the Legion reviewer's point 2, that a drift of the Kubernetes service
 // account the pod runs as breaks the pod, and that a drift of the leak check digest does not. GPT-6.1
 // Sol's non-blocking point on #5285 at 0259f8af asks that the classification come from a trusted
 // mark rather than from a search of the displayed reasons: the runtime marks a reason as breaking
 // where it decides the drift (runtime.BreakingDrift at the reason's start, the Sandbox runtime's
 // PodDrift for the account), and the round's recorded reasons carry the mark at their start where
 // any reason does. A value that a reason displays can hold the mark's words without making the
-// round break its pod. And INFRA-341's reviewer's point 8: an earlier round's keep of the pod holds
+// round break its pod. And the Legion reviewer's point 8: an earlier round's keep of the pod holds
 // no round over a drift that breaks the pod, which no role can keep working under.
 //
 // Each round here is over a working copy that holds a change. A round over a drift that breaks the
@@ -16,7 +16,7 @@ package daemon
 // round keeps the pod. The rig scripts the reasons PodDrift gives, so that the leak check digest's
 // reason carries no mark is the Sandbox runtime's to hold (leak_check_test.go's
 // TestAChangedManifestDigestIsDrift wants that reason exactly), and no row here stands for it
-// (INFRA-341's reviewer's minor point 12 on fa9deb04).
+// (the Legion reviewer's minor point 12 on fa9deb04).
 
 import (
 	"strings"
@@ -88,7 +88,7 @@ func TestOnlyAReasonThatOpensOnTheMarkMakesARoundBreakItsPod(t *testing.T) {
 	}
 }
 
-// INFRA-341's reviewer's point 8: an earlier round kept the pod over a drift of the image, and the
+// The Legion reviewer's point 8: an earlier round kept the pod over a drift of the image, and the
 // change is still in the working copy. The account then drifts too. The keep holds no round over
 // that drift: the round opens, asks, and replaces the pod after its read, and the architect is told
 // what the replacement took.
@@ -107,8 +107,8 @@ func TestAKeptPodGetsARoundOverADriftThatBreaksIt(t *testing.T) {
 	rig.wantReplacedAndTold("of the kept pod once its account drifted")
 }
 
-// Spec v23 (INFRA-3118's architect, R7): a round keeps the reasons it recorded at its open
-// (dispatch://INFRA-2981 R9), so a round open when the account drifts is still a round over the
+// Spec v23 (the spec's architect, R7): a round keeps the reasons it recorded at its open, so a
+// round open when the account drifts is still a round over the
 // drift it was opened for. The round opens over a drift of the image and asks its roles; the
 // account then drifts, and the roles answer. That round's read finds the change in the working
 // copy and keeps the pod. The keep holds back no round over the account's drift: the next sweep

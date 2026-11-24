@@ -140,12 +140,13 @@ import (
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these but one and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its
 // default, 0, on every row it finds.
-// The release that keeps no saved workspace (20261123050533) is applied after all of these but two
-// and touches no outbox_kind_check: it drops workspace_bundles, which main's own 20261101222725
-// made, with whatever rows main's releases saved in it, and makes idle_release_declines, empty.
+// The release that keeps no saved workspace (20261123050533) is applied after all of these and
+// touches no outbox_kind_check: it drops workspace_bundles, which main's own 20261101222725 made,
+// with whatever rows main's releases saved in it, and makes idle_release_declines, empty. So the
+// design news stays the last word of that check.
 // The told pod of a decline (20261123231000) adds idle_release_declines.told_pod, null, and the
 // records of pod replacements (20261124041455), applied last, make pod_replacements, empty; neither
-// touches outbox_kind_check. So the design news stays the last word of that check.
+// touches outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -175,10 +176,10 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the
-// release that keeps no saved workspace's 20261123050533, the told pod of its decline,
-// 20261123231000, and the records of pod replacements, 20261124041455. That is why the loop below
-// holds the
+// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, and the
+// release that keeps no saved workspace's 20261123050533, with the told pod of its decline,
+// 20261123231000, and the records of pod replacements, 20261124041455, after it. That is why the
+// loop below holds the
 // list rather than counting it, so that a version added above any of them is named here rather
 // than read as main's.
 const mainsNewestMigration = 20261111212544

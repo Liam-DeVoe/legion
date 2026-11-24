@@ -11,7 +11,7 @@ import (
 )
 
 // PodReplacement is the record of a replacement of an issue's pod that may take a disk (R7 of
-// dispatch://INFRA-3271, GPT-6.1 Sol's points 1 and 2 on #5285): the daemon writes it before the
+// #5285, GPT-6.1 Sol's points 1 and 2 on #5285): the daemon writes it before the
 // runtime acts, and deletes it once the act is made, in the transaction that queues the issue's
 // architect's notice of what the act took, or once the runtime shows the act was not made
 // (FinishPodReplacement). Operation is the act's own identity, which keys the row

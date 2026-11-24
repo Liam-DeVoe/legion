@@ -1,12 +1,12 @@
 package daemon
 
-// R7 of dispatch://INFRA-3271 (spec v20, verification v15's c-forced-replacement-told), the round's
+// R7 of #5285 (spec v20, verification v15's c-forced-replacement-told), the round's
 // case: a round over a drift that breaks the pod replaces it as before, whatever the read of its
 // workspace finds, and the issue's architect is told once what the replacement took. A round is one
 // over a drift that breaks the pod where the reasons it recorded open on the mark
 // runtime.BreakingDrift ("[breaks the pod] "), which the runtime puts at the start of the reason of
 // a drift that breaks the pod (runtime.Breaks): today a drift of the pod's service account (spec
-// v23), and the kinds dispatch://INFRA-4754 declares. This test scripts such a reason of the image.
+// v23), and the kinds a later change declares. This test scripts such a reason of the image.
 
 import (
 	"strings"
@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// roundBreakingDrift is a drift of a kind dispatch://INFRA-4754 declares breaks the pod: its reason
+// roundBreakingDrift is a drift of a kind a later change declares breaks the pod: its reason
 // starts with the mark such a reason carries (runtime.BreakingDrift). It is written out here, as
 // the reason a runtime would give, rather than built from the constant.
 const roundBreakingDrift = "[breaks the pod] image legion-worker:v22.16.2, now legion-worker:v22.17.0"

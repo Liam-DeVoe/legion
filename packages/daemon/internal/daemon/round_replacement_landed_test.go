@@ -1,7 +1,7 @@
 package daemon
 
-// R7 of dispatch://INFRA-3271, GPT-6.1 Sol's point 1 on #5285 at 0259f8af (and INFRA-341's
-// reviewer's point 3), which INFRA-3118's architect ruled a fix inside R7: a round's replacement
+// R7 of #5285, GPT-6.1 Sol's point 1 on #5285 at 0259f8af (and the Legion
+// reviewer's point 3), which the spec's architect ruled a fix inside R7: a round's replacement
 // whose suspension landed is a replacement made, whatever the call answered. The Sandbox runtime
 // writes the suspension that takes the pod before it waits for the pod to go (replaceRoundPod),
 // so a call whose wait ran out of its bound, or a daemon that stopped in that wait, has taken the

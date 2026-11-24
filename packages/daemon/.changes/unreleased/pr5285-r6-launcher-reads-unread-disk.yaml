@@ -2,7 +2,7 @@ kind: Changed
 body: |-
   The release of a pod no claim owns and the close of a left pod with no live claim delete the
   pod's disk only after a read of its workspace finds nothing that no branch or tag on origin holds
-  (R6 of INFRA-3271). No role process runs in such a pod, so the pod's launcher makes the read, with
+  (R6 of #5285). No role process runs in such a pod, so the pod's launcher makes the read, with
   the count a role's shim makes: its hello says `readsWorkspace`, and it answers the
   `workspace-work` frame on its own connection. The release queues that check before its teardown,
   and the close queues it alone and suspends the Sandbox only after a clean read, fenced on the
@@ -19,6 +19,3 @@ body: |-
   daemon's own jj commands run: a workspace that is not where the layout puts it, or whose
   `.jj/repo` names another repository, is not read, and a legacy configuration file jj would
   migrate is removed before the read.
-time: 2026-11-23T20:00:00Z
-custom:
-  Issue: r6-launcher-reads-unread-disk

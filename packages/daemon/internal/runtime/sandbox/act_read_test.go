@@ -1,7 +1,7 @@
 package sandbox
 
-// GPT-6.1 Sol's point 2 on #5285 at fa9deb04 and INFRA-341's reviewer's point A, which
-// INFRA-3118's architect ruled fixes inside R7: the read a sweep makes of a recorded replacement
+// GPT-6.1 Sol's point 2 on #5285 at fa9deb04 and the Legion reviewer's point A, which
+// the spec's architect ruled fixes inside R7: the read a sweep makes of a recorded replacement
 // before it forgets the record (runtime.ActReader) takes the pod's launch turn first, and answers
 // ErrTurnBusy without deciding anything while a launch or a replacement holds it. Under the turn
 // it reads the Sandbox and the pod from the API server: a store whose feed fails holds what it last

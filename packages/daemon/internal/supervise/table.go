@@ -307,7 +307,7 @@ type PodUpdateOpen struct {
 // goes, so the text says that work not pushed before the pod goes is lost. The daemon reads the
 // workspace before it replaces the pod, and a read that finds work that no branch or tag on
 // origin holds, or that fails, ends the round with no replacement and keeps the pod (R7 of
-// dispatch://INFRA-3271, internal/daemon's roundKeeps), so the text says that a round can end with
+// #5285, internal/daemon's roundKeeps), so the text says that a round can end with
 // no replacement and the pod then stays, and says that the pod goes whatever runs in it only of a
 // replacement the daemon makes. That keep has two exceptions, and the text names each where it
 // holds (GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af): a pod whose disk is a kept volume
@@ -377,7 +377,7 @@ The daemon starts your process again on the new pod, in this same session. %[4]s
 // opened over is gone — replaced by the round itself, replaced under it, or gone for a failure of
 // its own — and each role comes back on its own session through the displaced path; or the round
 // kept the pod, because the read of its workspace found work that no branch or tag on origin
-// holds or could not be made (R7 of dispatch://INFRA-3271, internal/daemon's keepPodForRound),
+// holds or could not be made (R7 of #5285, internal/daemon's keepPodForRound),
 // and each role works on in that pod. A plugin
 // round an earlier daemon left on the claim: no daemon on this release opens one, since the
 // stale-plugin lane relaunches a stale process rather than asking its worker anything

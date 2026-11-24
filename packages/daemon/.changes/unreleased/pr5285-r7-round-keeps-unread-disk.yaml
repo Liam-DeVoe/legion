@@ -1,7 +1,7 @@
 kind: Changed
 body: |-
   An update round replaces a pod only over a clean read of its workspace, and a replacement that
-  still takes a disk says what it took (R7 of INFRA-3271). Before every replacement a round makes,
+  still takes a disk says what it took (R7 of #5285). Before every replacement a round makes,
   through a role, by issue, or at a launch, the daemon reads the issue workspace through a role's
   shim or the pod's launcher; a turn that starts after the read voids it. Over a drift the pod's
   roles can keep working under, a read that finds work that no branch or tag on origin holds, or
@@ -20,6 +20,3 @@ body: |-
   record's delete, so a replacement whose call fails or whose daemon stops once the pod is taken
   is finished from the read made before it, never kept, and told once. The round's ask says a
   round can end with no replacement, and the ask of a round that breaks the pod says it cannot.
-time: 2026-11-24T05:00:00Z
-custom:
-  Issue: r7-round-keeps-unread-disk

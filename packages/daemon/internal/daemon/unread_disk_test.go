@@ -22,7 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// R6 of dispatch://INFRA-3271: no release deletes a disk that no read has shown clean. The release
+// R6 of #5285: no release deletes a disk that no read has shown clean. The release
 // of a pod no claim owns and the close of a left pod with no live claim take a pod in which no role
 // process runs, so no role's shim can read its workspace. The pod's launcher, which runs in the pod
 // whatever its roles do, makes the read instead, with R5's count (runtime.PodWorkspaceReader). A
@@ -156,7 +156,7 @@ func keptOverPasses(t *testing.T, rig *idleRig, publisher *outboxPublisher, pass
 //
 // a_kept_volume_with_a_standing_unread_decline_is_released: the issue's Sandbox keeps a volume the
 // issue's next pod mounts, and a decline stands whose read failed, made through a role's shim
-// before the roles stopped (INFRA-341's reviewer's point 1 on R6's review fixes). The release
+// before the roles stopped (the Legion reviewer's point 1 on R6's review fixes). The release
 // deletes no disk, so no read is owed and the failed one holds nothing: the release takes the pod
 // at its first pass, with no read and no unowned_workspace_unread hold.
 func TestTheReleaseOfAPodNoClaimOwnsReadsItsDiskFirst(t *testing.T) {
@@ -443,7 +443,7 @@ func TestALauncherReadNamesAndTakesOnlyThePodItRead(t *testing.T) {
 }
 
 // A pod kept for the work its launcher found is read again once a claim of the issue was started
-// after that read, or ran a turn after it (INFRA-341's reviewer's point 2 on R6): the role's
+// after that read, or ran a turn after it (the Legion reviewer's point 2 on R6): the role's
 // process can have pushed the work. Here the planner comes back into the same pod, pushes, and
 // fails again; the next pass has the launcher read the disk again, the read finds it clean, and
 // the release takes the pod. Before, a start into the pod the decline named did not end its hold,
@@ -484,7 +484,7 @@ func TestAKeptPodIsReadAgainAfterARoleOfItRanAgain(t *testing.T) {
 	}
 }
 
-// The error of a read that failed keeps its end wherever the daemon keeps it (INFRA-341's
+// The error of a read that failed keeps its end wherever the daemon keeps it (the Legion
 // reviewer's point 6 on R6's review fixes). Whichever process made the read cuts its error to one
 // line by keeping the start and the end (shimwire.CutAnswerError), since the end is where
 // workspace.RunCommand puts its note on a git lock (workspace.StaleGitLockNote), which says what to
@@ -537,7 +537,7 @@ func TestAFailedReadsErrorKeepsItsEnd(t *testing.T) {
 // The error of a read that failed is text from the pod: a path a role wrote, such as the one its
 // workspace's .jj/repo names, reaches it through the guard that refuses the read (workspace's
 // sharedRepository), and so can every line jj prints of the role's files. So the daemon quotes it
-// as data wherever it keeps it (INFRA-341's reviewer's point 14 on R6's review fixes): in the
+// as data wherever it keeps it (the Legion reviewer's point 14 on R6's review fixes): in the
 // workspace-kept notice to the issue's architect, which the controller is told to publish where it
 // gets the notice in the architect's place (skills/legion-controller's wakes reference), in the
 // hold record's detail, and in the round's notices. Here the error holds a line a role wrote after

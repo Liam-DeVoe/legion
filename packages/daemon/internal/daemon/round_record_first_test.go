@@ -1,11 +1,11 @@
 package daemon
 
-// R7 of dispatch://INFRA-3271, GPT-6.1 Sol's point 1 on #5285 at fa9deb04 (INFRA-341's reviewer's
-// minor point 2), which INFRA-3118's architect ruled a fix inside R7: a round's replacement writes
+// R7 of #5285, GPT-6.1 Sol's point 1 on #5285 at fa9deb04 (the Legion reviewer's
+// minor point 2), which the spec's architect ruled a fix inside R7: a round's replacement writes
 // its record before its last word, so the last word is the last decision before the suspension. A
 // turn that starts while the store writes the record is a turn the last word reads: the last word
 // refuses the replacement, and the record goes. The control is the same replacement with no such
-// turn. INFRA-341's reviewer's minor point 3: where the runtime finds the pod gone at the call, the
+// turn. The Legion reviewer's minor point 3: where the runtime finds the pod gone at the call, the
 // round ends as the replacement it made, and the issue's architect is told what the read before it
 // found, as the head before the record was.
 
@@ -125,7 +125,7 @@ func TestATurnThatStartsWhileTheRecordIsWrittenRefusesTheReplacement(t *testing.
 	}
 }
 
-// INFRA-341's reviewer's minor point 3: the runtime finds no pod of the round to end at the call
+// The Legion reviewer's minor point 3: the runtime finds no pod of the round to end at the call
 // (FindNoPodToReplace), as the Sandbox runtime answers a Sandbox suspended or a pod no longer its
 // own, and asks no last word. The round ends as the replacement it made, and the architect is told
 // what the read before it found, once.

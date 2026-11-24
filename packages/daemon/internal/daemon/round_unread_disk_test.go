@@ -1,11 +1,11 @@
 package daemon
 
-// R7 of dispatch://INFRA-3271 (spec v20, verification v15's c-round-keeps-unread-disk). An update
+// R7 of #5285 (spec v20, verification v15's c-round-keeps-unread-disk). An update
 // round replaces a pod only over a clean read of its workspace with R5's count, made through a
 // process in the pod: a live role's shim, or the pod's launcher where no role process runs. A turn
 // of the issue that starts after the read voids it, and the replacement's last word refuses.
 //
-// Over a drift the pod's roles can keep working under — every drift until dispatch://INFRA-4754's
+// Over a drift the pod's roles can keep working under — every drift until a later change's
 // kinds exist — a read that finds work origin does not hold, or that cannot be made, replaces
 // nothing: the round ends with no replacement, each claim that answered gets the task the round
 // held, the daemon records the pod, the work and the moment as #4869 records a release's decline,
@@ -13,7 +13,7 @@ package daemon
 // it reads the workspace again, without a round, and a read that finds nothing ends the record.
 // The open phase's worker, where it is live, is told once; otherwise the issue's architect is.
 //
-// The negative control is INFRA-4208's round pod:d4a8d543-2094-4a47-9068-5e3f0642e2fb, which
+// The negative control is a production issue's round pod:d4a8d543-2094-4a47-9068-5e3f0642e2fb, which
 // replaced the pod at 2026-11-23T17:02:55Z with the tester failed and commits after e8bc366e
 // unpushed; on main the round's read decides nothing (replacePodForRound).
 

@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// R6 of dispatch://INFRA-3271: the daemon asks an issue pod's launcher to read the workspace where
+// R6 of #5285: the daemon asks an issue pod's launcher to read the workspace where
 // no role process runs, and asks only a launcher whose hello said it reads one, since a launcher
 // before it closes its connection on the frame (launchers.workspaceReader). Of a pod's two
 // connected launchers, the one that said nothing is passed over, a launcher of another pod is never
@@ -84,7 +84,7 @@ func TestOnlyALauncherThatSaysItReadsAWorkspaceIsAskedToReadIt(t *testing.T) {
 	}
 }
 
-// A launcher that refuses the read is a read that could not be made (INFRA-341's reviewer's point
+// A launcher that refuses the read is a read that could not be made (the Legion reviewer's point
 // 4 on R6). The daemon keeps the pod for any error of the read, and takes a read with no error as
 // the disk's word, so a refusal answered as an empty read would have the disk deleted. The read
 // through the pod's launcher (Runtime.launcherWorkspaceWork, PodWorkspaceWork's read of the pod it
@@ -161,7 +161,7 @@ func TestALauncherThatRefusesTheReadIsAReadThatCouldNotBeMade(t *testing.T) {
 	}
 }
 
-// PodWorkspaceWork's answers before it sends a read (INFRA-341's reviewer's point 13 on R6's
+// PodWorkspaceWork's answers before it sends a read (the Legion reviewer's point 13 on R6's
 // review fixes, the half of its point 4 left untested): an issue whose pod the runtime cannot
 // name, here a key that names no Sandbox, and an issue whose Sandbox the runtime does not hold, are
 // each an error that names no pod, never an answer of no work, so the daemon keeps the pod. The

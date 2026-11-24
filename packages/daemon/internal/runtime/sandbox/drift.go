@@ -480,7 +480,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	// it does of every other. Its reason opens on runtime.BreakingDrift, which is set here, where
 	// the account's drift is decided: no role can keep working in a pod on an account the operator
 	// replaced, so the round over it replaces the pod after the read of its workspace whatever the
-	// read finds (R7 of dispatch://INFRA-3271, spec v23). No other reason carries the mark.
+	// read finds (R7 of #5285, spec v23). No other reason carries the mark.
 	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
 		drifted = append(drifted, runtime.BreakingDrift+"account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
 	}
@@ -554,7 +554,7 @@ func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, podUID string, due
 
 // ReadAct satisfies runtime.ActReader: whether a recorded act on issue's pod was made, read from
 // the API server under the pod's launch turn (GPT-6.1 Sol's point 2 on #5285 at fa9deb04,
-// INFRA-341's reviewer's point A). The turn is taken without waiting (tryTurn): a launch, a
+// the Legion reviewer's point A). The turn is taken without waiting (tryTurn): a launch, a
 // replacement or a release that holds it may be making the act now, so ReadAct answers
 // runtime.ErrTurnBusy and reads nothing. Under the turn no act of this daemon on the pod runs, and
 // the Sandbox and its pod are read from the API server, never from the stores: a store whose feed

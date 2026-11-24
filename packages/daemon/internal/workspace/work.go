@@ -7,7 +7,7 @@ import (
 
 // The workspace read: whether the workspace every role of an issue shares holds work that no
 // branch or tag on origin holds. A role's shim makes it in the workspace it works in, and the
-// issue pod's launcher makes it where no role process runs (R6 of dispatch://INFRA-3271). A pod
+// issue pod's launcher makes it where no role process runs (R6 of #5285). A pod
 // update round that replaces the pod without waiting for every role reads it to name what goes
 // with the pod, and the idle release, the release of a pod no claim owns and the close of a left
 // pod read it to take the pod only when it holds no work. Both readers run ReadWork, so they count

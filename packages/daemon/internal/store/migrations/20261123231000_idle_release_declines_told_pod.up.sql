@@ -5,7 +5,7 @@
 -- named when the daemon queued it (store's recordDecline): null where the row queued no such
 -- notice, '' where it queued one for a pod the runtime could not name. A pod in which no role
 -- process runs and that the daemon keeps for its disk is told to the architect once for each pod
--- (R6 of dispatch://INFRA-3271): a launcher's decline of the pod the column names, or of a pod that
+-- (R6 of #5285): a launcher's decline of the pod the column names, or of a pod that
 -- either side does not name, queues no second notice, whatever work the read found and whatever
 -- role the row names. A read through a role that replaces the row keeps the column, so the
 -- architect told of a pod is not told of it again after a role comes back and stops again. The

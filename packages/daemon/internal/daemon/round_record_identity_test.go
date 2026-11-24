@@ -1,6 +1,6 @@
 package daemon
 
-// GPT-6.1 Sol's point 3 on #5285 at fa9deb04 (INFRA-341's reviewer's point C), which INFRA-3118's
+// GPT-6.1 Sol's point 3 on #5285 at fa9deb04 (the Legion reviewer's point C), which the spec's
 // architect ruled a fix inside R7: each destructive act has a record of its own, keyed by an
 // identity of its own and never by the pod's uid, and no record is written over. A round over a
 // drift that breaks the pod replaces the pod over a read that found a commit origin does not hold,

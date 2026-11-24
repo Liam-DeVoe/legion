@@ -374,7 +374,7 @@ func (d IdleDecline) Stands(v IdleView, now time.Time) bool {
 //
 // A start of a claim's process after the last read (a start row above StartedRow), or a turn of a
 // claim that started after it, ends the hold, in whichever pod it ran: the process can have pushed
-// the work, or made more (INFRA-341's reviewer's point 2 on R6 of dispatch://INFRA-3271). Ending it
+// the work, or made more (the Legion reviewer's point 2 on R6 of #5285). Ending it
 // deletes nothing unread: both callers then have the pod's launcher read the disk before any
 // delete (workflow.IdleDecision.Read), and a read that finds the same work writes the decline again
 // at its own moment, so each start or turn costs one read.

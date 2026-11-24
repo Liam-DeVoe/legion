@@ -5,12 +5,12 @@ package daemon
 // root's exit, by an idle release or by an unknown source (supervise's Claim.PassedOverByRound),
 // runs no process and no turn in the pod. So the round does not ask it, wait for it, wake it or
 // resume it. What it left unpushed is on the pod's disk, which the replacement reads first,
-// through a role whose process runs in the pod (R7 of dispatch://INFRA-3271): the replacement
+// through a role whose process runs in the pod (R7 of #5285): the replacement
 // names on its line each claim it did not wait for and what the read found. A read that finds
 // work, or that fails, keeps the pod over a drift its roles can keep working under
 // (round_unread_disk_test.go holds that); over a drift that breaks the pod the replacement is
 // made, and the issue's architect is told what it took. An operator's suspension still holds the
-// round past its bound (dispatch://INFRA-2981 R5).
+// round past its bound.
 //
 // These cases drive the pod-update rig of podupdate_test.go. The suspended claims are seeded in
 // the store and restored as a boot restores them (newPodUpdateRig's sup.restore).
@@ -192,7 +192,7 @@ func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 }
 
 // R3's second and third rounds, over a drift that breaks the pod (roundBreakingDrift, R7 of
-// dispatch://INFRA-3271): the same claims over a read that finds an unpushed commit, and over a
+// #5285): the same claims over a read that finds an unpushed commit, and over a
 // read that fails. Such a round replaces its pod whatever the read found, at the same point as
 // over a read that finds no work (replacedOverPassedOverClaims). Its line names both suspended
 // roles and the commit or the error, and one workspace-taken notice to the issue's architect names
@@ -351,7 +351,7 @@ func TestAnUpdateRoundStillWaitsPastItsBoundForAnOperatorSuspension(t *testing.T
 }
 
 // The read of the workspace is made before every replacement the round asks for (R7 of
-// dispatch://INFRA-3271), afresh each time, through the role whose process the pod is replaced
+// #5285), afresh each time, through the role whose process the pod is replaced
 // through: a turn after a read voids it, so no read is kept for a later sweep.
 func TestAnUpdateRoundReadsTheWorkspaceBeforeEachReplacement(t *testing.T) {
 	t.Parallel()

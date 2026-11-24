@@ -12,7 +12,7 @@
 -- shows the second. The daemon writes the row before the runtime acts: an update round's
 -- replacement before the call whose last word the runtime asks under the pod's launch turn, one
 -- made at a launch as the launch's reading of the round answers it, and a launch's own replacement
--- before its suspension (R7 of dispatch://INFRA-3271, GPT-6.1 Sol's points 1 and 2 on #5285).
+-- before its suspension (R7 of #5285, GPT-6.1 Sol's points 1 and 2 on #5285).
 -- record is the daemon's own encoding of the replacement: the round and its recorded reasons, or
 -- the launch's claim and why it replaced the pod, and the read of the workspace made before the
 -- act, what it found or the error it failed with. written_at is the moment the row was written, by

@@ -1387,7 +1387,7 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // release's row leaves it zero, since its mark holds it.
 //
 // Launcher makes the pod's launcher read the workspace rather than Role's shim (R6 of
-// dispatch://INFRA-3271, runtime.PodWorkspaceReader): no role process runs in the pod, so no shim
+// #5285, runtime.PodWorkspaceReader): no role process runs in the pod, so no shim
 // is there to read through. It is the check of the release of a pod no claim owns
 // (workflow.UnownedPodRelease), inside that release's mark, and, with Close, of the close of a left
 // pod with no live claim, which marks no release and stops no role: its clean read queues the
@@ -2757,7 +2757,7 @@ const VolumeNearFullNotice NoticeKind = "volume-near-full"
 
 // WorkspaceKeptNotice is the architect's notice that the daemon keeps a pod in which no role
 // process runs, because the pod's launcher read its workspace and found work that no branch or tag
-// on origin holds, or could not read it (R6 of dispatch://INFRA-3271, internal/daemon's
+// on origin holds, or could not read it (R6 of #5285, internal/daemon's
 // keptMessage): the release of a pod no claim owns and the close of a left pod with no live claim
 // delete a disk only after a read shows it clean. It names the state of each claim of the issue
 // and what the read found, and it is sent once for each pod kept so (store's recordDecline). It is
@@ -2769,13 +2769,13 @@ const VolumeNearFullNotice NoticeKind = "volume-near-full"
 // among them, first (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
 //
 // An update round over a drift the pod's roles can keep working under that reads work in the pod's
-// workspace, or cannot read it, keeps the pod too (R7 of dispatch://INFRA-3271, internal/daemon's
+// workspace, or cannot read it, keeps the pod too (R7 of #5285, internal/daemon's
 // keepPodForRound): where the open phase's worker has no live process in the pod, its architect is
 // told by this notice, once for the pod, with each claim's state and what the read found.
 const WorkspaceKeptNotice NoticeKind = "workspace-kept"
 
 // WorkspaceTakenNotice is the architect's notice that a replacement of its issue's pod took a disk
-// that may hold work no branch or tag on origin holds (R7 of dispatch://INFRA-3271): an update
+// that may hold work no branch or tag on origin holds (R7 of #5285): an update
 // round over a drift that breaks the pod (runtime.Breaks), or a launch's own
 // replacement of an issue pod (runtime.TakenPod), whose read of the workspace before the
 // replacement found such work or could not be made. It names each commit and the working-copy

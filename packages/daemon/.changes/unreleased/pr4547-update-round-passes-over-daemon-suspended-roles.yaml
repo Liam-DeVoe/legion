@@ -8,7 +8,7 @@ body: |-
     stays the pause's while the pause still owes that role a launch. The shim gains the frame
     `workspace-work`, which reads whether the issue workspace holds work that no branch or tag at
     origin holds; an update round makes that read before every replacement, and what it does with
-    the read is R7 of INFRA-3271's (its own entry, r7-round-keeps-unread-disk).
+    the read is #5285's (its own entry, pr5285-r7-round-keeps-unread-disk).
     A round whose pod has no role process in it is replaced by issue where nothing holds the pod,
     and a launch into such a pod reads the round's bound when it runs and replaces the pod first,
     so the role starts once. Before the round's bound, a pod is kept while a project's pause still

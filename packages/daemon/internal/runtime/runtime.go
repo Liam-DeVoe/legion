@@ -186,13 +186,13 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a session up by its id")
 
 // BreakingDrift is the mark a reason of PodDrift starts with where the drift breaks the pod: no
-// role can keep working in it (R7 of dispatch://INFRA-3271). The runtime sets it where it decides
+// role can keep working in it (R7 of #5285). The runtime sets it where it decides
 // the drift, at the start of that drift's reason (Breaks), and nowhere else: a value a reason
 // displays, an image name or an account among them, follows the reason's own first words, so it
 // can hold the mark's words without making the drift one that breaks the pod. The Sandbox
 // runtime's PodDrift marks a drift of the Kubernetes service account the pod runs as (spec v23:
 // a role must not be able to keep a pod on an account the operator replaced by leaving its
-// working copy dirty or its read failing). dispatch://INFRA-4754 declares which other kinds of
+// working copy dirty or its read failing). A later change declares which other kinds of
 // drift break a pod, and a pod below a declared contract floor breaks too, and it opens an update
 // round over such a pod at once, whatever its spec names as the cause. A round records its
 // reasons as one string at its open (RoundReasons, supervise.Claim.UpdateReasons), with every
@@ -200,7 +200,7 @@ var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a s
 // (Breaks). Such a round replaces its pod whatever the read of its workspace finds, and tells
 // the issue's architect what it took. Every other round is one the pod's roles can keep working
 // under, and a read that finds work, or that cannot be made, keeps that pod. The leak check
-// digest's drift is not marked: INFRA-4754 declares that it drains, and a kept pod's roles are
+// digest's drift is not marked: a later change declares that it drains, and a kept pod's roles are
 // told the checker they run.
 const BreakingDrift = "[breaks the pod] "
 
@@ -229,7 +229,7 @@ func RoundReasons(reasons []string) string {
 	return strings.Join(ordered, ", ")
 }
 
-// TakenPod is what a launch's own replacement of an issue pod takes (R7 of dispatch://INFRA-3271):
+// TakenPod is what a launch's own replacement of an issue pod takes (R7 of #5285):
 // the claim whose launch makes it, the issue, the pod ("" where the issue's Sandbox runs no pod of
 // its own: a kept volume a launch deletes with its Sandbox), why the launch replaces the
 // pod rather than keep it — the pod is not live, a facet of it fixed for its life moved, its
@@ -311,7 +311,7 @@ const (
 )
 
 // ActReader reads whether a recorded act on issue's pod was made (GPT-6.1 Sol's point 2 on #5285
-// at fa9deb04, INFRA-341's reviewer's point A). It takes the pod's launch turn without waiting for
+// at fa9deb04, the Legion reviewer's point A). It takes the pod's launch turn without waiting for
 // it, so no act on the pod runs while it reads, and answers ErrTurnBusy, calling nothing, where
 // another holds the turn. Under the turn it reads the target from the cluster's API, never from a
 // store that may be stale, and hands decide what that says (ActState); decide runs under the turn,
@@ -446,7 +446,7 @@ type IssueVolumeReader interface {
 // issue shares holds work that no branch or tag on origin holds. A pod update round makes it before
 // each replacement it makes through a role, and replaces the pod only over a read that found
 // nothing, unless the round is over a drift that breaks the pod or the disk is a kept volume (R7 of
-// dispatch://INFRA-3271); the read that may end an earlier round's keep of the pod is made through
+// #5285); the read that may end an earlier round's keep of the pod is made through
 // a live role in the pod too, where one runs (internal/daemon's readKeptPod). The idle release and
 // the close of a left pod with a live claim make it before they take the pod, and take it only
 // when the read finds no work: nothing keeps a copy of work a taken pod's workspace held. The role
@@ -460,7 +460,7 @@ type WorkspaceWorkReader interface {
 
 // PodWorkspaceReader asks the issue pod's launcher, which runs in the pod whether or not a role
 // process does, to make WorkspaceWorkReader's read of the issue workspace, with the same count
-// (R6 of dispatch://INFRA-3271). The release of a pod no claim owns and the close of a left pod
+// (R6 of #5285). The release of a pod no claim owns and the close of a left pod
 // with no live claim make it before they delete a disk, an update round before a replacement it
 // makes by issue or at a launch, and the read that may end an earlier round's keep of a pod in
 // which no role runs (internal/daemon's readKeptPod), since no role's shim runs there to read
@@ -492,7 +492,7 @@ type WorkspaceWork struct {
 	// PodUID is the pod whose workspace the read was made in, which a read through the pod's
 	// launcher names (PodWorkspaceReader), with its error too once it has chosen the pod; "" where
 	// the runtime cannot say. A read is evidence of that pod alone: a pod that took its place since
-	// holds another disk (R6 of dispatch://INFRA-3271, Sol's point 2).
+	// holds another disk (R6 of #5285, Sol's point 2).
 	PodUID string
 }
 
@@ -502,7 +502,7 @@ func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
 
 // WorkspaceWorkOf is the read that a reader's answer to a `workspace-work` request carries, for
 // each caller that asks one: internal/stream's Conn.WorkspaceWork, through a role's shim, and
-// internal/runtime/sandbox's read through a pod's launcher (R6 of dispatch://INFRA-3271). An answer
+// internal/runtime/sandbox's read through a pod's launcher (R6 of #5285). An answer
 // the wire refuses (shimwire.WorkspaceWorkResult.Validate) is err; a reader's refusal is refused,
 // its reason, which the wire requires to be set; otherwise the answer is the work read. A refusal
 // is a read that could not be made, and never the empty read: the caller names it as an error. The

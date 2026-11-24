@@ -795,7 +795,7 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // the role's own push keeps its work, and that work not pushed before the pod goes is lost; it
 // names no rescue branch. It says that the daemon reads the workspace before it replaces the pod,
 // and that a read that finds work origin does not hold, or that fails, ends the round with no
-// replacement and keeps the pod (R7 of dispatch://INFRA-3271), so it no longer says that the pod
+// replacement and keeps the pod (R7 of #5285), so it no longer says that the pod
 // and its disk go when the round ends whatever runs. A role whose tool has no ready_for_update is
 // told to do the first three steps, because the round ends at that moment whatever it does: the
 // end of its turn is no answer. It does not say that the round ends early once no role is in a
@@ -870,7 +870,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 }
 
 // The ask of a round over a drift that breaks the pod (runtime.BreakingDrift at the start of the
-// round's reasons, R7 of dispatch://INFRA-3271, spec v23) does not promise that a read which finds
+// round's reasons, R7 of #5285, spec v23) does not promise that a read which finds
 // work keeps the pod: no role can keep working in that pod, so the daemon replaces it whatever the
 // read finds, and tells the issue's architect what the read found. Only a volume that the next pod
 // mounts keeps the work on the disk. GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af.

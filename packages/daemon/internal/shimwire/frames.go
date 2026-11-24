@@ -193,7 +193,7 @@ type AgentSecretsTokenResult struct {
 //
 // ReadsWorkspace is this launcher saying it answers WorkspaceWork on its own connection: it reads
 // the issue workspace of its pod, which the pod sets as its working directory, whether or not a
-// role process runs there (R6 of dispatch://INFRA-3271). A launcher's command loop closes its
+// role process runs there (R6 of #5285). A launcher's command loop closes its
 // connection on a frame it does not know, so the daemon asks only a launcher whose hello said
 // readsWorkspace, and a pod with no such launcher is one whose workspace the daemon cannot read.
 type LauncherHello struct {

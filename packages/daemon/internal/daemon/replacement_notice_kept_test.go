@@ -1,12 +1,12 @@
 package daemon
 
-// R7 of dispatch://INFRA-3271, GPT-6.1 Sol's point 2 on #5285 at 0259f8af (and INFRA-341's
-// reviewer's point 10, its enqueue part), which INFRA-3118's architect ruled a fix inside R7: the
+// R7 of #5285, GPT-6.1 Sol's point 2 on #5285 at 0259f8af (and the Legion
+// reviewer's point 10, its enqueue part), which the spec's architect ruled a fix inside R7: the
 // issue's architect's word of what a replacement took is a durable pending row, keyed by the
 // replacement's own identity, which only the commit of its outbox row clears. A store that refuses
 // the outbox row once, after the replacement took the pod, loses nothing: the launch goes on, and
 // once the store takes rows again the notice goes out, once. A round stays open until then
-// (INFRA-341's reviewer's point D on fa9deb04): its end clears what each claim records of the
+// (the Legion reviewer's point D on fa9deb04): its end clears what each claim records of the
 // round, which is what the notice names, so a notice queued after the end would name no role that
 // had not answered, and would read a kept volume as one marked for a reset.
 
@@ -135,7 +135,7 @@ func (r *podUpdateRig) wantRoundEnded() {
 	}
 }
 
-// INFRA-341's reviewer's point D on fa9deb04: a round over a drift its roles can keep working under
+// The Legion reviewer's point D on fa9deb04: a round over a drift its roles can keep working under
 // replaces a pod whose disk is a kept volume that the issue's next pod mounts, over a read that found
 // an unpushed commit. The store refuses the notice. The round stays open, and once the store takes
 // the notice, the notice is the one the replacement built: the work is on the kept volume, which is

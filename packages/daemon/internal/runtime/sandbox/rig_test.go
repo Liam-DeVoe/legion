@@ -595,7 +595,7 @@ func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resu
 
 // withWorkspaceRead has every fake launcher's hello say it reads the issue workspace, and answer
 // each workspace-work request with answer, as a launcher of this release answers the daemon's read
-// of a pod no role process reads through (R6 of dispatch://INFRA-3271).
+// of a pod no role process reads through (R6 of #5285).
 func withWorkspaceRead(answer shimwire.WorkspaceWorkResult) rigOption {
 	return func(g *rig, _ *Options) { g.readsWorkspace, g.workspaceAnswer = true, answer }
 }

@@ -437,7 +437,7 @@ func TestTheRunnerRefusesAWorkspaceWhoseRepoPointerNamesAnotherDirectory(t *test
 		}
 	})
 
-	// INFRA-341's reviewer's point 14 on R6's review fixes: the pointer is a role's to write, and
+	// The Legion reviewer's point 14 on R6's review fixes: the pointer is a role's to write, and
 	// the refusal names it, so it names it quoted (%q). A pointer of several lines then reaches
 	// the refusal, and from it the daemon's notice of a read the refusal stopped, as one quoted
 	// string, never as a line of its own.

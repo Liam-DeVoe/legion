@@ -1,6 +1,6 @@
 package daemon
 
-// GPT-6.1 Sol's point 4 on #5285 at fa9deb04 (INFRA-341's reviewer's point B), which INFRA-3118's
+// GPT-6.1 Sol's point 4 on #5285 at fa9deb04 (the Legion reviewer's point B), which the spec's
 // architect ruled a fix inside R7: a record names what its act takes and the uid of its target, and
 // the architect is told that a disk is gone only once the deletion of that target is confirmed. A
 // launch's replacement of the issue's Sandbox and the kept volume it owns, for the volume's reset,

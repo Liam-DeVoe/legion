@@ -290,7 +290,7 @@ var _ runtime.PodWorkspaceReader = (*Runtime)(nil)
 
 // PodWorkspaceWork has the launcher of issue's pod read whether the issue workspace holds work that
 // no branch or tag on origin holds, where no role process runs to read through
-// (runtime.PodWorkspaceReader, R6 of dispatch://INFRA-3271). The pod is the one the runtime holds
+// (runtime.PodWorkspaceReader, R6 of #5285). The pod is the one the runtime holds
 // for the issue now (IssuePod); the launcher is a connected one of that pod whose hello said it
 // reads a workspace (launchers.workspaceReader). The read is bounded by the read's own budget
 // (runtime.WorkspaceWorkTimeout) and one API call's time for the frame each way. The answer names

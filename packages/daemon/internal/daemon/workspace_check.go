@@ -35,7 +35,7 @@ import (
 // It is the first act of the release of a pod no claim owns too, where that release deletes the
 // disk (payload.Launcher, workflow.UnownedPodRelease's Read): no role process runs in that pod, so
 // the pod's launcher makes the same read (runtime.PodWorkspaceReader, R6 of
-// dispatch://INFRA-3271), and a decline tells the issue's architect (declineFor).
+// #5285), and a decline tells the issue's architect (declineFor).
 //
 // A read that finds nothing lets the release go on to its role stops and its teardown, which
 // deletes the pod's disk: nothing on it is lost, since all of it is on origin. A read that finds
@@ -69,7 +69,7 @@ func (r *outbox) checkIssueWorkspace(ctx context.Context, row record.OutboxRow, 
 	case store.ReleaseCancel:
 		// The project is paused (ReleaseCausePaused): the pause deletes no pod, so the release
 		// is cancelled before any role stops, whatever reached its roles first (decision 12 and
-		// departure 4 of dispatch://INFRA-3759). Or the pod was given work since the mark
+		// departure 4 of the pause's design in #4115). Or the pod was given work since the mark
 		// (ReleaseCauseOvertaken): a read beside that work could miss what it makes, so the
 		// release is cancelled before the read, and the pass decides the pod again.
 		hold, why := releaseHold(decision.Cause)
@@ -125,7 +125,7 @@ func (r *outbox) readIssueWorkspace(ctx context.Context, issue string, payload r
 
 // readOtherPod is whether a launcher's read of the check (payload.Launcher) was made in another pod
 // than the one the pass queued the check over (record.IssueWorkspaceCheck.PodUID): a pod took its
-// place, and the read is evidence of that pod alone (R6 of dispatch://INFRA-3271, Sol's point 2).
+// place, and the read is evidence of that pod alone (R6 of #5285, Sol's point 2).
 // A check or a read that names no pod is no such read.
 func readOtherPod(payload record.IssueWorkspaceCheck, work runtime.WorkspaceWork) bool {
 	return payload.Launcher && payload.PodUID != "" && work.PodUID != "" && work.PodUID != payload.PodUID
@@ -158,7 +158,7 @@ func (r *outbox) holdsPod(issue, pod string) bool {
 // checkLeftPodWorkspace is the first act of the close of a pod whose issue left the workflow while
 // its tree runs on (workflow.LeftPodClose): the close deletes the pod's disk, so the disk is read
 // first, as the idle release reads it, through a live role where one runs in the pod, and through
-// the pod's launcher where none does (payload.Launcher, R6 of dispatch://INFRA-3271). A read that
+// the pod's launcher where none does (payload.Launcher, R6 of #5285). A read that
 // finds work that origin does not hold, or that fails, declines the close (declineFor,
 // store.DeclineLeftPodClose): the pod stays with its roles as they are, the role read through, or
 // for a launcher's read the issue's architect, is told once, and the rule holds the pod while the
@@ -166,7 +166,7 @@ func (r *outbox) holdsPod(issue, pod string) bool {
 // none, and is otherwise recorded as a cancel's is (cancelRelease), as is its line. A read that
 // found work while a claim of the issue was in a turn, or had started one since the pass that
 // queued the check (store.Store.LeftPodTurned), records nothing: that turn can have pushed the work,
-// so the check finishes without acting and the next pass reads again (INFRA-341's reviewer's point
+// so the check finishes without acting and the next pass reads again (the Legion reviewer's point
 // 2 on R6). A read that finds nothing queues the close's stops and the issue's
 // Sandbox suspension (leftPodStopRows) in one transaction with a view read again
 // (workflow.LeftPodCloseAfterCheck), so a role that started a turn since the pass that queued the
@@ -314,12 +314,12 @@ func unreadReason(failed error) string {
 // readError is a failed workspace read's error as the daemon keeps it, in a notice, a hold record
 // and a log line: the far side's text, bounded keeping both its ends (storetext.FarSideErrorEnds),
 // since the process that made the read cut its middle out and kept its end for its note on a git
-// lock (shimwire.CutAnswerError, INFRA-341's reviewer's point 6 on R6's review fixes), and quoted
+// lock (shimwire.CutAnswerError, the Legion reviewer's point 6 on R6's review fixes), and quoted
 // (strconv.Quote). The text is the pod's: jj's words about files a role writes, or a path a role
 // wrote that the guard refusing the read names (workspace's sharedRepository). A notice carries it
 // to the issue's architect and, in its place, to the controller, whom the wakes reference tells to
 // publish the notice's reason, so it goes as one quoted string, which no line of it can leave
-// (INFRA-341's reviewer's point 14).
+// (the Legion reviewer's point 14).
 func readError(failed error) string {
 	return strconv.Quote(storetext.FarSideErrorEnds(failed.Error()))
 }
@@ -355,7 +355,7 @@ func (r *outbox) roleDecline(issue string, role claim.Role, readAt time.Time, wo
 	return decline, hold, why, nil
 }
 
-// keptDecline is the decline of a check the pod's launcher read (R6 of dispatch://INFRA-3271): no
+// keptDecline is the decline of a check the pod's launcher read (R6 of #5285): no
 // role process runs in the pod, so no live role is there to tell. The decline is Kept and names the
 // pod the launcher read (runtime.WorkspaceWork.PodUID), since a pod that took its place since holds
 // another disk. Its role is the issue's architect, whose workspace-kept notice (keptMessage) is its

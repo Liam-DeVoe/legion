@@ -451,12 +451,12 @@ type Options struct {
 	// the hook existed.
 	RoundPodEnds runtime.RoundPodEnds
 	// LaunchTakes is the daemon's record of a launch's own replacement of an issue pod
-	// (runtime.LaunchTakes, R7 of dispatch://INFRA-3271): relaunch hands it what LaunchTook will be
+	// (runtime.LaunchTakes, R7 of #5285): relaunch hands it what LaunchTook will be
 	// handed, before the replacement takes anything, and a record that cannot be written fails
 	// the launch, which then takes nothing. nil records nothing.
 	LaunchTakes runtime.LaunchTakes
 	// LaunchTook is the daemon's word of a launch's own replacement of an issue pod
-	// (runtime.LaunchTook, R7 of dispatch://INFRA-3271): relaunch hands it the pod, why the launch
+	// (runtime.LaunchTook, R7 of #5285): relaunch hands it the pod, why the launch
 	// replaced it rather than keep it — the pod is not live, a facet fixed for its life moved
 	// (movedInPod), its Sandbox has another disk shape (supersededDisk) or a kept volume to reset
 	// (volumeReset), its launchers are not bound to it (launcherBound), or its stored template

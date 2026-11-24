@@ -87,7 +87,7 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 // A renewal tick that finds its row no longer under its lease says why, from the row it runs. A row
 // another lane leases is a lost lease, at Warn. A left pod's close check (record.IssueWorkspaceCheck
 // with CloseRoles, or, where no role runs in the pod, the launcher's check with Close: R6 of
-// dispatch://INFRA-3271, INFRA-341's reviewer's point 8) finishes its own row inside its run
+// #5285, the Legion reviewer's point 8) finishes its own row inside its run
 // (checkLeftPodWorkspace), so that row found finished is logged as that, at Info. The idle release's
 // check is the same kind and never finishes its own row, so that one found gone was finished by
 // another lane after this lease lapsed, at Warn. A status write found gone may also have been

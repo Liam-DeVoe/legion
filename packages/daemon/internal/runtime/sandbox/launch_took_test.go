@@ -1,6 +1,6 @@
 package sandbox
 
-// R7 of dispatch://INFRA-3271 (spec v20, verification v15's c-forced-replacement-told), the launch's
+// R7 of #5285 (spec v20, verification v15's c-forced-replacement-told), the launch's
 // side: a launch that replaces an issue pod on its own account takes a disk that may hold work no
 // role pushed, so it has the pod's launcher read the workspace first where a process in the pod can
 // make the read, and once the suspension that takes the pod is written it hands the daemon what it
@@ -161,7 +161,7 @@ func TestALaunchThatCannotReadAKeptPodsTemplateSaysWhatItTook(t *testing.T) {
 // binds another pod (launcherBound). The tester's launcher, connected and authenticated for that
 // pod, can still read its workspace, so it does, and the daemon is handed the commit it found: one
 // launcher bound wrongly is no word that no process of the pod can read (GPT-6.1 Sol's point 4 on
-// #5285 at 0259f8af, INFRA-341's reviewer's point 4).
+// #5285 at 0259f8af, the Legion reviewer's point 4).
 func TestALaunchIntoAPodWithUnboundLaunchersReadsThroughALauncherThatCan(t *testing.T) {
 	var took tookLaunches
 	g := newRig(t, nil, withWorkspaceRead(oneCommitRead), withOptions(func(o *Options) { o.LaunchTook = took.record }))
@@ -232,7 +232,7 @@ func relaunchKept(g *rig, r *Runtime, loc runtime.Locator) (runtime.Locator, err
 
 // wantVolumeTaken holds the runtime to having handed the daemon one replacement that deletes the
 // issue's Sandbox of uid sandbox and the kept volume it owns (runtime.TakesVolume, its target the
-// Sandbox's uid), naming no pod, since the Sandbox ran none of its own (INFRA-341's reviewer's
+// Sandbox's uid), naming no pod, since the Sandbox ran none of its own (the Legion reviewer's
 // minor point 4), with why the launch made it and why no read could be made, which names because.
 func (l *tookLaunches) wantVolumeTaken(t *testing.T, sandbox types.UID, because string) {
 	t.Helper()
@@ -248,14 +248,14 @@ func (l *tookLaunches) wantVolumeTaken(t *testing.T, sandbox types.UID, because 
 }
 
 // A launch that deletes a kept volume its issue's Sandbox holds with no pod of its own (GPT-6.1
-// Sol's point 3 on #5285 at 0259f8af, INFRA-341's reviewer's point 5): the round's ReplacePod left
+// Sol's point 3 on #5285 at 0259f8af, the Legion reviewer's point 5): the round's ReplacePod left
 // the Sandbox Suspended with its volume, and the next launch replaces the Sandbox, and the volume
 // with it, because the launch renders another disk shape or because the volume carries the reset
 // mark. No process runs to read the volume, so the daemon is handed that no read could be made, and
 // an act that takes the volume, whose target is the Sandbox's uid (GPT-6.1 Sol's point 4 on #5285
 // at fa9deb04). It names no pod: the Sandbox's record of a displaced pod may be of a pod of the
-// Sandbox it replaced, which never used this volume (INFRA-341's reviewer's minor point 4). Each
-// launch is held to completing, and the Sandbox to being a new one (INFRA-341's reviewer's minor
+// Sandbox it replaced, which never used this volume (the Legion reviewer's minor point 4). Each
+// launch is held to completing, and the Sandbox to being a new one (the Legion reviewer's minor
 // point 6, GPT-6.1 Sol's non-blocking point on fa9deb04). The control is a launch that keeps the
 // volume: it completes in the same Sandbox, deletes no disk and is handed nothing.
 func TestALaunchThatDeletesAKeptVolumeWithNoPodSaysWhatItTook(t *testing.T) {
@@ -306,7 +306,7 @@ func TestALaunchThatDeletesAKeptVolumeWithNoPodSaysWhatItTook(t *testing.T) {
 	})
 }
 
-// GPT-6.1 Sol's point 4 on #5285 at fa9deb04 (INFRA-341's reviewer's point B): an act that takes a
+// GPT-6.1 Sol's point 4 on #5285 at fa9deb04 (the Legion reviewer's point B): an act that takes a
 // kept volume (runtime.TakesVolume) is made only once the Sandbox of its target uid is gone. The
 // launch above that resets the volume records its act (Options.LaunchTakes) before it deletes the
 // Sandbox. Where it stops before the delete, as a daemon that stops there, and where the API server

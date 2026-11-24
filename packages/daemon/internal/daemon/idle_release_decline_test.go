@@ -272,7 +272,7 @@ func TestAnIdleReleaseDeclinesAWorkspaceWithOneUnpushedCommitAndKeepsThePod(t *t
 // (pods.IdleDecline.HoldsUnpushedWork): the disk holds the work the check found, so the pass holds
 // the pod as unowned_unpushed_work, records that hold, marks no release and asks for no teardown.
 // A role started again in that same pod and stopped since can have pushed the work, so the
-// release reads the disk again through the pod's launcher first (INFRA-341's reviewer's point 2 on
+// release reads the disk again through the pod's launcher first (the Legion reviewer's point 2 on
 // R6), and a read that finds the same work keeps the pod as before. Only a pod made again — the
 // runtime answering another pod for the issue than the one the check read — takes the disk the
 // decline spoke of, and the pass releases it.

@@ -150,7 +150,7 @@ type Runtime struct {
 	launchTakes runtime.LaunchTakes
 	// launchTook is Options.LaunchTook: the daemon's word of a launch's own replacement of an
 	// issue pod, with what the read of its workspace found (relaunch, R7 of
-	// dispatch://INFRA-3271), nil for a runtime that tells nobody.
+	// #5285), nil for a runtime that tells nobody.
 	launchTook runtime.LaunchTook
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every

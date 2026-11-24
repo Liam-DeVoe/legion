@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// The one answer to a workspace read, whichever process read (INFRA-341's reviewer's point 9 on R6
-// of dispatch://INFRA-3271): a long failure is cut to one answer line that keeps its end, where
+// The one answer to a workspace read, whichever process read (the Legion reviewer's point 9 on R6
+// of #5285): a long failure is cut to one answer line that keeps its end, where
 // workspace.RunCommand puts the note about a stale git lock; a request that names no id is no
 // answer; a read lists at most MaxWorkspaceWorkCommits
 // commits and counts them all.

@@ -435,7 +435,7 @@ func disarmLegacyConfig(jjDir, repo string) error {
 // would migrate into the configuration it reads (disarmLegacyConfig, which removes each). The clone
 // is derived from dir's place in the layout and from nothing inside dir, by the derivation
 // WorkspaceOf makes (layoutWorkspace). The Kubernetes issue pod's launcher calls it before its
-// workspace read (R6 of dispatch://INFRA-3271). An error is a workspace in which no jj command is
+// workspace read (R6 of #5285). An error is a workspace in which no jj command is
 // to run.
 func GuardJJ(dir string) error {
 	located, err := layoutWorkspace(dir)
@@ -531,8 +531,8 @@ func refuseEnclosingWorkspace(dir string) error {
 // own (os.SameFile), or the command is refused, naming both, before jj opens a repository Legion
 // did not provision and before anything there is removed. The refusal names the path the file
 // holds quoted (%q), as data: a role writes it, and the refusal reaches the issue's architect and
-// the controller as a read's error (INFRA-341's reviewer's point 14 on R6 of
-// dispatch://INFRA-3271), so a path of several lines reaches them as one quoted string.
+// the controller as a read's error (the Legion reviewer's point 14 on R6 of
+// #5285), so a path of several lines reaches them as one quoted string.
 func sharedRepository(jjDir, clone string) (string, error) {
 	own := filepath.Join(jjDir, "repo")
 	if clone != "" {

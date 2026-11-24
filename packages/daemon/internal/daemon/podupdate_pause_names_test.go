@@ -192,7 +192,7 @@ func TestALiveRoundNamesTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
 // tester answered and runs in the pod, and the round passes over the reviewer, which keeps its
 // session. The read of the workspace finds nothing. Before the bound the implementer
 // holds the replacement (R8). At the bound the pod is replaced once, through the tester's process.
-// The replacement reads the workspace before it is made (R7 of dispatch://INFRA-3271), past the
+// The replacement reads the workspace before it is made (R7 of #5285), past the
 // bound too, and neither the reviewer the round passed over nor the implementer whose launch the
 // pause owes stops the read: the replacement's line names the read the tester made and the reviewer
 // the round did not wait for. R8 keeps the pod for the implementer before the bound only, so the

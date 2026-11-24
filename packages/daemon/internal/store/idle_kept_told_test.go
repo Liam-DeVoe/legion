@@ -11,7 +11,7 @@ import (
 )
 
 // A pod no role process runs in, kept for its disk, is told to the issue's architect once for each
-// pod (R6 of dispatch://INFRA-3271; Sol's point 3 and INFRA-341's reviewer's points 3 and 14 on it).
+// pod (R6 of #5285; Sol's point 3 and the Legion reviewer's points 3 and 14 on it).
 // Whether the architect was told of a pod is a fact of the decline row of its own, apart from the
 // work a read found and the role the read went through, so each row below is a sequence of
 // declines of one issue's release, read by the pod's launcher (Kept) or through a role, and

@@ -31,7 +31,7 @@ const (
 	// daemon reads the pod's workspace and replaces the pod. Where that read finds work that no
 	// branch or tag on origin holds, or cannot be made, over a drift the pod's roles can keep
 	// working under, the round ends with no replacement instead: the daemon releases the held
-	// task, and the process works on in the kept pod (R7 of dispatch://INFRA-3271,
+	// task, and the process works on in the kept pod (R7 of #5285,
 	// internal/daemon's roundKeeps).
 	UpdateStateAnswered UpdateState = "answered"
 )

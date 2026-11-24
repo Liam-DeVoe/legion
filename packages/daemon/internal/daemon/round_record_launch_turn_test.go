@@ -1,7 +1,7 @@
 package daemon
 
-// GPT-6.1 Sol's point 2 on #5285 at fa9deb04 (INFRA-341's reviewer's minor point 1), which
-// INFRA-3118's architect ruled a fix inside R7: a launch that makes a round's own replacement
+// GPT-6.1 Sol's point 2 on #5285 at fa9deb04 (the Legion reviewer's minor point 1), which
+// the spec's architect ruled a fix inside R7: a launch that makes a round's own replacement
 // (roundPodEndsAtLaunch) commits the replacement's record, and only then keeps in memory that it
 // replaced the pod (replacedAtLaunch), all under the pod's launch turn, and suspends the pod after.
 // A sweep that reads the record in that gap sees no launch in memory and the pod still running. It

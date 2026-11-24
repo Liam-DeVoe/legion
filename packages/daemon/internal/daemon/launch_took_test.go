@@ -1,6 +1,6 @@
 package daemon
 
-// R7 of dispatch://INFRA-3271 (verification v15's c-forced-replacement-told), the daemon's side of a
+// R7 of #5285 (verification v15's c-forced-replacement-told), the daemon's side of a
 // launch's own replacement of an issue pod: the Sandbox runtime hands the daemon what the
 // replacement is about to take before it acts (sandbox.Options.LaunchTakes) and what it took once
 // it has acted (sandbox.Options.LaunchTook, runtime.TakenPod; internal/runtime/sandbox's

@@ -718,8 +718,8 @@ func TestALeftPodCloseHoldsOnATurnThatEndedDuringItsRead(t *testing.T) {
 	})
 }
 
-// The same turn beside a read that found work (INFRA-341's reviewer's point 2 on R6 of
-// dispatch://INFRA-3271): the read can have missed the push that turn made, so the check records no
+// The same turn beside a read that found work (the Legion reviewer's point 2 on R6 of
+// #5285): the read can have missed the push that turn made, so the check records no
 // decline from it, which would hold the pod as holding work until another turn, and a pod whose
 // claims then stop holds it for good (pods.IdleDecline.HoldsUnpushedWork). The check finishes
 // without acting and the next pass reads the workspace again. The control is the same read with

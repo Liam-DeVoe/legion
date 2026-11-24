@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The launcher's workspace read (R6 of dispatch://INFRA-3271): the daemon releases a pod no claim
+// The launcher's workspace read (R6 of #5285): the daemon releases a pod no claim
 // owns, or closes a left pod with no live claim, only after a read of the issue workspace found
 // nothing that origin does not hold. No role process runs in such a pod, so no role's shim can
 // read it; the launcher runs there for the pod's whole life, and its working directory is the

@@ -106,7 +106,7 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 // informer holds it, without a decode, as IssueSandbox does, and it decodes only the claim
 // templates, at the end, for the shape. The daemon asks it only at those three moments, and at the
 // release of a pod no claim owns only for a pod that release would otherwise take with a read of its
-// disk (internal/daemon's unowned pass, R6 of dispatch://INFRA-3271), never at every tick of the
+// disk (internal/daemon's unowned pass, R6 of #5285), never at every tick of the
 // idle pass, so that decode is rare. Anything that leaves the Sandbox unread answers
 // false, and the issue of a round is then told what the issue of a pod on an ephemeral disk is
 // told: the work its roles did not push is lost.

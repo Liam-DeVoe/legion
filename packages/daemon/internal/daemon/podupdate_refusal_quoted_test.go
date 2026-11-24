@@ -1,13 +1,13 @@
 package daemon
 
-// GPT-6.1 Sol's point 5 on #5285 at 0259f8af (INFRA-341's reviewer's point 14 of R6, for the one
-// notice it had not reached), which INFRA-3118's architect ruled a fix inside R7: the update-stalled
+// GPT-6.1 Sol's point 5 on #5285 at 0259f8af (the Legion reviewer's point 14 of R6, for the one
+// notice it had not reached), which the spec's architect ruled a fix inside R7: the update-stalled
 // notice of a round whose replacement failed carries the runtime's error as data. The error is a
 // far side's text, which can hold line breaks and words that read as instructions; the controller
 // reads the notice's reason and publishes it, so the error goes in as one quoted string, labelled as
 // the runtime's quoted error, and no line of it can stand as a line of the notice. The quoted string
-// is held to its literal text (INFRA-341's reviewer's minor point 12 on fa9deb04: the test built it
-// with the production expression). INFRA-341's reviewer's minor point 5 on fa9deb04: a call that
+// is held to its literal text (the Legion reviewer's minor point 12 on fa9deb04: the test built it
+// with the production expression). The Legion reviewer's minor point 5 on fa9deb04: a call that
 // failed may have failed after its suspension landed, so the notice no longer says that the runtime
 // refused the replacement, and says what the daemon does if the pod was taken.
 

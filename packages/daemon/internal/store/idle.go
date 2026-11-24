@@ -488,7 +488,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // one row that tells the role the release waits for its push; nil sends none.
 //
 // Kept is the decline of a pod in which no role process runs, whose launcher made the read (R6 of
-// dispatch://INFRA-3271): the release of a pod no claim owns or the close of a left pod with no live
+// #5285): the release of a pod no claim owns or the close of a left pod with no live
 // claim. Its Role is the issue's architect and its Message the architect's workspace-kept notice,
 // which recordDecline queues once for each pod, whether the read found work or failed.
 type IdleReleaseDecline struct {
@@ -544,7 +544,7 @@ func (s *Store) DeclineLeftPodClose(ctx context.Context, project, issue string, 
 
 // DeclinePodReplacement records an update round's keep of issue's pod, whose read of the workspace
 // before the round's replacement found work that origin does not hold or could not be made, over a
-// drift the pod's roles can keep working under (R7 of dispatch://INFRA-3271, internal/daemon's
+// drift the pod's roles can keep working under (R7 of #5285, internal/daemon's
 // keepPodForRound), and each later read of that pod that finds the same or other work. The round
 // records this as a release's decline is recorded (recordDecline), under the shared serializer:
 // the pod (PodUID), the work, the moment, and the role told. The idle rule reads the same row
@@ -579,7 +579,7 @@ func (s *Store) declinePodDelete(ctx context.Context, project, issue string, dec
 }
 
 // PodKeep is what an update round reads of an issue's pod before it opens a round over it (R7 of
-// dispatch://INFRA-3271, internal/daemon's podKeptForWork): the decline on record, read as the
+// #5285, internal/daemon's podKeptForWork): the decline on record, read as the
 // idle view reads it (the zero decline where none stands), and the issue's phase, whose open
 // phase's worker is the role an update round's keep tells where it runs in the pod ("" where the
 // store holds no such issue).
@@ -628,8 +628,8 @@ func readIdleDecline(ctx context.Context, tx pgx.Tx, project, issue string) (pod
 // started a turn since, or is in a turn now, starting, or of a launch not yet known, by the one
 // condition a release's mark is overtaken on (claimWorkedSince). A read that such a turn ran beside
 // is no word of the disk: the turn can have pushed the work the read found, or made more, so
-// internal/daemon's checkLeftPodWorkspace records no decline from it (INFRA-341's reviewer's point
-// 2 on R6 of dispatch://INFRA-3271). It joins the caller's transaction, under the lifecycle
+// internal/daemon's checkLeftPodWorkspace records no decline from it (the Legion reviewer's point
+// 2 on R6 of #5285). It joins the caller's transaction, under the lifecycle
 // serializer the caller holds.
 func (s *Store) LeftPodTurned(ctx context.Context, project, issue string, turnStart time.Time) (bool, error) {
 	var turned bool
@@ -670,7 +670,7 @@ var leftPodTurnedQuery = `select exists (select 1 from claims where project = $1
 // moment, and queues its message.
 //
 // A Kept decline, the read of a pod's launcher where no role process runs (R6 of
-// dispatch://INFRA-3271), tells the issue's architect once for each pod, and whether the architect
+// #5285), tells the issue's architect once for each pod, and whether the architect
 // was told of a pod is a fact of the row of its own (told_pod), apart from the work the read found
 // and the role the row names: its message is queued unless told_pod names this pod, or either the
 // row's told pod or this decline's is one the runtime could not name ("") while a notice was

@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// R6 of dispatch://INFRA-3271: where no role process runs in an issue pod, the pod's launcher reads
+// R6 of #5285: where no role process runs in an issue pod, the pod's launcher reads
 // the issue workspace for the daemon, with the count a role's shim makes (workspace.ReadWork). The
 // launcher's hello says it answers the read, and it answers on the connection the daemon asked
 // through: a clean workspace reads as no work, and a change in the working copy reads as work, the
@@ -36,7 +36,7 @@ import (
 // jj also loads a configuration file inside the repository's own directories, the repository's
 // `config.toml` and the workspace's `.jj/workspace-config.toml`, where the id file beside it is
 // missing: it migrates that file into the configuration it reads. So the launcher runs the guards
-// the daemon's own jj commands run first (workspace.GuardJJ, INFRA-341's reviewer's point 6): the
+// the daemon's own jj commands run first (workspace.GuardJJ, the Legion reviewer's point 6): the
 // workspace and the shared clone that Location lays out beside it, and no legacy configuration
 // file, each removed before jj runs. A role that deletes the id files and writes both legacy files
 // with the signing program gets neither loaded: the read runs no program and counts the work, and

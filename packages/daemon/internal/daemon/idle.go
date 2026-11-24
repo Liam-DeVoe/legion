@@ -676,7 +676,7 @@ func (m *markRows) add(payload record.OutboxPayload, boundary bool) error {
 // which queues the stops and the suspension only where its read finds nothing that origin does not
 // hold (checkLeftPodWorkspace), since those delete the disk. A close that is Read runs no role to
 // read through, so its pod's launcher reads the pod (launcherCheck, with Close: R6 of
-// dispatch://INFRA-3271); any other close names its live roles, and is read through the open
+// #5285); any other close names its live roles, and is read through the open
 // phase's worker where it is live, else the first live role (CloseRoles). The rows carry no
 // release and the store writes them with no mark (store.IdleReleaseMark.Close).
 func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
@@ -700,7 +700,7 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 }
 
 // launcherCheck is the workspace check the pod's launcher reads where no role process runs in the
-// pod (record.IssueWorkspaceCheck.Launcher, R6 of dispatch://INFRA-3271): of the release of a pod no
+// pod (record.IssueWorkspaceCheck.Launcher, R6 of #5285): of the release of a pod no
 // claim owns and, with Close, of the close of a left pod with no live claim. It names no role,
 // since no role's shim reads it, and names the pod the pass read the runtime holding, which binds
 // the read and the teardown or suspension a clean read lets through (PodUID).
@@ -765,7 +765,7 @@ func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now, tu
 // check first (record.IssueWorkspaceCheck, Launcher): no role process runs in the pod, so its
 // launcher reads the workspace, and a read that finds work that origin does not hold, or that
 // cannot be made, declines the release and keeps the pod (checkIssueWorkspace, R6 of
-// dispatch://INFRA-3271, launcherCheck), and that decline tells the issue's architect. The
+// #5285, launcherCheck), and that decline tells the issue's architect. The
 // teardown waits for the check (store.IssueRelease), and a start or a turn of a claim of the issue
 // after the mark cancels it (store's releaseOvertaken), so a read a later turn could make stale
 // deletes nothing. A release of a pod whose Sandbox keeps a volume the next pod mounts deletes no

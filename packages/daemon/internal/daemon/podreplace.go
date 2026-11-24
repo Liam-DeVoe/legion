@@ -1,7 +1,7 @@
 package daemon
 
 // podreplace.go is the record of each replacement of an issue pod that may take a disk (R7 of
-// dispatch://INFRA-3271; GPT-6.1 Sol's points 1 and 2 on #5285 at 0259f8af, which INFRA-3118's
+// #5285; GPT-6.1 Sol's points 1 and 2 on #5285 at 0259f8af, which the spec's
 // architect ruled fixes inside R7). The daemon writes the record before the runtime acts, under an
 // identity of the act's own and never the pod's, with what the act takes and its target (store's
 // pod_replacements; Sol's points 3 and 4 at fa9deb04): an update round's replacement before the
@@ -126,7 +126,7 @@ func (r replacementRecord) taken(recorded store.PodReplacement) runtime.TakenPod
 // launch (roundPodEndsAtLaunch) before the answer that has the launch suspend the pod. The record
 // is written before the last word, so the last word is the last decision before the suspension
 // (GPT-6.1 Sol's point 1 on #5285 at fa9deb04), and a pod the runtime finds gone at the call is a
-// replacement whose record stands, and whose notice goes out (INFRA-341's reviewer's minor point
+// replacement whose record stands, and whose notice goes out (the Legion reviewer's minor point
 // 3). A record that cannot be encoded or written is logged, and nothing is replaced: a reading
 // nobody recorded may not delete a disk. It answers the record, and false where none is written.
 func (s *supervision) recordRoundReplacement(ctx context.Context, issue, round, pod, reasons string, read workspaceRead) (store.PodReplacement, bool) {
@@ -234,7 +234,7 @@ func (s *supervision) recordLaunchTakes(ctx context.Context, taken runtime.Taken
 // (finishReplacement): each commit and the working-copy change by name, or that no read could be
 // made and why (launchTakenMessage). A read that found nothing tells nobody. The record is the
 // launch's one write of it: a record a sweep finished already is not written again
-// (INFRA-341's reviewer's points B and minor 7), and a store that refuses the finish leaves the
+// (the Legion reviewer's points B and minor 7), and a store that refuses the finish leaves the
 // record for a later sweep (finishReplacements), so the launch, which is done, loses nothing of it.
 func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod) {
 	attrs := []any{"claim", taken.Claim, "why", taken.Why}
@@ -254,7 +254,7 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 // 0259f8af). claims is the sweep's snapshot.
 //
 // The runtime reads each act under the pod's launch turn, from the cluster's API (GPT-6.1 Sol's
-// point 2 on #5285 at fa9deb04, INFRA-341's reviewer's point A). Every act a record names is made
+// point 2 on #5285 at fa9deb04, the Legion reviewer's point A). Every act a record names is made
 // under that turn: a launch's own replacement (recordLaunchTakes, then tellLaunchTook), a launch's
 // replacement as the round's own (roundPodEndsAtLaunch), and a round's replacement by the
 // runtime's call, whose last word comes under it (recordedDue). So a turn another holds is an act

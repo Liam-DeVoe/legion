@@ -878,9 +878,9 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 // launchRounds is the seam between the Kubernetes runtime, which openSupervision builds before the
 // supervision exists, and three hooks of the supervision's that a launch calls under the pod's
 // launch turn: the reading of the update round over a pod a launch would keep
-// (supervision.roundPodEndsAtLaunch, dispatch://INFRA-4109 R7), the record of what a launch's own
+// (supervision.roundPodEndsAtLaunch), the record of what a launch's own
 // replacement of an issue pod is about to take (supervision.recordLaunchTakes), and the telling of
-// what it took (supervision.tellLaunchTook, R7 of dispatch://INFRA-3271). prepareSandbox makes one
+// what it took (supervision.tellLaunchTook, R7 of #5285). prepareSandbox makes one
 // and hands its ends, its takes and its took to the runtime (sandbox.Options.RoundPodEnds,
 // LaunchTakes, LaunchTook), and the boot fills it the moment the supervision is open
 // (plan.launchRounds, daemon.run).

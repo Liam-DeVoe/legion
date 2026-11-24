@@ -105,7 +105,7 @@ const keptPodControllerSource = "workspace-kept-controller"
 
 // diskNotice is whether kind is a notice of an issue pod's disk that must not finish with nobody
 // told: a pod the daemon keeps for its disk (record.WorkspaceKeptNotice), or a replacement that
-// still took a disk that may hold work (record.WorkspaceTakenNotice, R7 of dispatch://INFRA-3271).
+// still took a disk that may hold work (record.WorkspaceTakenNotice, R7 of #5285).
 // Where its owning architect will not hold its role again, it goes to the controller
 // (tellControllerOfKeptPod).
 func diskNotice(kind record.NoticeKind) bool {
@@ -113,8 +113,8 @@ func diskNotice(kind record.NoticeKind) bool {
 }
 
 // tellControllerOfKeptPod hands a notice of an issue pod's disk (diskNotice) whose owning
-// architect will not hold its role again, for why, to the project's controller (INFRA-341's
-// reviewer's point 1 on R6 of dispatch://INFRA-3271). The daemon counts a kept pod told when it
+// architect will not hold its role again, for why, to the project's controller (the Legion
+// reviewer's point 1 on R6 of #5285). The daemon counts a kept pod told when it
 // queues the notice (store's recordDecline), and keeps the pod until a read finds it clean, and a
 // workspace-taken notice is the one word of a disk that is gone, so neither must finish with
 // nobody told: the controller gets a controller notice of its own with the notice's words
@@ -126,7 +126,7 @@ func diskNotice(kind record.NoticeKind) bool {
 // is no spec decision, so every place a notice finishes undelivered because nobody will hold its
 // architect's role calls both, before its own line: an architect that will not hold its role
 // again (noticeAnswered), and one that stopped with its finished tree, found before a publish
-// (deliverNotice, INFRA-341's reviewer's point 3 on R6's review fixes) or before a re-hold
+// (deliverNotice, the Legion reviewer's point 3 on R6's review fixes) or before a re-hold
 // (reholdNotice). Every outcome logs one line that pairs the undelivered row with what became of
 // its notice, sent or handed over before under the same key, once the transaction has committed.
 func (r *outbox) tellControllerOfKeptPod(ctx context.Context, issue string, row int64, notice record.Notice, key string,

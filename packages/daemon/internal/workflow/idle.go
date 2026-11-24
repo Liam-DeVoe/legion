@@ -232,7 +232,7 @@ type IdleDecision struct {
 	// process runs, whose disk the release or the close deletes and no read has shown clean: the
 	// daemon has the pod's launcher read the workspace first (runtime.PodWorkspaceReader,
 	// record.IssueWorkspaceCheck.Launcher), and deletes the disk only where that read finds
-	// nothing that origin does not hold (R6 of dispatch://INFRA-3271). A release of a pod whose
+	// nothing that origin does not hold (R6 of #5285). A release of a pod whose
 	// Sandbox keeps a volume the issue's next pod mounts deletes no disk, and reads nothing.
 	Read bool
 	// HoldKinds names the hold more closely for the one hold that has more to say:
@@ -467,7 +467,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 // (LeftPodCloseAfterCheck). With no live claim no role runs to read through, so the decision is
 // Read: the check is the pod's launcher's (record.IssueWorkspaceCheck, Launcher and Close), and
 // its clean read queues the suspension alone, fenced on the turn start the pass read (R6 of
-// dispatch://INFRA-3271). A read that finds work, or that fails, records a decline instead, and
+// #5285). A read that finds work, or that fails, records a decline instead, and
 // the pod stays with its work. While that check waits on the lane, the pod is held as this
 // daemon's own act under way (IdleHoldReleasing, pods.IdleView.WorkspaceCheckQueued), which no
 // record counts.
@@ -708,7 +708,7 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 // The decision names no roles. There is no live claim to suspend, so the release this answers
 // changes no claim at all: it takes the Sandbox, the pod and the disk, and every path that starts
 // a claim of the issue again builds all three afresh. It deletes that disk only after a read shows
-// it clean (R6 of dispatch://INFRA-3271): the release is Read, and its first row has the pod's
+// it clean (R6 of #5285): the release is Read, and its first row has the pod's
 // launcher read the workspace (record.IssueWorkspaceCheck.Launcher). Where the issue's Sandbox
 // keeps a volume the issue's next pod mounts (pods.IdleView.KeptVolume), the release keeps that
 // Sandbox and its volume, so it deletes no disk and reads nothing.

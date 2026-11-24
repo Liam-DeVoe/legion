@@ -43,7 +43,7 @@ func CutAnswerError(reason string) string {
 // AnswerWorkspaceWork is the one answer to a `workspace-work` request, whichever process makes the
 // read (workspace.ReadWork): a role's shim (internal/shim's workspaceWork), or, where no role
 // process runs in the pod, the pod's launcher (internal/launcher's readWorkspace, R6 of
-// dispatch://INFRA-3271). A request that fails validation is answered with the reason where it
+// #5285). A request that fails validation is answered with the reason where it
 // names an id, and where it names none it is no answer at all: refused is that reason, which the
 // caller logs before it drops the frame. A read that fails is answered with its error, cut to one
 // line (CutAnswerError). A read that succeeds lists the first MaxWorkspaceWorkCommits work commits

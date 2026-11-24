@@ -233,7 +233,7 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // A launch that replaces a pod a round covers on its own account — a pod that is not live with a
 // pod of its own in a Sandbox not suspended, a moved facet (movedInPod), another disk shape
 // (supersededDisk), unbound launchers (launcherBound), or a stored template it cannot read
-// (keptBy) — takes a disk that may hold work no role pushed (R7 of dispatch://INFRA-3271). Before
+// (keptBy) — takes a disk that may hold work no role pushed (R7 of #5285). Before
 // the suspension it has a launcher of the pod read the issue's workspace where the pod is live and
 // a connected launcher of it can read, and has the daemon record what the act takes
 // (launchTaken, Options.LaunchTakes). Once the pod is gone, and the Sandbox too where the act
@@ -319,7 +319,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// does not drift, or a facet fixed for the pod's life moved. Where a round covers the pod,
 	// these are the reasons this launch replaces it before it reads the pod's bindings and stored
 	// template (below), and took is why it replaces the pod on its own account, rather than as a
-	// round's own replacement (R7 of dispatch://INFRA-3271). The daemon is told what such a
+	// round's own replacement (R7 of #5285). The daemon is told what such a
 	// replacement took (Options.LaunchTook, launchTaken), which reads no workspace of a pod that is
 	// not live. A pod no round covers is this launch's to replace for every drift above as well, and
 	// the daemon is told nothing of it (took "").
@@ -343,7 +343,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// A pod whose launchers are not bound to it is replaced by this launch on its own account
 	// (launcherBound), so the bindings are read before the update round is asked of the pod: a
 	// round's reading that keeps the pod, and tells the issue it stays, would be followed at once
-	// by this launch's replacement of it (INFRA-341's reviewer's point 10).
+	// by this launch's replacement of it (the Legion reviewer's point 10).
 	if !replace {
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
@@ -568,7 +568,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 }
 
 // launchTaken is what a launch's own replacement of an issue pod a round covers takes (R7 of
-// dispatch://INFRA-3271), for the daemon's record and word of it (Options.LaunchTakes,
+// #5285), for the daemon's record and word of it (Options.LaunchTakes,
 // LaunchTook), or nil where the launch takes no disk the daemon is to be told of: took is "" (the
 // launch keeps the pod), or kind is a round's own replacement (roundReplacement, which the daemon
 // makes and tells of itself). Each replacement has an operation identity of its own
@@ -581,7 +581,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 //     takes that volume (runtime.TakesVolume, the Sandbox's uid its target), and no process runs
 //     to read it, so it says no read could be made. It names the pod only where the Sandbox still
 //     owns one: the pod a Sandbox names as displaced may be a pod of the Sandbox it replaced, which
-//     never used this volume (INFRA-341's reviewer's minor point 4). A launch that replaces no
+//     never used this volume (the Legion reviewer's minor point 4). A launch that replaces no
 //     Sandbox, or a Sandbox that owns no volume, takes nothing.
 //   - A pod of the Sandbox's own takes its disk with it, unless the launch keeps the issue's volume
 //     and its Sandbox (keepsVolume, replacement ""): the pod (runtime.TakesPod, the pod's uid its
