@@ -1182,6 +1182,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The one block a plan task stands directly under (`parent`, read from this release). */
+  parent: "stands under",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
