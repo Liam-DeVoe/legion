@@ -293,28 +293,42 @@ func TestAMergersAskOwedAgainBeforeItsRowEndsReachesItsNewLaunch(t *testing.T) {
 	askToldOnce(t, pool, publisher, ask, machine.Claim().Generation)
 }
 
-// finishHeld is a record.Store whose next finish of an outbox row runs before first, on the
-// finishing transaction's own goroutine: the finish is the row's end, so the test acts between
-// everything the executor read and that end.
-type finishHeld struct {
+// endHeld is a record.Store that runs before once, inside the transaction that ends an outbox row,
+// after every read that end makes and before it commits: at the first read of an issue in the
+// transaction that finished the row under its lease, which is the last read of a merge-forward
+// ask's end (endMergeForwardAsk, after the claim's, and workflow.MergeForwardAskEnded), or at a
+// plain finish, a row's settle, which reads nothing after it.
+type endHeld struct {
 	record.Store
 	before func()
+	ending pgx.Tx
 }
 
-func (s *finishHeld) FinishOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error {
+func (s *endHeld) run() {
 	if before := s.before; before != nil {
 		s.before = nil
 		before()
 	}
-	return s.Store.FinishOutbox(ctx, tx, id, leaseToken)
 }
 
-func (s *finishHeld) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error {
-	if before := s.before; before != nil {
-		s.before = nil
-		before()
+func (s *endHeld) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error {
+	if s.before != nil {
+		s.ending = tx
 	}
 	return s.Store.FinishLeasedOutbox(ctx, tx, id, leaseToken)
+}
+
+func (s *endHeld) Issue(ctx context.Context, tx pgx.Tx, key string) (*record.Issue, error) {
+	if s.ending != nil && tx == s.ending {
+		s.ending = nil
+		s.run()
+	}
+	return s.Store.Issue(ctx, tx, key)
+}
+
+func (s *endHeld) FinishOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error {
+	s.run()
+	return s.Store.FinishOutbox(ctx, tx, id, leaseToken)
 }
 
 // factLockWaitedOn is whether a backend of pool's database waits for an advisory lock now: the
@@ -328,15 +342,15 @@ func factLockWaitedOn(pool *store.Pool) bool {
 }
 
 // The implementer's claim has failed when the ask's row runs, and is still failed at every read
-// of the executor's, the last of them under the fact lock that holds the row's end. The operator's
-// retry relaunches the implementer while the end holds that lock, and the new launch's ready waits
-// for it; applied once the end has committed, the ready finds no row of the ask queued and sends
-// the ask itself, so the new launch is told it once. A ready that read the row before its end
-// landed would leave the ask to a row that never reached the launch.
+// of the executor's, the last of them under the fact lock that holds the row's end. After those
+// reads and before the end commits, the operator's retry relaunches the implementer, and the new
+// launch's ready waits for the lock; applied once the end has committed, the ready finds no row of
+// the ask queued and sends the ask itself, so the new launch is told it once. A ready that read the
+// row before its end landed would leave the ask to a row that never reached the launch.
 func TestAReadyThatComesWhileAnAsksRowEndsAtAFailedClaimSendsTheAsk(t *testing.T) {
 	t.Parallel()
 	runner, pool, publisher, machine := failedWithTheAsk(t, phase.Testing, implementersAsk(), owedAsk)
-	held := &finishHeld{Store: runner.records}
+	held := &endHeld{Store: runner.records}
 	runner.records = held
 	readied := make(chan error, 1)
 	bound := testwait.Bounded(t, 30*time.Second, time.Second)
@@ -347,6 +361,9 @@ func TestAReadyThatComesWhileAnAsksRowEndsAtAFailedClaimSendsTheAsk(t *testing.T
 		}
 	}
 	drainAt(t, runner, 0, "the attempt that ends the row at the failed claim")
+	if held.before != nil {
+		t.Fatalf("the row's end ran nothing between its reads and its commit: the relaunch came between nothing")
+	}
 	select {
 	case err := <-readied:
 		if err != nil {
