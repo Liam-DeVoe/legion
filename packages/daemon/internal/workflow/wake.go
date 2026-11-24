@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	_ "embed"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -20,8 +22,9 @@ import (
 
 // A wake brings a released pod back. The release suspended every claim of the pod with the source
 // `released` and deleted the pod, its disk and its Sandbox; a wake resumes one of those claims,
-// which relaunches its session in a fresh pod whose launcher restores the workspace bundle the
-// release saved. Five things wake a pod, and this file holds four of them: the CI settlement, the
+// which relaunches its session in a fresh pod, whose workspace provisioning makes again from the
+// issue's pushed branch unless the pod is on a kept volume: the release took the pod only once its
+// workspace held nothing that origin does not hold (WorkspaceAfterRelease). Five things wake a pod, and this file holds four of them: the CI settlement, the
 // role message and the agent message the Envoy listener reports, and the stored backstop. The
 // fifth — a delivery the daemon already had for a role of the pod — needs nothing here, because a
 // delivery to a suspended claim already resumes it (supervise's deliverResuming) and the delivery
@@ -124,7 +127,9 @@ type WakeStop int
 
 const (
 	// StoppedByRelease: an idle release stopped the session and took its pod, which the wake
-	// brings back as a fresh pod with the workspace the release saved.
+	// brings back as a fresh pod. The release took the pod only because no working copy and no
+	// bookmark of its workspace held a commit origin does not hold and no working-copy change was in
+	// it (WorkspaceAfterRelease).
 	StoppedByRelease WakeStop = iota
 	// StoppedByPause: a project's pause stopped the session and kept its pod, its workspace and
 	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759), unless a later release
@@ -145,6 +150,31 @@ func (s WakeStop) word() string {
 // roleMessageKeep is how long Envoy keeps a message published to a role topic while no session
 // holds the role (dispatch://INFRA-2846's R7), which a role-message wake names.
 const roleMessageKeep = time.Hour
+
+// WorkspaceAfterRelease is what a role woken after an idle release is told of its workspace. The
+// wake's record names what stopped the session (texts.PodWakeRecord.StoppedBy) and carries no
+// sentence of it: the role's prompt does, word for word, in its passage on a `pod-wake` task with
+// `stopped_by: release` and in its passage on the notice its plugin writes when its launcher finds
+// the workspace made again (`notice: workspace recreated`, packages/pi-shared/src/workspace-recreated.ts,
+// which names the issue and its branch), in internal/prompts' go/worker-common.md and
+// go/architect-common.md. So a woken role reads one account of its workspace, and what it says is
+// what the daemon knows: the release's check keeps a pod whose workspace holds a commit on a
+// working copy or a local bookmark that no branch or tag on origin holds, or a working-copy change
+// (internal/daemon's checkIssueWorkspace, the shim's workspaceWorkRevset), and a pod whose disk
+// went with it comes back with a workspace that provisioning made from the issue's pushed branch.
+// The read does not count a commit that no working copy and no bookmark reaches, a side head a
+// role left with `jj new <base>`, so the release can take one, and the text says so: it never says
+// that nothing unpushed was lost, nor that unpushed work was kept, since the daemon keeps none. A
+// kept volume is the one disk that does not go, which is why the second sentence is conditional.
+// The text is the data file workspace-after-release.txt beside this one, embedded here; this
+// package's test (workspace_after_release_test.go) holds each prompt passage to it and the
+// plugin's test (packages/pi-shared/src/workspace-recreated.test.ts) holds each prompt passage on
+// the notice to the file, byte for byte. The file's one line ends in a newline, which the text does
+// not carry.
+var WorkspaceAfterRelease = strings.TrimSuffix(workspaceAfterReleaseFile, "\n")
+
+//go:embed workspace-after-release.txt
+var workspaceAfterReleaseFile string
 
 // PodWake is the one task a woken role is given, as the record of its kind: which wake brought
 // its pod back to issue (kind, the pods.Wake words) and what that wake was about, other than a CI

@@ -4,7 +4,6 @@ import { restartMessage, type StallCall, TURN_ENDED_NOTICE } from "./stall-watch
 import {
   WORKSPACE_RECREATED_NOTICE,
   WORKSPACE_RECREATED_VARIABLE,
-  WORKSPACE_RESTORED_VARIABLE,
   workspaceRecreatedNotice,
 } from "./workspace-recreated";
 
@@ -26,15 +25,12 @@ function call(toolName: string, toolCallId: string): StallCall {
 // different values in every field: a sentence the same in every notice of its kind is what two
 // renderings would share.
 test("every plugin notice states its fields", () => {
-  const workspace = (issue: string, restored: string) =>
-    workspaceRecreatedNotice(
-      { [WORKSPACE_RECREATED_VARIABLE]: "true", [WORKSPACE_RESTORED_VARIABLE]: restored },
-      issue
-    )?.content ?? "";
+  const workspace = (issue: string) =>
+    workspaceRecreatedNotice({ [WORKSPACE_RECREATED_VARIABLE]: "true" }, issue)?.content ?? "";
   const renderings = [
     {
       declared: WORKSPACE_RECREATED_NOTICE,
-      variants: [[workspace("REPO-43", "true"), workspace("CORE-7", "false")]],
+      variants: [[workspace("REPO-43"), workspace("CORE-7")]],
     },
     {
       declared: TURN_ENDED_NOTICE,

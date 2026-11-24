@@ -1051,6 +1051,30 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 			goldenWant("issue", issue, "pull_request", ref, "head", head, "landed", landed, "conflicts_with", base, "phase", phase.Merging,
 				"approval_owed", landed))
 	}
+
+	// idle-release-declined, as the release's workspace check queues it (declineFor, declinedRecord):
+	// a workspace that holds commits origin does not hold, each named, and one whose working copy
+	// holds a change beside more commits than the read names (shimwire.MaxWorkspaceWorkCommits),
+	// which counts the others. The role the check read through is the open phase's worker, or the
+	// architect where no worker is live.
+	{
+		reader := []claim.Role{claim.RoleImplementer, claim.RoleArchitect}[r.n-1]
+		commits := make([]string, 2+r.n)
+		for i := range commits {
+			commits[i] = r.sha(fmt.Sprintf("declined/commit/%d", i))
+		}
+		b.roleMessage(r, "commits", reader, issue, declinedRecord(issue, runtime.WorkspaceWork{Head: r.sha("declined/head"), Count: len(commits), Commits: commits}),
+			texts.UrgencyOf(texts.IdleReleaseDeclined, reader, texts.Variant{}),
+			goldenWant("issue", issue, "changed", false, "commits", len(commits), "commit_ids", commits))
+		named := make([]string, shimwire.MaxWorkspaceWorkCommits)
+		for i := range named {
+			named[i] = r.sha(fmt.Sprintf("declined/cut/%d", i))
+		}
+		head, count := r.sha("declined/cut/head"), shimwire.MaxWorkspaceWorkCommits+5*r.n
+		b.roleMessage(r, "changed-cut", reader, issue, declinedRecord(issue, runtime.WorkspaceWork{Head: head, Changed: true, Count: count, Commits: named}),
+			texts.UrgencyOf(texts.IdleReleaseDeclined, reader, texts.Variant{}),
+			goldenWant("issue", issue, "changed", true, "head", head, "commits", count, "commit_ids", named, "more_commit_ids", count-len(named)))
+	}
 }
 
 // catchUps adds the catch-up of a root's architect and of a child's own architect

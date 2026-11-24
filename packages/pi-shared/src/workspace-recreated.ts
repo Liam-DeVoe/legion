@@ -17,24 +17,20 @@ import { noticeKind, noticeText } from "@legion/envoy-client/notice-text";
 export const WORKSPACE_RECREATED_VARIABLE = "LEGION_WORKSPACE_RECREATED";
 
 /**
- * How the same launcher says whether the pod's one workspace-bundle restore put the released
- * workspace's unpushed work back (`LEGION_WORKSPACE_RESTORED`, `launcher.WorkspaceRestoredVariable`).
- * A workspace recreated because the daemon released an idle pod holds the work its session
- * remembers; one recreated by anything else holds only what was pushed, and the agent is told
- * which of the two it has.
- */
-export const WORKSPACE_RESTORED_VARIABLE = "LEGION_WORKSPACE_RESTORED";
-
-/**
- * The recreated-workspace notice: the issue, the issue's branch (`legion/<KEY>`), which
- * provisioning built the workspace from where anything was pushed to it, and whether the tracked
- * work the session had not pushed was put back (`unpushed_work: restored`) or is gone
- * (`unpushed_work: lost`). What the agent does on it is in its role prompt.
+ * The recreated-workspace notice: the issue and the issue's branch (`legion/<KEY>`), which
+ * provisioning built the workspace from where anything was pushed to it. The daemon keeps no copy of
+ * a workspace, and the launcher cannot tell an idle release from any other end of the pod, so the
+ * notice states nothing of the work the session had not pushed. What that is, and what the agent
+ * does on the notice, is its role prompt's passage on `notice: workspace recreated`
+ * (packages/daemon/internal/prompts/go/worker-common.md and architect-common.md): what the idle
+ * release keeps, in the words of the daemon's data file
+ * `packages/daemon/internal/workflow/workspace-after-release.txt` (`WorkspaceAfterRelease` in
+ * packages/daemon/internal/workflow/wake.go), which `workspace-recreated.test.ts` holds each such
+ * passage to, and what any other end of the pod costs.
  */
 export const WORKSPACE_RECREATED_NOTICE = noticeKind("legion", "workspace recreated", [
   "issue",
   "branch",
-  "unpushed_work",
 ]);
 
 /**
@@ -65,10 +61,6 @@ export function workspaceRecreatedNotice(
   if (!workspaceRecreated(environment)) return undefined;
   return {
     id: crypto.randomUUID(),
-    content: noticeText(WORKSPACE_RECREATED_NOTICE, {
-      issue,
-      branch: `legion/${issue}`,
-      unpushed_work: environment[WORKSPACE_RESTORED_VARIABLE] === "true" ? "restored" : "lost",
-    }),
+    content: noticeText(WORKSPACE_RECREATED_NOTICE, { issue, branch: `legion/${issue}` }),
   };
 }

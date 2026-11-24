@@ -9,18 +9,14 @@ import {
 import {
   WORKSPACE_RECREATED_NOTICE,
   WORKSPACE_RECREATED_VARIABLE,
-  WORKSPACE_RESTORED_VARIABLE,
 } from "@legion/pi-shared/workspace-recreated";
 import { noticeProblems } from "@legion/test-fixtures/notice-fields";
 import { createStallAborter } from "./stall-abort";
 import { workspaceRecreatedMessage, workspaceRecreatedNotice } from "./workspace-recreated";
 
 /** The text of the workspace notice this host saves for a session on `issue`. */
-function workspaceShown(issue: string, restored: "true" | "false"): string {
-  const notice = workspaceRecreatedNotice(
-    { [WORKSPACE_RECREATED_VARIABLE]: "true", [WORKSPACE_RESTORED_VARIABLE]: restored },
-    issue
-  );
+function workspaceShown(issue: string): string {
+  const notice = workspaceRecreatedNotice({ [WORKSPACE_RECREATED_VARIABLE]: "true" }, issue);
   if (notice === undefined) throw new Error("a recreated workspace earned no notice");
   return workspaceRecreatedMessage(notice).content;
 }
@@ -60,7 +56,7 @@ test("every plugin notice states its fields", () => {
   const renderings = [
     {
       declared: WORKSPACE_RECREATED_NOTICE,
-      variants: [[workspaceShown("REPO-43", "false"), workspaceShown("CORE-7", "true")]],
+      variants: [[workspaceShown("REPO-43"), workspaceShown("CORE-7")]],
     },
     {
       declared: TURN_ENDED_NOTICE,

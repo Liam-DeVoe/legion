@@ -231,7 +231,6 @@ const environmentKeys = [
   "LEGION_CONTROLLER_SECRET_FILE",
   "DISPATCH_TOKEN_FILE",
   "LEGION_WORKSPACE_RECREATED",
-  "LEGION_WORKSPACE_RESTORED",
   "DISPATCH_STATE_DIR",
   "ENVOY_CONFIG_FILE",
   "OMP_PROFILE",
@@ -7186,7 +7185,6 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
       notice: "workspace recreated",
       issue: "REPO-43",
       branch: "legion/REPO-43",
-      unpushed_work: "lost",
     });
     expect(JSON.stringify(notices(pane))).not.toMatch(/\bmain\b/);
   });

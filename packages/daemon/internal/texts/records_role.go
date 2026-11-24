@@ -394,3 +394,26 @@ const (
 	QueueEventReasonNone = "none"
 	QueueReadOnGitHub    = "github"
 )
+
+// IdleReleaseDeclinedRecord is the message to the role an idle release's workspace check read the
+// workspace through, or the check of the close of a pod whose issue left the workflow, that the
+// check found work that no branch or tag on origin holds and so the daemon did not take the pod
+// (internal/daemon's declineFor, cybermonklabs/legion#4869): the issue, whether the working copy
+// holds a change (changed) with the commit it sits on where it does (head), the count of the
+// commits on a working copy or a bookmark that origin does not hold (commits), and their ids
+// (commit_ids), the first ones the read names (shimwire.MaxWorkspaceWorkCommits at most), with the
+// count of the others where the read named fewer than the count (more_commit_ids). Main's message
+// gave the rest as sentences: that the idle release does not take a pod whose workspace holds such
+// work, so the pod stays and the release waits for the role's push; that the daemon does not push
+// for it; the step, to push the work it keeps to legion/<KEY> and abandon the rest; and that it is
+// told once. Those are the passage on this kind of each reader's prompt. The reader is the role the
+// check read through: the worker of the issue's open phase where it is live, otherwise the first
+// live role, the architect among them, so every role of an issue pod is a reader.
+type IdleReleaseDeclinedRecord struct {
+	RoleHead
+	Changed       bool     `json:"changed"`
+	Head          string   `json:"head,omitempty"`
+	Commits       int      `json:"commits"`
+	CommitIDs     []string `json:"commit_ids,omitempty"`
+	MoreCommitIDs int      `json:"more_commit_ids,omitempty"`
+}

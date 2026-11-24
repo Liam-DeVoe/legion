@@ -13500,6 +13500,129 @@
         "phase": "merging",
         "review_asked": "approve_landed_by_sha_with_footer_naming_it_or_request_changes"
       }
+    },
+    {
+      "kind": "idle-release-declined",
+      "variant": "changed-cut",
+      "sample": 1,
+      "reader": "implementer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "idle-release-declined on ALPHA-1260",
+      "payload": {
+        "kind": "idle-release-declined",
+        "issue": "ALPHA-1260",
+        "changed": true,
+        "head": "7e99a297d8d3466ba3ca4ea395a7589e67053c64",
+        "commits": 25,
+        "commit_ids": [
+          "0ea8721ae9a4aef90a84d8375dffeca6875e1f28",
+          "29f0d370a461e2e30dbf1e3b31dda66c74e3bed9",
+          "e30d0f79abf46a43fda7a69ed661e6f734a3099b",
+          "23529223597ea1037ea28005cf52d600677c4812",
+          "7d575cade73b9a7a6b46263d0dee311198ffe59d",
+          "6acf7f8045d1aa65d58292811cd4bf76a9e40721",
+          "053a52166acd5425dd8e7e5edb3e4358922cddcf",
+          "d75106cbae484e07dce4650decd086820809d89b",
+          "b10c4cac395a393af2fd78f4c56f03f697c86baa",
+          "8196aa2c83b9dc6e557d901891adba9f45b4070e",
+          "542f8c5bfdac11a4c4e530ebad5100d73bf13ff6",
+          "c26244271dc1039a2f628b3f25a5e9c937d8e3fd",
+          "ad4295b8fad198f9403f658b9578a0f8c277d794",
+          "05d07c945932fafb3116445e241767121747c1bf",
+          "1b0a430559121f549bf9cf09152c6f2aee443425",
+          "14704ebf30a8cae1f75fe53b4b0184c36ce8e724",
+          "1fae47ebcb12331ce1571421c4dbe7929392a5ca",
+          "e69f4c5ce9898bb3ded26c13145878cd58609df4",
+          "9c6b23516b518e1855800dce9fbae9eb00b1583a",
+          "5e6c8aaed7199c0dd5c6a24417de0eaa0fd1cc7e"
+        ],
+        "more_commit_ids": 5
+      }
+    },
+    {
+      "kind": "idle-release-declined",
+      "variant": "changed-cut",
+      "sample": 2,
+      "reader": "architect",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "idle-release-declined on BRAVO-2260",
+      "payload": {
+        "kind": "idle-release-declined",
+        "issue": "BRAVO-2260",
+        "changed": true,
+        "head": "6e5da412064579f47c9fe39d01dc5736d8dc17a3",
+        "commits": 30,
+        "commit_ids": [
+          "ae4bf82e3f8de38eecd5931506335759d5d455d2",
+          "066ceb87a4dcc7ea1c7e9e325a72bae9a9472266",
+          "360e6559212a1460308297b9b5a89d9804cbf1a4",
+          "19bb13e91a578c52c72ef939d69cf873caac1a13",
+          "e6fb1506d19e60a12bfbe506d779c10dc31be8a9",
+          "71118e85082e4532223ea198e07142dccb83a51b",
+          "724e5e9e21b414ac1cb0cafd9a878232492b6b5f",
+          "493f5b9253bb8da3d73f025aa1bceff8a8cdf7fe",
+          "b7490e646028409119cf9b562e5163960cfec8dd",
+          "fb7db4cd8d899053233ce648b00e028485cf5e1f",
+          "8557d9a62bcfebfed21846de8185357e666882c6",
+          "f6f8f035d84175ee6941c23776658e6c46a4f963",
+          "56b929a4274d007cca90f2415a132907e7c1d856",
+          "d9a594b67c4b516663e00f1c809e8b6c912aab7b",
+          "91781bdb0be68b9157300a78c9159f7762297b54",
+          "a41e655b010d762f8e09e2d9e0bb10fa49e1d6d4",
+          "80eec4cc88ef77c572c7ac76cabded479c7a81a3",
+          "a0042d09fc1be7e8bc486662344f7724b30fa9ba",
+          "beb8c471fd942046dcfed73bad926903fa19e778",
+          "0885beb3264d673a8bf4139e905edfd720ed169d"
+        ],
+        "more_commit_ids": 10
+      }
+    },
+    {
+      "kind": "idle-release-declined",
+      "variant": "commits",
+      "sample": 1,
+      "reader": "implementer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "idle-release-declined on ALPHA-1260",
+      "payload": {
+        "kind": "idle-release-declined",
+        "issue": "ALPHA-1260",
+        "changed": false,
+        "commits": 3,
+        "commit_ids": [
+          "432de2688d06fc3ef4e00aa3cf23a303a820e14e",
+          "04b406e03fdba2e2030c39c3bb42b2bc9f88ccf6",
+          "4266768241a5c01c6a4d78f81317e93c0a26ff78"
+        ]
+      }
+    },
+    {
+      "kind": "idle-release-declined",
+      "variant": "commits",
+      "sample": 2,
+      "reader": "architect",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "idle-release-declined on BRAVO-2260",
+      "payload": {
+        "kind": "idle-release-declined",
+        "issue": "BRAVO-2260",
+        "changed": false,
+        "commits": 4,
+        "commit_ids": [
+          "d9ad58a2172975468ea9bfc520530473612fe55f",
+          "a6941ec718cbd41a64a6c0c4d432543fd4425e0b",
+          "9c0683a4a8bd3daccf18d4cd59ddcdc926e93871",
+          "960bbf12fd6f6bb36015aebe0cfdd236fb4f6507"
+        ]
+      }
     }
   ]
 }

@@ -11,12 +11,13 @@ import (
 	"unicode/utf16"
 
 	"github.com/sjawhar/legion/daemon/internal/texts"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
 // c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0, c03d3afe, b537812f, 2f7ee6dc,
-// 054cd5ca, 74cb6855, 7cb1f229, 7df64124, f8a5195a, 40b01992 or 1e54a54b for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
+// 054cd5ca, 74cb6855, 7cb1f229, 7df64124, f8a5195a, 40b01992, 1e54a54b or 5d64e1b7 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
 // stand for any text), the readers, and the passage of the readers' prompt
 // (packages/daemon/internal/prompts) that gives each of them its own rule for the step, quoted
 // word for word from the one line of the file that holds it.
@@ -205,10 +206,17 @@ var goldenSteps = []goldenStep{
 		goPrompts + "architect-root.md", "re-admission cleared that generation and its design gate with it"},
 	{texts.ArchitectStart, " Its pull request has merged, so the daemon starts no worker for that phase, and the root stands there until the rest of its tree has left the workflow, when the daemon closes it.", "architect (root)",
 		goPrompts + "architect-root.md", "which stands in its phase until the rest of its tree has left the workflow and the daemon closes it."},
-	{texts.PodWake, "Your issue's pod had been released while it was idle, and this wake brought it back. Your session, your workspace and any work you had not pushed are as you left them. ", "planner, implementer, tester, reviewer, merger",
-		goPrompts + "worker-common.md", "Your session, your workspace and the work you had not pushed are as you left them."},
-	{texts.PodWake, "Your issue's pod had been released while it was idle, and this wake brought it back. Your session, your workspace and any work you had not pushed are as you left them. ", "architect",
-		goPrompts + "architect-common.md", "Your session and your workspace are as you left them."},
+	// Main's wake after a release at 5d64e1b7 (workflow/wake.go:WakeTask, "..." +
+	// WorkspaceAfterRelease + " Your session is as you left it. "), whose middle is the data file
+	// workflow.WorkspaceAfterRelease reads, word for word in the passage of each reader's prompt.
+	{texts.PodWake, "Your issue's pod had been released while it was idle, and this wake brought it back. %s Your session is as you left it. ", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "Your session is as you left it."},
+	{texts.PodWake, "Your issue's pod had been released while it was idle, and this wake brought it back. %s Your session is as you left it. ", "architect",
+		goPrompts + "architect-common.md", "Your session is as you left it."},
+	{texts.PodWake, workflow.WorkspaceAfterRelease, "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "With `stopped_by: release`, the daemon tells you this of your workspace. " + workflow.WorkspaceAfterRelease},
+	{texts.PodWake, workflow.WorkspaceAfterRelease, "architect",
+		goPrompts + "architect-common.md", "With `stopped_by: release`, the daemon tells you this of your workspace. " + workflow.WorkspaceAfterRelease},
 	{texts.PodWake, ". Read the checks before you decide anything.", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "read the checks before you decide anything."},
 	{texts.PodWake, ". Read the checks before you decide anything.", "architect",
@@ -235,6 +243,24 @@ var goldenSteps = []goldenStep{
 		goPrompts + "worker-common.md", "`pause` is a pause of your project, which kept your pod, unless a later release of the pod, which did not stop your session, took it, and then the wake brought your session back in a new pod."},
 	{texts.PodWake, "Your project was paused, and its pause stopped your session. This wake started it again. Your pod, your workspace and any work you had not pushed are as you left them. ", "architect",
 		goPrompts + "architect-common.md", "`pause` is a pause of your project, which kept your pod, unless a later release of the pod, which did not stop your session, took it, and then the wake brought your session back in a new pod."},
+	{texts.PodWake, "Your project was paused, and its pause stopped your session. This wake started it again. Your pod, your workspace and any work you had not pushed are as you left them. ", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "With `stopped_by: pause`, your workspace and the work you had not pushed are as you left them, since the pause kept your pod, unless that later release took it."},
+	{texts.PodWake, "Your project was paused, and its pause stopped your session. This wake started it again. Your pod, your workspace and any work you had not pushed are as you left them. ", "architect",
+		goPrompts + "architect-common.md", "With `stopped_by: pause`, your workspace and the work you had not pushed are as you left them, since the pause kept your pod, unless that later release took it."},
+	// Main's message of a declined idle release at 5d64e1b7 (daemon/outbox.go:declineMessage),
+	// told to the role the release's check read the workspace through: any role of the issue pod.
+	{texts.IdleReleaseDeclined, "The idle release does not take a pod whose workspace holds such work, so the pod stays and the release waits for your push. The daemon does not push for you.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "The idle release does not take a pod whose workspace holds such work, so the pod stays and the release waits for your push. The daemon does not push for you."},
+	{texts.IdleReleaseDeclined, "The idle release does not take a pod whose workspace holds such work, so the pod stays and the release waits for your push. The daemon does not push for you.", "architect",
+		goPrompts + "architect-common.md", "The idle release does not take a pod whose workspace holds such work, so the pod stays and the release waits for your push. The daemon does not push for you."},
+	{texts.IdleReleaseDeclined, "Push the work that you keep to legion/%s, and abandon the work that you do not keep. ", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "Push the work that you keep to `legion/<issue>`, and abandon the work that you do not keep."},
+	{texts.IdleReleaseDeclined, "Push the work that you keep to legion/%s, and abandon the work that you do not keep. ", "architect",
+		goPrompts + "architect-common.md", "Push the work that you keep to `legion/<issue>`, and abandon the work that you do not keep."},
+	{texts.IdleReleaseDeclined, "You are told this once: the daemon reads the workspace again after a turn of a role of this issue, and tells you again only if it finds other work.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "You are told this once: the daemon reads the workspace again after a turn of a role of this issue, and tells you again only if it finds other work."},
+	{texts.IdleReleaseDeclined, "You are told this once: the daemon reads the workspace again after a turn of a role of this issue, and tells you again only if it finds other work.", "architect",
+		goPrompts + "architect-common.md", "You are told this once: the daemon reads the workspace again after a turn of a role of this issue, and tells you again only if it finds other work."},
 	{texts.PodWake, ") while your session was stopped. A message that Envoy or Dispatch stored for your session reaches you in this session. ", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "`wake: agent_message` is a message sent to your session (`session`) while your session was stopped."},
 	{texts.PodWake, ") while your session was stopped. A message that Envoy or Dispatch stored for your session reaches you in this session. ", "architect",

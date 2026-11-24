@@ -440,6 +440,10 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"issue", "pull_request", "head"}},
 	{kind: texts.MergeQueueRemoval, variants: []string{"unread"}, from: "record/outbox.go:MergeQueueRemoval.Message (no read of GitHub)",
 		keys: []string{"unread"}},
+	{kind: texts.IdleReleaseDeclined, variants: []string{"commits"}, from: "daemon/outbox.go:declineMessage at 5d64e1b7 (the commits on a working copy or a bookmark that origin does not hold, by count and by id)",
+		keys: []string{"issue", "changed", "commits", "commit_ids"}},
+	{kind: texts.IdleReleaseDeclined, variants: []string{"changed-cut"}, from: "daemon/outbox.go:declineMessage at 5d64e1b7 (the working copy's change with its commit, and the first of more commits than the read names, with how many there are)",
+		keys: []string{"issue", "changed", "head", "commits", "commit_ids", "more_commit_ids"}},
 }
 
 // goldenStatusKeys is where a sample of a head's CI names the commit statuses that did not pass

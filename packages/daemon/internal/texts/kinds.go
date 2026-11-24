@@ -82,17 +82,18 @@ const (
 
 // The role messages: the messages that the daemon publishes to a role.
 const (
-	CISettled          Kind = "ci-settled"
-	GateMoved          Kind = "gate-moved"
-	ApprovedRoundStuck Kind = "approved-round-stuck"
-	MemoryKill         Kind = "memory-kill"
-	HookPrompt         Kind = "hook-prompt"
-	UpdateAsk          Kind = "update-ask"
-	MergeQueueRemoval  Kind = "merge-queue-removal"
-	MergeForwardAsk    Kind = "merge-forward-ask"
-	MergeForwardHold   Kind = "merge-forward-hold"
-	MergeForwardLanded Kind = "merge-forward-landed"
-	MergeForwardReview Kind = "merge-forward-review"
+	CISettled           Kind = "ci-settled"
+	GateMoved           Kind = "gate-moved"
+	ApprovedRoundStuck  Kind = "approved-round-stuck"
+	MemoryKill          Kind = "memory-kill"
+	HookPrompt          Kind = "hook-prompt"
+	UpdateAsk           Kind = "update-ask"
+	MergeQueueRemoval   Kind = "merge-queue-removal"
+	MergeForwardAsk     Kind = "merge-forward-ask"
+	MergeForwardHold    Kind = "merge-forward-hold"
+	MergeForwardLanded  Kind = "merge-forward-landed"
+	MergeForwardReview  Kind = "merge-forward-review"
+	IdleReleaseDeclined Kind = "idle-release-declined"
 )
 
 // list is the one list: one entry for each kind, in the order of the constants above.
@@ -171,4 +172,5 @@ var list = []Entry{
 	{Kind: MergeForwardHold, Form: RoleMessage, Record: MergeForwardHoldRecord{}, Readers: toHoldingWorkers},
 	{Kind: MergeForwardLanded, Form: RoleMessage, Record: MergeForwardLandedRecord{}, Readers: toHoldingWorkers},
 	{Kind: MergeForwardReview, Form: RoleMessage, Record: MergeForwardReviewRecord{}, Readers: toReviewer},
+	{Kind: IdleReleaseDeclined, Form: RoleMessage, Record: IdleReleaseDeclinedRecord{}, Readers: toPodRoles},
 }

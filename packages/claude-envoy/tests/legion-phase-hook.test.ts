@@ -755,7 +755,7 @@ test("a worker whose workspace was recreated is told once, as a turn of its own"
   try {
     boot()
     await waitFor(async () => inbox.length > 0, "the recreated-workspace notice")
-    expect(noticeFields(inbox[0] ?? "")).toMatchObject({
+    expect(noticeFields(inbox[0] ?? "")).toEqual({
       notice: "workspace recreated",
       issue: "LEGION-208",
       branch: "legion/LEGION-208",
