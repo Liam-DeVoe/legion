@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -44,7 +45,7 @@ func TestAStartThatNamesNoAgentAndMakesItsClaimRecordsTheAgentTheStepsGive(t *te
 			token := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 			if tc.planned {
 				owner := mustClaimToken(t, issue.Key, claim.RoleArchitect)
-				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 					steps := record.NameAgents(nil, nil, []record.PlanStep{
 						{Issue: issue.Key, Generation: 1, Task: "p", Position: 1, Role: "implementer", Type: stepplan.TypeImplementation, AgentKey: "k"},
 						{Issue: issue.Key, Generation: 1, Task: "p", Position: 2, Role: "reviewer", Type: stepplan.TypeReview},

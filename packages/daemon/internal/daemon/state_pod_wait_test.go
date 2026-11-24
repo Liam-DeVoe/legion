@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The served state names each start that waits for its issue's pod by the claim it starts, as
@@ -67,7 +68,7 @@ func TestTheStateNamesEachStartThatWaitsForItsPodByTheClaimItStarts(t *testing.T
 	waits(claim.RoleTester, "", "tester")
 
 	var served map[string]any
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		state, err := projection.Project(ctx, projection.Inputs{Tx: tx, Store: records,
 			Project: issue.Project, Now: time.Now().UTC()})
 		if err != nil {
