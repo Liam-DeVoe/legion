@@ -1235,8 +1235,9 @@ starts two real envoy-dispatch processes against one Postgres and one NATS - whi
 production runs - and drives them over HTTP, their own logs and NATS's own consumer and
 stream reads. They build only under the `multiprocess` tag, so envoy-go's unit run leaves
 them out, and they are a job of their own for the reason dispatch-memory is: envoy-go's unit
-step runs under go test's default ten-minute package deadline, which the memory tests
-already took red at 600 s (run 37116639565), and one row here waits out a durable hand-over
+step holds each package's test binary to 15 minutes (database-skips.sh's `--timeout 15m`), the
+memory tests took envoy-go red at go test's ten-minute default, 600 s (run 37116639565), when
+it had no other, and one row here waits out a durable hand-over
 or a maintenance loop's tick, tens of seconds each. Each row's NATS runs in its own test
 process (internal/testnats), so the job needs no container runtime of its own. It runs only
 the tests the tag adds, its -run from .github/scripts/go-tagged-tests.sh, for the reasons
@@ -1319,8 +1320,9 @@ enforced by the other through the reread fan-out, and signal a process to watch 
 readiness while it serves a request out past the old shutdown budget.
 
 They build only under the `multiprocess` tag, so envoy-go's unit run leaves them out, and
-they could not run there in any case: that step runs under go test's default ten-minute
-package deadline, which the memory tests already took red at 600 s (run 37116639565), and the
+they could not run there in any case: that step holds each package's test binary to 15 minutes
+(database-skips.sh's `--timeout 15m`), the memory tests took envoy-go red at go test's
+ten-minute default, 600 s (run 37116639565), when it had no other, and the
 rows here wait out a migration race, a ten-second fan-out window and a twelve-second drain,
 tens of seconds each. A leg of go-envoy rather than a step in dispatch-multiprocess, whose
 Postgres service and shape this copies: the broker's two-process tests run on every pull
