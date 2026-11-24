@@ -579,6 +579,12 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // as the release of any other hold queues the status of the phase it ends in: every later status
 // write of the issue is keyed on the record's status (Engine.status), the retro's that ends the
 // hold among them (startHeldRetro), and finds the board at it only once this row has put it back.
+//
+// A root held for its fix or for its CI (fixOrCIHold) is held by no plan, and no failure a retry
+// answers either: the fix's end or the CI at its head ends the hold. A todo on it keeps the hold
+// and the task where it stands, keeps the observation, and logs why; it queues the status the
+// record keeps over the todo, with the reason a release of the hold is refused with posted beside
+// it (planHoldRefusal), as for a root held for its children. No step starts again.
 func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	released, err := e.observedIssue(ctx, tx, issue, fact)
 	if err != nil {
@@ -589,6 +595,20 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	switch {
+	case fixOrCIHold(issue):
+		refusal, err := e.planHoldRefusal(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		if refusal == nil {
+			return fmt.Errorf("a todo on %s held for %s found no refusal of a release of its hold", issue.Key, issue.Hold.Reason)
+		}
+		e.logOnCommit(ctx, "workflow: a todo leaves the hold of a root held for its fix or its CI; the fix's end or the CI's pass moves it on",
+			"issue", issue.Key, "reason", issue.Hold.Reason, "from", issue.Hold.From)
+		if err := e.WriteIssue(ctx, tx, released); err != nil {
+			return err
+		}
+		return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(issue.Status, fact.Status, refusal.Message))
 	case !planHold(issue, w.Stored):
 	case record.HeldForChildren(issue):
 		wait, err := e.heldParentWaitOf(ctx, tx, issue)
@@ -2339,7 +2359,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
 // names which of the guard's four readings failed. served is whether the table holds a backward
-// row of the issue's phase for the move's target.
+// row of the phase the issue stands at (backwardFrom) for the move's target.
 //
 // The fourth is the tester's own move out of testing, to any target a row serves: a testing step
 // ends by the states Dispatch publishes of its checks at the head the tester tested, and by
@@ -2348,26 +2368,45 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // with its evidence for a check it cannot verify, and completes, which sends the issue back with a
 // task naming each check that does not pass.
 //
+// An issue held before its retro for its CI is read at the retro, where its hold stands, and the
+// move out of it is its owner's: no role runs the retro while it waits, and the owner's move back
+// is what ends the hold before CI passes. Every other hold is read in held, which no line holds,
+// so no row serves a move from it.
+//
 // It is a function of the issue and the fact alone and reads no pull request, so the rule that a
 // merged change never moves back is none of its readings: backward, which holds the transaction,
 // reads the issue's pull request after this answers "" and refuses that move itself.
 func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) string {
+	from, mover := backwardFrom(issue)
 	switch {
 	case fact.To == "":
 		return fmt.Sprintf("a backward move names the phase it moves to; the %s's move of %s named none, so it changed nothing",
 			fact.Requester, issue.Key)
 	case !served:
 		return fmt.Sprintf("a backward move reaches an earlier phase, and no backward row of %s serves %s; the %s's move of %s changed nothing",
-			issue.Phase, fact.To, fact.Requester, issue.Key)
-	case phase.RoleFor(issue.Phase) != fact.Requester:
+			from, fact.To, fact.Requester, issue.Key)
+	case mover != fact.Requester && record.HeldFor(issue, record.HoldForCI):
+		return fmt.Sprintf("%s waits before its retro for its CI, and its owner alone moves it back before CI passes, so the %s's move to %s changed nothing",
+			issue.Key, fact.Requester, fact.To)
+	case mover != fact.Requester:
 		return fmt.Sprintf("a backward move is the role running the issue's phase: %s of %s is the %s's, so the %s's move to %s changed nothing",
-			issue.Phase, issue.Key, phase.RoleFor(issue.Phase), fact.Requester, fact.To)
-	case issue.Phase == phase.Testing && fact.Requester == claim.RoleTester:
+			from, issue.Key, mover, fact.Requester, fact.To)
+	case from == phase.Testing && fact.Requester == claim.RoleTester:
 		return fmt.Sprintf("a testing step ends by the states of its checks at the head the tester tested, so the tester's move of %s back to %s changed nothing: "+
 			"record each check's result with `dispatch result` (a fail, with its evidence, for a check you cannot verify), then complete with handoff_complete, "+
 			"which sends the issue back with a task naming each check that does not pass", issue.Key, fact.To)
 	}
 	return ""
+}
+
+// backwardFrom is the phase a backward move of issue leaves and the role whose move it is: the
+// phase the issue stands in and the role running it, and for an issue held before its retro for
+// its CI the retro the hold stands in (record.StandsAt) and its owner, the architect.
+func backwardFrom(issue record.Issue) (phase.Phase, claim.Role) {
+	if record.HeldFor(issue, record.HoldForCI) {
+		return record.StandsAt(issue), claim.RoleArchitect
+	}
+	return issue.Phase, phase.RoleFor(issue.Phase)
 }
 
 // phaseNow is the phase issue stands in now, read back after a move wrote it (retryPhase, and
@@ -2389,6 +2428,12 @@ func (e *Engine) phaseNow(ctx context.Context, tx pgx.Tx, issue record.Issue) (p
 // GitHub reopens no merged pull request and its change is already on the base branch, so an
 // earlier phase has no pull request left to carry new work; that work goes to an issue whose pull
 // request is still open, which the architect decides.
+//
+// The owner's move back of an issue held before its retro for its CI is the owner's act that ends
+// that hold before CI passes: it is read at the retro the hold stands in (backwardFrom), and the
+// one move out of a hold makes it (moveFromHold), which puts the retro back and moves the task
+// from there, so the return is counted under the pair of the retro and the target, where the
+// deployment's hooks fire.
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -2417,7 +2462,8 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
-	_, served := w.row(issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase})
+	from, _ := backwardFrom(*issue)
+	_, served := w.row(from, TriggerBackward, fact.To, Snapshot{Phase: from})
 	if why := backwardRefusal(*issue, fact, served); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
@@ -2434,7 +2480,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	}
 	// The move posts its reason on the issue, so a reason Dispatch would refuse there is refused
 	// here, before anything moves (backwardReasonRefusal).
-	if code, why := backwardReasonRefusal(issue.Phase, fact.To, fact.Reason); code != "" {
+	if code, why := backwardReasonRefusal(from, fact.To, fact.Reason); code != "" {
 		return refused(code, why), nil
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
@@ -2447,6 +2493,9 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	row, err := e.phaseRow(ctx, tx, issue.Key, fact.Requester)
 	if err != nil {
 		return intake.Result{}, err
+	}
+	if record.HeldFor(*issue, record.HoldForCI) {
+		return intake.Result{}, e.moveFromHold(ctx, tx, *issue, w, fact.To, from, row, pr, fact.Reason)
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
 }
@@ -2493,11 +2542,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 			"A parent is accepted only once no issue beneath it is still in the workflow. Sign off again when each of them has left the workflow.",
 			issue.Key, strings.Join(open, ", "))+" "+endChildrenFirst("acceptance")), nil
 	}
-	accepted, err := e.acceptedRole(ctx, tx, *issue)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	report, err := e.phaseRow(ctx, tx, issue.Key, accepted)
+	report, err := e.acceptedReport(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2506,6 +2551,18 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")
+}
+
+// acceptedReport is the report the owner's acceptance of issue accepts: the phases row of the role
+// of the step before the acceptance (acceptedRole). The sign-off hands it to the step after it, and
+// where the acceptance is the task's last step the retro is told it (retroReport), whether the
+// sign-off moves the issue into its retro or a hold before the retro does and its release starts it.
+func (e *Engine) acceptedReport(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.PhaseRow, error) {
+	accepted, err := e.acceptedRole(ctx, tx, issue)
+	if err != nil {
+		return record.PhaseRow{}, err
+	}
+	return e.phaseRow(ctx, tx, issue.Key, accepted)
 }
 
 // acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
@@ -2590,15 +2647,15 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	// A parent whose last step is not the owner's acceptance passes that step into its retro, and while an
-	// issue beneath it is still in the workflow Legion holds it before its retro instead
-	// (beneathRetro, holdBeforeRetro).
-	beneath, err := e.beneathRetro(ctx, tx, issue, w, row.To)
+	// A task whose last step passes into its retro is held before it instead while something
+	// holds it there: the issues beneath a parent, a fix of its task, or the CI at its head
+	// (retroHold, holdBeforeRetro).
+	hold, waits, err := e.retroHold(ctx, tx, issue, w, row.To)
 	if err != nil {
 		return err
 	}
-	if len(beneath) > 0 {
-		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, handoff, pr, reason, beneath)
+	if hold != "" {
+		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, handoff, pr, reason, hold, waits)
 	}
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, row.To, PhaseStatus(row.To), nil, handoff, pr, reason)
 	if err != nil {
@@ -2734,29 +2791,34 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 	return from, nil
 }
 
-// holdBeforeRetro is the pass of a parent's last step into to, its retro, on a task whose last
-// step is not the owner's acceptance while beneath, the issues beneath it, are still in the
-// workflow (beneathRetro): the task moves to its retro's place and the issue stands in held for
-// its children
-// (record.HoldForChildren) instead. The hold writes no status, since held has none, starts no
-// retro, which starts once none of them is open beneath it (releaseHeldParents), and keeps the last step's
-// handoff for the retro's task, which no clear of a handoff takes. The architect is told the pass
-// and the hold. The hold asks nothing of the merge forward: the retro is where the merge comes
+// holdBeforeRetro is the pass of a task's last step into to, its retro, while something holds it
+// before the retro (retroHold): the task moves to its retro's place and the issue stands in held
+// for hold, with waits what it waits for, instead. Whatever the hold, it stands from retro, which
+// keeps no slot. The hold writes no status, since held has none, starts no retro, which starts once
+// nothing holds the issue before it (startHeldRetro), and keeps the last step's handoff for the
+// retro's task, which no clear of a handoff takes. The owner is told the pass as the move into the
+// retro would tell it (noticeFor), and the hold by one retro-held notice of its reason
+// (endHoldNotice). The hold asks nothing of the merge forward: the retro is where the merge comes
 // next (classify.MergeComesNext), where a move asks nothing (mergeForwardOnEntry). An ask made in
 // implementing stays on the record, neither the hold nor its release (startHeldRetro) asks it
 // again, and the move into merging asks the merger.
 func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
-	handoff record.PhaseRow, pr *record.PullRequest, reason string, beneath []string) error {
-	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr, reason)
+	handoff record.PhaseRow, pr *record.PullRequest, reason string, hold record.HoldReason, waits []string) error {
+	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: hold}, handoff, pr, reason)
 	if err != nil {
 		return err
 	}
-	e.logOnCommit(ctx, "workflow: a parent is held before its retro for the issues beneath it", "issue", issue.Key, "tree", issue.Tree,
-		"task", w.Task, "beneath", beneath)
+	if hold == record.HoldForChildren {
+		e.logOnCommit(ctx, "workflow: a parent is held before its retro for the issues beneath it", "issue", issue.Key, "tree", issue.Tree,
+			"task", w.Task, "beneath", waits)
+	} else {
+		e.logOnCommit(ctx, "workflow: a task that passed its last step is held before its retro", "issue", issue.Key, "tree", issue.Tree,
+			"task", w.Task, "reason", hold, "waitsFor", waits)
+	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, reason)); err != nil {
 		return err
 	}
-	return e.notice(ctx, tx, issue.Key, retroHeldNotice(issue.Key, beneath))
+	return e.notice(ctx, tx, issue.Key, endHoldNotice(issue, w, pr, hold, waits))
 }
 
 // queueMovedNews queues the reconcile of issue's tree's news of its approved design
