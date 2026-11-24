@@ -17,20 +17,23 @@
  * would answer it (arms.ts's `skillFile`: the file under a `[Skill file: <path>]` header whose
  * path is the skill's installed one, the same in every arm, or Oh My Pi's not-found result for a
  * file the arm lacks, or, in `none`, which installs no copy of the skill, Oh My Pi's unknown-skill
- * result; `pathFile` for a read by path: Oh My Pi's result for that path, at the path read, or its
- * not-found result). In the arm of ours, whose skill is ours under its own name, a read of the
- * case's skill is answered with Oh My Pi's unknown-skill text (arms.ts's `unknownSkill`), since
- * that arm does not install it, and a read by path of the cut's own copy is answered from our file
- * at that path. Each read of another skill is answered from that skill's installed copy
- * (`ReplayOptions.copies`, context.ts's `installedCopies` of the arm's capture's record), the same
- * text in every arm, and a read of a skill the arm does not install gets Oh My Pi's unknown-skill
- * result. The answers go in the form Oh My Pi sends a tool result in the body's API, and the body
- * goes again with the reply and the answers added; at most `maxSkillRounds` times
- * (MAX_SKILL_ROUNDS). A Messages reply goes back as the assistant's message and its answers as one
- * user message of `tool_result` blocks (F2); a Responses reply's output items go back as they came
- * (its reasoning items' encrypted content included), and after all of them, in the order of the
- * reply's calls, one `function_call_output` item per call holding the answer's text (F8: the
- * Responses API takes no error flag, and Oh My Pi sends none).
+ * result; `pathFile` for a read by path: Oh My Pi's result for that path, its hashline line
+ * naming the file under the directory the case's reads of the copy show, or its not-found result
+ * for the path as read). In `none`, a `skill://` read of the case's skill is answered from the
+ * copy of another source the profile lists under the skill's name instead, where it lists one
+ * (arms.ts's `caseNameCopy`), as a read of another skill is. In the arm of ours, whose skill is
+ * ours under its own name, a read of the case's skill is answered with Oh My Pi's unknown-skill
+ * text (arms.ts's `unknownSkill`), since that arm does not install it, and a read by path of the
+ * cut's own copy is answered from our file at that path. Each read of another skill is answered
+ * from that skill's installed copy (`ReplayOptions.copies`, context.ts's `installedCopies` of the
+ * arm's capture's record), the same text in every arm, and a read of a skill the arm does not
+ * install gets Oh My Pi's unknown-skill result. The answers go in the form Oh My Pi sends a tool
+ * result in the body's API, and the body goes again with the reply and the answers added; at
+ * most `maxSkillRounds` times (MAX_SKILL_ROUNDS). A Messages reply goes back as the assistant's
+ * message and its answers as one user message of `tool_result` blocks (F2); a Responses reply's
+ * output items go back as they came (its reasoning items' encrypted content included), and after
+ * all of them, in the order of the reply's calls, one `function_call_output` item per call
+ * holding the answer's text (F8: the Responses API takes no error flag, and Oh My Pi sends none).
  *
  * The first reply that holds no tool call, or any tool call that reads no skill file (a read of
  * another path on disk, a read of a directory of a skill, a read with another selector, a read by
@@ -87,14 +90,16 @@
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import {
   type Arm,
   type ArmName,
+  type InstalledCopy,
   newReadRows,
   otherSkillRead,
+  ownSkillReadFile,
   pathFile,
   readRange,
-  type SkillCopy,
   skillFile,
   skillFileRange,
   unknownSkill,
@@ -106,6 +111,7 @@ import {
   freshIdentity,
   type Gateway,
   isResponsesBody,
+  isToolCallBlock,
   type MessagesBody,
   type Reply,
   type RequestBody,
@@ -207,16 +213,19 @@ export function withCacheBreakpoint(body: MessagesBody): MessagesBody {
 /** One read an answered round answered: the skill (the name the profile lists it under, or the
  *  name a `skill://` URL gives a skill the profile does not list), the file inside its directory,
  *  how it was read (`skill` for a `skill://` URL, `path` for a whole read by path), where the
- *  answer came from (`arm`, the arm's own directory; `copy`, another skill's installed copy;
- *  `absent`, Oh My Pi's unknown-skill or not-found result where the arm installs no copy of the
- *  skill: every read of the case's skill in `none`), and whether the answer is an error. */
-export interface AnsweredRead {
-  readonly skill: string;
-  readonly file: string;
-  readonly by: "skill" | "path";
-  readonly from: "arm" | "copy" | "absent";
-  readonly isError: boolean;
-}
+ *  answer came from (`arm`, the arm's own directory; `copy`, another skill's installed copy, or
+ *  in `none` the copy of another source listed under the case's skill's name; `absent`, Oh My
+ *  Pi's unknown-skill or not-found result where the arm installs no copy of the skill: every
+ *  other read of the case's skill in `none`), and whether the answer is an error. A run record
+ *  keeps each as it is (cli.ts's runs, load.ts's replies). */
+export const AnsweredRead = z.strictObject({
+  skill: z.string(),
+  file: z.string(),
+  by: z.enum(["skill", "path"]),
+  from: z.enum(["arm", "copy", "absent"]),
+  isError: z.boolean(),
+});
+export type AnsweredRead = Readonly<z.infer<typeof AnsweredRead>>;
 
 /** One read-only call a checkout round answered from the written case's checkout copy
  *  (checkout.ts's `answerCall`): its tool, its input as the reply gave it (a bash call's command
@@ -294,21 +303,22 @@ export class UnansweredRead extends Error {
 }
 
 /** How a replay runs: the most rounds of skill reads it answers; the installed copies of the
- *  arm's other skills, which a read of one is answered from (arms.ts's `SkillCopy`, context.ts's
- *  `installedCopies` of the arm's capture's record; none by default, and a read of a skill the
- *  profile lists with no copy here fails the run); the headers that go with the body on every
- *  round (gateway.ts's `SendOptions`: the `anthropic-*` headers Oh My Pi sent beside a captured
- *  Messages body, whose betas its fields need; none beside a Responses body); and `endsAt`, which
- *  is told each reply's content and the answers made to its reads (`round`; undefined when the
- *  reply holds no tool call, or one that reads no skill file), before the reply after the last
- *  answered round is refused. When it gives true, the run ends at that reply: the reply is the
- *  judged step, its answers are not sent, and they are in no round of `reads`. Without it, a run
- *  ends only as the file's header says. load.ts's load test uses it. A written case's run gives
- *  `checkout`, the copy of its checkout its read-only calls are answered from, at most
- *  MAX_CHECKOUT_ROUNDS rounds of them (see the file's header); a run without one answers none. */
+ *  arm's other skills, which a read of one is answered from (arms.ts's `InstalledCopy`,
+ *  context.ts's `installedCopies` of the arm's capture's record; none by default, and a read of a
+ *  skill the profile lists with no copy here fails the run); the headers that go with the body on
+ *  every round (gateway.ts's `SendOptions`: the `anthropic-*` headers Oh My Pi sent beside a
+ *  captured Messages body, whose betas its fields need; none beside a Responses body); and
+ *  `endsAt`, which is told each reply's content and the answers made to its reads (`round`;
+ *  undefined when the reply holds no tool call, or one that reads no skill file), before the reply
+ *  after the last answered round is refused. When it gives true, the run ends at that reply: the
+ *  reply is the judged step, its answers are not sent, and they are in no round of `reads`.
+ *  Without it, a run ends only as the file's header says. load.ts's load test uses it. A written
+ *  case's run gives `checkout`, the copy of its checkout its read-only calls are answered from, at
+ *  most MAX_CHECKOUT_ROUNDS rounds of them (see the file's header); a run without one answers
+ *  none. */
 export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
-  readonly copies?: readonly SkillCopy[];
+  readonly copies?: readonly InstalledCopy[];
   readonly endsAt?: (
     content: readonly ContentBlock[],
     round: readonly SkillRead[] | undefined
@@ -316,11 +326,11 @@ export interface ReplayOptions extends SendOptions {
   readonly checkout?: CheckoutCopy;
 }
 
-/** A tool call an answered round answered: the call's id, the answer, and its record. */
+/** A tool call an answered round answered: the call's id, the answer's text, and its record,
+ *  which says whether the answer is an error. */
 interface AnsweredCall {
   readonly id: string;
   readonly text: string;
-  readonly isError: boolean;
   readonly read: RoundRead;
 }
 
@@ -332,22 +342,26 @@ export interface SkillRead extends AnsweredCall {
 /** The read `target` the tool call `id` makes, answered, or undefined when it reads no skill file
  *  (see the file's header). A read with one line range (arms.ts's `readRange`: `:N-M`, `:N+K`,
  *  `:N`) is answered with those lines (`skillFileRange`, arms.ts's `pathFile` and
- *  `otherSkillRead`), one with any other selector not. A read of a directory of the arm's skill is
- *  none: Oh My Pi answers it with a listing, which the arm does not rebuild; nor is a read by path
- *  that `pathFile` does not answer, nor one `otherSkillRead` does not, nor a `skill://` range past
- *  the end of its file (a range past the end of a file of the cut's copy read by path gets the
- *  pin's notice, `pathFile`). In the arm of ours, a read of the case's skill (`arm.ours.theirs`)
- *  gets Oh My Pi's unknown-skill text (`unknownSkill`): the arm does not install it. */
+ *  `otherSkillRead`), one with any other selector not. In an arm with no skill directory whose
+ *  profile lists a copy of another source under the case's skill's name (arms.ts's
+ *  `caseNameCopy`), a `skill://` read of the case's skill is a read of that copy
+ *  (`ownSkillReadFile` gives no file), which `otherSkillRead` answers. A read of a directory of
+ *  the arm's skill is none: Oh My Pi answers it with a listing, which the arm does not rebuild;
+ *  nor is a read by path that `pathFile` does not answer, nor one `otherSkillRead` does not, nor a
+ *  `skill://` range past the end of its file (a range past the end of a file of the cut's copy
+ *  read by path gets the pin's notice, `pathFile`). In the arm of ours, a read of the case's
+ *  skill (`arm.ours.theirs`) gets Oh My Pi's unknown-skill text (`unknownSkill`): the arm does
+ *  not install it. */
 function skillRead(
   id: string,
   target: string,
   arm: Arm,
-  copies: readonly SkillCopy[]
+  copies: readonly InstalledCopy[]
 ): SkillRead | undefined {
   const from = arm.skillDir === undefined ? "absent" : "arm";
   const ranged = readRange(target);
   const whole = ranged?.path ?? target;
-  const file = skillReadFile(arm.skill, whole);
+  const file = ownSkillReadFile(arm, whole);
   if (file !== undefined) {
     if (ranged !== undefined && ranged.range === undefined) return undefined;
     if (arm.skillDir !== undefined) {
@@ -358,7 +372,7 @@ function skillRead(
       ranged?.range === undefined ? skillFile(arm, file) : skillFileRange(arm, file, ranged.range);
     if (answer === undefined) return undefined;
     const read = { skill: arm.skill, file, by: "skill", from, isError: answer.isError } as const;
-    return { id, ...answer, read };
+    return { id, text: answer.text, read };
   }
   const theirs = arm.ours?.theirs;
   const theirFile = theirs === undefined ? undefined : skillReadFile(theirs, whole);
@@ -372,7 +386,7 @@ function skillRead(
       from: "absent",
       isError: answer.isError,
     } as const;
-    return { id, ...answer, read };
+    return { id, text: answer.text, read };
   }
   const byPath = pathFile(arm, target);
   if (byPath !== undefined) {
@@ -383,12 +397,12 @@ function skillRead(
       from,
       isError: byPath.isError,
     } as const;
-    return { id, ...byPath, read };
+    return { id, text: byPath.text, read };
   }
   const other = otherSkillRead(arm, copies, target);
   if (other === undefined) return undefined;
   const { text, ...read } = other;
-  return { id, text, isError: other.isError, read };
+  return { id, text, read };
 }
 
 /** The reads a reply's `content` makes, answered, or undefined when it holds no tool call, or a
@@ -398,11 +412,11 @@ function skillRead(
 function roundReads(
   content: readonly ContentBlock[],
   arm: Arm,
-  copies: readonly SkillCopy[]
+  copies: readonly InstalledCopy[]
 ): SkillRead[] | undefined {
   const calls: { id: string; target: string }[] = [];
   for (const { id, name, input } of toolCalls(content)) {
-    const target = typeof input === "object" && input !== null ? Reflect.get(input, "path") : null;
+    const target = isObject(input) ? input.path : undefined;
     if (id === undefined || name !== "read" || typeof target !== "string") return undefined;
     calls.push({ id, target });
   }
@@ -424,7 +438,7 @@ function roundReads(
 async function checkoutRound(
   content: readonly ContentBlock[],
   arm: Arm,
-  copies: readonly SkillCopy[],
+  copies: readonly InstalledCopy[],
   checkout: CheckoutCopy
 ): Promise<AnsweredCall[] | { readonly why: string } | undefined> {
   const calls = toolCalls(content);
@@ -435,10 +449,7 @@ async function checkoutRound(
   const rows = newReadRows(arm);
   const answers: AnsweredCall[] = [];
   for (const { id = "", name, input } of calls) {
-    const target =
-      name === "read" && typeof input === "object" && input !== null
-        ? Reflect.get(input, "path")
-        : undefined;
+    const target = name === "read" && isObject(input) ? input.path : undefined;
     const skill = typeof target === "string" ? skillRead(id, target, arm, copies) : undefined;
     if (skill !== undefined) {
       answers.push(skill);
@@ -446,15 +457,15 @@ async function checkoutRound(
     }
     const answer = await answerCall(checkout, name, input, rows);
     if ("why" in answer) return { why: `${name} ${JSON.stringify(input)}: ${answer.why}` };
-    const { wholeText, ...given } = answer;
+    const { text, isError, wholeText } = answer;
     const read = {
       from: "checkout",
       tool: name ?? "",
       input,
-      isError: answer.isError,
+      isError,
       ...(wholeText === true ? { wholeText } : {}),
     } as const;
-    answers.push({ id, ...given, read });
+    answers.push({ id, text, read });
   }
   return answers;
 }
@@ -474,11 +485,11 @@ function answered(
     }));
     return { ...body, input: [...body.input, ...content, ...outputs] };
   }
-  const results = reads.map(({ id, text, isError }) => ({
+  const results = reads.map(({ id, text, read }) => ({
     type: "tool_result",
     tool_use_id: id,
     content: [{ type: "text", text }],
-    is_error: isError,
+    is_error: read.isError,
   }));
   return {
     ...body,
@@ -550,10 +561,7 @@ async function replaySent(
       answers = looked;
     }
     reads.push(answers.map(({ read }) => read));
-    // A Messages `tool_use` block, or a Responses `function_call` item.
-    calls.push(
-      ...content.filter((block) => block.type === "tool_use" || block.type === "function_call")
-    );
+    calls.push(...content.filter(isToolCallBlock));
     body = answered(body, content, answers);
   }
 }
@@ -582,7 +590,7 @@ export interface ArmRuns {
   readonly arm: Arm;
   readonly body: RequestBody;
   readonly headers?: Readonly<Record<string, string>>;
-  readonly copies?: readonly SkillCopy[];
+  readonly copies?: readonly InstalledCopy[];
   readonly runs: number;
 }
 

@@ -77,19 +77,47 @@
  * listed skills under their hints, or under the cut-down description where Oh My Pi kept none, is
  * refused.
  *
+ * **A recorded listing line.** A load test (load.ts) gives the capture the lines of the skill
+ * listing its task's session recorded (`options.recordedLines`, RecordedLine); the behaviour
+ * commands give none. A listed skill is listed under its recorded line, in place of a hint, where
+ * the line has its name and stands for the same skill text: the line names the description the
+ * session's copy had and the skill has that description, or the line names none and the context
+ * installs the skill from the profile's repository copy, the session's own. Oh My Pi then lists
+ * exactly that line, a recorded cut-down description as that cut-down description: the capture
+ * writes the line into the scratch profile's database under Oh My Pi's key for the name and the
+ * description (`keyFor`: the SHA-256 of the hint prompt, the name and the description), so Oh My
+ * Pi asks no model for that skill. The runner reads that key from the cached hint of draw 1 of
+ * the skill text, else from its key cache (`<cacheDir>/hint-keys/<key of the Oh My Pi version,
+ * the name and the description>.json`). Where neither holds it, the hint run answers Oh My Pi's
+ * hint request for the skill with the recorded line itself and asks no model; the capture reads
+ * the key off the row Oh My Pi stores, keeps it in the key cache, and writes the line under it.
+ * The record's `hints` names each skill's source: `recorded (session)`, `recorded (subagent <path
+ * hash>)`, or `drawn (draw <n>)`.
+ *
+ * **The draw.** A hint of draw 1 is cached under the key of the Oh My Pi version, the name and the
+ * description, as above; a hint of draw n > 1 (`options.hintDraw`) under the key of those and
+ * `draw <n>`. So each draw asks the hint model once more for each skill text that has no recorded
+ * line, and every capture of one draw lists the same hint. Oh My Pi's key is the same in every
+ * draw.
+ *
  * **A recorded prompt.** A subagent's case carries the system prompt and tools its session
  * recorded (`profile.systemPrompt`, `profile.tools`), and its capture sends those blocks in place
  * of the prompt Oh My Pi builds: the replay hook's `before_agent_start` handler returns them
- * (`SKILL_CUTS_SYSTEM_PROMPT`), with only the case skill's line of the recorded skill listing
- * (`- <skill>: <hint>`) changed (`armPromptBlocks`): the arm's hint, written and cached as above,
- * where the arm lists the skill, and the line removed where it does not (`none`, or an arm whose
- * text hides the skill). The arm of ours lists our skill under its own name (`armRecordedPrompt`):
- * the line names ours under our hint in their skill's place, or, where the recording lists a skill
- * of our name already, their line goes and that line holds our hint. A recording that does not
- * list the skill is sent as recorded in every
- * arm. `--tools` restricts Oh My Pi's tools to the recorded names. The body's system prompt must
- * be those blocks byte for byte, or the capture is refused; a recorded tool the body does not
- * define, or one it defines beyond them, is kept in the record (`tools`).
+ * (`SKILL_CUTS_SYSTEM_PROMPT`), with the case skill's line of the recorded skill listing
+ * (`- <skill>: <hint>`) changed (`armPromptBlocks`): the hint of the skill the arm lists under
+ * that name, written and cached as above, or its recorded line where one applies, where the arm
+ * lists one, and the line removed where it does not (`none`, or an arm whose text hides the
+ * skill). The arm of ours lists our skill under its own name (`armRecordedPrompt`): the line
+ * names ours under our hint in their skill's place, or, where the recording lists a skill of our
+ * name already, their line goes and that line holds our hint. An arm that lists a copy under its
+ * bare name in place of `<namespace>/<name>` (arms.ts's `Arm.relisted`: `none`, once the tested
+ * copy of that name is gone) also leaves out the recorded line of `<namespace>/<name>`, as Oh My
+ * Pi lists that copy under the bare name alone; where that name is the case skill's, the case
+ * skill's line is that copy's hint, in the recorded line's place, which is where Oh My Pi's
+ * listing, sorted by name, puts it. Every other byte is sent as recorded. `--tools` restricts Oh
+ * My Pi's tools to the recorded names. The body's system prompt must be those blocks byte for
+ * byte, or the capture is refused; a recorded tool the body does not define, or one it defines
+ * beyond them, is kept in the record (`tools`).
  *
  * **An injected skill.** A skill that reaches the session other than by its listing line and its
  * reads (arms.ts's `Injection`) reaches the capture in the arm's messages, which carry each
@@ -100,8 +128,9 @@
  * definition (context.ts's `agent`) autoloads the skill, and whose messages hold no autoloaded
  * block of it though no compaction summary opens them, holds the block in a form the runner
  * cannot rebuild: its capture throws InjectionRefused of kind `autoload-no-block`, naming the
- * case, before Oh My Pi runs. A saved capture of an arm with such a block whose record lists none
- * was made before arms gave it their own text, and is refused (`savedCapture`).
+ * case, before Oh My Pi runs. A saved capture of an arm with such a block whose record has no
+ * `injections` field was made before arms gave it their own text, and is refused
+ * (`savedCapture`).
  *
  * **The digests.** The record holds the session's `system-prompt-digest` (`sessionDigest`, from
  * the case) and the capture's own, `promptDigest`, which is Oh My Pi's algorithm
@@ -160,11 +189,18 @@ import {
   InjectionRefused,
 } from "./arms";
 import type { Case } from "./cases";
-import { eachChunk, json, STORE_QUIET_MS, textOf, timeLimit, writeWhole } from "./common";
-import { buildContext, type ContextRecord, cacheKey, legionRole, type RepoSource } from "./context";
+import { json, pastLimit, STORE_QUIET_MS, textOf, timeLimit, writeWhole } from "./common";
+import {
+  buildContext,
+  type ContextRecord,
+  cacheKey,
+  type InstalledSkill,
+  legionRole,
+  type RepoSource,
+} from "./context";
 import { sessionHeadSql } from "./countsql";
 import { type Gateway, isResponsesBody, type MessagesBody, type RequestBody } from "./gateway";
-import { psqlRows } from "./psql-rows";
+import { eachStoreRow } from "./psql-rows";
 import { messageSse, type RecordedRequest, sseResponse, startRecorder } from "./recorder";
 import { HOOK_LOG_VARIABLE, MESSAGES_VARIABLE, SYSTEM_PROMPT_VARIABLE } from "./replay-hook";
 
@@ -189,6 +225,8 @@ const HINT_ROW = /^[0-9a-f]{64}$/;
 /** The key under which Oh My Pi records a reply it kept no hint of: the hint's key, the revision
  *  of its rule and the model's `<provider>/<id>` (`unusableKey`); the match is all but the model. */
 const UNKEPT_ROW = /^[0-9a-f]{64}:v\d+:/;
+/** Oh My Pi's key of a skill text (`keyFor`) at the start of either row's key. */
+const OMP_KEY = /^[0-9a-f]{64}/;
 /** What the scratch profile gives Oh My Pi as its provider credential: the recorder reads none,
  *  and no gateway ever gets this one. */
 // fixture-secret-next-line: a placeholder the recorder never reads, and never a credential
@@ -321,6 +359,23 @@ export type HintWriter = (
   headers: Readonly<Record<string, string>>
 ) => Promise<HintReply>;
 
+/** One line of the skill listing a session recorded, as a capture lists it in place of a hint
+ *  (the file's header, "A recorded listing line"): the name and the text the session listed the
+ *  skill under, where the line was recorded (`session`, or `subagent <path hash>`), and, where the
+ *  skill the line stands for is not the profile's own repository copy (a load test's tested
+ *  skill, whose text the arm gives), the description the session's copy had. */
+export interface RecordedLine {
+  readonly name: string;
+  readonly text: string;
+  readonly from: string;
+  readonly description?: string;
+}
+
+/** Where the line a capture lists a skill under came from, as its record's `hints` names it: the
+ *  line its session recorded (RecordedLine's `from` in the brackets), or a hint the hint model
+ *  wrote in draw `<n>`. */
+type HintSource = `recorded (${string})` | `drawn (draw ${number})`;
+
 /** The `anthropic-*` headers of a recorded request: the API version, and the betas the fields of
  *  Oh My Pi's body need (adaptive thinking's `block_binding`, `context_management` and
  *  `output_config.effort` are refused without theirs). */
@@ -364,6 +419,11 @@ export interface CaptureOptions {
   readonly hints: HintWriter;
   /** The model that writes hints (the context's `smol` role), the case's model by default. */
   readonly hintModel?: string;
+  /** The lines of the skill listing the case's session recorded, each listed in place of a hint
+   *  where it applies (the file's header, "A recorded listing line"); none by default. */
+  readonly recordedLines?: readonly RecordedLine[];
+  /** The draw of the hint model's hints (the file's header, "The draw"), 1 by default. */
+  readonly hintDraw?: number;
   /** Oh My Pi settings files laid over the scratch profile's, as `PI_CONFIG_FILES` names them. */
   readonly configFiles?: readonly string[];
   /** The longest one Oh My Pi run may take. */
@@ -428,18 +488,21 @@ export interface CaptureRecord {
     readonly extra: readonly string[];
     readonly leftOut: readonly { readonly name: string; readonly reason: string }[];
   } | null;
-  /** Each listed skill's hint (an installed skill that is not hidden): the text the body lists it
-   *  under, the runner's cache key, Oh My Pi's key, and whether this capture had it written. Where
+  /** Each listed skill's line (an installed skill that is not hidden): the text the body lists it
+   *  under, the runner's cache key, Oh My Pi's key, whether this capture had it written, and where
+   *  the line came from (`source`; the file's header, "A recorded listing line"). For a recorded
+   *  line the cache key is that of the key cache, and `written` is false: no model wrote it. Where
    *  Oh My Pi kept no hint of the model's reply (`kept` false), the text is the cut-down
    *  description, Oh My Pi's key is that of its record of the reply, and `reply` and `reason` say
-   *  what the model wrote and why Oh My Pi did not keep it. `kept` is absent from a capture saved
-   *  before this field. */
+   *  what the model wrote and why Oh My Pi did not keep it. `kept` is absent for a recorded line,
+   *  and `kept` and `source` from a capture saved before each field. */
   readonly hints: readonly {
     readonly skill: string;
     readonly hint: string;
     readonly key: string;
     readonly ompKey: string;
     readonly written: boolean;
+    readonly source?: HintSource;
     readonly kept?: boolean;
     readonly reply?: string;
     readonly reason?: string;
@@ -534,6 +597,108 @@ interface CachedHint {
   readonly kept?: boolean;
   readonly reply?: string;
   readonly reason?: string;
+  /** The draw it was written in, absent for draw 1 (the file's header, "The draw"). */
+  readonly draw?: number;
+}
+
+/** Oh My Pi's key of a skill text, as the runner's key cache keeps it (`<cacheDir>/hint-keys/`;
+ *  the file's header, "A recorded listing line"): the Oh My Pi version, the name, the
+ *  description, the key, and when the capture read it off the row Oh My Pi stored. */
+interface CachedKey {
+  readonly omp: string;
+  readonly name: string;
+  readonly description: string;
+  readonly ompKey: string;
+  readonly readAt: string;
+}
+
+/** The runner's cache key of the hint of `skill` in draw `draw` under the Oh My Pi `version`
+ *  (the file's header, "The draw"): of the version, the name and the description, and of
+ *  `draw <n>` too beyond draw 1. */
+function hintKey(
+  version: string,
+  skill: Pick<InstalledSkill, "name" | "description">,
+  draw: number
+): string {
+  return draw === 1
+    ? cacheKey(version, skill.name, skill.description)
+    : cacheKey(version, skill.name, skill.description, `draw ${draw}`);
+}
+
+/** The line of `lines` that the listed skill `skill` is listed under (the file's header, "A
+ *  recorded listing line"), or undefined: the line of its name, where that line names the
+ *  skill's description, or names none and `from`, the context record's source of the skill, is a
+ *  repository copy of the profile. */
+function recordedLineOf(
+  skill: InstalledSkill,
+  from: ContextRecord["skills"][number]["from"] | undefined,
+  lines: readonly RecordedLine[]
+): RecordedLine | undefined {
+  const line = lines.find((each) => each.name === skill.name);
+  if (line === undefined) return undefined;
+  if (line.description !== undefined) {
+    return line.description === skill.description ? line : undefined;
+  }
+  return typeof from === "object" ? line : undefined;
+}
+
+/** Oh My Pi's key of a skill text as the runner read it before (the file's header, "A recorded
+ *  listing line"): from the skill text's cached hint of draw 1 (`hintFile`), else from its key
+ *  cache entry (`keyFile`); undefined where neither holds it. */
+function knownOmpKey(hintFile: string, keyFile: string): string | undefined {
+  for (const file of [hintFile, keyFile]) {
+    if (!existsSync(file)) continue;
+    const saved: unknown = JSON.parse(readFileSync(file, "utf8"));
+    const key = typeof saved === "object" && saved !== null ? Reflect.get(saved, "ompKey") : null;
+    const found = typeof key === "string" ? OMP_KEY.exec(key)?.[0] : undefined;
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+/** One listed skill's line as a capture chooses it: the line its session recorded (`recorded`),
+ *  with Oh My Pi's key of the skill text once known (`ompKey`) and the key cache entry (`key`,
+ *  `file`); or a hint of the capture's draw, with its cache entry (`key`, `file`), the cached
+ *  hint (`cached`) and whether this capture had it written. */
+interface ListedHint {
+  readonly skill: InstalledSkill;
+  readonly key: string;
+  readonly file: string;
+  readonly recorded: RecordedLine | undefined;
+  ompKey: string | undefined;
+  cached: CachedHint | undefined;
+  written: boolean;
+}
+
+/** The text a capture lists `entry`'s skill under: its recorded line, else its cached hint. */
+function listedText(entry: ListedHint | undefined): string | undefined {
+  return entry?.recorded?.text ?? entry?.cached?.hint;
+}
+
+/** What a capture lists `entry`'s skill under, as a refused body's fault names it. */
+function listedUnder(entry: ListedHint): string {
+  if (entry.recorded !== undefined) return "the line its session recorded";
+  if (entry.cached?.kept === false) {
+    return "the cut-down description Oh My Pi lists in place of a hint";
+  }
+  return "its hint";
+}
+
+/** Writes each `[key, description]` of `rows`, in order, into the `skill_descriptions` table of
+ *  the Oh My Pi database file `database` (made, and the table, when missing), over any row of the
+ *  same key. */
+function putDescriptions(database: string, rows: readonly (readonly [string, string])[]): void {
+  const db = new Database(database, { create: true });
+  try {
+    db.run(
+      "CREATE TABLE IF NOT EXISTS skill_descriptions (key TEXT PRIMARY KEY, description TEXT NOT NULL)"
+    );
+    const put = db.prepare("INSERT OR REPLACE INTO skill_descriptions VALUES (?, ?)");
+    for (const [key, description] of rows) put.run(key, description);
+    put.finalize();
+  } finally {
+    db.close();
+  }
 }
 
 /** The files of the capture of `caseId`'s arm `arm` under `outDir`. */
@@ -549,8 +714,8 @@ export function capturePaths(
 /** The capture saved at `files` (`capturePaths`), read back, or undefined when either file is
  *  missing. Throws for a capture whose record holds no harness-string record: it was made before
  *  that rule, so its body holds the capture's own paths and date; and, given the `arm` it stands
- *  for, for a capture whose record lists no injected block (`injections`) while the arm has one:
- *  it was made before arms gave such a block their own text. */
+ *  for, for a capture whose record has no `injections` field while the arm has an injected
+ *  block: it was made before arms gave such a block their own text. */
 export function savedCapture(
   files: { readonly body: string; readonly record: string },
   arm?: Pick<Arm, "injections">
@@ -621,18 +786,25 @@ export function promptDigest(body: unknown): string {
   return hash.toString(16);
 }
 
-/** The skills a body's system prompt lists (`<skills>` … `</skills>`), each with the text it is
- *  listed under, in order. */
-export function skillListing(body: unknown): Map<string, string> {
+/** The skills the `<skills>` listing of the system prompt blocks `blocks` lists (`- <name>:
+ *  <text>`), each with the text it is listed under, in order; a name listed twice keeps its first
+ *  line. build.ts reads a recorded prompt's listing with it. */
+export function listingOf(blocks: readonly string[]): Map<string, string> {
   const listing = new Map<string, string>();
-  for (const text of systemTexts(body)) {
+  for (const text of blocks) {
     const block = /<skills>\n([\s\S]*?)<\/skills>/.exec(text)?.[1];
     for (const line of block?.split("\n") ?? []) {
       const match = /^- ([^:\s]+): (.*)$/.exec(line);
-      if (match?.[1] !== undefined && match[2] !== undefined) listing.set(match[1], match[2]);
+      if (match?.[1] !== undefined && match[2] !== undefined && !listing.has(match[1]))
+        listing.set(match[1], match[2]);
     }
   }
   return listing;
+}
+
+/** The skills a body's system prompt lists (`listingOf` of its system blocks). */
+export function skillListing(body: unknown): Map<string, string> {
+  return listingOf(systemTexts(body));
 }
 
 /** What became of the case skill's line of a recorded skill listing in an arm's prompt. */
@@ -712,6 +884,19 @@ export function renamedListingBlocks(
   to: string
 ): string[] {
   return changedListingLine(blocks, from, (text) => `- ${to}: ${text}`) ?? [...blocks];
+}
+
+/** The recorded system prompt `blocks` less the first `<skills>` listing line of each name of
+ *  `names`, every other byte as recorded. An arm that lists a copy under its bare name in place of
+ *  `<namespace>/<name>` (arms.ts's `Arm.relisted`, which holds `<namespace>/<name>`) sends its
+ *  recording less that line, as Oh My Pi lists that copy under the bare name alone. */
+function withoutListingLines(
+  blocks: readonly string[],
+  names: readonly string[]
+): readonly string[] {
+  let kept = blocks;
+  for (const name of names) kept = changedListingLine(kept, name, () => undefined) ?? kept;
+  return kept;
 }
 
 // The harness-string rule: what a captured body shows of the session it stands for.
@@ -799,7 +984,8 @@ export function sessionHeadFile(dir: string, store: string, pathHash: string): s
  * read back too when it is this store's head; another store's is not this one's, so this store
  * reads its own. A hash the store holds no file of gets a head with `held: false`. Throws when the
  * command prints nothing for `quietMs` (it is then ended, and the error names it and the limit),
- * when it fails, or when a row or a file saved under this store's name is no head.
+ * when it fails, when a row or a file saved under this store's name is no head, and when a saved
+ * file of either name is not JSON (`JSON.parse`'s error, naming no file).
  */
 export async function sessionHeads(
   command: string,
@@ -831,43 +1017,23 @@ export async function sessionHeads(
     missing.push(hash);
   }
   if (missing.length === 0) return heads;
-  const child = Bun.spawn([command, store], {
-    stdin: new Blob([sessionHeadSql(missing)]),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  // Ended once it prints nothing for `quietMs` (common.ts's STORE_QUIET_MS): each chunk of its
-  // answer starts the time again.
-  const limit = timeLimit(child, quietMs);
-  const chunks: Uint8Array[] = [];
-  const [, stderr] = await Promise.all([
-    eachChunk(child.stdout, limit, (chunk) => {
-      limit.touch();
-      chunks.push(chunk);
-    }),
-    textOf(child.stderr, limit),
-  ]);
-  limit.clear();
-  if (limit.timedOut()) {
-    throw new Error(
-      `the store command ${command}'s read of the session heads printed nothing for ${quietMs} ms on ${store}, so it was ended (STORE_QUIET_MS)`
-    );
-  }
-  const stdout = Buffer.concat(chunks).toString("utf8");
-  const code = await child.exited;
-  if (code !== 0) {
-    const first = stderr.split("\n").find((line) => line.trim() !== "") ?? "";
-    throw new Error(
-      `the store command's read of the session heads exited ${code}: ${first.slice(0, 300)}`
-    );
-  }
+  // Read as every store read is (psql-rows.ts's `eachStoreRow`): ended once it prints nothing for
+  // `quietMs` (STORE_QUIET_MS), each chunk of its answer starting the time again; its exit waited
+  // for under the same limit, and its error text only when it exits other than 0.
   const rows = new Map<string, z.infer<typeof HeadRow>>();
-  for (const row of psqlRows(stdout)) {
-    const parsed = HeadRow.safeParse(row);
-    if (!parsed.success)
-      throw new Error(`a session-head.sql row is no head: ${JSON.stringify(row)}`);
-    rows.set(parsed.data.hash, parsed.data);
-  }
+  await eachStoreRow(
+    command,
+    store,
+    sessionHeadSql(missing),
+    (row) => {
+      const parsed = HeadRow.safeParse(row);
+      if (!parsed.success)
+        throw new Error(`a session-head.sql row is no head: ${JSON.stringify(row)}`);
+      rows.set(parsed.data.hash, parsed.data);
+    },
+    quietMs,
+    "read of the session heads"
+  );
   const readAt = new Date().toISOString();
   for (const hash of missing) {
     const row = rows.get(hash);
@@ -1239,13 +1405,22 @@ function previewDescription(description: string): string {
 
 const versions = new Map<string, Promise<string>>();
 
-/** What `omp --version` prints for `binary`. */
-function ompVersion(binary: string): Promise<string> {
+/** The longest `omp --version` may run: it took 0.10 s on the pod (Oh My Pi 18.18.6, measured
+ *  2026-11-23), so a minute is 600 times that, room for a cold start on a loaded pod. */
+export const OMP_VERSION_TIMEOUT_MS = 60_000;
+
+/** What `omp --version` prints for `binary`. A run past `timeoutMs` (OMP_VERSION_TIMEOUT_MS) is
+ *  ended (common.ts's `timeLimit`) and fails naming the command and the limit (`pastLimit`).
+ *  Exported for capture.test.ts. */
+export function ompVersion(binary: string, timeoutMs = OMP_VERSION_TIMEOUT_MS): Promise<string> {
   let version = versions.get(binary);
   if (version === undefined) {
     version = (async () => {
       const child = Bun.spawn([binary, "--version"], { stdout: "pipe", stderr: "ignore" });
-      const [text, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      const limit = timeLimit(child, timeoutMs);
+      const [text, code] = await Promise.all([textOf(child.stdout, limit), child.exited]);
+      limit.clear();
+      if (limit.timedOut()) throw new Error(pastLimit(`${binary} --version`, timeoutMs));
       if (code !== 0) throw new Error(`${binary} --version failed with exit ${code}`);
       return text.trim();
     })();
@@ -1345,13 +1520,15 @@ function writeProfile(
   );
 }
 
-/** Oh My Pi's lines on extensions that failed to load: from its log files under `profileDir`,
- *  and from `stderr`. */
-function extensionErrors(profileDir: string, stderr: string): string[] {
+/** Oh My Pi's lines on extensions that failed to load: from its log files, the files directly
+ *  under `<profileDir>/logs` (a directory there, such as the `http-400-requests/` Oh My Pi writes
+ *  a refused request into, is passed over), and from `stderr`. */
+export function extensionErrors(profileDir: string, stderr: string): string[] {
   const errors = stderr.split("\n").filter((line) => /extension.*fail|fail.*extension/i.test(line));
   const logs = path.join(profileDir, "logs");
-  for (const file of existsSync(logs) ? readdirSync(logs) : []) {
-    for (const line of readFileSync(path.join(logs, file), "utf8").split("\n")) {
+  for (const entry of existsSync(logs) ? readdirSync(logs, { withFileTypes: true }) : []) {
+    if (!entry.isFile()) continue;
+    for (const line of readFileSync(path.join(logs, entry.name), "utf8").split("\n")) {
       if (line.includes('"Failed to load extension"')) errors.push(line);
     }
   }
@@ -1371,9 +1548,9 @@ export type CaptureCase = Pick<
  * when no capture is saved and `options` gives no Oh My Pi binary or no `models.yml` to make one,
  * when Oh My Pi fails or sends no turn, when a hint cannot be written (the error `options.hints`
  * threw, as it is, the moment it throws: the gateway's BudgetSpent stays one), or when the body
- * does not list exactly the arm's installed skills under their hints, or under the cut-down
- * description where Oh My Pi kept no hint of the model's reply. A reply Oh My Pi does not keep
- * fails no capture (the file's header, "A reply Oh My Pi keeps no hint of").
+ * does not list exactly the arm's installed skills under their recorded lines or their hints, or
+ * under the cut-down description where Oh My Pi kept no hint of the model's reply. A reply Oh My
+ * Pi does not keep fails no capture (the file's header, "A reply Oh My Pi keeps no hint of").
  */
 export async function captureBody(
   c: CaptureCase,
@@ -1432,41 +1609,44 @@ export async function captureBody(
   const messagesFile = path.join(root, "messages.json");
   writeWhole(messagesFile, JSON.stringify(arm.messages));
 
-  // Each listed skill's hint, from the cache where it holds one, or the cut-down description
-  // where Oh My Pi kept no hint. A hidden skill is not listed, so Oh My Pi writes it no hint.
+  // Each listed skill's line: the line its session recorded where one applies (`recordedLineOf`;
+  // the file's header, "A recorded listing line"), else the hint of this capture's draw, from the
+  // cache where it holds one, or the cut-down description where Oh My Pi kept no hint. A hidden
+  // skill is not listed, so Oh My Pi writes it no hint.
+  const draw = options.hintDraw ?? 1;
   const hintDir = path.join(options.cacheDir, "hints");
+  const keyDir = path.join(options.cacheDir, "hint-keys");
   const listed = context.skills.filter((skill) => !skill.hidden);
-  const hints = listed.map((skill) => {
-    const key = cacheKey(version, skill.name, skill.description);
+  const hints = listed.map((skill): ListedHint => {
+    const from = context.record.skills.find((each) => each.name === skill.name)?.from;
+    const recorded = recordedLineOf(skill, from, options.recordedLines ?? []);
+    if (recorded !== undefined) {
+      const key = hintKey(version, skill, 1);
+      const file = path.join(keyDir, `${key}.json`);
+      const ompKey = knownOmpKey(path.join(hintDir, `${key}.json`), file);
+      return { skill, key, file, recorded, ompKey, cached: undefined, written: false };
+    }
+    const key = hintKey(version, skill, draw);
     const file = path.join(hintDir, `${key}.json`);
     const cached = existsSync(file)
       ? (JSON.parse(readFileSync(file, "utf8")) as CachedHint)
       : undefined;
-    return { skill, key, file, cached, written: false };
+    return { skill, key, file, recorded, ompKey: undefined, cached, written: false };
   });
   const database = path.join(agentDir, "skill-descriptions.db");
-  const seeded = new Set<string>();
-  {
-    const db = new Database(database, { create: true });
-    try {
-      db.run(
-        "CREATE TABLE IF NOT EXISTS skill_descriptions (key TEXT PRIMARY KEY, description TEXT NOT NULL)"
-      );
-      const put = db.prepare("INSERT OR REPLACE INTO skill_descriptions VALUES (?, ?)");
-      for (const { cached } of hints) {
-        if (cached === undefined) continue;
-        // Oh My Pi's record of a reply it kept no hint of names the model that wrote it. This run
-        // records it under its own hint model, so Oh My Pi asks that model for no hint either.
-        const unkept = cached.kept === false ? UNKEPT_ROW.exec(cached.ompKey)?.[0] : undefined;
-        const key = unkept === undefined ? cached.ompKey : `${unkept}${hintModel}`;
-        put.run(key, cached.hint);
-        seeded.add(key);
-      }
-      put.finalize();
-    } finally {
-      db.close();
-    }
+  const seeds: [string, string][] = [];
+  for (const { recorded, ompKey, cached } of hints) {
+    // A recorded line under Oh My Pi's key of its skill text, where the runner knows that key: Oh
+    // My Pi lists it and asks no model for it.
+    if (recorded !== undefined && ompKey !== undefined) seeds.push([ompKey, recorded.text]);
+    if (cached === undefined) continue;
+    // Oh My Pi's record of a reply it kept no hint of names the model that wrote it. This run
+    // records it under its own hint model, so Oh My Pi asks that model for no hint either.
+    const unkept = cached.kept === false ? UNKEPT_ROW.exec(cached.ompKey)?.[0] : undefined;
+    seeds.push([unkept === undefined ? cached.ompKey : `${unkept}${hintModel}`, cached.hint]);
   }
+  putDescriptions(database, seeds);
+  const seeded = new Set(seeds.map(([key]) => key));
 
   // The stand-in Envoy listener the capture run gets, as the variables that name it. The Envoy
   // plugin defines its tools only when it has a listener to reach, and the real session had one.
@@ -1484,8 +1664,13 @@ export async function captureBody(
       ? ["ENVOY_URL", "ENVOY_NATS_URL"]
       : [];
 
-  // What the recorder does with each request, by the run it is in.
-  const wanted = new Set(hints.filter((h) => h.cached === undefined).map((h) => h.skill.name));
+  // What the recorder does with each request, by the run it is in. The hint run owes each drawn
+  // hint the cache lacks, and each recorded line whose key the runner does not know.
+  const wanted = new Set(
+    hints
+      .filter((h) => (h.recorded === undefined ? h.cached === undefined : h.ompKey === undefined))
+      .map((h) => h.skill.name)
+  );
   const written = new Map<string, HintReply>();
   const allWritten = Promise.withResolvers<void>();
   if (wanted.size === 0) allWritten.resolve();
@@ -1572,14 +1757,20 @@ export async function captureBody(
       return undefined;
     }
     if (hintRun && skill !== undefined && wanted.has(skill)) {
+      // A skill listed under its recorded line is answered with that line, and no model is asked:
+      // the row Oh My Pi stores of it gives Oh My Pi's key of its text.
+      const line = hints.find((entry) => entry.skill.name === skill)?.recorded;
       try {
-        const reply = await options.hints(body, anthropicHeaders(request.headers));
-        hintCalls.push({ skill, model: reply.model, usage: reply.usage });
+        const reply: HintReply =
+          line === undefined
+            ? await options.hints(body, anthropicHeaders(request.headers))
+            : { text: line.text, model: body.model };
+        if (line === undefined) hintCalls.push({ skill, model: reply.model, usage: reply.usage });
         written.set(skill, reply);
         if ([...wanted].every((name) => written.has(name))) allWritten.resolve();
         return sseResponse(
           messageSse({
-            id: `msg_hint_${hintCalls.length}`,
+            id: `msg_hint_${written.size}`,
             model: reply.model,
             content: [{ type: "text", text: reply.text }],
             stopReason: "end_turn",
@@ -1761,8 +1952,10 @@ export async function captureBody(
         db.close();
       }
       const taken = new Set(seeded);
+      // Each recorded line whose key the hint run gave, under that key.
+      const learned: [string, string][] = [];
       for (const entry of hints) {
-        if (entry.cached !== undefined) continue;
+        if (!wanted.has(entry.skill.name)) continue;
         const reply = written.get(entry.skill.name);
         if (reply === undefined) {
           throw new Error(
@@ -1780,14 +1973,34 @@ export async function captureBody(
         const row = rows.find(
           (r) => r.description === shown && rowKey.test(r.key) && !taken.has(r.key)
         );
+        const wrote =
+          entry.recorded === undefined
+            ? `the model wrote ${JSON.stringify(reply.text)}`
+            : `the recorder answered with its recorded line ${JSON.stringify(reply.text)}`;
         if (row === undefined) {
           throw new Error(
             reason === undefined
-              ? `case ${c.id} arm ${arm.name}: Oh My Pi stored no hint of skill ${name}: the model wrote ${JSON.stringify(reply.text)}, a hint Oh My Pi keeps, and its database holds no row of it`
-              : `case ${c.id} arm ${arm.name}: Oh My Pi stored no record of the reply it kept no hint of for skill ${name}: the model wrote ${JSON.stringify(reply.text)} (${reason}), and its database holds no row of the cut-down description ${JSON.stringify(shown)} under the skill's key and a model`
+              ? `case ${c.id} arm ${arm.name}: Oh My Pi stored no hint of skill ${name}: ${wrote}, a hint Oh My Pi keeps, and its database holds no row of it`
+              : `case ${c.id} arm ${arm.name}: Oh My Pi stored no record of the reply it kept no hint of for skill ${name}: ${wrote} (${reason}), and its database holds no row of the cut-down description ${JSON.stringify(shown)} under the skill's key and a model`
           );
         }
         taken.add(row.key);
+        if (entry.recorded !== undefined) {
+          // Oh My Pi's key of the skill text, which the key cache keeps; the line goes under it
+          // below.
+          const ompKey = OMP_KEY.exec(row.key)?.[0] ?? row.key;
+          const known: CachedKey = {
+            omp: version,
+            name,
+            description: entry.skill.description,
+            ompKey,
+            readAt: new Date().toISOString(),
+          };
+          writeWhole(entry.file, json(known));
+          entry.ompKey = ompKey;
+          learned.push([ompKey, entry.recorded.text]);
+          continue;
+        }
         const cached: CachedHint = {
           omp: version,
           name,
@@ -1797,21 +2010,26 @@ export async function captureBody(
           model: reply.model,
           writtenAt: new Date().toISOString(),
           ...(reason === undefined ? { kept: true } : { kept: false, reply: reply.text, reason }),
+          ...(draw === 1 ? {} : { draw }),
         };
         writeWhole(entry.file, json(cached));
         entry.cached = cached;
         entry.written = true;
       }
+      // Each recorded line whose key the hint run gave goes under that key, in place of the row Oh
+      // My Pi stored, so Oh My Pi lists exactly that line.
+      if (learned.length > 0) putDescriptions(database, learned);
     }
-    // A recorded prompt: its blocks with the case skill's listing line as this arm lists it.
+    // A recorded prompt: its blocks with the case skill's listing line as this arm lists it, less
+    // the line of each name the arm lists under its bare name in place of the recorded one.
     const recorded =
       c.profile.systemPrompt === undefined
         ? undefined
         : armRecordedPrompt(
-            c.profile.systemPrompt,
+            withoutListingLines(c.profile.systemPrompt, arm.relisted ?? []),
             c.skill,
             arm.skill,
-            hints.find((entry) => entry.skill.name === arm.skill)?.cached?.hint
+            listedText(hints.find((entry) => entry.skill.name === arm.skill))
           );
     if (recorded !== undefined) {
       promptFile = path.join(root, `system-prompt.${arm.name}.json`);
@@ -1847,8 +2065,8 @@ export async function captureBody(
 
     // A recorded prompt must be sent as the arm's blocks, byte for byte (in a Responses body, as
     // Oh My Pi joins them into its `instructions`: the blocks not blank, a blank line between).
-    // Otherwise the listing must be the installed skills Oh My Pi lists, each under its hint, or
-    // under its cut-down description where Oh My Pi kept no hint.
+    // Otherwise the listing must be the installed skills Oh My Pi lists, each under its recorded
+    // line or its hint, or under its cut-down description where Oh My Pi kept no hint.
     const listing = skillListing(body);
     const faults: string[] = [];
     if (recorded !== undefined) {
@@ -1865,16 +2083,14 @@ export async function captureBody(
         }
       }
     } else {
-      for (const { skill, cached } of hints) {
+      for (const entry of hints) {
+        const { skill } = entry;
+        const want = listedText(entry);
         const shown = listing.get(skill.name);
         if (shown === undefined) faults.push(`it does not list ${skill.name}`);
-        else if (shown !== cached?.hint) {
-          const under =
-            cached?.kept === false
-              ? "the cut-down description Oh My Pi lists in place of a hint"
-              : "its hint";
+        else if (shown !== want) {
           faults.push(
-            `it lists ${skill.name} as ${JSON.stringify(shown)}, not under ${under} ${JSON.stringify(cached?.hint)}`
+            `it lists ${skill.name} as ${JSON.stringify(shown)}, not under ${listedUnder(entry)} ${JSON.stringify(want)}`
           );
         }
       }
@@ -1943,15 +2159,27 @@ export async function captureBody(
               extra: sentTools.filter((name) => !recordedTools.includes(name)),
               leftOut: toolsLeftOut,
             },
-      hints: hints.map(({ skill, key, cached, written: was }) => ({
-        skill: skill.name,
-        hint: cached?.hint ?? "",
-        key,
-        ompKey: cached?.ompKey ?? "",
-        written: was,
-        kept: cached?.kept !== false,
-        ...(cached?.kept === false ? { reply: cached.reply, reason: cached.reason } : {}),
-      })),
+      hints: hints.map(({ skill, key, recorded: line, ompKey, cached, written: was }) =>
+        line !== undefined
+          ? {
+              skill: skill.name,
+              hint: line.text,
+              key,
+              ompKey: ompKey ?? "",
+              written: false,
+              source: `recorded (${line.from})` as const,
+            }
+          : {
+              skill: skill.name,
+              hint: cached?.hint ?? "",
+              key,
+              ompKey: cached?.ompKey ?? "",
+              written: was,
+              source: `drawn (draw ${draw})` as const,
+              kept: cached?.kept !== false,
+              ...(cached?.kept === false ? { reply: cached.reply, reason: cached.reason } : {}),
+            }
+      ),
       hintCalls,
       otherRequests,
       extensionErrors: extensionErrors(profileDir, stderr),

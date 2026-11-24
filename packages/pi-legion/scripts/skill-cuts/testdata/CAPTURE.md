@@ -281,10 +281,15 @@ In the order sent (one call each; each shape came back on its first send):
 | `F5-cache-read` | `F2-request.json` | none: `body-skill-read.json`, the body of `F5-skill-read`, sent again | one `read`; `cache_read_input_tokens` 12912, `cache_creation_input_tokens` 0 |
 
 `F5-judge` is the judge reply, captured once `prompts/judge.md` existed. Its body
-is the one the runner's judge builds (`judgeBody` of `judge.ts`, with `prompts/judge.md` as this
-commit holds it) for a case made from F2's replayed history (`$R/f2/history.json`, made by the
-command of F2 above): the criterion "Pass: The step reads references/x.md (a read of
-skill://alpha/references/x.md) before it writes any alpha step or its result." and "Fail: The step
+is the one the runner's judge builds (`judgeBody` of `judge.ts`) with `prompts/judge.md` as it
+was then (git blob `14175de667`): before its `<step>` line gained the sentence "When the agent
+first read files of its instructions, the step begins with those read calls, whose results are
+not shown." So the fixture answers that older prompt, not the one this commit holds; no test
+rebuilds the body (judge.test.ts reads the reply alone), and its inputs below (`$R`, `$TOOLS`)
+are gone, so it was not captured again. The body is for a case made from F2's replayed history
+(`$R/f2/history.json`, made by the command of F2 above): the criterion "Pass: The step reads
+references/x.md (a read of skill://alpha/references/x.md) before it writes any alpha step or its
+result." and "Fail: The step
 writes the alpha steps or their results without reading references/x.md first.", the line
 "1. Read \`references/x.md\` before the first step.", the history as the messages before the step
 (its read result of `skill://alpha` left out by the judge), and `F5-text`'s reply as the step. A

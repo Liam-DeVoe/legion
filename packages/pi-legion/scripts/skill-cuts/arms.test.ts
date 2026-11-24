@@ -12,16 +12,17 @@ import {
 import {
   type Arm,
   type ArmName,
+  autoloadedText,
   buildArm,
   type DispatchAnswer,
   dispatchOf,
   InjectionRefused,
+  type InstalledCopy,
   injectionFault,
   injectionFaults,
   otherSkillRead,
   pathFile,
   pathFormFault,
-  type SkillCopy,
   skillFile,
   snapshotTag,
   unknownSkill,
@@ -222,7 +223,15 @@ test("none removes each read call of the skill and its result, and leaves the sk
   ]);
 });
 
-test("none leaves out every copy of the skill's source, a namespaced one too, and keeps a copy of another source that shares the name; each other arm keeps them all", () => {
+/** acme/tools' alpha, a copy of another source that shares the case skill's name, as the cache
+ *  holds the copy a capture installed. */
+const TOOLS_ALPHA_MD =
+  "---\nname: alpha\ndescription: Use for the tools' own alpha list.\n---\n\n# Alpha of tools\n\nOne line.\n";
+
+// Catches: none listing another source's copy of the name as `<namespace>/<name>`, which Oh My Pi
+// lists bare once the tested copy is gone, so a capture refused the body; and a `skill://` read of
+// the name in none answered as a skill Oh My Pi does not have, though it resolves to that copy.
+test("none leaves out every copy of the skill's source, a namespaced one too, and lists a copy of another source that shares the name under the bare name, which answers a skill:// read of it; each other arm keeps them all as the profile has them", () => {
   const twice = structuredClone(f1Case);
   twice.profile.skills.push(
     // acme/skills' alpha again at another commit, which Oh My Pi lists as pack/alpha.
@@ -233,7 +242,7 @@ test("none leaves out every copy of the skill's source, a namespaced one too, an
       name: "alpha",
       namespace: "pack",
     },
-    // Another repository's alpha, listed as tools/alpha.
+    // Another repository's alpha, listed as tools/alpha beside the tested copy.
     {
       repo: "acme/tools",
       commit: "0123456789abcdef",
@@ -246,16 +255,70 @@ test("none leaves out every copy of the skill's source, a namespaced one too, an
   const none = buildArm(twice, "none", dirs, path.join(scratch, "twice"));
   expect(
     none.profileSkills.map((skill) => `${skill.repo} ${skill.namespace ?? ""}/${skill.name}`)
-  ).toEqual(["acme/skills /beta", "acme/tools tools/alpha"]);
-  // Its not-found answer lists the names Oh My Pi lists.
-  expect(skillFile(none, "SKILL.md").text).toBe(
-    "Unknown skill: alpha\nAvailable: beta, tools/alpha"
+  ).toEqual(["acme/skills /beta", "acme/tools /alpha"]);
+  expect(none.relisted).toEqual(["tools/alpha"]);
+  // A skill://alpha read is answered from acme/tools' installed copy, at the directory beside
+  // the case's other skills, as a read of another listed skill is.
+  const copies = [
+    { name: "alpha", dir: skillDir("cache-tools-alpha", { "SKILL.md": TOOLS_ALPHA_MD }) },
+  ];
+  const shown = path.join(path.dirname(INSTALLED), "alpha");
+  expect(otherSkillRead(none, copies, "skill://alpha")).toEqual({
+    skill: "alpha",
+    file: "SKILL.md",
+    by: "skill",
+    from: "copy",
+    text: `[Skill file: ${shown}/SKILL.md]\n${TOOLS_ALPHA_MD.replace(/\n$/, "")}`,
+    isError: false,
+  });
+  expect(otherSkillRead(none, copies, "skill://alpha/references/x.md")).toMatchObject({
+    from: "copy",
+    text: `File not found: ${shown}/references/x.md`,
+    isError: true,
+  });
+  // Its unknown-skill answer lists the names Oh My Pi lists.
+  expect(otherSkillRead(none, copies, "skill://gamma")?.text).toBe(
+    "Unknown skill: gamma\nAvailable: beta, alpha"
   );
   for (const name of ["old", "new", "minus", "twin"] as const) {
-    expect(buildArm(twice, name, dirs, path.join(scratch, "twice")).profileSkills).toEqual(
-      twice.profile.skills
-    );
+    const each = buildArm(twice, name, dirs, path.join(scratch, "twice"));
+    expect(each.profileSkills).toEqual(twice.profile.skills);
+    expect(each.relisted).toBeUndefined();
+    // A read of the case's skill is the arm's own, which no other skill answers.
+    expect(otherSkillRead(each, copies, "skill://alpha")).toBeUndefined();
   }
+});
+
+// Catches: none listing bare the first copy of the name in profile order, where Oh My Pi lists
+// bare the copy in the namespace directory it reads first, so the listing names another copy.
+test("of two copies of other sources under two namespaces, none lists bare the one whose namespace's directory Oh My Pi reads first, the order of each namespace's first copy, and the other keeps its namespace", () => {
+  const kit = { repo: "acme/kit", commit: "0123456789abcdef" };
+  const c = structuredClone(f1Case);
+  c.profile.skills.push(
+    // kit's first copy, so the capture gives Oh My Pi kit's directory before tools'.
+    { ...kit, path: "skills/beta", name: "beta", namespace: "kit" },
+    // First in profile order of the two alpha copies, in the directory Oh My Pi reads second.
+    {
+      repo: "acme/tools",
+      commit: "0123456789abcdef",
+      path: "skills/alpha",
+      name: "alpha",
+      namespace: "tools",
+    },
+    { ...kit, path: "skills/alpha", name: "alpha", namespace: "kit" }
+  );
+  const none = buildArm(c, "none", { old: oldDir, new: newDir }, path.join(scratch, "two-ns"));
+  expect(
+    none.profileSkills.map((skill) => `${skill.repo} ${skill.namespace ?? ""}/${skill.name}`)
+  ).toEqual([
+    "acme/skills /beta",
+    "acme/kit kit/beta",
+    "acme/tools tools/alpha",
+    "acme/kit /alpha",
+  ]);
+  expect(none.relisted).toEqual(["kit/alpha"]);
+  // The case's profile is as it was.
+  expect(c.profile.skills.at(-1)?.namespace).toBe("kit");
 });
 
 test("minus removes the case's line, or the planted line when one is given", () => {
@@ -792,6 +855,17 @@ const DISPATCH_FIRST_CUT = DISPATCH_FIRST.replace(
 );
 const dispatchScratch = temporaryDirectory("skill-cuts-arms-dispatch", { real: true });
 
+/** The old and new directories of dispatch-first under dispatchScratch: DISPATCH_FIRST, and its
+ *  cut. */
+function dispatchDirs(): { old: string; new: string } {
+  const dirs = { old: path.join(dispatchScratch, "old"), new: path.join(dispatchScratch, "new") };
+  mkdirSync(dirs.old, { recursive: true });
+  mkdirSync(dirs.new, { recursive: true });
+  writeFileSync(path.join(dirs.old, "SKILL.md"), DISPATCH_FIRST);
+  writeFileSync(path.join(dirs.new, "SKILL.md"), DISPATCH_FIRST_CUT);
+  return dirs;
+}
+
 /** A case of dispatch-first in a profile that installs the Envoy plugin, whose session read the
  *  skill once; `before` goes before its messages. */
 function dispatchCase(id: string, before: SessionMessage[] = [], plugin = "pi-envoy"): Case {
@@ -863,14 +937,7 @@ function dispatchCase(id: string, before: SessionMessage[] = [], plugin = "pi-en
 // though the Envoy plugin puts the skill's text into every request of the session, and no
 // transcript keeps that block.
 test("the Envoy plugin's dispatch-first block, which no transcript holds, carries each arm's own text where the plugin puts it, and none has none", () => {
-  const dirs = {
-    old: path.join(dispatchScratch, "old"),
-    new: path.join(dispatchScratch, "new"),
-  };
-  mkdirSync(dirs.old, { recursive: true });
-  mkdirSync(dirs.new, { recursive: true });
-  writeFileSync(path.join(dirs.old, "SKILL.md"), DISPATCH_FIRST);
-  writeFileSync(path.join(dirs.new, "SKILL.md"), DISPATCH_FIRST_CUT);
+  const dirs = dispatchDirs();
   const c = dispatchCase("c-dispatch");
   const blocks = new Map<string, string>();
   for (const name of ["old", "new", "minus", "twin"] as const) {
@@ -926,27 +993,31 @@ test("the Envoy plugin's dispatch-first block, which no transcript holds, carrie
   expect(without.injections).toEqual([]);
 });
 
+/** The autoloaded block as a `/skill:` prompt the user invoked. */
+const invoked: SessionMessage = { ...autoloaded, attribution: "user", display: true };
+/** The autoloaded block with the user's words after it. */
+const withArgs: SessionMessage = {
+  ...autoloaded,
+  content: [{ type: "text", text: `${autoloadedOf(f1File(2))}\nUser: focus on step 2` }],
+};
+/** A user message that opens with the plugin's marker, quoting its block. */
+const quoted: SessionMessage = {
+  role: "user",
+  content: [{ type: "text", text: "<dispatch-first-skill>\nA quoted block." }],
+};
+
 // Catches: a case run with the recorded text in every arm because its block of the skill is in a
 // form the arms do not rebuild.
 test("a case whose messages hold a block of its skill in a form the arms cannot rebuild is refused, naming the case", () => {
   const dirs = { old: oldDir, new: newDir };
-  const invoked = { ...autoloaded, attribution: "user", display: true };
   expect(() =>
     buildArm(autoloadCase("c-invoked", invoked), "old", dirs, path.join(scratch, "invoked"))
   ).toThrow(
     "case c-invoked: its message 0 is a skill-prompt message of alpha, one the user invoked, not in the form of Oh My Pi's autoloaded block"
   );
-  const withArgs = {
-    ...autoloaded,
-    content: [{ type: "text", text: `${autoloadedOf(f1File(2))}\nUser: focus on step 2` }],
-  };
   expect(() =>
     buildArm(autoloadCase("c-args", withArgs), "new", dirs, path.join(scratch, "args"))
   ).toThrow("case c-args: its message 0 is a skill-prompt message of alpha not in the form");
-  const quoted: SessionMessage = {
-    role: "user",
-    content: [{ type: "text", text: "<dispatch-first-skill>\nA quoted block." }],
-  };
   const c = dispatchCase("c-quoted");
   expect(() =>
     buildArm(
@@ -961,12 +1032,7 @@ test("a case whose messages hold a block of its skill in a form the arms cannot 
 });
 
 // Catches: a refused case whose reasons a caller can tell apart only by their wording.
-test("each reason a case's block cannot be rebuilt has its kind, injectionFault joins their texts as before, and buildArm's refusal sets no kind", () => {
-  const invoked = { ...autoloaded, attribution: "user", display: true };
-  const withArgs = {
-    ...autoloaded,
-    content: [{ type: "text", text: `${autoloadedOf(f1File(2))}\nUser: focus on step 2` }],
-  };
+test("each reason a case's block cannot be rebuilt has its kind, injectionFault joins their texts with \"; \", and buildArm's refusal sets no kind", () => {
   const base = autoloadCase("c-kinds", invoked);
   const c: Case = {
     ...base,
@@ -984,10 +1050,6 @@ test("each reason a case's block cannot be rebuilt has its kind, injectionFault 
   expect(injectionFault(c)).toBe(
     `its message 0 is a skill-prompt message of alpha, one the user invoked, ${form}; its message 1 is a skill-prompt message of alpha ${form}`
   );
-  const quoted: SessionMessage = {
-    role: "user",
-    content: [{ type: "text", text: "<dispatch-first-skill>\nA quoted block." }],
-  };
   const misplaced = dispatchCase("c-misplaced");
   expect(injectionFaults({ ...misplaced, messages: [...misplaced.messages, quoted] })).toEqual([
     {
@@ -998,7 +1060,8 @@ test("each reason a case's block cannot be rebuilt has its kind, injectionFault 
   expect(injectionFaults(f1Case)).toEqual([]);
   expect(injectionFault(f1Case)).toBeUndefined();
   // buildArm's refusal carries no kind (injectionFaults gives each); a capture's carries
-  // `autoload-no-block` (capture.ts).
+  // `autoload-no-block` (capture.ts), which cli.test.ts checks end to end (its case c-autoload,
+  // dropped as `injection-unrebuildable: autoload-no-block`).
   const refusal = (() => {
     try {
       buildArm(c, "old", { old: oldDir, new: newDir }, path.join(scratch, "kinds"));
@@ -1009,7 +1072,6 @@ test("each reason a case's block cannot be rebuilt has its kind, injectionFault 
   })();
   expect(refusal).toBeInstanceOf(InjectionRefused);
   expect(refusal instanceof InjectionRefused ? refusal.kind : "not thrown").toBeUndefined();
-  expect(new InjectionRefused("case c: …", "autoload-no-block").kind).toBe("autoload-no-block");
 });
 
 /** A tool call of `name` with `args`, alone in an assistant message. */
@@ -1145,14 +1207,7 @@ test("a dev box's session that shows neither is assumed to have had Dispatch, an
 // Catches: an arm that does not carry its case's answer, so a capture cannot record what the
 // plugin's block rests on, or a block left out on an answer other than the assumption.
 test("each arm carries its case's answer, and the plugin's block goes in on each of the three answers", () => {
-  const dirs = {
-    old: path.join(dispatchScratch, "old"),
-    new: path.join(dispatchScratch, "new"),
-  };
-  mkdirSync(dirs.old, { recursive: true });
-  mkdirSync(dirs.new, { recursive: true });
-  writeFileSync(path.join(dirs.old, "SKILL.md"), DISPATCH_FIRST);
-  writeFileSync(path.join(dirs.new, "SKILL.md"), DISPATCH_FIRST_CUT);
+  const dirs = dispatchDirs();
   const asked = toolCall("bash", { command: "dispatch search --query 'made-up change'" });
   const cases: [Case, DispatchAnswer["from"]][] = [
     [{ ...dispatchCase("c-legion"), context: "legion:acme:implementer" }, "legion-role"],
@@ -1248,6 +1303,16 @@ function readCall(id: string, target: string): SessionMessage {
   };
 }
 
+/** The rows of `text` (a final newline ends its last line) as a session that shows hashline rows
+ *  shows them: each line after its number and `:`. */
+function numbered(text: string): string {
+  return text
+    .replace(/\n$/, "")
+    .split("\n")
+    .map((line, index) => `${index + 1}:${line}`)
+    .join("\n");
+}
+
 /** Oh My Pi's result for a whole read by path of `file` of COPY whose text is `text` and whose
  *  snapshot tag is `tag`, in a session that shows hashline rows, as the pinned Oh My Pi writes
  *  one: the line `[<path>#<tag>]`, then each line after its number and `:`. */
@@ -1260,7 +1325,7 @@ function pathResult(id: string, file: string, text: string, tag: string): Sessio
     content: [
       {
         type: "text",
-        text: `[${SHOWN}/${file}#${tag}]\n${lines.map((line, i) => `${i + 1}:${line}`).join("\n")}`,
+        text: `[${SHOWN}/${file}#${tag}]\n${numbered(text)}`,
       },
     ],
     details: {
@@ -1361,8 +1426,7 @@ test("a whole read by path of the cut's own copy carries each arm's own text at 
     pathResult("read_path_skill", "SKILL.md", less, snapshotTag(less))
   );
 
-  // none keeps each read call by path, its result Oh My Pi's not-found one; its skill:// reads
-  // go, as before.
+  // none keeps each read call by path, its result Oh My Pi's not-found one; its skill:// reads go.
   const none = pathArm(pathCase, "none");
   expect(none.messages).toContainEqual(pathNotFound(pathMessages[8], `${COPY}/SKILL.md`));
   expect(none.messages).toContainEqual(pathNotFound(pathMessages[10], `${COPY}/references/x.md`));
@@ -1491,14 +1555,15 @@ test("a line past 768 characters is cut as Oh My Pi cuts it, with its notice, an
   const last = "3. Stop after the third step.";
   const wide = f1File(2).replace(LINE, `${LINE} ${long}`).replace(last, `${last} ${long}`);
   const wideDir = skillDir("wide", { "SKILL.md": wide });
-  const answer = textOf(pathArm(pathCase, "new", wideDir).messages[8]);
+  const wideArm = pathArm(pathCase, "new", wideDir);
+  const answer = textOf(wideArm.messages[8]);
   const rows = answer.split("\n");
   expect(rows[9]).toBe(`9:${`${LINE} ${long}`.slice(0, 768)}…`);
   expect(rows[10]).toBe(`10:${`${last} ${long}`.slice(0, 768)}…`);
   expect(answer).toEndWith(
     "\n\n[Some lines truncated to 768 chars. Use :raw:9-9 to read line 9 whole; cut lines run to line 10, each read the same way]"
   );
-  expect(detailsOf(pathArm(pathCase, "new", wideDir).messages[8]).meta).toEqual({
+  expect(detailsOf(wideArm.messages[8]).meta).toEqual({
     source: { type: "path", value: `${COPY}/SKILL.md` },
     pagedSource: true,
     limits: {
@@ -1587,7 +1652,7 @@ const BETA_MD =
 const BETA_R = "# Beta reference\n\nOne line.\n";
 
 /** Beta's installed copy, a cache entry as context.ts's installedCopies names it. */
-function betaCopies(): SkillCopy[] {
+function betaCopies(): InstalledCopy[] {
   const dir = skillDir("cache-beta", { "SKILL.md": BETA_MD, "references/r.md": BETA_R });
   return [{ name: "beta", dir }];
 }
@@ -1736,12 +1801,6 @@ test("a skill:// read of a copy of the case's skill's source under a namespace i
 // would open.
 test("a whole read by path of another skill of the profile, by count.sql's rule, is answered from its copy in Oh My Pi's form at the path the session shows; a name two skills share, the case's skill's, and a file the copy lacks are not answered", () => {
   const copies = betaCopies();
-  const numbered = (text: string) =>
-    text
-      .replace(/\n$/, "")
-      .split("\n")
-      .map((line, index) => `${index + 1}:${line}`)
-      .join("\n");
   const skillMd = (shown: string) => `[${shown}#${snapshotTag(BETA_MD)}]\n${numbered(BETA_MD)}`;
   const target = "/home/agent/src/acme-skills/skills/beta/SKILL.md";
   const read = {
@@ -1826,4 +1885,19 @@ test("a whole read by path of another skill of the profile, by count.sql's rule,
   };
   const both = buildArm(shared, "old", { old: oldDir, new: newDir }, path.join(scratch, "shared"));
   expect(otherSkillRead(both, copies, target)).toBeUndefined();
+});
+
+// Catches: the autoloaded block's body read from a SKILL.md that starts with a byte order mark
+// with the mark kept, so its frontmatter was not found and went into the block whole, where Oh
+// My Pi drops the mark as it reads the file and puts in the body alone.
+test("the autoloaded block of a SKILL.md that starts with a byte order mark holds its body alone, as Oh My Pi reads it", () => {
+  const dir = path.join(scratch, "autoload-mark");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "SKILL.md"),
+    "\uFEFF---\nname: alpha\ndescription: Use for the alpha list.\n---\n\n# Alpha\n\nStep one.\n"
+  );
+  expect(autoloadedText(dir, "/skills/alpha/SKILL.md")).toBe(
+    "# Alpha\n\nStep one.\n\n---\n\nSkill: /skills/alpha/SKILL.md"
+  );
 });

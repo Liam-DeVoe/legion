@@ -52,6 +52,15 @@ export const OneLine = z
   .string()
   .refine((text) => text.trim() !== "" && !text.includes("\n"), "is not one non-blank line");
 
+/** `text` as JSON, or undefined when it is none. */
+export function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Each issue of a zod error as `<path>: <message>`, joined by `; `; an issue of the whole value
  *  is named `root`. */
 export function schemaFaults(error: z.ZodError, root = "the value"): string {
@@ -110,30 +119,43 @@ export function firstLine(text: string): string {
   return text.trim().split("\n")[0] ?? "";
 }
 
+/** A file's text as Oh My Pi reads a file (capability/fs.ts's `readFile`, `Bun.file(…).text()`):
+ *  decoded as UTF-8 with a leading byte order mark dropped, so a SKILL.md that starts with one
+ *  still opens with its frontmatter's `---`. Takes the file's bytes, or a text already decoded (a
+ *  GraphQL blob's `text`, a file read as UTF-8), whose leading mark it drops the same way. Every
+ *  SKILL.md the runner parses is read through it. */
+export function ompText(raw: Uint8Array | string): string {
+  return typeof raw === "string" ? raw.replace(/^\uFEFF/, "") : new TextDecoder().decode(raw);
+}
+
 /** A rate limit, primary or secondary, as gh reports it. */
 export const RATE_LIMITED = /rate limit|HTTP 429/i;
 /** The most times one call GitHub refused for its rate limit is sent again. */
 export const MAX_RATE_RETRIES = 5;
 /** gh's error text for a failure the same call may not meet again, with its reason: the union of
  *  the two lists the runner had before it shared one rule, copies.ts's and context.ts's. The
- *  connection timed out, was reset or refused, or ended early; GitHub's front end answered a 5xx,
- *  or the npm registry a 429 (too many requests: build.ts's registry read);
- *  the gh process ran past the time limit its caller gave it and was ended (context.ts's reads
- *  have one); a name did not resolve, or did not resolve yet; a pipe broke; or the text names a
- *  timeout in any other words. The first pattern that matches gives the reason, so a more
- *  particular reason comes before a more general one. A call that fails so is sent again
- *  (`GhRetries.waitToRetry`); no other failure is. */
+ *  connection timed out, was reset or refused, or ended early; gh's answer ended early, so gh
+ *  could not parse it (`unexpected end of JSON input`: gh read a large body, such as a recursive
+ *  tree of 17 MB, cut short, and the same call gives it whole again); GitHub's front end answered
+ *  a 5xx, or the npm registry a 429 (`HTTP 429 (too many requests)`, the words of build.ts's
+ *  registry read alone: GitHub's 429 is a rate limit, RATE_LIMITED, waited out at most
+ *  MAX_RATE_RETRIES times and then not sent again); the gh process ran past the time limit its
+ *  caller gave it and was ended (context.ts's reads have one); a name did not resolve, or did not
+ *  resolve yet; a pipe broke; or the text names a timeout in any other words. The first pattern
+ *  that matches gives the reason, so a more particular reason comes before a more general one. A
+ *  call that fails so is sent again (`GhRetries.waitToRetry`); no other failure is. */
 const TRANSIENT_FAILURES: readonly (readonly [reason: string, pattern: RegExp])[] = [
   ["TLS handshake timeout", /TLS handshake timeout/i],
   ["connection reset", /connection reset|reset by peer|ECONNRESET/i],
   ["connection refused", /connection refused|ECONNREFUSED/i],
   ["unexpected EOF", /unexpected EOF/i],
+  ["body cut short", /unexpected end of JSON input/i],
   ["i/o timeout", /i\/o timeout/i],
   ["HTTP 502", /HTTP 502\b/],
   ["HTTP 503", /HTTP 503\b/],
   ["HTTP 504", /HTTP 504\b/],
   ["other HTTP 5xx", /HTTP 5\d\d/i],
-  ["HTTP 429", /HTTP 429\b/],
+  ["HTTP 429", /HTTP 429 \(too many requests\)/],
   ["time limit", /timed out after \d+ ms/],
   ["timed out", /timed out/i],
   ["TLS handshake", /TLS handshake/i],
@@ -175,6 +197,17 @@ export interface GhTry {
   readonly stderr: string;
 }
 
+/** What `GhRetries.send` gives: the try it ended on, whose `stderr` is each try's error
+ *  (`triesError`) when there were several, and then `lastStderr` is that last try's own error. */
+export type Sent<T extends GhTry> = T & { readonly lastStderr?: string };
+
+/** The error text of the try a call `GhRetries.send` made ended on. A call is sent again only
+ *  after a transient failure or a rate limit, so a last try that failed so is a call that failed
+ *  so on every try, and one that failed for good (a 404) after a 502 failed for good. */
+export function lastTryError(result: Sent<GhTry>): string {
+  return result.lastStderr ?? result.stderr;
+}
+
 /** Where `GhRetries` waits, and says that it does. */
 export interface RetryIo {
   sleep(ms: number): Promise<void>;
@@ -207,6 +240,9 @@ export function started<T>(promise: Promise<T>): Promise<T> {
   return promise;
 }
 
+/** How a retry's line names a gh call whose caller gives it no name of its own. */
+const A_GH_CALL = "a gh call";
+
 /**
  * The one rule by which the runner sends a gh call again (copies.ts's reads, build.ts's
  * `GithubReads`, context.ts's `ghSource`), with its count of the calls it sent again. A call whose
@@ -237,46 +273,47 @@ export class GhRetries {
   /** Whether a call that failed with `stderr`, sent again `retried` times so far, is sent again:
    *  when `stderr` names a transient failure, and not one of BATCH_TOO_LARGE for a batch its caller
    *  `splits`, and fewer than 4 retries were made, this counts the retry by its reason, says so on
-   *  standard error and sleeps the next wait of TRANSIENT_WAITS_MS. A caller that holds a read slot
-   *  calls it outside the slot, so the wait holds none. */
+   *  standard error (naming the call as `read` does, A_GH_CALL when absent) and sleeps the next
+   *  wait of TRANSIENT_WAITS_MS. A caller that holds a read slot calls it outside the slot, so the
+   *  wait holds none. */
   async waitToRetry(
     stderr: string,
     retried: number,
-    splits = false,
-    read = "a gh call"
+    options: { readonly splits?: boolean; readonly read?: string } = {}
   ): Promise<boolean> {
     const reason = transientReason(stderr);
     const wait = TRANSIENT_WAITS_MS[retried];
     if (
       reason === undefined ||
       wait === undefined ||
-      (splits && Object.hasOwn(BATCH_TOO_LARGE, reason))
+      (options.splits === true && Object.hasOwn(BATCH_TOO_LARGE, reason))
     )
       return false;
     this.counts.set(reason, (this.counts.get(reason) ?? 0) + 1);
     this.say(
-      `${read} failed (${firstLine(stderr)}); sending it again in ${wait / 1000} s, retry ${retried + 1} of ${TRANSIENT_WAITS_MS.length}`
+      `${options.read ?? A_GH_CALL} failed (${firstLine(stderr)}); sending it again in ${wait / 1000} s, retry ${retried + 1} of ${TRANSIENT_WAITS_MS.length}`
     );
     await this.io.sleep(wait);
     return true;
   }
 
   /** The first try of the call `send` makes that exits 0, else the last try, which no rule sends
-   *  again, its `stderr` each try's error (`triesError`) when there were several. `splits`: the
-   *  call is a GraphQL batch of more than one item, which its caller splits. `rateWait`: the
-   *  milliseconds to wait before a call GitHub refused for its rate limit is sent again, at its
-   *  `refused`-th refusal (from 0); without it a rate limit is not waited out. Each such wait is
-   *  said on standard error first: the call, gh's first error line, the wait and when it ends. `send` takes any
-   *  read slot itself, so no wait holds one. */
+   *  again, its `stderr` each try's error (`triesError`) when there were several, and its own
+   *  error then kept as `lastStderr` (`lastTryError`). `splits`: the call is a GraphQL batch of
+   *  more than one item, which its caller splits. `rateWait`: the milliseconds to wait before a
+   *  call GitHub refused for its rate limit is sent again, at its `refused`-th refusal (from 0);
+   *  without it a rate limit is not waited out. Each such wait is said on standard error first:
+   *  the call, gh's first error line, the wait and when it ends. `send` takes any read slot
+   *  itself, so no wait holds one. */
   async send<T extends GhTry>(
     send: () => Promise<T>,
     options: {
       readonly splits?: boolean;
       readonly rateWait?: (stderr: string, refused: number) => Promise<number>;
-      /** What the call is, in the line said on each retry (`a gh call` when absent). */
+      /** What the call is, in the line said on each retry (A_GH_CALL when absent). */
       readonly read?: string;
     } = {}
-  ): Promise<T> {
+  ): Promise<Sent<T>> {
     const errors: string[] = [];
     let limited = 0;
     let transient = 0;
@@ -292,13 +329,14 @@ export class GhRetries {
         const wait = await options.rateWait(result.stderr, limited);
         // A rate wait can be 15 minutes: it says itself, so it is never taken for a hang.
         this.say(
-          `${options.read ?? "a gh call"} was refused for its rate limit (${firstLine(result.stderr)}); waiting ${Math.round(wait / 1000)} s, until ${new Date(Date.now() + wait).toISOString()}, before sending it again, refusal ${limited + 1} of ${MAX_RATE_RETRIES}`
+          `${options.read ?? A_GH_CALL} was refused for its rate limit (${firstLine(result.stderr)}); waiting ${Math.round(wait / 1000)} s, until ${new Date(Date.now() + wait).toISOString()}, before sending it again, refusal ${limited + 1} of ${MAX_RATE_RETRIES}`
         );
         await this.io.sleep(wait);
         limited++;
-      } else if (await this.waitToRetry(result.stderr, transient, options.splits, options.read)) {
+      } else if (await this.waitToRetry(result.stderr, transient, options)) {
         transient++;
-      } else return errors.length === 1 ? result : { ...result, stderr: `${triesError(errors)}\n` };
+      } else if (errors.length === 1) return result;
+      else return { ...result, stderr: `${triesError(errors)}\n`, lastStderr: result.stderr };
     }
   }
 
@@ -342,7 +380,7 @@ export class Limiter {
 }
 
 /** The environment variable that bounds the gh processes the runner has at once. */
-export const GH_CONCURRENCY_ENV = "SKILL_CUTS_GH_CONCURRENCY";
+const GH_CONCURRENCY_ENV = "SKILL_CUTS_GH_CONCURRENCY";
 /** The gh processes the runner has at once when GH_CONCURRENCY_ENV is unset: a pod's gh is a
  *  wrapper of about 145 MiB a call (a binary and a leak check), so the bound keeps the runner's
  *  processes near 600 MiB however many reads one profile starts. */
@@ -375,8 +413,14 @@ export interface TimeLimit {
 
 /** Ends `child` (SIGTERM) once `ms` pass, if `ms` is given; each `touch()` starts the `ms` again.
  *  `timedOut()` says whether the limit ended it, so a child a signal from elsewhere ended is not
- *  reported as out of time. Every limited child of the runner uses it: copies.ts's gh calls, the
- *  store reads of build.ts and capture.ts, and context.ts's commands. */
+ *  reported as out of time. Every child the runner starts has a limit, and every one but two gets
+ *  it here: copies.ts's and context.ts's gh calls (`gh <call> timed out after <ms> ms`, a
+ *  transient failure), the store reads (psql-rows.ts's `eachStoreRow`), and, ended with
+ *  `pastLimit`'s reason, context.ts's commands (`tar`, `bun install`, `bun run build`, `go
+ *  test`), `omp --version` (capture.ts), Claude Code's `--version` and `claude plugin` commands
+ *  (load.ts) and `--after-case` (cli.ts). The Oh My Pi run (capture.ts) and the Claude Code run
+ *  (load.ts), which write their output to files, keep their own timer, which ends them with
+ *  SIGKILL. */
 export function timeLimit(child: { kill(): void }, ms: number | undefined): TimeLimit {
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -397,22 +441,26 @@ export function timeLimit(child: { kill(): void }, ms: number | undefined): Time
   return { touch: start, timedOut: () => timedOut, clear: () => clearTimeout(timer), ended };
 }
 
+/** Why a child that ran past its limit (`timeLimit`) was ended: the command and the limit, in one
+ *  wording for every command the runner starts. */
+export function pastLimit(command: string, ms: number): string {
+  return `\`${command}\` ran past its limit of ${ms} ms, so it was ended`;
+}
+
 /** Gives each chunk of `stream` to `take` until the stream ends, or until `limit` ends its child:
- *  the stream is then let go, since a process the child started (psql under the store's wrapper
- *  script, the binary under gh's) can hold it open after the child is gone. */
+ *  the reader is then cancelled, which ends a pending read at once, since a process the child
+ *  started (psql under the store's wrapper script, the binary under gh's) can hold the stream open
+ *  after the child is gone. A chunk is let go once `take` returns. */
 export async function eachChunk(
   stream: ReadableStream<Uint8Array>,
   limit: TimeLimit,
   take: (chunk: Uint8Array) => void
 ): Promise<void> {
   const reader = stream.getReader();
-  const ended = limit.ended.then(() => {
-    reader.cancel().catch(() => {});
-    return undefined;
-  });
+  void limit.ended.then(() => reader.cancel().catch(() => {}));
   for (;;) {
-    const next = await Promise.race([reader.read(), ended]);
-    if (next === undefined || next.done) return;
+    const next = await reader.read();
+    if (next.done) return;
     take(next.value);
   }
 }
@@ -436,7 +484,7 @@ export async function textOf(
 export const STORE_QUIET_MS = 1_200_000;
 
 /** GitHub's refusal for its secondary rate limit, which has no reset to wait for (`rateLimitWait`). */
-export const SECONDARY_LIMITED = /secondary rate limit/i;
+const SECONDARY_LIMITED = /secondary rate limit/i;
 /** The first wait after a refusal for the secondary rate limit, doubled at each refusal after. */
 export const SECONDARY_WAIT_MS = 60_000;
 
@@ -649,4 +697,16 @@ export async function untilInstallationReset(
     `${resets}; waiting ${Math.round(wait / 1000)} s, until ${new Date(clock + wait).toISOString()}`
   );
   return wait;
+}
+
+/** The `rateWait` of `GhRetries.send` for the gh call `args` (without `gh`): `rateLimitWait`,
+ *  whose primary limit is waited out to the reset of the installation that refused the call,
+ *  read with `io` (`untilInstallationReset`). The one rule of copies.ts's, context.ts's and
+ *  build.ts's reads. */
+export function installationRateWait(
+  args: readonly string[],
+  io: ResetIo
+): (stderr: string, refused: number) => Promise<number> {
+  return (stderr, refused) =>
+    rateLimitWait(stderr, refused, () => untilInstallationReset(args, io));
 }

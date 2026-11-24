@@ -21,7 +21,11 @@
  *   longer of the `retry-after` wait and the back-off (1 s, 2 s, 4 s, ... at most 30 s), up to
  *   GATEWAY_TRIES tries in all, whose waits add up to 91 s at least: more than the 60 s a
  *   gateway's rate guard looks back over, so a refusal that names a 1 s `retry-after` but holds a
- *   team back for a minute is outlasted. Any other status, a 400 among them, throws at once.
+ *   team back for a minute is outlasted. Any other status, a 400 among them, throws at once, and
+ *   so does a streamed reply whose error's type (a Responses error's `code`) ends in `_policy`
+ *   (the provider's content policy, as `cyber_policy`), as a MessagesApiError of the answer's
+ *   status whose message is `the stream ended in an error: <type>: <message>` (STREAM_FAILED):
+ *   the provider refuses the same content on each try, and each try is paid for.
  * - At most `concurrency` calls are in flight; the others wait their turn, in the order sent. A
  *   reply says when its call got its place and was sent and how many calls were in flight then
  *   (`sentAt`, `inFlight`; `onSent` is told the same as the call goes), and carries the
@@ -50,7 +54,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { holdSecret, scrubError } from "@legion/contracts/held-secrets";
 import { z } from "zod";
-import { postMessages, readKeyFile } from "../skill-scenarios/messages-api";
+import { MessagesApiError, postMessages, readKeyFile } from "../skill-scenarios/messages-api";
 import type { Fetch, Sleep } from "../skill-scenarios/production-dispatch";
 
 /** How many times one call is tried before `send` fails: the back-off's waits before the last of
@@ -109,6 +113,27 @@ export const PRICES: Readonly<Record<string, Price>> = {
     cacheWriteLong: 20,
     cacheRead: 1,
   },
+  "claude-mythos-5-2": {
+    input: 8,
+    output: 40,
+    cacheWriteShort: 10,
+    cacheWriteLong: 16,
+    cacheRead: 0.2,
+  },
+  "claude-mythos-5-1": {
+    input: 10,
+    output: 50,
+    cacheWriteShort: 12.5,
+    cacheWriteLong: 20,
+    cacheRead: 0.25,
+  },
+  "claude-mythos-5": {
+    input: 10,
+    output: 50,
+    cacheWriteShort: 12.5,
+    cacheWriteLong: 20,
+    cacheRead: 1,
+  },
   "claude-opus-5-5": {
     input: 4,
     output: 20,
@@ -144,6 +169,34 @@ export const PRICES: Readonly<Record<string, Price>> = {
     cacheWriteLong: 10,
     cacheRead: 0.5,
   },
+  "claude-opus-4-6-20260205": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
+  "claude-opus-4-7-20260416": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
+  "claude-opus-4-5": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
+  "claude-opus-4-5-20251101": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
   "claude-sonnet-5-5": {
     input: 2,
     output: 10,
@@ -159,6 +212,20 @@ export const PRICES: Readonly<Record<string, Price>> = {
     cacheRead: 0.2,
   },
   "claude-sonnet-4-6": {
+    input: 3,
+    output: 15,
+    cacheWriteShort: 3.75,
+    cacheWriteLong: 6,
+    cacheRead: 0.3,
+  },
+  "claude-sonnet-4-5": {
+    input: 3,
+    output: 15,
+    cacheWriteShort: 3.75,
+    cacheWriteLong: 6,
+    cacheRead: 0.3,
+  },
+  "claude-sonnet-4-5-20250929": {
     input: 3,
     output: 15,
     cacheWriteShort: 3.75,
@@ -181,6 +248,20 @@ export const PRICES: Readonly<Record<string, Price>> = {
         cacheRead: 0.05,
       },
     },
+  },
+  "claude-haiku-4-5": {
+    input: 1,
+    output: 5,
+    cacheWriteShort: 1.25,
+    cacheWriteLong: 2,
+    cacheRead: 0.1,
+  },
+  "claude-haiku-4-5-20251001": {
+    input: 1,
+    output: 5,
+    cacheWriteShort: 1.25,
+    cacheWriteLong: 2,
+    cacheRead: 0.1,
   },
   "gpt-6.1-sol": {
     input: 2,
@@ -386,16 +467,22 @@ export interface ToolCall {
   readonly input: unknown;
 }
 
+/** Whether a block of a reply's content is a tool call: a Messages `tool_use` block, or a
+ *  Responses `function_call` item. */
+export function isToolCallBlock(block: ContentBlock): boolean {
+  return block.type === "tool_use" || block.type === "function_call";
+}
+
 /** The tool calls of a reply's content, in order. */
 export function toolCalls(content: readonly ContentBlock[]): ToolCall[] {
   return content.flatMap((block): ToolCall[] => {
+    if (!isToolCallBlock(block)) return [];
     const name = typeof block.name === "string" ? block.name : undefined;
     if (block.type === "tool_use") {
       return [
         { id: typeof block.id === "string" ? block.id : undefined, name, input: block.input },
       ];
     }
-    if (block.type !== "function_call") return [];
     let input: unknown;
     try {
       input = block.arguments === "" ? {} : JSON.parse(String(block.arguments));
@@ -654,6 +741,21 @@ const StreamError = z.looseObject({
   error: z.looseObject({ type: z.string().optional(), message: z.string().optional() }),
 });
 
+/** How the error a streamed reply's reader throws on the stream's error begins (StreamFailed). */
+export const STREAM_FAILED = "the stream ended in an error";
+
+/** What a streamed reply's reader throws on the stream's `error` event (a Responses stream's
+ *  `response.failed` too): `<STREAM_FAILED>: <type>: <message>`, its error's type (a Responses
+ *  error's `code`; `error` where the event names none) kept as `type`. */
+class StreamFailed extends Error {
+  constructor(
+    readonly type: string,
+    said: string
+  ) {
+    super(`${STREAM_FAILED}: ${type}: ${said}`);
+  }
+}
+
 /** The block at `index` of `blocks`, or a throw naming the event that names a block not started. */
 function blockAt(blocks: Record<string, unknown>[], index: number, event: string) {
   const block = blocks[index];
@@ -731,9 +833,7 @@ export function streamedMessage(text: string): unknown {
         break;
       case "error": {
         const { error } = StreamError.parse(event);
-        throw new Error(
-          `the stream ended in an error: ${error.type ?? "error"}: ${error.message ?? ""}`
-        );
+        throw new StreamFailed(error.type ?? "error", error.message ?? "");
       }
     }
   }
@@ -764,11 +864,11 @@ const StreamFailure = ErrorFields.extend({
 });
 
 /** What an `error` event (its own `code` and `message`, or its `error`'s) or a `response.failed`
- *  event (its response's `error`) of a Responses stream says. */
-function streamError(event: unknown): string {
+ *  event (its response's `error`) of a Responses stream says, as StreamFailed. */
+function streamError(event: unknown): StreamFailed {
   const failure: z.infer<typeof StreamFailure> = StreamFailure.safeParse(event).data ?? {};
   const said = failure.response?.error ?? failure.error ?? failure;
-  return `${said.code ?? "error"}: ${said.message ?? ""}`;
+  return new StreamFailed(said.code ?? "error", said.message ?? "");
 }
 
 /**
@@ -784,7 +884,7 @@ export function streamedResponse(text: string): unknown {
     const { type, response } = ResponseEvent.parse(event);
     if (type === "response.completed" || type === "response.incomplete") done = response;
     else if (type === "error" || type === "response.failed") {
-      throw new Error(`the stream ended in an error: ${streamError(event)}`);
+      throw streamError(event);
     }
   }
   if (done === undefined) throw new Error("the stream ended before response.completed");
@@ -932,7 +1032,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       const inFlight = running;
       onSent?.({ at: sentAt, inFlight });
       const started = performance.now();
-      const { message, usage, requestId, gatewayHeaders } = await postMessages({
+      const answer = await postMessages({
         url: baseUrl,
         ...(responses ? { path: "/v1/responses", auth: "bearer" as const } : {}),
         key,
@@ -942,19 +1042,34 @@ export function createGateway(options: GatewayOptions): Gateway {
         sleep,
         tries: GATEWAY_TRIES,
         timeoutMs,
-        accept: (reply, response) => ({
-          ...(responses
-            ? responseReply(streamed ? streamedResponse(reply) : JSON.parse(reply))
-            : { message: replyMessage(reply, streamed), usage: undefined }),
-          requestId: response.headers.get("request-id") ?? undefined,
-          gatewayHeaders: Object.fromEntries(
-            GATEWAY_HEADERS.flatMap((name): [string, string][] => {
-              const value = response.headers.get(name);
-              return value === null ? [] : [[name, value]];
-            })
-          ),
-        }),
+        accept: (reply, response) => {
+          try {
+            return {
+              ...(responses
+                ? responseReply(streamed ? streamedResponse(reply) : JSON.parse(reply))
+                : { message: replyMessage(reply, streamed), usage: undefined }),
+              requestId: response.headers.get("request-id") ?? undefined,
+              gatewayHeaders: Object.fromEntries(
+                GATEWAY_HEADERS.flatMap((name): [string, string][] => {
+                  const value = response.headers.get(name);
+                  return value === null ? [] : [[name, value]];
+                })
+              ),
+            };
+          } catch (error) {
+            // A stream error whose type ends in `_policy` is the provider's content policy, which
+            // refuses the same content on each try: it is given back, not thrown, since
+            // postMessages tries again on a throw. It leaves `send` as postMessages' own errors
+            // do, a MessagesApiError with the answer's status, which the request log records.
+            if (error instanceof StreamFailed && error.type.endsWith("_policy")) {
+              return { refused: new MessagesApiError(error.message, response.status) };
+            }
+            throw error;
+          }
+        },
       });
+      if ("refused" in answer) throw answer.refused;
+      const { message, usage, requestId, gatewayHeaders } = answer;
       const durationMs = Math.round(performance.now() - started);
       const spent = count(message, bodyPrice, usage);
       const providerRequestId =

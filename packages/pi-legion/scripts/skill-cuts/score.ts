@@ -38,6 +38,7 @@
  * recorded names is dropped (listingStanding).
  */
 import { z } from "zod";
+import { parseJson } from "./common";
 
 /** Runs of each arm of a case in the screen stage. */
 export const SCREEN_RUNS = 10;
@@ -80,8 +81,8 @@ export const NEAR_MISS_MAX_LOADS = 1;
  *  session's recorded listing holds (the architect, 2026-11-22T03:04Z): one that misses more is
  *  dropped (listingStanding). */
 export const MAX_LISTING_MISSING_PERCENT = 10;
-/** The evidence item of a case or a load task that holds its listing measure as JSON: build.ts
- *  writes it as its LISTING_MEASURE, and cli.test.ts checks the two names agree. */
+/** The evidence item of a case or a load task that holds its listing measure as JSON, under which
+ *  build.ts writes its ListingMeasure. */
 export const LISTING_MEASURE_ITEM = "listing measure";
 /** How the drop of a case or a task whose listing misses too many names begins. */
 export const LISTING_MISSES = "listing-misses";
@@ -336,7 +337,8 @@ export function isFalseLoss(passes: Passes<"control">): boolean {
 }
 
 /** The informative cases of `cases` in the control rule's order: the one whose old text passes
- *  most more often than no skill first, a tie going to the lower id in string order. */
+ *  most more often than no skill first, a tie going to the lower id in string order. A skill's
+ *  control case is the first of them that was not dropped (scoreSkill). */
 export function controlOrder(
   cases: readonly { caseId: string; passes: Passes<"screen"> }[]
 ): string[] {
@@ -346,14 +348,6 @@ export function controlOrder(
     )
     .sort((a, b) => b.gap - a.gap || (a.caseId < b.caseId ? -1 : a.caseId > b.caseId ? 1 : 0))
     .map((each) => each.caseId);
-}
-
-/** The id of a skill's control case: the first of its informative screened cases in the control
- *  rule's order (controlOrder). Undefined when no case is informative. */
-export function controlCase(
-  cases: readonly { caseId: string; passes: Passes<"screen"> }[]
-): string | undefined {
-  return controlOrder(cases)[0];
 }
 
 /** A skill that gets no verdict, and why. */
@@ -395,9 +389,12 @@ export function skillVerdict(counts: {
   return { verdict: counts.losses > 0 ? "loss" : "keeps" };
 }
 
-/** A case dropped at `stage` (cli.ts writes why: a judge control failed, the gateway serves its
- *  model no more, a directory of its context could not be read, or its listing misses too many
- *  names), and why. */
+/** A case dropped at `stage`, and why. cli.ts writes why: a judge control failed, the gateway
+ *  serves its model no more, a directory of its context could not be read, its listing misses
+ *  too many names, a block of its skill its arms cannot each rebuild, a file it reads by path an
+ *  arm's text holds in a form the arms do not rebuild, an arm's runs read skill files past the
+ *  last answered round, or the provider refused, on a content policy, every replay with no verdict
+ *  of each arm of a stage that lacks its judged runs. */
 export interface CaseDrop {
   readonly stage: Stage;
   readonly reason: string;
@@ -515,11 +512,10 @@ export function scoreSkill(
       : []
   );
   const informative = cases.filter((c) => c.informative).length;
-  const drops = new Map(cases.map((c) => [c.caseId, c.drop]));
   const replacedControls: string[] = [];
   let chosen: string | undefined;
   for (const caseId of controlOrder(screenedCases)) {
-    if (drops.get(caseId) === undefined) {
+    if (facts.get(caseId)?.drop === undefined) {
       chosen = caseId;
       break;
     }
@@ -528,7 +524,7 @@ export function scoreSkill(
   const noControl =
     chosen === undefined && replacedControls.length > 0
       ? `no informative case is left to be the control case: each is dropped (${replacedControls
-          .map((caseId) => `${caseId} at ${drops.get(caseId)?.stage}`)
+          .map((caseId) => `${caseId} at ${facts.get(caseId)?.drop?.stage}`)
           .join(", ")})`
       : undefined;
   const control = chosen === undefined ? undefined : stageOutcome(records, chosen, "control");
@@ -541,7 +537,8 @@ export function scoreSkill(
     noControl,
     control,
   };
-  const waiting = (outcome: { state: string } | undefined) => outcome?.state === "running";
+  const waiting = (outcome: { state: StageState | ConfirmScore["state"] } | undefined) =>
+    outcome?.state === "running";
   if (cases.some((c) => c.drop?.stage !== "screen" && waiting(c.screen)))
     return { ...score, outcome: undefined };
   if (informative >= MIN_INFORMATIVE_CASES && noControl !== undefined)
@@ -931,13 +928,7 @@ export function listingStanding(
   if (item === undefined) {
     return { state: "not measurable", why: "its evidence holds no listing measure" };
   }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(item.source);
-  } catch {
-    raw = undefined;
-  }
-  const measure = ListingRead.safeParse(raw);
+  const measure = ListingRead.safeParse(parseJson(item.source));
   if (!measure.success) {
     return { state: "not measurable", why: "its listing measure is not one build.ts writes" };
   }

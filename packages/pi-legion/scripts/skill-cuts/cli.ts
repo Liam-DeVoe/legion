@@ -55,7 +55,8 @@
  *       [--runs <n>] [--model <model>] [--thinking <level>] [--budget-usd <n>]
  *       [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>]
  *       [--scratch <dir>] [--models <models.yml>] [--omp <binary>] [--hint-model <model>]
- *       [--omp-config <file>]... [--claude <binary>] [--context-session <store>:<path hash>]
+ *       [--hint-draw <n>] [--omp-config <file>]... [--claude <binary>]
+ *       [--context-session <store>:<path hash>]
  *   bun scripts/skill-cuts/cli.ts copies --config <file> --at <ISO instant> --out <dir>
  *       [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]
  *   bun scripts/skill-cuts/cli.ts attribute --config <file> --count <dir> --copies <dir>
@@ -101,8 +102,9 @@
  * Each case's results are one file, `<out>/cases/<id>.json` (CaseResult),
  * written whole (a fresh file renamed over it) after each round of runs, so a run started again
  * goes on from what was saved and skips each case whose stage is complete. `--after-case
- * <command>` runs `<command> <that file>` through `sh` when a case's stage ends. In a run with an
- * arm of ours, every judgement reads the case's skill name and ours as `the-skill` (blind.ts);
+ * <command>` runs `<command> <that file>` through `sh` when a case's stage ends; one still
+ * running after 10 minutes (AFTER_CASE_TIMEOUT_MS) is ended, and counts as failed. In a run with
+ * an arm of ours, every judgement reads the case's skill name and ours as `the-skill` (blind.ts);
  * with `--new` or no skill compared, the judge reads the case's text as it is.
  *
  * - `screen`: the session cases first, in the file's order, then the written ones (cases.ts's
@@ -180,16 +182,17 @@
  *   arm and stage (and the history reads the ours arm removed), and for a dropped case the stage
  *   that dropped it, why, and the passes of each stage it ran; each confirm of a case with more
  *   than one, and the pooled passes of a case whose three confirms are pooled; the cases of each
- *   kind and the informative cases of each; the drops by each judge control, by
- *   `model-not-served`, by `unreadable-directory`, by `listing-misses`, by
+ *   kind and the informative cases of each; the drops by the judge controls (and by each
+ *   control), by `model-not-served`, by `unreadable-directory`, by `listing-misses`, by
  *   `injection-unrebuildable` (with the cases of each of its kinds), by `path-form` (by the arm
- *   its reason names: old and new, and ours where it is the compared arm) and by
- *   `reads-past-last-round`; the control case, and each dropped case it replaced; with ours
- *   compared, ours against old over all screened cases and over those with
+ *   its reason names: old and new, and ours where it is the compared arm), by
+ *   `reads-past-last-round` and by `provider-refused`; the control case, and each dropped case it
+ *   replaced; with ours compared, ours against old over all screened cases and over those with
  *   no removed read; each model of the cases; the skill's verdict and its reason (score.ts;
  *   `keeps` is printed "no loss detected by the registered rule", or "no loss of no skill …" with
  *   no skill compared), with how many of its screened cases have a listing that could not be
- *   measured and how many rest on the assumption that their session had Dispatch; the rule's
+ *   measured, how many installed names their recorded listing gave them (`fromRecorded`), and how
+ *   many rest on the assumption that their session had Dispatch; the rule's
  *   sensitivity (`lossChance` at an old pass rate of 0.9 and 0.7 and drops of 0.1 to 0.4), each
  *   screened case's smallest drop and their medians (score.ts's `dropFigures`), the estimated
  *   false-loss rate at the cases run (`falseLossChance`), the spend, the peak memory, how many
@@ -240,7 +243,15 @@
  * beginning `reads-past-last-round` or `unanswered-read`; each case's line and `report` count such
  * runs by arm, `report` by kind of case too beside the whole-text answers, and a stage left
  * unscreened by an arm with such runs drops its case under `reads-past-last-round`, with the
- * counts. A capture made for a stage shows the case's
+ * counts. A stage left unscreened in which the provider refused, on a content policy (a stream
+ * error whose type ends in `_policy`, as `cyber_policy`), every replay that got no verdict in
+ * each arm that lacks its judged runs can never be judged, and drops its case as
+ * `provider-refused: provider refused every replay of <arms> (<policy>): <n> refusals (<arm>
+ * <count>, ...)`, the refused arms joined by ` and `, and none named where every arm of the stage
+ * is refused; an arm with its judged runs blocks nothing. A stage saved unscreened in that shape
+ * before this rule, with no drop, is dropped so when a stage command reaches its case again, from
+ * its saved runs and with no model call. A stage where an arm that lacks its runs has a run with
+ * no verdict for another reason stays unscreened. A capture made for a stage shows the case's
  * session (capture.ts, "The harness strings"), whose head the capture reads once from its store
  * through the configuration's `psqlCommand` and saves under `<out>/sessions/`.
  *
@@ -382,7 +393,6 @@ import {
   caseKind,
   loadCases,
   pathReadFile,
-  skillReadFile,
   stepSkillFiles,
   Thinking,
   textLines,
@@ -394,7 +404,9 @@ import {
   firstLine,
   json,
   OneLine,
+  ompText,
   parse,
+  pastLimit,
   Refused,
   required,
   Stopped,
@@ -430,6 +442,7 @@ import {
   type RequestBody,
   type Sent,
   SpentRecord,
+  STREAM_FAILED,
   toolCalls,
   usdOf,
 } from "./gateway";
@@ -485,6 +498,7 @@ import {
   skillFiles,
 } from "./readers";
 import {
+  AnsweredRead,
   MAX_CHECKOUT_ROUNDS,
   MAX_SKILL_ROUNDS,
   READS_PAST_LAST_ROUND,
@@ -496,6 +510,7 @@ import {
 } from "./replay";
 import { main as resultsIndexMain } from "./results-index";
 import {
+  type CaseDrop,
   type CaseFacts,
   CaseKind,
   type CaseScore,
@@ -549,6 +564,11 @@ import { type StyleRule, styleRules } from "./style";
 const CALL_TIMEOUT_MS = 600_000;
 /** The model calls in flight at once, unless `--concurrency` says otherwise. */
 const DEFAULT_CONCURRENCY = 8;
+/** The longest one `--after-case` command may run. It is the user's command, so its time is
+ *  theirs; what it is for, a copy of the case's results file elsewhere, took 59 ms on the pod for
+ *  a file of 2.2 MB (the largest results file the efficiency review found was 2.1 MB; measured
+ *  2026-11-23), and 10 minutes leaves room for a copy to another machine. */
+export const AFTER_CASE_TIMEOUT_MS = 600_000;
 /** The request log's name: `<out>/requests.jsonl` for `behaviour`, `load`, `control craft` and
  *  `proposals`, and the `--out` file's path with `.requests.jsonl` added for `read`, `control`,
  *  `craft` and `nearest`, unless `--request-log` names one. */
@@ -1008,7 +1028,7 @@ function readSkill(dir: string, flag: string): ReadSkill {
   }
   const skill = files.find((file) => file.path === "SKILL.md");
   if (skill === undefined) throw new Refused(`${flag} ${dir} has no SKILL.md`);
-  return { dir, name: skillNameOf(readFrontmatter(skill.text), dir), files };
+  return { dir, name: skillNameOf(readFrontmatter(ompText(skill.text)), dir), files };
 }
 
 /** The skills directly under `root`: each `<root>/<name>/SKILL.md`, by name. Throws a refusal
@@ -1275,7 +1295,7 @@ async function nearestCommand(argv: readonly string[], io: CliIo): Promise<numbe
   if (roots.length === 0) throw new Refused(`--candidates required. ${NEAREST_USAGE}`);
   const skillMd = path.join(given.skill, "SKILL.md");
   if (!isFile(skillMd)) throw new Refused(`--skill ${given.skill} has no SKILL.md`);
-  const text = readFileSync(skillMd, "utf8");
+  const text = ompText(readFileSync(skillMd));
   const frontmatter = readFrontmatter(text);
   const skill = {
     name: skillNameOf(frontmatter, given.skill),
@@ -1284,7 +1304,7 @@ async function nearestCommand(argv: readonly string[], io: CliIo): Promise<numbe
   };
   const candidates = roots.flatMap(({ source, root, names }) =>
     names.map((name) => {
-      const read = readFrontmatter(readFileSync(path.join(root, name, "SKILL.md"), "utf8"));
+      const read = readFrontmatter(ompText(readFileSync(path.join(root, name, "SKILL.md"))));
       return { name: skillNameOf(read, name), source, description: textOr(read.description, "") };
     })
   );
@@ -1954,17 +1974,6 @@ async function controlCraftCommand(argv: readonly string[], io: CliIo): Promise<
 
 // `behaviour`: the results of a case.
 
-/** One read a round of a replay answered (replay.ts's `AnsweredRead`): the skill, the file inside
- *  its directory, whether it was read by `skill://` or by path, where the answer came from (the
- *  arm's directory, another skill's installed copy, or Oh My Pi's answer for a skill the arm does
- *  not install), and whether the answer is an error. */
-const SkillReadRecord = z.strictObject({
-  skill: z.string(),
-  file: z.string(),
-  by: z.enum(["skill", "path"]),
-  from: z.enum(["arm", "copy", "absent"]),
-  isError: z.boolean(),
-});
 /** One read-only call a checkout round of a written case's replay answered from its checkout
  *  copy (replay.ts's `CheckoutRead`): its tool, its input (a bash call's command among it),
  *  whether the answer is an error, and whether a read was answered with the file's whole text in
@@ -1997,10 +2006,11 @@ const Run = z.strictObject({
   /** The rounds of read-only calls a written case's replay answered from its checkout copy
    *  before the step, or null when it failed; absent from a run made before this field. */
   checkoutRounds: z.int().nonnegative().nullable().optional(),
-  /** Each answered round's answers, in order (a skill read's, or a checkout read's), or null when
-   *  the replay failed; absent from a run made before this field. */
+  /** Each answered round's answers, in order (a skill read's, replay.ts's AnsweredRead, or a
+   *  checkout read's), or null when the replay failed; absent from a run made before this
+   *  field. */
   skillReads: z
-    .array(z.array(z.union([SkillReadRecord, CheckoutReadRecord])))
+    .array(z.array(z.union([AnsweredRead, CheckoutReadRecord])))
     .nullable()
     .optional(),
   /** Why the reply that ended the run, every call of it read-only, was not answered from the
@@ -2035,7 +2045,7 @@ const CaptureNote = z.strictObject({
  *  its own, and every arm's runs of a round in one seeded order. A stage result that does not
  *  record it was made before, when an arm's runs shared its capture's one id and went as one
  *  batch, so its runs are no runs of this procedure. */
-const SENDS = "each run its own session id; a round's arms interleaved in one seeded order";
+export const SENDS = "each run its own session id; a round's arms interleaved in one seeded order";
 
 /** What a stage whose arms hold the arm of ours records of it: our skill's name; whether our text
  *  replaced a skill of our name that the case's profile held, which makes the arm a bundle (their
@@ -2134,7 +2144,8 @@ const PATH_FORM = "path-form";
  *  dropped it (`droppedAt`: `screen` for a drop by the judge controls, the model, the listing, a
  *  block its arms cannot rebuild or a file read by path an arm's text holds in a form the arms do
  *  not rebuild (`path-form`), else the stage whose capture needed a directory no read gives
- *  or found such a block; absent when it was not dropped, and in a result written before the
+ *  or found such a block, or whose runs left it unscreened (`reads-past-last-round`,
+ *  `provider-refused`); absent when it was not dropped, and in a result written before the
  *  stage was recorded, `dropStage`); for an `injection-unrebuildable` drop, the kind of each fault
  *  (`injectionKinds`); its judge controls; each stage it ran, `confirm` its latest confirm and
  *  `earlierConfirms` the finished ones before it, oldest first; and the peak resident memory at
@@ -2384,6 +2395,28 @@ function readResults(b: Behaviour): Map<string, CaseResult> {
   return results;
 }
 
+/** `result` as the score reads it (`scored`): each run of each stage, earlier confirms included,
+ *  with no reply and no reads, which the score does not read, so that the results kept for the
+ *  score hold no reply's content. */
+function forScore(result: CaseResult): CaseResult {
+  const slim = (stage: StageResult): StageResult => ({
+    ...stage,
+    runs: stage.runs.map((run) => ({ ...run, reply: null, skillReads: null })),
+  });
+  const { screen, confirm, control } = result.stages;
+  return {
+    ...result,
+    stages: {
+      ...(screen === undefined ? {} : { screen: slim(screen) }),
+      ...(confirm === undefined ? {} : { confirm: slim(confirm) }),
+      ...(control === undefined ? {} : { control: slim(control) }),
+    },
+    ...(result.earlierConfirms === undefined
+      ? {}
+      : { earlierConfirms: result.earlierConfirms.map(slim) }),
+  };
+}
+
 /** Writes `result` whole, its time counted in `phases` when given. Returns its file. */
 function writeResult(b: Behaviour, result: CaseResult, phases?: Phases): string {
   const started = performance.now();
@@ -2486,7 +2519,7 @@ function pathFormDrop(c: Case, dirs: ArmDirs): string | undefined {
   const files = c.skillReads.flatMap((index) => {
     const message = c.messages[index];
     const target = targets.get(message?.toolCallId ?? "") ?? "";
-    if (message?.role !== "toolResult" || skillReadFile(c.skill, target) !== undefined) return [];
+    if (message?.role !== "toolResult") return [];
     const file = pathReadFile(c, target);
     return file === undefined ? [] : [file];
   });
@@ -2494,24 +2527,28 @@ function pathFormDrop(c: Case, dirs: ArmDirs): string | undefined {
   return found === undefined ? undefined : `${PATH_FORM}: ${found.arm}: ${found.fault}`;
 }
 
+/** The drop score.ts reads of case `c`, whose result is `result` (undefined when it has none):
+ *  the drop its result records (`dropStage`), else its listing measure's (score.ts's
+ *  `listingStanding`), else its block its arms cannot rebuild (`injectionDrop`), at screen; or
+ *  undefined when it has none. */
+function caseDrop(c: Case, result: CaseResult | undefined): CaseDrop | undefined {
+  if (result !== undefined && result.dropped !== null) {
+    return { stage: dropStage(result), reason: result.dropped };
+  }
+  const listing = listingStanding(c.evidence);
+  if (listing.state === "dropped") return { stage: "screen", reason: listing.reason };
+  const injection = injectionDrop(c);
+  return injection === undefined ? undefined : { stage: "screen", reason: injection.reason };
+}
+
 /** What score.ts reads of `b`'s cases beside their run records (CaseFacts): the drop of each case
- *  that has one, the drop its result records (`dropStage`), else its listing measure's
- *  (score.ts's `listingStanding`), else its block its arms cannot rebuild (`injectionDrop`), at
- *  screen; and each case's confirms with the runner and texts of each, old against `b.compared`. */
+ *  that has one (`caseDrop`), and each case's confirms with the runner and texts of each, old
+ *  against `b.compared`. */
 function caseFacts(b: Behaviour, results: ReadonlyMap<string, CaseResult>): Map<string, CaseFacts> {
   const facts = new Map<string, CaseFacts>();
   for (const c of b.cases) {
     const result = results.get(c.id);
-    const listing = listingStanding(c.evidence);
-    const injection = injectionDrop(c);
-    const drop =
-      result !== undefined && result.dropped !== null
-        ? { stage: dropStage(result), reason: result.dropped }
-        : listing.state === "dropped"
-          ? { stage: "screen" as const, reason: listing.reason }
-          : injection !== undefined
-            ? { stage: "screen" as const, reason: injection.reason }
-            : undefined;
+    const drop = caseDrop(c, result);
     const confirms: MadeConfirm[] = (result === undefined ? [] : confirmStages(result)).map(
       (stage) => ({
         runner: stage.runner ?? null,
@@ -2764,17 +2801,21 @@ async function judgeTheControls(r: Runner, c: Case, result: CaseResult): Promise
   };
 }
 
+/** How the reason of a run whose replay failed begins (runRound): `<REPLAY_FAILED>: <why>`. */
+const REPLAY_FAILED = "the replay failed";
+
 /** Round `round` of a stage: `toStart` replays of each arm, every arm's sent in one order under
  *  `seed` (replay.ts's `replayInterleaved`; the gateway bounds the calls in flight), each run with
  *  a session id of its own and its arm's installed copies of the profile's other skills, from its
  *  capture's record and the cache (context.ts's `installedCopies`), and, for a written case,
  *  `checkout`, the copy of its checkout its read-only calls are answered from; then every reply
- *  judged blind under `seed`. A replay that fails is a run with no verdict, and so is one whose
- *  reply after the last answered round still only reads, or makes a read-only call the checkout
- *  answers in no form (replay.ts's ReadsPastLastRound and UnansweredRead: its reason begins
- *  READS_PAST_LAST_ROUND or UNANSWERED_READ, and it keeps that run's reads, reply and spend); one the
- *  budget refused, or whose judgement the budget refused, is no run. The runs are numbered, within
- *  their arm, in the order they were sent. */
+ *  judged blind under `seed`. A replay that fails is a run with no verdict, its reason
+ *  `<REPLAY_FAILED>: <why>` (REFUSED_REPLAY reads a content-policy refusal there), and so is one
+ *  whose reply after the last answered round still only reads, or makes a read-only call the
+ *  checkout answers in no form (replay.ts's ReadsPastLastRound and UnansweredRead: its reason
+ *  begins READS_PAST_LAST_ROUND or UNANSWERED_READ, and it keeps that run's reads, reply and
+ *  spend); one the budget refused, or whose judgement the budget refused, is no run. The runs are
+ *  numbered, within their arm, in the order they were sent. */
 async function runRound(
   r: Runner,
   c: Case,
@@ -2838,7 +2879,7 @@ async function runRound(
         ...base,
         run: next(),
         verdict: null,
-        reason: past?.message ?? `the replay failed: ${messageFor(outcome.reason)}`,
+        reason: past?.message ?? `${REPLAY_FAILED}: ${messageFor(outcome.reason)}`,
         id: null,
         skillRounds: past?.replayed.rounds ?? null,
         checkoutRounds: past?.replayed.checkoutRounds ?? null,
@@ -2881,10 +2922,11 @@ async function runRound(
  * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of it short
  * even read alone) is returned dropped, with that reason and `stage`, before any run, so a run
  * started again skips it. A stage left unscreened by an arm whose runs read skill files past the
- * last answered round is returned dropped under READS_PAST_LAST_ROUND (`readsPastDrop`). A stage
- * it starts records this runner (`r.runner`), and a confirm it runs or goes on with under
- * `--confirm-flagged` records that (`confirmFlagged`). Throws Stopped, after saving, when the
- * budget refused a call.
+ * last answered round is returned dropped under READS_PAST_LAST_ROUND (`readsPastDrop`); else one
+ * in each of whose arms that lack their judged runs the provider refused, on a content policy,
+ * every run with no verdict, under PROVIDER_REFUSED (`refusedDrop`). A stage it starts records
+ * this runner (`r.runner`), and a confirm it runs or goes on with under `--confirm-flagged`
+ * records that (`confirmFlagged`). Throws Stopped, after saving, when the budget refused a call.
  */
 async function runStage(
   r: Runner,
@@ -3017,9 +3059,12 @@ async function runStage(
     const outcome = stageOutcome(state.runs, c.id, stage, r.compared);
     if (outcome.state !== "running") {
       update({ ...state, state: outcome.state });
-      const past =
-        outcome.state === "unscreened" ? readsPastDrop(state.runs, stage, r.compared) : undefined;
-      return past === undefined ? current : { ...current, dropped: past, droppedAt: stage };
+      const dropped =
+        outcome.state === "unscreened"
+          ? (readsPastDrop(state.runs, stage, r.compared) ??
+            refusedDrop(state.runs, stage, r.compared))
+          : undefined;
+      return dropped === undefined ? current : { ...current, dropped, droppedAt: stage };
     }
     const seed = newSeed();
     const round = await runRound(
@@ -3265,6 +3310,29 @@ async function makeSharedCheckout(
   }
 }
 
+/** Runs the `--after-case` command `command` on the results file `file` (`<command> "<file>"`
+ *  through `sh`, its output the runner's own), ended once `timeoutMs` pass (common.ts's
+ *  `timeLimit`). Gives why it failed, naming the file (with the command and the limit when the
+ *  limit ended it, `pastLimit`), or undefined when it exited 0. Exported for cli.test.ts. */
+export async function runAfterCase(
+  command: string,
+  file: string,
+  timeoutMs = AFTER_CASE_TIMEOUT_MS
+): Promise<string | undefined> {
+  const child = Bun.spawn(["sh", "-c", `${command} "$1"`, "after-case", file], {
+    stdin: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const limit = timeLimit(child, timeoutMs);
+  const code = await child.exited;
+  limit.clear();
+  if (limit.timedOut()) {
+    return `the --after-case command for ${file}: ${pastLimit(command, timeoutMs)}`;
+  }
+  return code === 0 ? undefined : `the --after-case command exited ${code} for ${file}`;
+}
+
 /** Ends case `result`'s stage: records the peak memory, writes the result, says the case's line
  *  (its stage, the peak and the seconds of each phase of `phases`), runs `--after-case`, and stops
  *  the run when the peak is above RUN_MEMORY_LIMIT_BYTES. Returns the result as written. */
@@ -3286,14 +3354,9 @@ async function finishCase(
     `case ${result.caseId}: ${what}; peak memory ${mib(peak)} MiB; ${phaseWords(phases)}; written to ${file}`
   );
   if (r.afterCase !== undefined) {
-    const child = Bun.spawn(["sh", "-c", `${r.afterCase} "$1"`, "after-case", file], {
-      stdin: "ignore",
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    const code = await child.exited;
-    if (code !== 0) {
-      r.io.err(`${r.command}: the --after-case command exited ${code} for ${file}`);
+    const failed = await runAfterCase(r.afterCase, file);
+    if (failed !== undefined) {
+      r.io.err(`${r.command}: ${failed}`);
       r.afterCaseFailures.push(file);
     }
   }
@@ -3314,12 +3377,13 @@ async function screenCommand(r: Runner): Promise<void> {
     `${r.cases.length} cases of the skill ${r.cases[0]?.skill} in ${r.casesFile}; old text ${r.texts.old}, ${compared}`
   );
   // Each case's result, read once here and kept as each case ends (only this process writes
-  // <out>/cases/), for the score that says when screening stops.
-  const results = readResults(r);
+  // <out>/cases/), for the score that says when screening stops: as the score reads it
+  // (`forScore`), so no case's replies are held while the screen runs.
+  const results = new Map([...readResults(r)].map(([id, result]) => [id, forScore(result)]));
   // The score, computed again only once a case has ended: a case passed over changes nothing.
   let scoreSoFar: SkillScore | undefined;
   const finished = async (result: CaseResult, phases: Phases): Promise<void> => {
-    results.set(result.caseId, await finishCase(r, result, "screen", phases));
+    results.set(result.caseId, forScore(await finishCase(r, result, "screen", phases)));
     scoreSoFar = undefined;
   };
   // The served-sessions refusal stops the session cases only; the setup refused a skill with no
@@ -3348,7 +3412,10 @@ async function screenCommand(r: Runner): Promise<void> {
       continue;
     }
     if (stageDone(r, result, "screen")) {
-      say(r, `case ${c.id}: screened before, skipped`);
+      // A screen saved unscreened before the provider-refused rule is dropped now, from its runs.
+      const refused = result === undefined ? undefined : savedRefusal(result, "screen");
+      if (refused === undefined) say(r, `case ${c.id}: screened before, skipped`);
+      else await finished(refused, phases);
       continue;
     }
     if (result === undefined) {
@@ -3489,6 +3556,11 @@ async function confirmCommand(r: Runner): Promise<void> {
     let result = results.get(id);
     if (c === undefined || result === undefined) throw new Error(`no case ${id} in ${r.casesFile}`);
     if (stageDone(r, result, "confirm")) {
+      const refused = savedRefusal(result, "confirm");
+      if (refused !== undefined) {
+        await finishCase(r, refused, "confirm", phases);
+        continue;
+      }
       const third = confirm?.state === "running" && confirm.third;
       if (!third && !r.again.includes(id)) {
         say(r, `case ${id}: confirmed before, skipped`);
@@ -3558,7 +3630,9 @@ async function controlStageCommand(r: Runner): Promise<void> {
     `the control case is ${c.id}${replacedWords(score)}; minus leaves out ${planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`}, and twin is the old text again (the false-loss control); old, minus and twin are sent in one order each round`
   );
   if (stageDone(r, result, "control")) {
-    say(r, `case ${c.id}: control runs made before, skipped`);
+    const refused = savedRefusal(result, "control");
+    if (refused === undefined) say(r, `case ${c.id}: control runs made before, skipped`);
+    else await finishCase(r, refused, "control", phases);
     return;
   }
   await finishCase(r, await runStage(r, c, "control", result, phases), "control", phases);
@@ -3609,7 +3683,7 @@ function armCounts(counts: readonly { arm: ArmName; count: number }[]): string {
  *  many of its runs still only read after the last answered round (skill files, or read-only
  *  calls a written case's checkout answers) and how many made a read-only call the checkout
  *  answers in no form, when it has one or more such runs; then every arm's count of them.
- *  Undefined when no arm that lacks its runs has one: the stage is then unscreened, as before. */
+ *  Undefined when no arm that lacks its runs has one: the stage then stays unscreened. */
 function readsPastDrop(runs: readonly Run[], stage: Stage, compared: Compared): string | undefined {
   const past = readsPast(runs, stage, compared);
   const unanswered = readsPast(runs, stage, compared, UNANSWERED_READ);
@@ -3637,6 +3711,60 @@ function readsPastDrop(runs: readonly Run[], stage: Stage, compared: Compared): 
     ? `; runs with a read-only call the checkout answers in no form: ${armCounts(unanswered)}`
     : "";
   return `${READS_PAST_LAST_ROUND}: ${short.join("; ")} (runs that read past the last round: ${armCounts(past)}${missedWords})`;
+}
+
+/** How the drop of a case begins whose stage the provider refused on a content policy, in each arm
+ *  that lacks its judged runs (`refusedDrop`). */
+const PROVIDER_REFUSED = "provider-refused";
+
+/** A run's reason when the provider refused its replay on a content policy: runRound's replay
+ *  failure (REPLAY_FAILED) of the stream error gateway.ts throws (`<STREAM_FAILED>: <type>:
+ *  <message>`), whose type ends in `_policy`, as the provider's `cyber_policy` does; the type is
+ *  group 1. gateway.ts throws it at once; a run saved before it did holds `, on each of <n>
+ *  tries` after the message, which this reads alike. Neither prefix holds a character a pattern
+ *  reads otherwise. */
+const REFUSED_REPLAY = new RegExp(`^${REPLAY_FAILED}: ${STREAM_FAILED}: ([^\\s:]*_policy): `);
+
+/** Why a case whose `stage` is unscreened is dropped because the provider refused it on a content
+ *  policy, from the stage's `runs` (the old text compared with `compared`), as `readsPastDrop`
+ *  reads an arm: each arm that lacks its judged runs (STAGE_RUNS) is refused when each of its runs
+ *  with no verdict is a refusal (REFUSED_REPLAY), and an arm with its judged runs blocks nothing.
+ *  The reason names the refused arms joined by ` and ` (no arm where every arm of the stage is
+ *  refused), each policy in the order first seen, how many runs were refused, and each arm's
+ *  count of them. Undefined when no arm lacks its runs, or one that does has no refusal or a run
+ *  with no verdict for another reason: the stage then stays unscreened. */
+function refusedDrop(runs: readonly Run[], stage: Stage, compared: Compared): string | undefined {
+  const refusals = runs.flatMap((run) => {
+    const policy = run.verdict === null ? REFUSED_REPLAY.exec(run.reason)?.[1] : undefined;
+    return policy === undefined ? [] : [{ arm: run.arm, policy }];
+  });
+  const byArm: { arm: ArmName; count: number }[] = [];
+  const refused: ArmName[] = [];
+  const arms = stageArms(stage, compared);
+  for (const arm of arms) {
+    const own = runs.filter((run) => run.arm === arm);
+    const unjudged = own.filter((run) => run.verdict === null).length;
+    const count = refusals.filter((each) => each.arm === arm).length;
+    byArm.push({ arm, count });
+    if (own.length - unjudged >= STAGE_RUNS[stage]) continue;
+    if (count === 0 || count < unjudged) return undefined;
+    refused.push(arm);
+  }
+  if (refused.length === 0) return undefined;
+  const of = refused.length === arms.length ? "" : ` of ${refused.join(" and ")}`;
+  const policies = [...new Set(refusals.map((each) => each.policy))].join(", ");
+  return `${PROVIDER_REFUSED}: provider refused every replay${of} (${policies}): ${refusals.length} refusals (${armCounts(byArm)})`;
+}
+
+/** Case `result` dropped at `stage` from its saved runs, where that stage is recorded unscreened
+ *  with no drop and the provider refused its arms that lack their runs (`refusedDrop`, by the
+ *  compared arm the stage records): a stage saved before that rule, which a stage command that
+ *  reaches the case again drops with no model call. Undefined for any other result. */
+function savedRefusal(result: CaseResult, stage: Stage): CaseResult | undefined {
+  const saved = result.stages[stage];
+  if (result.dropped !== null || saved?.state !== "unscreened") return undefined;
+  const dropped = refusedDrop(saved.runs, stage, recordedArm(saved));
+  return dropped === undefined ? undefined : { ...result, dropped, droppedAt: stage };
 }
 
 /** Case `caseId`'s stage `state` of `stage` as one line, under `label`: each arm's passes and what
@@ -3840,10 +3968,11 @@ function dispatchAnswers(results: ReadonlyMap<string, CaseResult>): Map<string, 
   return answers;
 }
 
-/** The end of a verdict's line: how many of the skill's screened cases have a listing measure
- *  that says their listing could not be measured (score.ts's `listingStanding`), and how many of
- *  them carry the Envoy plugin's block on the assumption that their session had Dispatch
- *  (`dispatchAnswers`), so a reader sees both rests of the verdict at once. */
+/** The end of a verdict's line: how many of the skill's screened cases have a listing that could
+ *  not be measured (score.ts's `listingStanding`: no listing measure, one it cannot read, or one
+ *  that says so), how many installed names their recorded listing gave them (`fromRecorded`), and
+ *  how many carry the Envoy plugin's block on the assumption that their session had Dispatch
+ *  (`dispatchAnswers`), so a reader sees each rest of the verdict at once. */
 function listingWords(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
@@ -3852,18 +3981,17 @@ function listingWords(
   const screened = score.cases.filter(
     (each) => each.screen.state === "counted" && each.drop?.stage !== "screen"
   );
-  const unmeasured = screened.filter((each) => {
-    const c = b.cases.find((candidate) => candidate.id === each.caseId);
-    return listingStanding(c?.evidence).state === "not measurable";
-  }).length;
+  const evidence = screened.map(
+    (each) => b.cases.find((candidate) => candidate.id === each.caseId)?.evidence
+  );
+  const unmeasured = evidence.filter(
+    (each) => listingStanding(each).state === "not measurable"
+  ).length;
   const answers = dispatchAnswers(results);
   const assumed = screened.filter((each) => answers.get(each.caseId) === "assumed").length;
   // A case whose profile took names from its recorded listing (build.ts's POOL_AT_START_RULE):
   // its listing measure cannot see a miss of them.
-  const taken = screened.filter(
-    (each) =>
-      fromRecordedIn(b.cases.find((candidate) => candidate.id === each.caseId)?.evidence).length > 0
-  ).length;
+  const taken = evidence.filter((each) => fromRecordedIn(each).length > 0).length;
   return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured, ${taken} of the ${screened.length} installed names their recorded listing gave them (fromRecorded), and ${assumed} of the ${screened.length} rest on the assumption that their session had Dispatch`;
 }
 
@@ -3874,11 +4002,12 @@ const CONFIRM_FLAGGED_VERDICT = "case result only; no skill verdict stands (--co
 
 /** The skill's verdict as one line: the verdict and its reason, or what it waits for; a verdict
  *  ends with the reading sessions it speaks for (`speaksFor`), and a verdict or its reason with
- *  how many screened cases' listings could not be measured (`listingWords`). A run any of whose
- *  confirms, earlier ones too, records `confirmFlagged` gets CONFIRM_FLAGGED_VERDICT and no
- *  verdict. With `--reading-models`, a skill too few of whose reading sessions are on served
- *  models (`servedScreeningRefusal`) gets none when it has no written case; one with written
- *  cases is screened on them, and its reason is theirs. */
+ *  how many screened cases' listings could not be measured, took names from their recorded
+ *  listing, and rest on the assumption that their session had Dispatch (`listingWords`). A run
+ *  any of whose confirms, earlier ones too, records `confirmFlagged` gets CONFIRM_FLAGGED_VERDICT
+ *  and no verdict. With `--reading-models`, a skill too few of whose reading sessions are on
+ *  served models (`servedScreeningRefusal`) gets none when it has no written case; one with
+ *  written cases is screened on them, and its reason is theirs. */
 function verdictLine(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
@@ -4444,15 +4573,16 @@ function reportCommand(
     )
     .join(", ");
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}), ${unscreened} unscreened, ${notRun} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
   );
   // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
   // round still only read: an arm that keeps the agent reading acts differently.
   const pastByStage = Stage.options.map((stage) => {
-    const runs = [...results.values()].flatMap((result) => [
-      ...(result.stages[stage]?.runs ?? []),
-      ...(stage === "confirm" ? (result.earlierConfirms ?? []).flatMap((each) => each.runs) : []),
-    ]);
+    const runs = [...results.values()].flatMap((result) => {
+      const stages: (StageResult | undefined)[] =
+        stage === "confirm" ? confirmStages(result) : [result.stages[stage]];
+      return stages.flatMap((each) => each?.runs ?? []);
+    });
     return `${stage} ${armCounts(readsPast(runs, stage, b.compared))}`;
   });
   lines.push(
@@ -4908,9 +5038,19 @@ const LOAD_USAGE = [
   `  [--runs <n, default ${LOAD_RUNS}>] [--model <model, default ${LOAD_MODEL}>] [--thinking <level, default ${LOAD_THINKING.omp} on omp, ${LOAD_THINKING.claude} on claude>]`,
   "  [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>]",
   "  [--context-session <store>:<path hash>] (the session a written task stands for: the one its profile was rebuilt from)",
-  "  omp: [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--omp-config <file>]...",
+  "  omp: [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--hint-draw <n, default 1>] [--omp-config <file>]...",
   "  claude: [--claude <binary>]",
 ].join("\n");
+
+/** The whole number of 1 or more `--<name>` gives as `value`, or `fallback` when it is not given.
+ *  Throws a refusal naming the option on any other value. */
+function wholeOption(name: string, value: string | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new Refused(`--${name} ${value} is not a whole number of 1 or more`);
+  }
+  return Number(value);
+}
 
 /** `skill-cuts load`: the load test of load.ts. */
 async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> {
@@ -4930,6 +5070,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
       models: { type: "string" },
       omp: { type: "string" },
       "hint-model": { type: "string" },
+      "hint-draw": { type: "string" },
       "omp-config": { type: "string", multiple: true },
       claude: { type: "string" },
       repos: { type: "string" },
@@ -4957,9 +5098,8 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
   }
   const omp =
     host.data === "omp" && values.models !== undefined ? requiredOmp(values.omp) : undefined;
-  if (values.runs !== undefined && !/^[1-9][0-9]*$/.test(values.runs)) {
-    throw new Refused(`--runs ${values.runs} is not a whole number of 1 or more`);
-  }
+  const runs = wholeOption("runs", values.runs, LOAD_RUNS);
+  const hintDraw = wholeOption("hint-draw", values["hint-draw"], 1);
   if (!statSync(given.skill, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Refused(`--skill ${given.skill} is not a directory`);
   }
@@ -4993,7 +5133,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     ...(values.name === undefined ? {} : { name: values.name }),
     tasksFile: given.tasks,
     ...(values.profile === undefined ? {} : { profileFile: values.profile }),
-    runs: values.runs === undefined ? LOAD_RUNS : Number(values.runs),
+    runs,
     out: given.out,
     model: values.model ?? LOAD_MODEL,
     thinking: thinking.data,
@@ -5005,6 +5145,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     ...(omp === undefined ? {} : { omp }),
     ...(values.models === undefined ? {} : { models: values.models }),
     ...(values["hint-model"] === undefined ? {} : { hintModel: values["hint-model"] }),
+    hintDraw,
     configFiles: values["omp-config"] ?? [],
     claude: values.claude ?? "claude",
     requestLog: log,

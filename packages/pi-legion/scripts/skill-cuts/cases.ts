@@ -49,15 +49,25 @@ export function listedName(skill: Pick<ProfileSkill, "name" | "namespace">): str
   return skill.namespace === undefined ? skill.name : `${skill.namespace}/${skill.name}`;
 }
 
+/** The copy of `skills` listed under the tested skill's name `name`, or undefined when none is. */
+export function testedSource(
+  skills: readonly ProfileSkill[],
+  name: string
+): ProfileSkill | undefined {
+  return skills.find((skill) => listedName(skill) === name);
+}
+
 /** Which of `skills` are copies of the source of the tested skill `name`: the repository and path
- *  (at any commit, under any namespace) of the copy listed under `name` itself. An arm gives each
- *  of them its own text (`none` leaves each out); a copy of another source that shares the name
- *  stays as the profile has it. With no copy listed under `name`, none is. */
+ *  (at any commit, under any namespace) of the copy listed under `name` itself (`testedSource`).
+ *  An arm gives each of them its own text (`none` leaves each out); a copy of another source that
+ *  shares the name stays as the profile has it in every arm but `none`, which lists one such copy
+ *  under the bare name where no copy left holds that name bare (arms.ts's `Arm.relisted`). With
+ *  no copy listed under `name`, none is. */
 export function testedCopy(
   skills: readonly ProfileSkill[],
   name: string
 ): (skill: Pick<ProfileSkill, "repo" | "path">) => boolean {
-  const source = skills.find((skill) => listedName(skill) === name);
+  const source = testedSource(skills, name);
   return (skill) =>
     source !== undefined && skill.repo === source.repo && skill.path === source.path;
 }
@@ -83,8 +93,10 @@ const CheckoutDir = z
  * context, the role prompt that goes to `--append-system-prompt`. A subagent's
  * session records its own system prompt and tools (its `session_init` line), so its case carries
  * them: `systemPrompt`, the recorded blocks the capture sends in place of a rebuilt prompt, with
- * only the case skill's line of their skill listing changed per arm, and `tools`, the recorded
- * tool names the capture restricts Oh My Pi's tools to. */
+ * only the case skill's line of their skill listing changed per arm (and, in a `none` that lists
+ * a copy of another source under its bare name, that copy's `<namespace>/<name>` line left out:
+ * arms.ts's `Arm.relisted`), and `tools`, the recorded tool names the capture restricts Oh My
+ * Pi's tools to. */
 export const Profile = z.strictObject({
   skills: z.array(ProfileSkill),
   plugins: z.array(z.strictObject({ ...RepoPath, name: z.string().min(1) })),
@@ -110,16 +122,13 @@ const InsidePath = z
   );
 
 /** An absolute directory as a session reads files under it: `/`, then parts that are neither
- * empty, `.` nor `..`, with no `/` at its end. */
-const AbsoluteDir = z.string().refine(
-  (dir) =>
-    dir.startsWith("/") &&
-    dir
-      .slice(1)
-      .split("/")
-      .every((part) => part !== "" && part !== "." && part !== ".."),
-  "is not an absolute directory with no / at its end"
-);
+ * empty, `.` nor `..` (a CheckoutDir), with no `/` at its end. */
+const AbsoluteDir = z
+  .string()
+  .refine(
+    (dir) => dir.startsWith("/") && CheckoutDir.safeParse(dir.slice(1)).success,
+    "is not an absolute directory with no / at its end"
+  );
 
 /** One case. `line` is the line of the cut's base text that the step exercises: its text,
  * `lineNumber` (from 1) and `lineCount` (the lines of `baseFile`; a final newline ends the last
@@ -269,7 +278,15 @@ export function stepSkillFiles(
 }
 
 /** A `read` target with a scheme (`skill://`, `https://`): no path on disk. */
-const URL_TARGET = /^[a-z][a-z0-9+.-]*:\/\//i;
+export const URL_TARGET = /^[a-z][a-z0-9+.-]*:\/\//i;
+/** A read selector after a read's last `/` (`:raw`, `:1-40`). */
+export const READ_SELECTOR = /:[^/]*$/;
+
+/** Whether a read of `target` reads a whole file: no read selector after its last `/`
+ *  (READ_SELECTOR) and no `/` at its end (a directory). */
+export function wholeReadTarget(target: string): boolean {
+  return !target.endsWith("/") && !READ_SELECTOR.test(target);
+}
 
 /** The absolute path the pinned Oh My Pi's `read` opens for the path `target` (its read selector
  *  already taken off), resolved with the working directory `cwd` and the home directory `home`, or
@@ -322,9 +339,7 @@ export function pathReadFile(
   target: string
 ): string | undefined {
   if (c.pathCopy === undefined) return undefined;
-  if (target.endsWith("/") || target.slice(target.lastIndexOf("/") + 1).includes(":")) {
-    return undefined;
-  }
+  if (!wholeReadTarget(target)) return undefined;
   const full = resolvedReadPath(target, c.pathCopy);
   if (full === undefined || !full.startsWith(`${c.pathCopy.dir}/`)) return undefined;
   const file = full.slice(c.pathCopy.dir.length + 1);
@@ -334,10 +349,7 @@ export function pathReadFile(
 /** The file of `c`'s skill that a `read` of `target` reads, as a path inside the skill's
  * directory: a `skill://` read's (`skillReadFile`) or a whole read's of the case's own copy by
  * path (`pathReadFile`); undefined for any other read. */
-export function caseReadFile(
-  c: Pick<Case, "skill" | "pathCopy">,
-  target: string
-): string | undefined {
+function caseReadFile(c: Pick<Case, "skill" | "pathCopy">, target: string): string | undefined {
   return skillReadFile(c.skill, target) ?? pathReadFile(c, target);
 }
 

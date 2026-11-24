@@ -221,10 +221,14 @@ export function sessionPathsSql(pathHashes: readonly string[]): string {
   return fillTemplate(readTemplate("session-paths.sql"), { hashes: pathHashArray(pathHashes) });
 }
 
+/** An ISO 8601 time with a date, hours, minutes and seconds (and a fraction) and an offset, the
+ *  form Oh My Pi writes an entry's `timestamp` in (`2026-11-20T01:59:48.959Z`). */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
 /** subagents.sql filled for the top-level sessions `sessions`: each one's path hash
  *  (`pathHashArray`) and the times its subagent's start must be at or after (`from`) and before
- *  (`to`), each an ISO time or null for no bound, as one JSON array literal. Throws on a time of
- *  any other form. */
+ *  (`to`), each an ISO time (ISO_TIME, and one `Date.parse` reads) or null for no bound, as one
+ *  JSON array literal. Throws on a time of any other form. */
 export function subagentsSql(
   sessions: readonly {
     readonly hash: string;
@@ -235,7 +239,7 @@ export function subagentsSql(
   pathHashArray(sessions.map((each) => each.hash));
   for (const { from, to } of sessions) {
     for (const time of [from, to]) {
-      if (time !== null && Number.isNaN(Date.parse(time))) {
+      if (time !== null && (!ISO_TIME.test(time) || Number.isNaN(Date.parse(time)))) {
         throw new Error(`${JSON.stringify(time)} is not a time`);
       }
     }

@@ -8,9 +8,10 @@
  *   notice that its endpoints do not answer). The arm's messages come from the real transcript,
  *   which holds each message the real session's plugins sent into it, but not what a plugin's
  *   own `context` handler put into each request, which Oh My Pi stores nowhere: the Envoy
- *   plugin's dispatch-first block. arms.ts puts that block into the arm's messages itself. When
- *   SKILL_CUTS_HOOK_LOG names a file, each request appends one JSON line to it,
- *   `{"dropped": <messages dropped>}`.
+ *   plugin's dispatch-first block. arms.ts puts that block into the arm's messages itself, only
+ *   for a case of dispatch-first whose profile installs the plugin (`pluginInjects`); for any
+ *   other case it puts none. When SKILL_CUTS_HOOK_LOG names a file, each request appends one JSON
+ *   line to it, `{"dropped": <messages dropped>}`.
  * - Its `tool_call` handler blocks every tool call, so no tool runs in a capture.
  * - When SKILL_CUTS_SYSTEM_PROMPT names a file, a JSON list of the system prompt's blocks, its
  *   `before_agent_start` handler returns them as the turn's system prompt, which Oh My Pi sends in

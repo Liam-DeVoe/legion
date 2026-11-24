@@ -22,7 +22,7 @@ import {
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
 import { type ArmName, buildArm, snapshotTag } from "./arms";
-import { LISTING_MEASURE, ListingMeasure } from "./build";
+import { ListingMeasure } from "./build";
 import { capturePaths } from "./capture";
 import { type Case, pathHash } from "./cases";
 import {
@@ -34,12 +34,15 @@ import {
   main,
   noVerdict,
   ompBinary,
+  runAfterCase,
   runnerDigest,
+  SENDS,
   textDigest,
 } from "./cli";
 import { loadConfig } from "./config";
 import { cacheKey } from "./context";
 import { countSql } from "./countsql";
+import { GATEWAY_TRIES } from "./gateway";
 import { beforeText, judgeBody, NOTHING_REPLY } from "./judge";
 import { ATTACK_PLANTED_LINE, loadPrompt, READER_TRIES } from "./readers";
 import {
@@ -67,6 +70,7 @@ import {
   scoreSkill,
   smallestDrop,
 } from "./score";
+import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
 // every GH_* and GITHUB_* variable taken out of its environment, against a stand-in gateway on
@@ -782,6 +786,38 @@ function result(out: string, id: string): CaseResult {
   return CaseResult.parse(JSON.parse(readFileSync(caseResultFile(out, id), "utf8")));
 }
 
+/** What a capture of case `caseId` of `s` reads before any Oh My Pi run, made up: an Oh My Pi in
+ *  `ompDir` that answers --version (the context is built before it runs any capture), a
+ *  models.yml, and the session's head saved already, so no store is read. */
+function standInContext(
+  s: Scenario,
+  caseId: string,
+  ompDir: string
+): { omp: string; models: string } {
+  const omp = path.join(ompDir, "omp");
+  writeFileSync(omp, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
+  const models = path.join(s.dir, "models.yml");
+  writeFileSync(models, "providers: {}\n");
+  const hash = pathHash(`/sessions/${caseId}.jsonl`);
+  mkdirSync(path.join(s.out, "sessions"), { recursive: true });
+  writeFileSync(
+    path.join(s.out, "sessions", `store_a-${hash}.json`),
+    JSON.stringify({
+      store: "store_a",
+      pathHash: hash,
+      held: false,
+      cwd: null,
+      start: null,
+      firstUser: null,
+      reminders: [],
+      bytes: 0,
+      badLines: 0,
+      readAt: "2026-11-22T00:00:00.000Z",
+    })
+  );
+  return { omp, models };
+}
+
 /** The passes of each arm in a stage of `r`. */
 function passes(r: CaseResult, stage: Stage): Record<string, number> {
   const counts: Record<string, number> = {};
@@ -955,7 +991,7 @@ describe("behaviour", () => {
     );
     expect(lines).toContain("case c09: not run");
     expect(lines).toContain(
-      `cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), 1 unscreened, 1 not run`
+      `cases: 6 screened, 6 informative, 6 flagged, 6 confirmed losses; 2 dropped (2 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 1 unscreened, 1 not run`
     );
     expect(lines).toContain(
       `judge controls failed, by control (a case can fail more than one): the real step not judged pass 1, the violating step not judged fail 1, the reply "${NOTHING_REPLY}" not judged fail 0`
@@ -1219,7 +1255,8 @@ describe("behaviour", () => {
     copyFileSync(resultText, slowResult);
     expect(falseControl.code).toBe(0);
     const controlLine = falseControl.stdout.split("\n").find((line) => line.includes("case c04: "));
-    const [, otherSeconds = ""] = /, other (\d+\.\d), total/.exec(controlLine ?? "") ?? [];
+    // No default: with no such line, or another format, Number(undefined) is NaN and fails.
+    const [, otherSeconds] = /, other (\d+\.\d), total/.exec(controlLine ?? "") ?? [];
     expect(Number(otherSeconds)).toBeLessThan(1);
     expect(passes(result(falseLoss.out, "c04"), "control")).toEqual({
       old: 40,
@@ -1344,74 +1381,23 @@ describe("behaviour", () => {
       "case c-unserved: dropped at screen: model-not-served: its model anthropic/claude-opus-5-5 is none the gateway serves"
     );
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), `
+      `; 1 dropped (0 by the judge controls, 1 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 300_000);
 
-  // Catches: a case whose context holds a directory no read can give ending the whole screen, and
-  // read again by every run started again (each time from the whole repository's tarball, before
-  // 2026-11-22).
+  // Catches: a case whose context holds a directory no read can give ending the whole screen,
+  // read again by every run started again, or read from the whole repository's tarball.
   test("a case whose context needs a directory GitHub cuts short even read alone is dropped as unreadable-directory, with no tarball read; a run started again reads nothing for it, and report counts it", async () => {
     const s = scenario("unreadable", LOSS_SKILL(), [{ id: "c04" }]);
     answer = behaviourStandIn;
     const commit = s.cases[0]?.profile.skills[1]?.commit ?? "";
-    const [skills, beta] = ["1".repeat(40), "2".repeat(40)];
     // acme/skills at the case's commit, as GitHub lists a repository of too many entries: its
     // recursive tree cut short, then skills/beta's, and skills/beta's one level even read alone.
-    const answers: Record<string, object> = {
-      [`repos/acme/skills/git/trees/${commit}?recursive=1`]: { tree: [], truncated: true },
-      [`repos/acme/skills/git/trees/${commit}`]: {
-        tree: [{ path: "skills", mode: "040000", type: "tree", sha: skills }],
-        truncated: false,
-      },
-      [`repos/acme/skills/git/trees/${skills}`]: {
-        tree: [{ path: "beta", mode: "040000", type: "tree", sha: beta }],
-        truncated: false,
-      },
-      [`repos/acme/skills/git/trees/${beta}?recursive=1`]: { tree: [], truncated: true },
-      [`repos/acme/skills/git/trees/${beta}`]: { tree: [], truncated: true },
-    };
     const bin = path.join(s.dir, "bin");
     const log = path.join(s.dir, "gh-calls.jsonl");
     mkdirSync(bin, { recursive: true });
-    writeFileSync(
-      path.join(bin, "gh"),
-      `#!${process.execPath}
-import { appendFileSync } from "node:fs";
-const answers = ${JSON.stringify(answers)};
-const route = process.argv.at(-1) ?? "";
-appendFileSync(${JSON.stringify(log)}, route + "\\n");
-if (answers[route] === undefined) {
-  process.stderr.write("gh: Not Found (HTTP 404)\\n");
-  process.exit(1);
-}
-process.stdout.write(JSON.stringify(answers[route]));
-`,
-      { mode: 0o755 }
-    );
-    // An Oh My Pi that answers --version: the context is built before it runs any capture.
-    const omp = path.join(bin, "omp");
-    writeFileSync(omp, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
-    const models = path.join(s.dir, "models.yml");
-    writeFileSync(models, "providers: {}\n");
-    // The session's head saved already, so no store is read.
-    const hash = pathHash("/sessions/c04.jsonl");
-    mkdirSync(path.join(s.out, "sessions"), { recursive: true });
-    writeFileSync(
-      path.join(s.out, "sessions", `store_a-${hash}.json`),
-      JSON.stringify({
-        store: "store_a",
-        pathHash: hash,
-        held: false,
-        cwd: null,
-        start: null,
-        firstUser: null,
-        reminders: [],
-        bytes: 0,
-        badLines: 0,
-        readAt: "2026-11-22T00:00:00.000Z",
-      })
-    );
+    writeGhStandIn(path.join(bin, "gh"), log, truncatedSkillsTree(commit));
+    const { omp, models } = standInContext(s, "c04", bin);
     const env = { ...ENV, PATH: `${bin}:${ENV.PATH ?? ""}` };
     const args = behaviour(
       "screen",
@@ -1448,7 +1434,7 @@ process.stdout.write(JSON.stringify(answers[route]));
     expect(reported.code).toBe(0);
     expect(reported.stdout).toContain(`case c04: dropped at screen: ${dropped}; screen: not run\n`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 120_000);
 
@@ -1779,8 +1765,6 @@ function comparedArgs(
     : [...args.slice(0, at), "--ours", s.ours?.dir ?? "", ...args.slice(at + 2)];
 }
 
-/** How a stage's runs were sent, as the runner records it in each stage. */
-const SENDS = "each run its own session id; a round's arms interleaved in one seeded order";
 /** The report's verdict with no skill compared on six cases, each flagged and none a confirmed
  *  loss, the first of them the control case. */
 const NO_SKILL_KEEPS =
@@ -2867,6 +2851,36 @@ const NO_INJECTION =
 const NO_PATH_FORM = "0 path-form (old 0, new 0)";
 /** The report's count of `reads-past-last-round` drops when there is none. */
 const NO_READS_PAST = `0 ${READS_PAST_LAST_ROUND}`;
+/** The report's count of `provider-refused` drops when there is none. */
+const NO_REFUSED = "0 provider-refused";
+
+/** Run `n` (from 0) of `arm` in case `caseId`'s `stage`, as the runner records one, with `verdict`
+ *  and `reason`. */
+function plantedRun(
+  caseId: string,
+  arm: string,
+  stage: Stage,
+  n: number,
+  verdict: "pass" | "fail" | null,
+  reason: string
+): Record<string, unknown> {
+  return {
+    caseId,
+    arm,
+    stage,
+    verdict,
+    reason,
+    run: n + 1,
+    round: 1,
+    sendPlace: n,
+    userId: null,
+    id: null,
+    skillRounds: null,
+    reply: null,
+    replaySpent: [],
+    judgeSpent: [],
+  };
+}
 
 /** A finished stage of case `caseId`, made with the texts of `s` (and by `runner`, when given),
  *  each arm of `passes` passing that many of the stage's judged runs. */
@@ -2878,22 +2892,9 @@ function plantedStage(
   runner?: string
 ): Record<string, unknown> {
   const runs = Object.entries(passes).flatMap(([arm, passed]) =>
-    Array.from({ length: STAGE_RUNS[stage] }, (_, n) => ({
-      caseId,
-      arm,
-      stage,
-      verdict: n < passed ? "pass" : "fail",
-      reason: "planted",
-      run: n + 1,
-      round: 1,
-      sendPlace: n,
-      userId: null,
-      id: null,
-      skillRounds: null,
-      reply: null,
-      replaySpent: [],
-      judgeSpent: [],
-    }))
+    Array.from({ length: STAGE_RUNS[stage] }, (_, n) =>
+      plantedRun(caseId, arm, stage, n, n < passed ? "pass" : "fail", "planted")
+    )
   );
   return {
     state: "counted",
@@ -2956,7 +2957,7 @@ function plantSix(s: Scenario, ids: readonly string[], control: string): void {
  *  `kind`, its recorded listing holding `recorded` names, of which the rebuilt one misses
  *  `missing`. */
 function listingEvidence(
-  kind: "session listing" | "subagent listing" | "not measurable",
+  kind: ListingMeasure["kind"],
   recorded: number | null,
   missing: string[]
 ): { item: string; source: string }[] {
@@ -2972,7 +2973,7 @@ function listingEvidence(
     subagent: null,
     why: "the made-up session records no system prompt, only its digest",
   });
-  return [{ item: LISTING_MEASURE, source: JSON.stringify(measure) }];
+  return [{ item: LISTING_MEASURE_ITEM, source: JSON.stringify(measure) }];
 }
 
 /** The cases of `s` again in its cases file, each id of `evidence` with that evidence. */
@@ -3018,7 +3019,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at confirm: ${UNREADABLE}; screen: old 10/10, new 0/10, none 0/10: informative, flagged`
     );
     expect(lines).toContain(
-      `cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), 0 unscreened, 0 not run`
+      `cases: 7 screened, 7 informative, 1 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 1 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       `verdict: none: flagged case c07 could not be confirmed (${UNREADABLE})${unmeasured(7, 7)}`
@@ -3132,7 +3133,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       `case c07: dropped at screen: ${misses}; screen: old 10/10, new 10/10, none 0/10: informative, not flagged`
     );
     expect(lines).toContain(
-      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), 0 unscreened, 0 not run`
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 1 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines).toContain(
       `verdict: no loss detected by the registered rule: no confirmed case is a loss (0 flagged of 6 informative), and the planted-loss control (case c01) is a loss and its false-loss control is no loss${unmeasured(1, 6, 0, 1)}`
@@ -3156,8 +3157,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     ]);
   }, 60_000);
 
-  test("the listing rule reads the listing measure build.ts writes, under the name it writes it", () => {
-    expect(LISTING_MEASURE_ITEM).toBe(LISTING_MEASURE);
+  test("the listing rule reads the listing measure build.ts writes", () => {
     expect(listingStanding(listingEvidence("subagent listing", 30, ["beta", "gamma"]))).toEqual({
       state: "measured",
       recorded: 30,
@@ -3345,7 +3345,7 @@ describe("behaviour: confirm --confirm-flagged", () => {
       "case c07: screen: old 10/10, new 0/10, none 0/10: informative, flagged; confirm: old 40/40, new 0/40: a loss"
     );
     expect(lines).toContain(
-      `cases: 7 screened, 7 informative, 1 flagged, 1 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}), 0 unscreened, 0 not run`
+      `cases: 7 screened, 7 informative, 1 flagged, 1 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
     );
     expect(lines.filter((line) => line.startsWith("verdict: "))).toEqual([CASE_RESULT_ONLY]);
 
@@ -3559,9 +3559,9 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
       `case c-invoked: dropped at screen: ${fault}`
     );
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0), ${NO_PATH_FORM}, ${NO_READS_PAST}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 1, other-shape 0, plugin-block-misplaced 0, autoload-no-block 0), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
-    // The other stages read the file too, and refuse it no more.
+    // The other stages read the file too, and do not refuse it.
     const confirm = await cli(behaviour("confirm", s));
     expect({ code: confirm.code, stderr: confirm.stderr }).toEqual({ code: 0, stderr: "" });
   }, 60_000);
@@ -3605,29 +3605,7 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
       "packages/agents-pack/agents/reviewer.md":
         "---\nname: alpha-reviewer\ndescription: Reviews with alpha.\nautoloadSkills: [alpha]\n---\n\nReview.\n",
     });
-    // An Oh My Pi that answers --version: the context is built before it runs any capture.
-    const omp = path.join(s.dir, "omp");
-    writeFileSync(omp, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
-    const models = path.join(s.dir, "models.yml");
-    writeFileSync(models, "providers: {}\n");
-    // The session's head saved already, so no store is read.
-    const hash = pathHash("/sessions/c-autoload.jsonl");
-    mkdirSync(path.join(s.out, "sessions"), { recursive: true });
-    writeFileSync(
-      path.join(s.out, "sessions", `store_a-${hash}.json`),
-      JSON.stringify({
-        store: "store_a",
-        pathHash: hash,
-        held: false,
-        cwd: null,
-        start: null,
-        firstUser: null,
-        reminders: [],
-        bytes: 0,
-        badLines: 0,
-        readAt: "2026-11-22T00:00:00.000Z",
-      })
-    );
+    const { omp, models } = standInContext(s, "c-autoload", s.dir);
     answer = behaviourStandIn;
     const ran = await cli(
       behaviour(
@@ -3651,14 +3629,14 @@ describe("behaviour: a case whose block of its skill the arms cannot each rebuil
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout).toContain(`case c-autoload: dropped at screen: ${fault}`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1), ${NO_PATH_FORM}, ${NO_READS_PAST}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 1 injection-unrebuildable (user-invoked 0, other-shape 0, plugin-block-misplaced 0, autoload-no-block 1), ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 60_000);
 });
 
 // build-cases may run before the cut has a text (no --new), so a case whose file read by path the
-// new text holds in a form the arms do not rebuild reaches the screen; before, buildArm's throw
-// failed the whole command on it.
+// new text holds in a form the arms do not rebuild reaches the screen, which drops it before any
+// arm is built.
 describe("behaviour: a case whose new text holds a file it reads by path in a form the arms do not rebuild", () => {
   // Catches: a screen that fails the command on such a case, or that spends calls on it.
   test("is dropped at screen as path-form before any model call, listed and counted by arm, and the rest of the file runs", async () => {
@@ -3716,7 +3694,7 @@ describe("behaviour: a case whose new text holds a file it reads by path in a fo
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout).toContain(`case c-wide: dropped at screen: ${fault}`);
     expect(reported.stdout).toContain(
-      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, 1 path-form (old 0, new 1), ${NO_READS_PAST}), `
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, 1 path-form (old 0, new 1), ${NO_READS_PAST}, ${NO_REFUSED}), `
     );
   }, 60_000);
 
@@ -4768,8 +4746,9 @@ describe("behaviour: a replay's reads of skill files", () => {
   }, 120_000);
 
   // Catches: a reply that still only reads skill files after the last answered round judged as
-  // the step, which fails in every arm for a read alone.
-  test("a run whose replies only read skill files through every answered round gets no verdict and is run again, and its case's line counts such runs by arm", async () => {
+  // the step, which fails in every arm for a read alone; and a report that hides an arm that keeps
+  // the agent reading skill files.
+  test("a run whose replies only read skill files through every answered round gets no verdict and is run again, and its case's line and report count such runs by arm", async () => {
     const s = scenario("reads-past", LOSS_SKILL(), [{ id: "c04" }]);
     recordCaptures(s, ["old", "new", "none"]);
     let left = 2;
@@ -4800,16 +4779,8 @@ describe("behaviour: a replay's reads of skill files", () => {
     expect(ran.stdout).toContain(
       `(2 runs with no verdict, run again; ${READS_PAST_LAST_ROUND}: ${pastByArm(runs)})`
     );
-  }, 120_000);
 
-  // Catches: a report that hides an arm that keeps the agent reading skill files.
-  test("report gives, per stage and arm, how many runs read skill files past the last answered round", async () => {
-    const s = scenario("reads-past-report", LOSS_SKILL(), [{ id: "c04" }]);
-    recordCaptures(s, ["old", "new", "none"]);
-    let left = 3;
-    answer = readingStandIn(() => left-- > 0);
-    expect((await cli(behaviour("screen", s))).code).toBe(0);
-    const runs = result(s.out, "c04").stages.screen?.runs ?? [];
+    // The report gives them per stage and arm.
     const reported = await cli(report(s));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
     expect(reported.stdout.split("\n")).toContain(
@@ -4819,7 +4790,7 @@ describe("behaviour: a replay's reads of skill files", () => {
       pastByArm(runs)
         .match(/\d+/g)
         ?.reduce((sum, n) => sum + Number(n), 0)
-    ).toBe(3);
+    ).toBe(2);
   }, 120_000);
 
   // Catches: a case whose arm keeps the agent reading past the last answered round left
@@ -4844,7 +4815,9 @@ describe("behaviour: a replay's reads of skill files", () => {
     expect(reported.stdout).toContain(
       `case c04: dropped at screen: ${reason}; screen: unscreened: an arm lacks its ${SCREEN_RUNS} judged runs after ${MAX_EXTRA_RUNS} extra runs (${all} runs with no verdict, run again; ${READS_PAST_LAST_ROUND}: old 0, new 0, none ${all})\n`
     );
-    expect(reported.stdout).toContain(`, 1 ${READS_PAST_LAST_ROUND}), 0 unscreened, 0 not run`);
+    expect(reported.stdout).toContain(
+      `, 1 ${READS_PAST_LAST_ROUND}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+    );
   }, 120_000);
 
   /** A made-up repository acme/proj of one commit holding `files` and the symbolic links `links`
@@ -5290,4 +5263,300 @@ describe("behaviour: a replay's reads of skill files", () => {
       `runs with no verdict, run again, and reads answered whole, by kind of case: session: 0 ${READS_PAST_LAST_ROUND}, 0 unanswered-read, 0 reads answered with the file's whole text in place of the pin's summary; written: 0 ${READS_PAST_LAST_ROUND}, 2 unanswered-read, ${3 * SCREEN_RUNS} reads answered with the file's whole text in place of the pin's summary`
     );
   }, 120_000);
+});
+
+// The provider's content policy (the architect, 2026-11-24): a case whose every replay the provider
+// refuses with a stream error of a `*_policy` type can never be judged, so its stage drops it as
+// provider-refused, where it was left unscreened as if a later run could judge it.
+describe("behaviour: a case the provider refuses on every replay", () => {
+  /** What the stand-in provider says of the content it refuses. */
+  const POLICY_TEXT = "This content was flagged for possible cybersecurity risk.";
+  /** The reason of a refused replay as a run saved before the gateway stopped trying a policy
+   *  refusal again holds it: GATEWAY_TRIES tries, named at its end. */
+  const REFUSED_RUN = `the replay failed: the stream ended in an error: cyber_policy: ${POLICY_TEXT}, on each of ${GATEWAY_TRIES} tries`;
+  /** The reason of another failure that names a policy outside a stream error's type. */
+  const OTHER_FAILURE =
+    "the replay failed: the model answered 400 invalid_request_error: the body names cyber_policy, which is no stream error";
+  /** A screen's runs per arm: its runs and its extra runs. */
+  const SCREEN_ALL = SCREEN_RUNS + MAX_EXTRA_RUNS;
+  /** The drop of a case whose screen the provider refused on every replay. */
+  const SCREEN_REFUSED = `provider-refused: provider refused every replay (cyber_policy): ${3 * SCREEN_ALL} refusals (old ${SCREEN_ALL}, new ${SCREEN_ALL}, none ${SCREEN_ALL})`;
+
+  /** Case `caseId`'s `stage` as a run saved it unscreened with the texts of `s`, and no drop: each
+   *  arm of `byArm` holding one run per reason, a judged pass for "pass", else a run with no
+   *  verdict and that reason. */
+  const unscreenedStage = (
+    s: Scenario,
+    caseId: string,
+    stage: Stage,
+    byArm: Record<string, readonly string[]>
+  ): Record<string, unknown> => ({
+    ...plantedStage(s, caseId, stage, {}),
+    state: "unscreened",
+    runs: Object.entries(byArm).flatMap(([arm, reasons]) =>
+      reasons.map((reason, n) =>
+        reason === "pass"
+          ? plantedRun(caseId, arm, stage, n, "pass", "planted")
+          : plantedRun(caseId, arm, stage, n, null, reason)
+      )
+    ),
+  });
+
+  /** Each arm's runs when every one is a refusal: the stage's runs and its extra runs. */
+  const allRefused = (stage: Stage) => Array(STAGE_RUNS[stage] + MAX_EXTRA_RUNS).fill(REFUSED_RUN);
+
+  // Catches: a case whose every replay the provider refuses left unscreened, as if a later run
+  // could judge it, and counted as unscreened by the report; and a refused call logged with no
+  // error name of its own and no status, where a call that fails in postMessages logs both.
+  test("a case whose every replay the provider refuses on a content policy is dropped at screen as provider-refused with its refusals by arm, each refused call is logged as a MessagesApiError of status 200, the report counts it, and the screen goes on to the next case", async () => {
+    const s = scenario("provider-refused", LOSS_SKILL(), [
+      { id: "c04", marker: "REFUSED" },
+      { id: "c05" },
+    ]);
+    recordCaptures(s, ["old", "new", "none"]);
+    // The provider refuses each replay of c04 with a Messages stream of one error event of type
+    // cyber_policy, which gateway.ts throws at once as `the stream ended in an error: <type>:
+    // <message>`, and does not try again.
+    answer = (body) =>
+      !isJudgement(body) && JSON.stringify(body.messages).includes("REFUSED")
+        ? sseResponse(
+            `event: error\ndata: ${JSON.stringify({
+              type: "error",
+              error: { type: "cyber_policy", message: POLICY_TEXT },
+            })}\n\n`
+          )
+        : behaviourStandIn(body);
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const c = result(s.out, "c04");
+    expect({ dropped: c.dropped, at: c.droppedAt, state: c.stages.screen?.state }).toEqual({
+      dropped: SCREEN_REFUSED,
+      at: "screen",
+      state: "unscreened",
+    });
+    const runs = c.stages.screen?.runs ?? [];
+    expect(runs).toHaveLength(3 * SCREEN_ALL);
+    for (const run of runs) {
+      expect({ verdict: run.verdict, reason: run.reason }).toEqual({
+        verdict: null,
+        reason: `the replay failed: the stream ended in an error: cyber_policy: ${POLICY_TEXT}`,
+      });
+    }
+    // The request log names each refused call's error and the status of its answer.
+    const failed = readFileSync(path.join(s.out, "requests.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((line) => line.kind === "replay" && line.error !== undefined);
+    expect(failed.map((line) => `${line.error} ${line.status}`)).toEqual(
+      Array(3 * SCREEN_ALL).fill("MessagesApiError 200")
+    );
+    expect(ran.stdout).toContain(`case c04: dropped: ${SCREEN_REFUSED}; `);
+    // The screen goes on to the next case.
+    expect(result(s.out, "c05").stages.screen?.state).toBe("counted");
+    const reported = await cli(report(s));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(reported.stdout).toContain(
+      `case c04: dropped at screen: ${SCREEN_REFUSED}; screen: unscreened: an arm lacks its ${SCREEN_RUNS} judged runs after ${MAX_EXTRA_RUNS} extra runs (${3 * SCREEN_ALL} runs with no verdict, run again)\n`
+    );
+    expect(reported.stdout).toContain(
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
+    );
+  }, 120_000);
+
+  // Catches: a screen saved unscreened before the rule, every replay refused, skipped as
+  // "screened before" and left unscreened for good; or dropped by calling the model again.
+  test("a screen saved unscreened with every replay refused and no drop is dropped as provider-refused by a later screen, from its saved runs, with no model call", async () => {
+    const s = scenario("provider-refused-saved", LOSS_SKILL(), [{ id: "c04" }]);
+    plantResult(s, "c04", {
+      stages: {
+        screen: unscreenedStage(s, "c04", "screen", {
+          old: allRefused("screen"),
+          new: allRefused("screen"),
+          none: allRefused("screen"),
+        }),
+      },
+    });
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(ran.stdout).not.toContain("case c04: screened before, skipped");
+    expect(ran.stdout).toContain(`case c04: dropped: ${SCREEN_REFUSED}; `);
+    const c = result(s.out, "c04");
+    expect({ dropped: c.dropped, at: c.droppedAt, runs: c.stages.screen?.runs.length }).toEqual({
+      dropped: SCREEN_REFUSED,
+      at: "screen",
+      runs: 3 * SCREEN_ALL,
+    });
+    // A screen started again skips the dropped case.
+    const again = await cli(behaviour("screen", s));
+    expect(again.stdout).toContain(`case c04: dropped before, skipped: ${SCREEN_REFUSED}`);
+    const reported = await cli(report(s));
+    expect(reported.stdout).toContain(
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, 0 not run`
+    );
+  }, 60_000);
+
+  // Catches: a control case whose saved control runs the provider refused every time kept as the
+  // control case for good, so the skill could never get its controls.
+  test("a control stage saved unscreened with every replay refused is dropped at control as provider-refused by a later control, with no model call, and the next case of the control rule's order takes its place", async () => {
+    const SIX = ["c01", "c02", "c03", "c04", "c05", "c06"];
+    const s = scenario(
+      "provider-refused-control",
+      LOSS_SKILL(),
+      SIX.map((id) => ({ id }))
+    );
+    // Six informative cases, the control rule's first of them (c01) with its control saved so.
+    for (const id of SIX.slice(1)) {
+      plantResult(s, id, { stages: { screen: plantedStage(s, id, "screen", KEPT) } });
+    }
+    plantResult(s, "c01", {
+      stages: {
+        screen: plantedStage(s, "c01", "screen", KEPT),
+        control: unscreenedStage(s, "c01", "control", {
+          old: allRefused("control"),
+          minus: allRefused("control"),
+          twin: allRefused("control"),
+        }),
+      },
+    });
+    const all = STAGE_RUNS.control + MAX_EXTRA_RUNS;
+    const reason = `provider-refused: provider refused every replay (cyber_policy): ${3 * all} refusals (old ${all}, minus ${all}, twin ${all})`;
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("control", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(0);
+    expect(ran.stdout).not.toContain("case c01: control runs made before, skipped");
+    expect(ran.stdout).toContain(`case c01: dropped: ${reason}; `);
+    const c01 = result(s.out, "c01");
+    expect({ dropped: c01.dropped, at: c01.droppedAt }).toEqual({ dropped: reason, at: "control" });
+    const reported = await cli(report(s));
+    expect(reported.stdout.split("\n")).toContain(
+      "control case: c02, in place of c01 (dropped at control), which the control rule chose before it"
+    );
+    expect(reported.stdout).toContain(`, ${NO_READS_PAST}, 1 provider-refused), `);
+  }, 60_000);
+
+  // Catches: a screen whose old and new arms the provider refused on every replay, its none arm
+  // judged, left unscreened as if a later run could judge old and new (dotfiles-93-46c17afdabdd),
+  // since the drop asked every run of the stage to be a refusal.
+  test("a screen whose old and new arms the provider refuses on every replay, with its none arm judged, is dropped at screen as provider-refused naming old and new, with the refusals of each arm", async () => {
+    const s = scenario("provider-refused-arms", LOSS_SKILL(), [{ id: "c04", marker: "REFUSED" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    // The provider refuses each replay of c04's old and new arms, whose bodies hold the skill's
+    // reads; the none arm's body holds the user's message alone, and is answered.
+    answer = (body) =>
+      !isJudgement(body) &&
+      JSON.stringify(body.messages).includes("REFUSED") &&
+      (body.messages as unknown[]).length > 1
+        ? sseResponse(
+            `event: error\ndata: ${JSON.stringify({
+              type: "error",
+              error: { type: "cyber_policy", message: POLICY_TEXT },
+            })}\n\n`
+          )
+        : behaviourStandIn(body);
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const reason = `provider-refused: provider refused every replay of old and new (cyber_policy): ${2 * SCREEN_ALL} refusals (old ${SCREEN_ALL}, new ${SCREEN_ALL}, none 0)`;
+    const c = result(s.out, "c04");
+    expect({ dropped: c.dropped, at: c.droppedAt, state: c.stages.screen?.state }).toEqual({
+      dropped: reason,
+      at: "screen",
+      state: "unscreened",
+    });
+    expect(passes(c, "screen")).toEqual({ old: 0, new: 0, none: 0 });
+    expect(
+      c.stages.screen?.runs.filter((run) => run.arm === "none" && run.verdict !== null)
+    ).toHaveLength(SCREEN_RUNS);
+    expect(ran.stdout).toContain(`case c04: dropped: ${reason}; `);
+    const reported = await cli(report(s));
+    expect(reported.stdout).toContain(`case c04: dropped at screen: ${reason}; `);
+    expect(reported.stdout).toContain(`, ${NO_READS_PAST}, 1 provider-refused), 0 unscreened, `);
+  }, 120_000);
+
+  // Catches: a stage left unscreened whose one arm short of its runs the provider refused, kept
+  // unscreened because its other arms were judged; or a stage dropped as provider-refused though an
+  // arm short of its runs has a run that failed for another reason (a policy named outside a
+  // stream error's type among them), which a later run could get past.
+  test("a saved unscreened stage whose one arm short of its runs the provider refused is dropped naming that arm, though its other arms were judged; one whose arm short of its runs has a run that failed for another reason stays unscreened; and the report counts each", async () => {
+    const s = scenario("provider-refused-mixed", LOSS_SKILL(), [
+      { id: "c01" },
+      { id: "c02" },
+      { id: "c03" },
+    ]);
+    const passed = Array(SCREEN_RUNS).fill("pass");
+    // The none arm refused, the old and new arms judged.
+    plantResult(s, "c01", {
+      stages: {
+        screen: unscreenedStage(s, "c01", "screen", {
+          old: passed,
+          new: passed,
+          none: allRefused("screen"),
+        }),
+      },
+    });
+    // Each arm refused, but one of the none arm's runs failed for another reason.
+    plantResult(s, "c02", {
+      stages: {
+        screen: unscreenedStage(s, "c02", "screen", {
+          old: allRefused("screen"),
+          new: allRefused("screen"),
+          none: [...allRefused("screen").slice(1), OTHER_FAILURE],
+        }),
+      },
+    });
+    // The old arm refused, the new arm failed for another reason, the none arm judged.
+    plantResult(s, "c03", {
+      stages: {
+        screen: unscreenedStage(s, "c03", "screen", {
+          old: allRefused("screen"),
+          new: Array(SCREEN_ALL).fill(OTHER_FAILURE),
+          none: passed,
+        }),
+      },
+    });
+    const from = recorder.requests.length;
+    const ran = await cli(behaviour("screen", s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(requestsSince(from)).toHaveLength(0);
+    const noneRefused = `provider-refused: provider refused every replay of none (cyber_policy): ${SCREEN_ALL} refusals (old 0, new 0, none ${SCREEN_ALL})`;
+    expect(ran.stdout).toContain(`case c01: dropped: ${noneRefused}; `);
+    const c01 = result(s.out, "c01");
+    expect({ dropped: c01.dropped, at: c01.droppedAt }).toEqual({
+      dropped: noneRefused,
+      at: "screen",
+    });
+    for (const id of ["c02", "c03"]) {
+      expect(ran.stdout).toContain(`case ${id}: screened before, skipped`);
+      const c = result(s.out, id);
+      expect({ id, dropped: c.dropped, state: c.stages.screen?.state }).toEqual({
+        id,
+        dropped: null,
+        state: "unscreened",
+      });
+    }
+    const reported = await cli(report(s));
+    expect(reported.stdout).toContain(
+      `; 1 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, 1 provider-refused), 2 unscreened, 0 not run`
+    );
+  }, 60_000);
+});
+
+// Catches: the --after-case command run with no limit, so one that never exits held the
+// behaviour run for ever after a case.
+test("an --after-case command that never exits is ended at its limit, and counts as failed, naming the file, the command and the limit", async () => {
+  const root = path.join(scratch, "after-case-hangs");
+  mkdirSync(root, { recursive: true });
+  const command = path.join(root, "upload.sh");
+  writeFileSync(command, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  const file = path.join(root, "c1.json");
+  const started = performance.now();
+  expect(await runAfterCase(command, file, 200)).toBe(
+    `the --after-case command for ${file}: \`${command}\` ran past its limit of 200 ms, so it was ended`
+  );
+  expect(performance.now() - started).toBeLessThan(3_000);
+  writeFileSync(command, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  expect(await runAfterCase(command, file, 2_000)).toBeUndefined();
 });

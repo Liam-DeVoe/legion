@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { type Arm, type SkillCopy, snapshotTag } from "./arms";
+import { type Arm, type InstalledCopy, snapshotTag } from "./arms";
 import type { CheckoutCopy } from "./checkout";
 import {
   bodyIdentity,
@@ -468,15 +468,7 @@ test("answers a reply's whole read by path of the cut's own copy by arm, and a r
     pathCopy,
   };
   const lacking: Arm = { ...armWith("new", { "SKILL.md": SKILL_MD }), pathCopy };
-  const none: Arm = {
-    name: "none",
-    skill: "alpha",
-    skillDir: undefined,
-    installedDir: INSTALLED,
-    messages: [],
-    profileSkills: PROFILE_SKILLS.filter((skill) => skill.name !== "alpha"),
-    pathCopy,
-  };
+  const none: Arm = { ...noneArm(), pathCopy };
   const call = { type: "tool_use", id: "toolu_path", name: "read" };
   const answers: [Arm, string, boolean][] = [
     // 0098 is Oh My Pi's tag of X_MD.
@@ -565,12 +557,13 @@ const BETA_MD =
 /** Beta's installed directory as the model sees it: beside alpha's (INSTALLED). */
 const BETA_INSTALLED = "/home/agent/.omp/agent/skills/beta";
 
-/** Beta's installed copy, a cache entry as context.ts's installedCopies names it. */
-function betaCopy(): SkillCopy[] {
-  const dir = path.join(scratch, `beta-copy-${Math.random()}`);
+/** The installed copy of the skill `name` whose SKILL.md is `text`, a cache entry as context.ts's
+ *  installedCopies names it. */
+function installedCopy(name: string, text: string): InstalledCopy {
+  const dir = path.join(scratch, `${name}-copy-${Math.random()}`);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, "SKILL.md"), BETA_MD);
-  return [{ name: "beta", dir }];
+  writeFileSync(path.join(dir, "SKILL.md"), text);
+  return { name, dir };
 }
 
 /** The `none` arm of alpha: no directory of it, and a profile of beta alone. */
@@ -618,7 +611,7 @@ const betaAnswer = (dir: string) => `[Skill file: ${dir}/SKILL.md]\n${BETA_MD.re
 // Catches: a reply that only reads another installed skill taken for the judged step, so every arm
 // fails on a read the case's line does not govern; or that read answered from one arm's text.
 test("a reply that reads another installed skill is answered from its installed copy, the same in every arm, and the act after it is judged", async () => {
-  const copies = betaCopy();
+  const copies = [installedCopy("beta", BETA_MD)];
   const beta = readCall("toolu_beta", "skill://beta");
   const arms = [
     armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD }),
@@ -678,7 +671,7 @@ test("a reply that reads another installed skill is answered from its installed 
 // of a control screen, `skill://<skill>/references/reports.md:1-90`), while the agent still loads
 // the skill, so every arm fails it alike.
 test("a skill:// read with a line range, of another installed skill or the case's own, is answered with those lines in Oh My Pi's range form, and the run goes on to the act", async () => {
-  const copies = betaCopy();
+  const copies = [installedCopy("beta", BETA_MD)];
   const betaDir = copies[0]?.dir ?? "";
   const betaX = Array.from({ length: 10 }, (_, n) => `Beta line ${n + 1}.\n`).join("");
   mkdirSync(path.join(betaDir, "references"), { recursive: true });
@@ -725,9 +718,61 @@ test("a skill:// read with a line range, of another installed skill or the case'
   ]);
 });
 
+/** acme/tools' alpha, a copy of another source that shares the case skill's name. */
+const TOOLS_ALPHA_MD =
+  "---\nname: alpha\ndescription: Use for the tools' own alpha list.\n---\n\n# Alpha of tools\n\nOne line.\n";
+
+// Catches: a none run's read of the case skill's name answered with Oh My Pi's unknown-skill text
+// where the arm lists another source's copy under that name, which Oh My Pi reads instead.
+test("in none, a reply's skill:// read of the case's skill is answered from the copy of another source the profile lists under its name, and with the unknown-skill text where it lists none", async () => {
+  const tools = installedCopy("alpha", TOOLS_ALPHA_MD);
+  const copies = [installedCopy("beta", BETA_MD), tools];
+  const none = noneArm();
+  const relisted: Arm = {
+    ...none,
+    profileSkills: [
+      ...none.profileSkills,
+      { repo: "acme/tools", commit: "0123456789abcdef", path: "skills/alpha", name: "alpha" },
+    ],
+    relisted: ["tools/alpha"],
+  };
+  const read = readCall("toolu_alpha", "skill://alpha");
+  const listed = scripted([[read], [ACT]]);
+  const answered = await replayOnce({ ...BODY, stream: false }, relisted, listed.gateway, {
+    copies,
+  });
+  expect(listed.bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      toolResult(
+        "toolu_alpha",
+        `[Skill file: ${INSTALLED}/SKILL.md]\n${TOOLS_ALPHA_MD.replace(/\n$/, "")}`,
+        false
+      ),
+    ],
+  });
+  expect(answered.reads).toEqual([
+    [{ skill: "alpha", file: "SKILL.md", by: "skill", from: "copy", isError: false }],
+  ]);
+  expect(JSON.stringify(listed.bodies)).not.toContain(tools.dir);
+
+  // A none that lists no copy under the name: Oh My Pi's answer to a skill it lacks.
+  const unlisted = scripted([[read], [ACT]]);
+  const absent = await replayOnce({ ...BODY, stream: false }, noneArm(), unlisted.gateway, {
+    copies,
+  });
+  expect(unlisted.bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [toolResult("toolu_alpha", "Unknown skill: alpha\nAvailable: beta", true)],
+  });
+  expect(absent.reads).toEqual([
+    [{ skill: "alpha", file: "SKILL.md", by: "skill", from: "absent", isError: true }],
+  ]);
+});
+
 // Catches: a whole read by path of another installed skill's SKILL.md taken for the judged step.
 test("a whole read by path of another installed skill's SKILL.md is answered from its copy in Oh My Pi's form of a read by path; a file its copy lacks is not answered", async () => {
-  const copies = betaCopy();
+  const copies = [installedCopy("beta", BETA_MD)];
   const target = "/home/agent/src/acme-skills/skills/beta/SKILL.md";
   const lines = BETA_MD.replace(/\n$/, "").split("\n");
   const hashline = (shown: string) =>
@@ -787,7 +832,7 @@ test("a read of a skill the profile does not list gets Oh My Pi's unknown-skill 
   for (const [arm, available] of answers) {
     const { gateway, bodies } = scripted([[gamma], [ACT]]);
     const replayed = await replayOnce({ ...BODY, stream: false }, arm, gateway, {
-      copies: betaCopy(),
+      copies: [installedCopy("beta", BETA_MD)],
     });
     expect(bodies[1]?.messages.at(-1)).toEqual({
       role: "user",
@@ -800,10 +845,11 @@ test("a read of a skill the profile does not list gets Oh My Pi's unknown-skill 
   }
 });
 
-// Catches: the case's skill's read after another skill's read answered other than before, or the
-// none arm's read of the case's skill judged, which fails that arm by construction.
-test("a read of another skill, then of the case's skill, then the act: two rounds, the case's skill answered as before, and in none with the unknown-skill result", async () => {
-  const copies = betaCopy();
+// Catches: the case's skill's read after another skill's read answered other than a read of it in
+// a round of its own is, or the none arm's read of the case's skill judged, which fails that arm by
+// construction.
+test("a read of another skill, then of the case's skill, then the act: two rounds, the case's skill answered as in a round of its own, and in none with the unknown-skill result", async () => {
+  const copies = [installedCopy("beta", BETA_MD)];
   const beta = readCall("toolu_beta", "skill://beta");
   const alpha = readCall("toolu_alpha", "skill://alpha/references/x.md");
   const answers: [Arm, string, boolean, "arm" | "absent"][] = [

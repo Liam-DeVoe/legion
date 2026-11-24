@@ -4,7 +4,7 @@ import {
   type CaseFacts,
   type CaseKind,
   confirmScore,
-  controlCase,
+  controlOrder,
   descriptionFault,
   dropFigures,
   isControlLoss,
@@ -291,38 +291,39 @@ const rows: [string, () => unknown, unknown][] = [
     false,
   ],
 
-  // control case: the informative case with the largest old - none gap; a tie to the lower id.
+  // control case: the first of the control rule's order, the informative case with the largest
+  // old - none gap; a tie to the lower id.
   [
     "the control case is the informative case with the largest gap",
     () =>
-      controlCase([
+      controlOrder([
         { caseId: "a", passes: { old: 8, new: 8, none: 5 } },
         { caseId: "b", passes: { old: 9, new: 9, none: 5 } },
         { caseId: "c", passes: { old: 6, new: 6, none: 5 } },
-      ]),
+      ])[0],
     "b",
   ],
   [
     "a tie for the largest gap goes to the lower case id",
     () =>
-      controlCase([
+      controlOrder([
         { caseId: "b", passes: { old: 8, new: 8, none: 5 } },
         { caseId: "a", passes: { old: 9, new: 9, none: 6 } },
-      ]),
+      ])[0],
     "a",
   ],
   [
     "the lower case id is the lower in string order",
     () =>
-      controlCase([
+      controlOrder([
         { caseId: "c9", passes: { old: 8, new: 8, none: 5 } },
         { caseId: "c10", passes: { old: 8, new: 8, none: 5 } },
-      ]),
+      ])[0],
     "c10",
   ],
   [
     "no informative case gives no control case",
-    () => controlCase([{ caseId: "a", passes: { old: 6, new: 6, none: 5 } }]),
+    () => controlOrder([{ caseId: "a", passes: { old: 6, new: 6, none: 5 } }])[0],
     undefined,
   ],
 

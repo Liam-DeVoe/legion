@@ -9,8 +9,14 @@
  * differs between arms: the messages are the case's own but for the text of the skill's files in
  * its read results, and the profile is the case's own, each copy of the skill's source (cases.ts's
  * `testedCopy`: its repository and path, under its own name or a namespace) installed from the
- * arm's directory, which `none` leaves out; a copy of another source that shares the name stays
- * as the profile has it in every arm.
+ * arm's directory, which `none` leaves out. A copy of another source that shares the name stays
+ * as the profile has it in every arm but `none`. In `none`, Oh My Pi 18.18.6 lists a copy under
+ * its bare name once it finds no other copy of that name, so for each name that no copy left
+ * holds bare and some copy holds under a namespace, the copy whose namespace's skills directory
+ * Oh My Pi reads first loses its namespace (`relistedSkills`; context.ts gives Oh My Pi `skills/`
+ * first, then each namespace's directory in the order of its first copy in the profile). The arm
+ * records the name the profile lists each such copy under (`relisted`, as `tools/alpha`), and
+ * every other copy keeps its namespace.
  *
  * In each arm but `none` and `ours`, each read result of a `skill://` read of the skill (in the
  * case's `skillReads`) is answered from the arm's file the way the pinned Oh My Pi 18.18.6 answers
@@ -69,9 +75,9 @@
  * own copy is answered from our file at that path, or as not found where ours lacks it.
  *
  * `skillFile(arm, file)` answers one new `skill://` read the same way, at the arm's
- * `installedDir`, and `pathFile(arm, target)` one new read by path, at the path read; replay.ts
- * answers a reply's reads with them. cases.ts's `skillReadFile(arm.skill, target)` and
- * `pathReadFile(arm, target)` say which file a read reads.
+ * `installedDir`, and `pathFile(arm, target)` one new read by path, its hashline line naming the
+ * file under `PathCopy.shownDir`; replay.ts answers a reply's reads with them. cases.ts's
+ * `skillReadFile(arm.skill, target)` and `pathReadFile(arm, target)` say which file a read reads.
  *
  * `otherSkillRead(arm, copies, target)` answers one new read of a file of another skill, the
  * same text in every arm. A skill the profile lists is read from its installed copy (`copies`,
@@ -80,11 +86,13 @@
  * read under a `[Skill file: <path>]` line whose directory is the one the case's own reads of
  * that skill show (`arm.skillDirs`), else the directory beside the case's skill's installed
  * directory; a whole read by path (a path that ends `/<name>/SKILL.md`, or holds
- * `skills/<name>/<file>`, as count.sql and build.ts find a skill's read by path) in Oh My Pi's
- * form of a read by path, its rows as the session shows them (`arm.pathRows`). A `skill://` read
- * of a skill the profile does not list gets Oh My Pi's unknown-skill result, the text of
- * `skill-protocol.ts`'s resolver in the pinned binary: `Unknown skill: <name>`, then `Available:`
- * and the names the session installs joined by `, ` (`none` for no name).
+ * `skills/<name>/references/<file>`, as count.sql and build.ts find a skill's read by path) in Oh
+ * My Pi's form of a read by path, its rows as the session shows them (`arm.pathRows`). In `none`,
+ * a `skill://<skill>[/<file>]` read of the case's skill is answered so from the copy of another
+ * source the profile lists under the skill's name (`caseNameCopy`), where it lists one. A
+ * `skill://` read of a skill the profile does not list gets Oh My Pi's unknown-skill result, the
+ * text of `skill-protocol.ts`'s resolver in the pinned binary: `Unknown skill: <name>`, then
+ * `Available:` and the names the session installs joined by `, ` (`none` for no name).
  *
  * A skill can reach a session other than by its listing line and its reads, and each arm puts its
  * own text there too (`Injection`, `arm.injections`):
@@ -146,11 +154,13 @@ import {
   readDispatchFirstContext,
 } from "@legion/envoy-client/dispatch-first";
 import {
+  AT_COMMAND,
   readTargets,
   type SessionMessage,
   skillFileHeader,
   skillHeaderPath,
   stripSkillHeader,
+  withoutBodies,
 } from "../skill-scenarios/transcript";
 import {
   type Case,
@@ -160,8 +170,12 @@ import {
   resolvedReadPath,
   skillReadFile,
   testedCopy,
+  testedSource,
   textLines,
+  URL_TARGET,
+  wholeReadTarget,
 } from "./cases";
+import { ompText } from "./common";
 import type { Arm as ScoreArm } from "./score";
 
 /** The name of an arm, as run records carry it. */
@@ -177,7 +191,7 @@ export const PLUGIN_INJECTED = { skill: "dispatch-first", plugin: ENVOY_PLUGIN }
 
 /** The custom message type of a skill's text Oh My Pi puts into a session
  *  (SKILL_PROMPT_MESSAGE_TYPE, packages/tui/src/chat/messages.ts line 21 at the pin). */
-export const SKILL_PROMPT = "skill-prompt";
+const SKILL_PROMPT = "skill-prompt";
 
 /** A block of the case's skill that reaches its session beside the listing line and the reads,
  *  and where the arm's messages hold it (`at`; null for `none`, which holds none): one a plugin
@@ -254,11 +268,15 @@ export interface Arm {
   /** The case's messages, as this arm gives them. */
   readonly messages: SessionMessage[];
   /** The skills the arm's profile installs: the case's own, less each copy of the case's skill's
-   * source for `none` (cases.ts's `testedCopy`), and for `ours` less those too, with ours in the
-   * place of the copy listed under the case's skill or of the skill listed under our name. Each
-   * copy of the arm's skill's source (`testedCopy(profileSkills, skill)`) is installed from
-   * `skillDir`. */
+   * source for `none` (cases.ts's `testedCopy`), where a copy of another source can lose its
+   * namespace (`relisted`), and for `ours` less those too, with ours in the place of the copy
+   * listed under the case's skill or of the skill listed under our name. Each copy of the arm's
+   * skill's source (`testedCopy(profileSkills, skill)`) is installed from `skillDir`. */
   readonly profileSkills: ProfileSkill[];
+  /** The name the case's profile lists each copy under that the arm lists under its bare name
+   *  (`tools/alpha` for a copy `none` lists as `alpha`; `relistedSkills`). Absent where the arm
+   *  lists every copy as the profile does. */
+  readonly relisted?: readonly string[];
   /** Each block of the skill that reaches the session beside its listing line and its reads, and
    *  where this arm holds it (Injection). Absent, or empty, when the case has none. */
   readonly injections?: readonly Injection[];
@@ -448,18 +466,19 @@ const RANGE_AFTER = 3;
 const CONFLICT_OPENER = /^<<<<<<<(?: |\r?$)/;
 
 /** The bytes of a file's lines a whole read of it shows, each cut line counted as shown, with a
- *  newline between two (read.ts lines 2663-2672 at the pin): 50 KB, less four bytes for each of
- *  the 300 lines when the rows show their numbers. */
+ *  newline between two (read.ts lines 2663-2672 at the pin, whose `Math.min` of its two bounds
+ *  is always this one at its defaults): 50 KB, less four bytes for each of the 300 lines when the
+ *  rows show their numbers. */
 function pageBytes(rows: PathRows): number {
   const numbers = rows === "plain" ? 0 : String(READ_LINES).length + 1;
-  return Math.min(Math.max(SPILL_BYTES, READ_LINES * 512), SPILL_BYTES - READ_LINES * numbers);
+  return SPILL_BYTES - READ_LINES * numbers;
 }
 
 /** Oh My Pi's snapshot tag of a file's text, the `<tag>` of a hashline line (`file_hash`,
  *  crates/pi-edit/src/store.rs lines 70-91 at the pin): xxHash32, seed 0, of the text with the
  *  spaces, tabs and carriage returns at the end of each line left out, its low 16 bits as four
  *  uppercase hex digits. Oh My Pi hashes the text with a leading byte order mark left out and
- *  each CRLF or CR as LF. */
+ *  each CRLF or CR as LF, which its caller does first (`fileTag`). */
 export function snapshotTag(text: string): string {
   const kept = text
     .split("\n")
@@ -534,8 +553,7 @@ function pathPage(
   // The lines as Oh My Pi shows them: the bytes decoded as they are, a final newline ending the
   // last line (read.ts lines 266-291 at the pin).
   const raw = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");
-  const lines = raw.split("\n");
-  if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+  const lines = textLines(raw);
   if (lines.length > READ_LINES && !checkoutRead) {
     return `${file} has ${lines.length} lines, and a read by path shows ${READ_LINES}, then the end of each block past them`;
   }
@@ -813,9 +831,10 @@ function skillRangeText(
 
 /** The answer to a new read of `target` from the arm's files, when it is a read of a file of the
  *  cut's own copy of the skill by path (cases.ts's `pathReadFile` of `arm.pathCopy`), whole or of
- *  one line range (`readRange`): Oh My Pi's result at the path read (a range as
- *  `pathRangeAnswer` gives it), its rows as the case's reads by path show them, or its not-found
- *  result. Undefined for any other read (another selector among them), a read of a directory of
+ *  one line range (`readRange`): Oh My Pi's result (a range as `pathRangeAnswer` gives it), its
+ *  hashline line naming the file under the directory the case's reads of the copy show
+ *  (`PathCopy.shownDir`) and its rows as they show them, or its not-found result for the path as
+ *  read. Undefined for any other read (another selector among them), a read of a directory of
  *  the copy, and a read of a file Oh My Pi shows in a form the arms do not rebuild
  *  (`pathFormFault`, `pathRangeAnswer`'s faults). */
 export function pathFile(arm: Arm, target: string): { text: string; isError: boolean } | undefined {
@@ -841,7 +860,7 @@ export function pathFile(arm: Arm, target: string): { text: string; isError: boo
 }
 
 /** A hashline line: `[<path>#<tag>]`, the path as Oh My Pi shows it. */
-const HASHLINE_HEADER = /^\[(.+)#[0-9A-F]{4}\]$/;
+export const HASHLINE_HEADER = /^\[(.+)#[0-9A-F]{4}\]$/;
 
 /** How a read result of a path shows its rows, and the path its hashline line shows; undefined
  *  for one that shows neither: a failed read, a raw one (`:raw` shows no row numbers in any
@@ -857,9 +876,6 @@ function shownRows(message: SessionMessage): { rows: PathRows; shown?: string } 
   if (header?.[1] !== undefined) return { rows: "hashline", shown: header[1] };
   return /^\d+\|/.test(first) ? { rows: "numbered" } : undefined;
 }
-
-/** A path or URL with a scheme (`skill://`, `https://`), which no read by path is. */
-const URL_TARGET = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 /** How a new read by path shows its rows in `c`'s session: as the last read by path of its
  *  messages shows them (`shownRows`), else hashline, or plain when the case's recorded tools leave
@@ -890,7 +906,7 @@ function pathCopyOf(
   for (const message of c.messages) {
     if (message.role !== "toolResult" || message.toolName !== "read") continue;
     const target = targets.get(message.toolCallId ?? "");
-    if (target === undefined || URL_TARGET.test(target)) continue;
+    if (target === undefined) continue;
     const shown = shownRows(message)?.shown;
     const file = pathReadFile(c, target);
     if (file === undefined || shown === undefined) continue;
@@ -935,7 +951,7 @@ function skillDirsOf(c: Case, targets: ReadonlyMap<string, string>): Record<stri
 /** A skill of an arm's profile other than the case's, as the capture installed it (context.ts's
  *  `installedCopies`): the name the profile lists it under, and the directory of its installed
  *  copy, which a read of it is answered from, the same in every arm. */
-export interface SkillCopy {
+export interface InstalledCopy {
   readonly name: string;
   readonly dir: string;
 }
@@ -956,19 +972,54 @@ export interface OtherSkillRead {
   readonly isError: boolean;
 }
 
-/** The directory a read of `skill`, a skill of the arm's profile other than the case's, is
- *  answered from, and which one it is: the arm's directory for a copy of the case's skill's source
- *  under another name (cases.ts's `testedCopy`), else its installed copy in `copies`. Throws naming
- *  the skill when `copies` holds no copy of it, or its copy's directory is gone, so that no read
- *  of it is answered as not found. */
+/** For a skill of the arm's profile, the arm's directory it is installed from, or undefined when
+ *  it is not: the arm's `skillDir` for each copy of the case's skill's source (cases.ts's
+ *  `testedCopy`), and undefined for every skill in an arm with no skill directory (`none`), where
+ *  a copy listed under the case's skill's name is another source's (`Arm.relisted`). context.ts
+ *  installs each skill by this rule. */
+export function installedFromArm(
+  arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">
+): (skill: Pick<ProfileSkill, "repo" | "path">) => string | undefined {
+  const { skillDir } = arm;
+  if (skillDir === undefined) return () => undefined;
+  const tested = testedCopy(arm.profileSkills, arm.skill);
+  return (skill) => (tested(skill) ? skillDir : undefined);
+}
+
+/** The copy of another source that an arm with no skill directory (`none`) lists under the case's
+ *  skill's name (cases.ts's `testedSource`; `Arm.relisted`), or undefined when it lists none or
+ *  the arm has the skill's directory. A `skill://` read of the case's skill in such an arm reads
+ *  that copy. */
+export function caseNameCopy(
+  arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">
+): ProfileSkill | undefined {
+  if (arm.skillDir !== undefined) return undefined;
+  return testedSource(arm.profileSkills, arm.skill);
+}
+
+/** The file of the case's skill that a `skill://` read of `target` reads from the arm's own files
+ *  (cases.ts's `skillReadFile`), or undefined when it reads none: always in an arm whose profile
+ *  lists a copy of another source under the case's skill's name (`caseNameCopy`), which a read of
+ *  that name reads instead. */
+export function ownSkillReadFile(
+  arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">,
+  target: string
+): string | undefined {
+  return caseNameCopy(arm) === undefined ? skillReadFile(arm.skill, target) : undefined;
+}
+
+/** The directory a read of `skill`, a skill of the arm's profile other than the case's, or the
+ *  copy `caseNameCopy` gives, is answered from, and which one it is: the arm's directory for a
+ *  copy of the case's skill's source under another name (`installedFromArm`), else its installed
+ *  copy in `copies`. Throws naming the skill when `copies` holds no copy of it, or its copy's
+ *  directory is gone, so that no read of it is answered as not found. */
 function sourceOf(
   arm: Arm,
-  copies: readonly SkillCopy[],
+  copies: readonly InstalledCopy[],
   skill: ProfileSkill
 ): { dir: string; from: "arm" | "copy" } {
-  if (arm.skillDir !== undefined && testedCopy(arm.profileSkills, arm.skill)(skill)) {
-    return { dir: arm.skillDir, from: "arm" };
-  }
+  const armDir = installedFromArm(arm)(skill);
+  if (armDir !== undefined) return { dir: armDir, from: "arm" };
   const name = listedName(skill);
   const copy = copies.find((each) => each.name === name);
   if (copy === undefined) {
@@ -1002,13 +1053,13 @@ export function shownPath(
 }
 
 /** A `skill://` read of `target` (its selector taken off) answered when it reads a file of a skill
- *  of `others`, the profile's skills other than the case's, or of a skill the profile does not
- *  list (see the file's header), whole or of the line range `range` (`rangeAnswer`; undefined for
- *  a range past the file's end). Oh My Pi's resolver tries `<name>/<first part of the path>`
- *  before `<name>`, so the longest listed name is tried first. */
+ *  of `others`, the profile's skills other than the case's, or the copy `caseNameCopy` gives, or
+ *  of a skill the profile does not list (see the file's header), whole or of the line range
+ *  `range` (`rangeAnswer`; undefined for a range past the file's end). Oh My Pi's resolver tries
+ *  `<name>/<first part of the path>` before `<name>`, so the longest listed name is tried first. */
 function otherSkillUrlRead(
   arm: Arm,
-  copies: readonly SkillCopy[],
+  copies: readonly InstalledCopy[],
   others: readonly ProfileSkill[],
   target: string,
   range: { readonly first: number; readonly last: number | undefined } | undefined
@@ -1041,16 +1092,14 @@ function otherSkillUrlRead(
  *  answered: the session's read opened a file on its own disk, which the copy may not hold. */
 function otherSkillPathRead(
   arm: Arm,
-  copies: readonly SkillCopy[],
+  copies: readonly InstalledCopy[],
   others: readonly ProfileSkill[],
   target: string
 ): OtherSkillRead | undefined {
-  if (target.endsWith("/") || target.slice(target.lastIndexOf("/") + 1).includes(":")) {
-    return undefined;
-  }
-  const tested = testedCopy(arm.profileSkills, arm.skill);
+  if (!wholeReadTarget(target)) return undefined;
+  const fromArm = installedFromArm(arm);
   const taken = new Set([arm.skill, path.posix.basename(arm.skill)]);
-  for (const skill of arm.profileSkills) if (tested(skill)) taken.add(skill.name);
+  for (const skill of arm.profileSkills) if (fromArm(skill) !== undefined) taken.add(skill.name);
   const byName = new Map<string, ProfileSkill | null>();
   for (const skill of others) {
     if (!taken.has(skill.name)) byName.set(skill.name, byName.has(skill.name) ? null : skill);
@@ -1093,20 +1142,26 @@ function otherSkillPathRead(
  *  (see the file's header): a `skill://` read of a skill the profile lists from the copy
  *  `sourceOf` gives, at its installed directory, whole or of one line range (`readRange`); a
  *  `skill://` read of a skill it does not list with Oh My Pi's unknown-skill result; a whole read
- *  by path (`otherSkillPathRead`) in Oh My Pi's form at the path the session shows. Undefined for
- *  any other read: one of the case's skill, one with another selector, a read by path with any, one
- *  of a directory, and one by path that names no skill of the profile or a file its copy lacks or
- *  shows in a form the arms do not rebuild (`pathFormFault`). Throws when the profile lists the
- *  skill and `copies` holds no copy of it (`sourceOf`). */
+ *  by path (`otherSkillPathRead`) in Oh My Pi's form at the path the session shows. In an arm with
+ *  no skill directory whose profile lists a copy of another source under the case's skill's name
+ *  (`caseNameCopy`), a `skill://` read of the case's skill is a read of that copy, answered as a
+ *  read of another skill is. Undefined for any other read: any other read of the case's skill,
+ *  one with another selector, a read by path with any, one of a directory, and one by path that
+ *  names no skill of the profile or a file its copy lacks or shows in a form the arms do not
+ *  rebuild (`pathFormFault`). Throws when the profile lists the skill and `copies` holds no copy
+ *  of it (`sourceOf`). */
 export function otherSkillRead(
   arm: Arm,
-  copies: readonly SkillCopy[],
+  copies: readonly InstalledCopy[],
   target: string
 ): OtherSkillRead | undefined {
   const ranged = readRange(target);
   const whole = ranged?.path ?? target;
-  if (skillReadFile(arm.skill, whole) !== undefined) return undefined;
-  const others = arm.profileSkills.filter((skill) => listedName(skill) !== arm.skill);
+  const own = caseNameCopy(arm);
+  if (ownSkillReadFile(arm, whole) !== undefined) return undefined;
+  const others = arm.profileSkills.filter(
+    (skill) => skill === own || listedName(skill) !== arm.skill
+  );
   if (whole.startsWith("skill://")) {
     if (ranged !== undefined && ranged.range === undefined) return undefined;
     return otherSkillUrlRead(arm, copies, others, whole, ranged?.range);
@@ -1342,7 +1397,7 @@ function compactSeparator(line: string): string {
       const trimmed = cell.trim();
       const left = trimmed.startsWith(":");
       const right = trimmed.endsWith(":");
-      return left && right ? ":---:" : left ? ":---" : right ? "---:" : "---";
+      return `${left ? ":" : ""}---${right ? ":" : ""}`;
     });
   return `|${cells.join("|")}|`;
 }
@@ -1356,7 +1411,7 @@ function compactSeparator(line: string): string {
  * row's cells less their padding (a separator row's each `---`, `:---`, `---:` or `:---:`); then
  * the text's last blank lines dropped.
  */
-export function formatPrompt(content: string): string {
+function formatPrompt(content: string): string {
   const lines = content.split("\n");
   const result: string[] = [];
   const dropBlanks = () => {
@@ -1426,9 +1481,10 @@ function skillBody(content: string): string {
 
 /** The text of Oh My Pi's autoloaded block of the SKILL.md in `skillDir`, naming `file` as its
  *  path: prompts/skills/autoload.md rendered with no arguments (`<body>`, a blank line, `---`, a
- *  blank line, `Skill: <file>`), put through `formatPrompt` and trimmed. */
+ *  blank line, `Skill: <file>`), put through `formatPrompt` and trimmed. The file is read as Oh My
+ *  Pi reads it (common.ts's `ompText`: a leading byte order mark dropped). */
 export function autoloadedText(skillDir: string, file: string): string {
-  const body = skillBody(readFileSync(path.join(skillDir, "SKILL.md"), "utf8"));
+  const body = skillBody(ompText(readFileSync(path.join(skillDir, "SKILL.md"))));
   return formatPrompt(`${body}\n\n---\n\nSkill: ${file}\n`).trim();
 }
 
@@ -1484,30 +1540,19 @@ function opensWithMarker(message: SessionMessage | undefined): boolean {
 }
 
 /** Whether the plugin of PLUGIN_INJECTED puts the case's skill into its session's requests: the
- *  case's skill is the one it reads, listed under that bare name, and the profile installs it. */
-function pluginInjects(c: Pick<Case, "skill" | "profile">): boolean {
+ *  case's skill is the one it reads, listed under that bare name, and the profile installs it.
+ *  load.ts asks it of a load test's tested skill too. */
+export function pluginInjects(c: Pick<Case, "skill" | "profile">): boolean {
   return (
     c.skill === PLUGIN_INJECTED.skill &&
     c.profile.plugins.some((plugin) => plugin.name === PLUGIN_INJECTED.plugin)
   );
 }
 
-/** Where a command starts in shell text, as skill-scenarios/score.ts's AT_COMMAND finds it: at a
- *  line's start, or after `;`, `&`, `|`, `(`, `$(` or a backquote, past any variable assignments,
- *  the words that open a command inside a compound one, and `command`, `exec` or `env`. */
-const AT_COMMAND = String.raw`(?:^|[;&|(\x60]|\$\()[ \t]*(?:[A-Za-z_]\w*=\S*[ \t]+)*(?:(?:then|do|else|elif|!|\{)[ \t]+)*(?:(?:command|exec|env)[ \t]+)?`;
-/** A `dispatch` command at a command's place, and its subcommand. */
+/** A `dispatch` command at a command's place (skill-scenarios/transcript.ts's AT_COMMAND), and
+ *  its subcommand. A `bash` call's command is read with its continued lines joined and its
+ *  here-document bodies, data for the command that opens each, left out (`withoutBodies`). */
 const DISPATCH_COMMAND = new RegExp(String.raw`${AT_COMMAND}dispatch[ \t]+([a-z][a-z-]*)`, "m");
-/** A here-document: the rest of the line that opens it, then its body up to the line that ends
- *  it (score.ts's HEREDOC). Its body is data for the command that opens it. */
-const HEREDOC = /(<<-?[ \t]*(['"]?)(\w+)\2[^\n]*\n)[\s\S]*?^[ \t]*\3[ \t]*$/gm;
-
-/** The subcommand of the first `dispatch` command `command` (a `bash` call's) runs, its continued
- *  lines joined and its here-document bodies left out, or undefined when it runs none. */
-function dispatchCommand(command: string): string | undefined {
-  const code = command.replace(/\\\r?\n/g, " ").replace(HEREDOC, "$1");
-  return DISPATCH_COMMAND.exec(code)?.[1];
-}
 
 /** What `message` shows of Dispatch, as the end of a sentence that starts "its message <index>",
  *  or undefined when it shows none: a user, custom or developer message whose text holds the
@@ -1537,7 +1582,10 @@ function dispatchShown(message: SessionMessage): string | undefined {
     if (name === "write" && field("path").startsWith("xd://dispatch_")) {
       return `writes the Dispatch tool device ${field("path")}`;
     }
-    const command = name === "bash" ? dispatchCommand(field("command")) : undefined;
+    const command =
+      name === "bash"
+        ? DISPATCH_COMMAND.exec(withoutBodies(field("command")).code)?.[1]
+        : undefined;
     if (command !== undefined) return `runs \`dispatch ${command}\` in a bash call`;
   }
   return undefined;
@@ -1726,6 +1774,44 @@ export function installedDirIn(
   return path.join("/skills", skill);
 }
 
+/** `skills`, the profile of `none` once each copy of the case's skill's source is gone, as Oh My
+ *  Pi lists them, and, for each copy that lost its namespace, the name `skills` lists it under
+ *  (see the file's header). Oh My Pi reads `skills/` first, then each
+ *  `namespaced/<namespace>/skills` in the order of each namespace's first copy in `skills`
+ *  (context.ts's `namespacedDirs`), and lists the first copy of a name it finds under the bare
+ *  name. So for each name that no copy holds bare and some copy holds under a namespace, the copy
+ *  whose namespace comes first in that order loses its namespace; every other copy keeps it. */
+function relistedSkills(skills: readonly ProfileSkill[]): {
+  skills: ProfileSkill[];
+  relisted: string[];
+} {
+  // The names some copy holds bare, and the namespaces in the order Oh My Pi reads their
+  // directories.
+  const bare = new Set<string>();
+  const order = new Set<string>();
+  for (const skill of skills) {
+    if (skill.namespace === undefined) bare.add(skill.name);
+    else order.add(skill.namespace);
+  }
+  // By name, the first copy of each name no copy holds bare that Oh My Pi finds, reading each
+  // namespace's directory in that order.
+  const first = new Map<string, ProfileSkill>();
+  for (const namespace of order) {
+    for (const skill of skills) {
+      if (skill.namespace !== namespace || bare.has(skill.name) || first.has(skill.name)) continue;
+      first.set(skill.name, skill);
+    }
+  }
+  return {
+    skills: skills.map((skill) => {
+      if (first.get(skill.name) !== skill) return structuredClone(skill);
+      const { namespace: _, ...listedBare } = skill;
+      return structuredClone(listedBare);
+    }),
+    relisted: [...first.values()].map((skill) => listedName(skill)),
+  };
+}
+
 /** The arm `name` of case `c`, from the skill directories `dirs`, with whether its session had
  * Dispatch (`dispatchOf`). `minus` writes its copy of the old directory to `<scratch>/minus`,
  * replacing one there. Throws naming the case when a skillReads index is not a read of a file of
@@ -1779,13 +1865,15 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
       reads
     );
     const tested = testedCopy(c.profile.skills, c.skill);
+    const { skills, relisted } = relistedSkills(c.profile.skills.filter((skill) => !tested(skill)));
     return {
       name,
       skill: c.skill,
       skillDir: undefined,
       installedDir,
       ...withInjections(c, messages, undefined),
-      profileSkills: structuredClone(c.profile.skills.filter((skill) => !tested(skill))),
+      profileSkills: skills,
+      ...(relisted.length === 0 ? {} : { relisted }),
       dispatch: dispatchOf(c),
       ...(pathCopy === undefined ? {} : { pathCopy }),
       ...shared,

@@ -549,6 +549,12 @@ test("a case whose copy names its cwd and home loads with a relative and a ~ rea
   expect(() => loadCases(leftFile, base)).toThrow(
     `case c-resolved-left (${leftFile}:1): the read result at index 10 (~/src/acme-skills/skills/alpha/references/x.md) is not in skillReads`
   );
+  // The relative read left out, index 8, is refused too: the check is made for it as well.
+  const relativeLeft = { ...resolved, id: "c-resolved-relative-left", skillReads: [2, 4, 10] };
+  const relativeLeftFile = caseFile("path-resolved-relative-left", [relativeLeft]);
+  expect(() => loadCases(relativeLeftFile, base)).toThrow(
+    `case c-resolved-relative-left (${relativeLeftFile}:1): the read result at index 8 (skills/alpha/SKILL.md) is not in skillReads`
+  );
   for (const where of [{ cwd: "src/acme-skills" }, { home: "/home/agent/" }]) {
     const bad = caseFile("path-where", [{ ...resolved, pathCopy: { dir: COPY, ...where } }]);
     expect(() => loadCases(bad, base)).toThrow(

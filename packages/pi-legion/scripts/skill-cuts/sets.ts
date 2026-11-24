@@ -40,9 +40,9 @@
  */
 import path from "node:path";
 import { z } from "zod";
-import { firstLine, type GhRetries, schemaFaults, started } from "./common";
+import { firstLine, type GhRetries, parseJson, schemaFaults, started } from "./common";
 import type { SkillCutsConfig } from "./config";
-import { type Gh, type GhResult, parseJson, parseManifest } from "./copies";
+import { type Gh, type GhResult, parseManifest } from "./copies";
 
 export const PLUGINS_MANIFEST = "omp/plugins/package.json";
 export const INSTALLER = "installers/omp.sh";

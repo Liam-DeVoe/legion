@@ -1,12 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { SQL } from "bun";
 import { z } from "zod";
-import { attribute, parseQueryOutput, type R4Tables } from "./attribute";
+import { attribute, parseQueryOutput, type QueryOutput, type R4Tables } from "./attribute";
 import { pullTranscript } from "./build";
+import { pathHash } from "./cases";
 import { loadConfig } from "./config";
 import {
   countSql,
@@ -46,12 +47,16 @@ import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 // its first line, so that its model_change line is in its second part; in the fifth a file made
 // here, F4 with a long line before its first assistant message, whose head models.sql cuts at 256
 // Ki; in the sixth, for pull.sql and tasks.sql, the made-up sessions the pull tests describe; and
-// in the seventh a made-up session and three forks of it, which the fork tests describe.
+// in the seventh a made-up session and three forks of it, which the fork tests describe. Three
+// digest-times.sql rows each make one more database, and drop it in their own `finally`: F1's
+// session cut inside its digest line, a made-up root of 256 MiB, and a made-up root with digest
+// lines whose timestamps are no times.
 // The rows of count.sql, models.sql and the pull, tasks and sessions queries on the fixture
 // databases must equal those of their F7 captures (psql-rows.test.ts and this header give the
 // capture commands), so a change to one of those queries that changes such a result fails here
-// until F7 is captured again. The other rows (the made-up files', session-head.sql's and
-// session-paths.sql's) are checked against values the test computes from its inputs.
+// until F7 is captured again. The other rows (the made-up files', session-head.sql's,
+// session-paths.sql's, subagents.sql's and digest-times.sql's) are checked against values the
+// test computes from its inputs.
 //
 // F1c, F1d and models.sql's captures, from packages/pi-legion/scripts/skill-cuts, in the shell
 // that ran psql-rows.test.ts's capture commands (its N, SERVER, FIRST, F1 and store()):
@@ -227,7 +232,7 @@ describe("countsql.ts fills the SQL", () => {
   });
 
   test("session-head.sql is filled with the path hashes, each a SHA-256 in hex, and refuses any other", () => {
-    const hash = createHash("sha256").update("made-up/a.jsonl").digest("hex");
+    const hash = pathHash("made-up/a.jsonl");
     const sql = sessionHeadSql([hash]);
     expect(sql).toStartWith("SET LOCAL statement_timeout = '15min';");
     expect(sql).toContain(`= ANY (ARRAY['${hash}']::text[])`);
@@ -239,7 +244,7 @@ describe("countsql.ts fills the SQL", () => {
   });
 
   test("session-paths.sql is filled with the path hashes, each a SHA-256 in lowercase hex, and refuses any other", () => {
-    const hash = createHash("sha256").update("made-up/a.jsonl").digest("hex");
+    const hash = pathHash("made-up/a.jsonl");
     const sql = sessionPathsSql([hash]);
     expect(sql).toContain(`WHERE h.hash = ANY (ARRAY['${hash}']::text[])`);
     expect(sql).not.toContain("{{");
@@ -251,7 +256,7 @@ describe("countsql.ts fills the SQL", () => {
   });
 
   test("subagents.sql is filled with each session's path hash and the times its subagent's start falls between, as one JSON array, and refuses a hash or a time of any other form", () => {
-    const hash = createHash("sha256").update("made-up/a.jsonl").digest("hex");
+    const hash = pathHash("made-up/a.jsonl");
     const sql = subagentsSql([
       { hash, from: "2026-11-20T01:59:48.959Z", to: null },
       { hash, from: null, to: null },
@@ -266,13 +271,17 @@ describe("countsql.ts fills the SQL", () => {
         `${JSON.stringify(bad)} is not a path hash of 64 hex characters`
       );
     }
-    expect(() => subagentsSql([{ hash, from: null, to: "'; DROP TABLE y; --" }])).toThrow(
-      "is not a time"
-    );
+    // A time Date.parse reads but that is not an ISO time (an HTTP date, a date alone) is refused
+    // too: the query compares the text as given with `::timestamptz`.
+    for (const bad of ["'; DROP TABLE y; --", "Fri, 20 Nov 2026 01:59:48 GMT", "2026-11-20"]) {
+      expect(() => subagentsSql([{ hash, from: null, to: bad }])).toThrow(
+        `${JSON.stringify(bad)} is not a time`
+      );
+    }
   });
 
   test("digest-times.sql is filled with the sessions' path hashes, each a SHA-256 in lowercase hex, and refuses any other", () => {
-    const hash = createHash("sha256").update("made-up/a/b.jsonl").digest("hex");
+    const hash = pathHash("made-up/a/b.jsonl");
     const sql = digestTimesSql([hash]);
     expect(sql).toStartWith("SET LOCAL statement_timeout = '15min';");
     expect(sql).toContain(`SELECT DISTINCT unnest(ARRAY['${hash}']::text[]) AS hash`);
@@ -282,6 +291,20 @@ describe("countsql.ts fills the SQL", () => {
         `${JSON.stringify(bad)} is not a path hash of 64 hex characters`
       );
     }
+  });
+
+  // Catches: a store query with no statement_timeout (pull.sql, sessions.sql and session-paths.sql
+  // had none), which only the client's quiet limit ended, and ending the client does not cancel
+  // the query on the server: common.ts's STORE_QUIET_MS and the README say every SQL of the runner
+  // ends itself after 15 minutes.
+  test("every SQL file of the runner starts with the 15-minute statement_timeout", () => {
+    const files = readdirSync(import.meta.dir).filter((file) => file.endsWith(".sql"));
+    expect(files.length).toBeGreaterThanOrEqual(9);
+    const first = (file: string) =>
+      readFileSync(path.join(import.meta.dir, file), "utf8").split("\n")[0];
+    expect(
+      files.filter((file) => first(file) !== "SET LOCAL statement_timeout = '15min';")
+    ).toEqual([]);
   });
 });
 
@@ -877,9 +900,21 @@ describe.skipIf(serverDsn === undefined)(
       ]);
     });
 
-    /** count.sql's output on the fork database for the mtime day `day`, read by attribute.ts. */
-    const forkQuery = (day: string) =>
-      parseQueryOutput("store_a", day, output(names.fork, countSql(CONFIG, "store_a", day)));
+    /** count.sql's output on the fork database for the mtime day `day`, read by attribute.ts: one
+     *  query a day, kept, since no test changes the database. */
+    const forkQueries = new Map<string, QueryOutput>();
+    const forkQuery = (day: string) => {
+      let read = forkQueries.get(day);
+      if (read === undefined) {
+        read = parseQueryOutput(
+          "store_a",
+          day,
+          output(names.fork, countSql(CONFIG, "store_a", day))
+        );
+        forkQueries.set(day, read);
+      }
+      return read;
+    };
     /** attribute.ts's count of the fork database's queries of the mtime days `days`. */
     const forkCount = (...days: string[]) => attribute(CONFIG, days.map(forkQuery), NO_COPIES);
 
@@ -1004,6 +1039,10 @@ describe.skipIf(serverDsn === undefined)(
       });
     });
 
+    /** The path hash of the fixture file `file` (cases.ts's `pathHash`), as the databases store
+     *  its path. */
+    const hashOf = (file: string) => pathHash(storedPath(file));
+
     /** What session-head.sql must give for `file`: its header's cwd and start, its first user
      *  message's timestamp and attribution, and its journaled reminders, read from the fixture. */
     const headOf = (file: string) => {
@@ -1015,7 +1054,7 @@ describe.skipIf(serverDsn === undefined)(
       const header = lines.find((line) => line.type === "session");
       const user = lines.find((line) => line.type === "message" && line.message?.role === "user");
       return {
-        hash: createHash("sha256").update(storedPath(file)).digest("hex"),
+        hash: hashOf(file),
         cwd: header.cwd,
         start: header.timestamp,
         first_user: {
@@ -1043,7 +1082,7 @@ describe.skipIf(serverDsn === undefined)(
         `user:${session.first_user.timestamp}:${session.first_user.attribution}`
       );
       expect(subagent.first_user.attribution).toBe("agent");
-      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      const missing = pathHash("made-up/missing.jsonl");
       const rows = run(names.first, sessionHeadSql([session.hash, subagent.hash, missing]));
       expect(rows).toEqual([session, subagent].toSorted((a, b) => (a.hash < b.hash ? -1 : 1)));
       // F1's session cut into three parts inside one line: the head is joined whole.
@@ -1055,23 +1094,22 @@ describe.skipIf(serverDsn === undefined)(
     test("session-paths.sql: the path of each file of a path hash, in path order; no row for a hash the store does not hold", () => {
       const files = [F4_SESSION, F1_SUBAGENT, F1_SESSION].map((file) => ({
         path: storedPath(file),
-        hash: createHash("sha256").update(storedPath(file)).digest("hex"),
+        hash: hashOf(file),
       }));
-      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      const missing = pathHash("made-up/missing.jsonl");
       const rows = run(names.first, sessionPathsSql([...files.map((each) => each.hash), missing]));
       expect(rows).toEqual(files.toSorted((a, b) => (a.path < b.path ? -1 : 1)));
       expect(run(names.first, sessionPathsSql([missing]))).toEqual([]);
     });
 
     test("subagents.sql: of a session's subagents one level below its directory, the earliest with a recorded skill listing whose start falls between the times, its session_init line whole, or none; the counts; no row for a session with no subagent, or a hash the store does not hold", () => {
-      const hashOf = (file: string) => createHash("sha256").update(storedPath(file)).digest("hex");
       const lines = readFileSync(F1_SUBAGENT, "utf8").split("\n");
       const header = JSON.parse(lines.find((line) => line.includes('"type":"session"')) ?? "{}");
       const init = lines.find((line) => line.startsWith('{"type":"session_init"'));
       expect(init).toContain("<skills>");
       const start = header.timestamp as string;
       const before = new Date(Date.parse(start) - 1).toISOString();
-      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      const missing = pathHash("made-up/missing.jsonl");
       const session = hashOf(F1_SESSION);
       const found = { hash: hashOf(F1_SUBAGENT), start, init, subagents: 1, recorded: 1, under: 1 };
       const none = { hash: null, start: null, init: null, subagents: 1, recorded: 1, under: 0 };
@@ -1100,7 +1138,6 @@ describe.skipIf(serverDsn === undefined)(
     });
 
     test("digest-times.sql: for a subagent, its root (the file its topmost <…>Z_<id> directory stands for), and for a top-level session itself, with the time and digest of each of the root's system-prompt-digest lines, a line the file row and its first part split read whole; no row for a hash the store does not hold", async () => {
-      const hashOf = (file: string) => createHash("sha256").update(storedPath(file)).digest("hex");
       // F1's session's own digest lines, read as Oh My Pi wrote them.
       const digests = readFileSync(F1_SESSION, "utf8")
         .split("\n")
@@ -1110,7 +1147,7 @@ describe.skipIf(serverDsn === undefined)(
           return { at: entry.timestamp as string, digest: entry.data as string };
         });
       expect(digests.length).toBeGreaterThan(0);
-      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      const missing = pathHash("made-up/missing.jsonl");
       const session = hashOf(F1_SESSION);
       const subagent = hashOf(F1_SUBAGENT);
       expect(run(names.first, digestTimesSql([subagent, session, missing]))).toEqual(
@@ -1150,5 +1187,86 @@ describe.skipIf(serverDsn === undefined)(
         await server.close();
       }
     });
+
+    // Catches: the digest pattern run over a whole piece. Postgres's regexp_matches takes 4 bytes
+    // a byte of its input in one allocation and refuses one past 1 GB, so a file row of 256 MiB
+    // (count.sql's header: a file row that holds a whole older file) failed the whole query. The
+    // row is made by the server (`repeat`), so no 256 MiB passes through this process.
+    test("digest-times.sql: a root whose file row is one piece of 256 MiB of short lines gives its digest line, read line by line", async () => {
+      const ROOT = "made-up/2026-11-01T10-00-00-000Z_0a0b0c0d-0000-4000-8000-000000000001.jsonl";
+      const at = "2026-11-01T10:00:01.000Z";
+      const line = `{"type":"custom","customType":"system-prompt-digest","data":"d1","id":"a1","parentId":null,"timestamp":"${at}"}\n`;
+      const root = pathHash(ROOT);
+      const name = `skill_cuts_count_${stamp}_digest_big`;
+      const server = new SQL(serverDsn ?? "");
+      try {
+        await server.unsafe(`CREATE DATABASE ${name}`);
+        await loadFixtures(dsnOf(name), [], { parts: 2 });
+        const db = new SQL(dsnOf(name));
+        try {
+          // 262144 lines of 1 KiB, then the digest line.
+          await db.unsafe(
+            `INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len)
+             SELECT $1, repeat(repeat('x', 1023) || E'\\n', 262144) || $2, 0, 0`,
+            [ROOT, line]
+          );
+        } finally {
+          await db.close();
+        }
+        expect(run(name, digestTimesSql([root]))).toEqual([
+          { hash: root, root, rootHeld: true, digests: [{ at, digest: "d1" }] },
+        ]);
+      } finally {
+        await server.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+        await server.close();
+      }
+    }, 120_000);
+
+    // Catches: the digests ordered by `at::timestamptz` with no guard, so one digest line whose
+    // timestamp is no time failed the whole query (count.sql, tasks.sql and subagents.sql guard
+    // their times with pg_input_is_valid).
+    test("digest-times.sql: a digest line whose timestamp is no time is kept, after the lines whose timestamps are times, by its data; the query does not fail", async () => {
+      const ROOT = "made-up/2026-11-01T10-00-00-000Z_0a0b0c0d-0000-4000-8000-000000000002.jsonl";
+      const digest = (data: string, at: string) =>
+        `{"type":"custom","customType":"system-prompt-digest","data":"${data}","id":"i-${data}","parentId":null,"timestamp":"${at}"}\n`;
+      const lines = [
+        digest("b-bad", "not a time"),
+        digest("d2", "2026-11-01T10:05:00.000Z"),
+        digest("a-bad", "later"),
+        digest("d1", "2026-11-01T10:00:00.000Z"),
+      ];
+      const root = pathHash(ROOT);
+      const name = `skill_cuts_count_${stamp}_digest_bad_time`;
+      const server = new SQL(serverDsn ?? "");
+      try {
+        await server.unsafe(`CREATE DATABASE ${name}`);
+        await loadFixtures(dsnOf(name), [], { parts: 2 });
+        const db = new SQL(dsnOf(name));
+        try {
+          await db`
+            INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len)
+            VALUES (${ROOT}, ${lines.join("")}, ${0}, ${0})
+          `;
+        } finally {
+          await db.close();
+        }
+        expect(run(name, digestTimesSql([root]))).toEqual([
+          {
+            hash: root,
+            root,
+            rootHeld: true,
+            digests: [
+              { at: "2026-11-01T10:00:00.000Z", digest: "d1" },
+              { at: "2026-11-01T10:05:00.000Z", digest: "d2" },
+              { at: "later", digest: "a-bad" },
+              { at: "not a time", digest: "b-bad" },
+            ],
+          },
+        ]);
+      } finally {
+        await server.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+        await server.close();
+      }
+    }, 60_000);
   }
 );

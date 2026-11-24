@@ -40,10 +40,7 @@ import {
   INSTALLERS_COLUMNS,
   LOADERS_COLUMNS,
   MANIFESTS_COLUMNS,
-  type Manifest,
-  type ManifestKind,
   PREFIX_TABLE_COLUMNS,
-  parseManifest,
   parseTsv,
   REPOSITORIES_COLUMNS,
   resolveInstallers,
@@ -52,6 +49,7 @@ import {
   tsv,
 } from "./copies";
 import { psqlRows } from "./psql-rows";
+import { madeManifest } from "./testdata/fixtures";
 
 // attribute.ts on F7, count.sql's and models.sql's own output under the store command's flags
 // (testdata/F7-count-first.txt and F7-count-second.txt, whose capture commands psql-rows.test.ts's
@@ -483,22 +481,8 @@ test.each([
 // (acme/dots) over made-up copies: acme/powers' power-one, acme/pack's pack-one, and a copy of
 // power-one in acme/skills, which a read of the dependency's must not be counted for.
 test("a read under node_modules/<package>/skills/<name>/ of a github: dependency, or under vendor/<pool>/skills/<name>/ of a cloned pool, goes to the pinned copy by the prefix table when its repository is a target", () => {
-  const manifest = (
-    repository: string,
-    file: string,
-    kind: ManifestKind,
-    text: string
-  ): Manifest => ({
-    repository,
-    path: file,
-    kind,
-    source: "tree",
-    ...parseManifest(kind, file, text),
-    error: "",
-    rows: 0,
-  });
   const manifests = [
-    manifest(
+    madeManifest(
       "acme/dots",
       "omp/plugins/package.json",
       "omp-plugins",
@@ -507,25 +491,25 @@ test("a read under node_modules/<package>/skills/<name>/ of a github: dependency
         dependencies: { "acme-powers": "github:acme/powers#v1" },
       })
     ),
-    manifest(
+    madeManifest(
       "acme/powers",
       "package.json",
       "omp-package",
       JSON.stringify({ name: "powers-of-acme", pi: { skills: ["./skills"] } })
     ),
-    manifest(
+    madeManifest(
       "acme/dots",
       "skills-sources.json",
       "omp-skill-sources",
       JSON.stringify({ sources: [{ root: "vendor/acme-pack" }] })
     ),
-    manifest(
+    madeManifest(
       "acme/dots",
       "omp/extensions/skill-pools.ts",
       "omp-extension",
       'export const manifest = readFileSync("skills-sources.json", "utf8");\n'
     ),
-    manifest(
+    madeManifest(
       "acme/dots",
       "installers/omp.sh",
       "installer-script",
@@ -749,7 +733,7 @@ test("rows no key of which files of two queries hold come back as they are", () 
   expect(counted.acrossQueries.get("store_a")).toEqual({ keys: 0, pairs: 0 });
 });
 
-test("a count whose rows name no calls, made by an earlier count.sql, is refused, naming the field", () => {
+test("a count whose rows name no calls, made by an earlier count.sql, fails the command (exit 1), naming the field", () => {
   const earlier = psqlTable(
     psqlRows(f7("F7-count-first.txt")).map((value) => {
       const { calls: _calls, unpaired_calls: _unpaired, ...row } = value as Record<string, unknown>;

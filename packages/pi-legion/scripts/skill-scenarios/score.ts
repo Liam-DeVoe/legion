@@ -40,6 +40,7 @@ import {
 } from "./judge-prompts";
 import { byCreatedAt, parseInstant } from "./production-dispatch";
 import {
+  AT_COMMAND,
   CREATED,
   readCalls,
   SessionEntry,
@@ -49,6 +50,7 @@ import {
   subagentSessions,
   toolCalls,
   toolResults,
+  withoutBodies,
 } from "./transcript";
 
 /** `GET /api/v1/issues/{key}/asks`: every ask on the issue, whatever its state. */
@@ -1016,10 +1018,6 @@ interface DispatchCall {
   text: string;
   flag: (name: string) => string | undefined;
 }
-/** Where a command starts in shell text: at a line's start, or after `;`, `&`, `|`, `(`, `$(` or a
- * backquote, past any variable assignments, the words that open a command inside a compound one
- * (`then`, `do`, `else`, `elif`, `!`, `{`), and `command`, `exec` or `env`. */
-const AT_COMMAND = String.raw`(?:^|[;&|(\x60]|\$\()[ \t]*(?:[A-Za-z_]\w*=\S*[ \t]+)*(?:(?:then|do|else|elif|!|\{)[ \t]+)*(?:(?:command|exec|env)[ \t]+)?`;
 /** A command's text after its first word, up to the next command's place. */
 const COMMAND_REST = String.raw`[^\n;&|\x60)]*`;
 /** A `dispatch` command at a command's place: its text from `dispatch` on, and its command. */
@@ -1032,8 +1030,6 @@ const SHELL_COMMAND = new RegExp(
   String.raw`${AT_COMMAND}([^\s;&|\x60()<>]+)(${COMMAND_REST})`,
   "gm"
 );
-/** A here-document: the rest of the line that opens it, then its body up to the line that ends it. */
-const HEREDOC = /(<<-?[ \t]*(['"]?)(\w+)\2[^\n]*\n)[\s\S]*?^[ \t]*\3[ \t]*$/gm;
 /** A skill file a command names: a skill:// target, or a `.md` file under `skills/<name>/`. */
 const SKILL_PATH = /skill:\/\/[\w./-]+|[^\s"'`]*\/skills\/[\w.-]+\/[\w./-]*\.md/g;
 /** A command whose output goes to a file, not to the tool's result. */
@@ -1089,22 +1085,6 @@ function nativeCall(step: Step, tool: string): DispatchCall {
           : JSON.stringify(value);
     },
   };
-}
-/** Shell text with its lines joined where a backslash continues them, and its here-document
- * bodies taken out (a body is data for the command whose `<<` opens it), with each body and the
- * place of its `<<` in that text. */
-function withoutBodies(source: string): { code: string; bodies: { at: number; text: string }[] } {
-  const joined = source.replace(/\\\r?\n/g, " ");
-  const bodies: { at: number; text: string }[] = [];
-  let code = "";
-  let last = 0;
-  for (const hit of joined.matchAll(HEREDOC)) {
-    const opener = hit[1] ?? "";
-    code += joined.slice(last, hit.index) + opener;
-    bodies.push({ at: code.length - opener.length, text: hit[0].slice(opener.length) });
-    last = (hit.index ?? 0) + hit[0].length;
-  }
-  return { code: code + joined.slice(last), bodies };
 }
 /** How the command at `at` follows the one before it. */
 function separator(code: string, at: number): string {

@@ -1,5 +1,6 @@
 // The Oh My Pi session transcript shapes score.ts, seed.ts and the skill-cuts runner read, so a
-// run's own JSONL has one parser and one notion of what a tool result says, never two that drift.
+// run's own JSONL has one parser and one notion of what a tool result says, never two that drift;
+// and the reading of a `bash` call's shell text that score.ts and the skill-cuts runner share.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -177,3 +178,30 @@ export function skillHeaderPath(text: string): string | undefined {
  * `bash` call, the same run from inside an `eval` cell, or a host that calls the tool by name. A
  * refusal reads `Not created:`, which the capital and the key after it keep from matching. */
 export const CREATED = /\bCreated ([A-Z][A-Z0-9]*-\d+):/;
+
+/** Where a command starts in shell text: at a line's start, or after `;`, `&`, `|`, `(`, `$(` or a
+ * backquote, past any variable assignments, the words that open a command inside a compound one
+ * (`then`, `do`, `else`, `elif`, `!`, `{`), and `command`, `exec` or `env`. */
+export const AT_COMMAND = String.raw`(?:^|[;&|(\x60]|\$\()[ \t]*(?:[A-Za-z_]\w*=\S*[ \t]+)*(?:(?:then|do|else|elif|!|\{)[ \t]+)*(?:(?:command|exec|env)[ \t]+)?`;
+/** A here-document: the rest of the line that opens it, then its body up to the line that ends it. */
+const HEREDOC = /(<<-?[ \t]*(['"]?)(\w+)\2[^\n]*\n)[\s\S]*?^[ \t]*\3[ \t]*$/gm;
+
+/** Shell text with its lines joined where a backslash continues them, and its here-document
+ * bodies taken out (a body is data for the command whose `<<` opens it), with each body and the
+ * place of its `<<` in that text. */
+export function withoutBodies(source: string): {
+  code: string;
+  bodies: { at: number; text: string }[];
+} {
+  const joined = source.replace(/\\\r?\n/g, " ");
+  const bodies: { at: number; text: string }[] = [];
+  let code = "";
+  let last = 0;
+  for (const hit of joined.matchAll(HEREDOC)) {
+    const opener = hit[1] ?? "";
+    code += joined.slice(last, hit.index) + opener;
+    bodies.push({ at: code.length - opener.length, text: hit[0].slice(opener.length) });
+    last = (hit.index ?? 0) + hit[0].length;
+  }
+  return { code: code + joined.slice(last), bodies };
+}

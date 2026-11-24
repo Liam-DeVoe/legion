@@ -6,10 +6,11 @@
  *
  * - `skills/`: the arm's installed skills (`arm.profileSkills`), one directory each under its
  *   name. Each copy of the case's skill's source (cases.ts's `testedCopy`) comes from the arm's
- *   own directory; every other skill is its repository's directory at its commit, read through
- *   `source` and kept under the cache (`skills/<key of repo, commit, path>`). A skill directory
- *   the repository holds as a symbolic link is read at the directory the link names in the
- *   repository (`skillReadDir`), and one whose link leads out of the repository, or to no
+ *   own directory, and none does in an arm with no skill directory (`none`; arms.ts's
+ *   `installedFromArm`); every other skill is its repository's directory at its commit, read
+ *   through `source` and kept under the cache (`skills/<key of repo, commit, path>`). A skill
+ *   directory the repository holds as a symbolic link is read at the directory the link names in
+ *   the repository (`skillReadDir`), and one whose link leads out of the repository, or to no
  *   directory of it, is an UnreadableDirectory naming the case, the link and its target. A
  *   second copy of a name, whose text differs (a profile skill's `namespace`), goes in
  *   `namespaced/<namespace>/skills/<name>`, one more skills directory of its own
@@ -82,9 +83,11 @@
  * which stops the context; no source reads a whole repository in its place. Repository and owner
  * names come only from the case. Every cache entry is `<cacheDir>/<kind>s/<key>` (`skills`,
  * `trees`, `plugins`, `composes`, `files` for each single file read, and `dirs` for another
- * directory of a repository: a dev box's installers and the agents they link), made into a fresh
- * path and renamed into place. `record` says what was used: each commit and cache key, each
- * plugin left out, and each build with its time and whether the cache already held it.
+ * directory of a repository: a dev box's installers and the agents they link, and the directory
+ * each level's `.omp/agents` of the session repository leads to, as `projectAgents` reads them),
+ * made into a fresh path and renamed into place. `record` says what was used: each commit and
+ * cache key, each plugin left out, and each build with its time and whether the cache already
+ * held it.
  */
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -105,25 +108,28 @@ import {
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
-import { type Arm, legionStore, type SkillCopy } from "./arms";
-import { type Case, listedName, type ProfileSkill, testedCopy } from "./cases";
+import { type Arm, type InstalledCopy, installedFromArm, legionStore } from "./arms";
+import { type Case, listedName, type ProfileSkill } from "./cases";
 import {
   eachChunk,
   firstLine,
   GhRetries,
   ghLimiter,
-  rateLimitWait,
+  installationRateWait,
+  ompText,
+  parseJson,
+  pastLimit,
   textOf,
   timeLimit,
-  untilInstallationReset,
 } from "./common";
 import {
   BlobBatch,
   blobBatches,
   blobQuery,
+  GH_CALL_TIMEOUT_MS,
   graphqlArgs,
   joinPath,
-  parseJson,
+  shellVariables,
   type TreeEntry,
 } from "./copies";
 
@@ -138,6 +144,15 @@ export const DAEMON_IMAGE_ITEM = "the daemon image's commit of ";
 /** The words of a DAEMON_IMAGE_ITEM source that name `commit` of `repo` as the daemon image's. */
 export const composedAt = (repo: string, commit: string) =>
   `so the role prompt is composed from ${repo} at ${commit}`;
+/** The evidence item build.ts writes that names a profile's session repository
+ *  (`<SESSION_REPOSITORY_ITEM><repo>`), and the one that says there is none; the source of each
+ *  names the session's absolute working directory after "working directory " (`underHome`). */
+export const SESSION_REPOSITORY_ITEM = "session repository ";
+export const NO_SESSION_REPOSITORY_ITEM = "no session repository";
+/** The start of the evidence item `read times of <repo>`, which build.ts writes for a pool's host
+ *  of a subagent's profile: its source names the commit of the pool directories after "its pool
+ *  directories at" (`poolCommit`). */
+export const READ_TIMES_ITEM = "read times of ";
 /** The repository a load test's own entry of the tested skill names (load.ts's `caseOf`): a name
  *  for no repository, since a context installs the arm's skill from the arm's directory
  *  (`testedCopy`). Every read of a profile entry's repository passes it over; a real repository an
@@ -288,7 +303,7 @@ export interface ContextRecord {
 export function installedCopies(
   record: Pick<ContextRecord, "skills">,
   cacheDir: string
-): SkillCopy[] {
+): InstalledCopy[] {
   return record.skills.flatMap(({ name, from }) =>
     typeof from === "string" ? [] : [{ name, dir: path.join(cacheDir, "skills", from.key) }]
   );
@@ -487,12 +502,13 @@ export function readFrontmatter(content: string): Record<string, unknown> {
   );
 }
 
-/** The frontmatter of the skill in `dir`, as Oh My Pi reads it for the listing (`readFrontmatter`):
- *  its `description` ("" when it has none), and whether it is hidden from the listing, which Oh My
- *  Pi does for `hide: true` or `disable-model-invocation: true` (extensibility/skills.ts at the
- *  pinned tag). */
-export function skillFrontmatter(dir: string): { description: string; hidden: boolean } {
-  const frontmatter = readFrontmatter(readFileSync(path.join(dir, "SKILL.md"), "utf8"));
+/** The frontmatter of the SKILL.md text `text`, as Oh My Pi reads it for the listing
+ *  (`readFrontmatter`): its `description` ("" when it has none), and whether it is hidden from the
+ *  listing, which Oh My Pi does for `hide: true` or `disable-model-invocation: true`
+ *  (extensibility/skills.ts at the pinned tag). load.ts's `sessionDescription` reads the session's
+ *  copy with it, and build.ts the copies of a repository. */
+export function skillTextFrontmatter(text: string): { description: string; hidden: boolean } {
+  const frontmatter = readFrontmatter(text);
   const description = frontmatter.description;
   return {
     description: typeof description === "string" ? description : "",
@@ -500,11 +516,18 @@ export function skillFrontmatter(dir: string): { description: string; hidden: bo
   };
 }
 
-/** What a finished command gave. */
+/** The frontmatter of the skill in `dir` (`skillTextFrontmatter`), its file read as Oh My Pi reads
+ *  a SKILL.md (common.ts's `ompText`: a leading byte order mark dropped). */
+export function skillFrontmatter(dir: string): { description: string; hidden: boolean } {
+  return skillTextFrontmatter(ompText(readFileSync(path.join(dir, "SKILL.md"))));
+}
+
+/** What a finished command gave; `timedOut` when its limit ended it. */
 interface Ran {
   readonly code: number;
   readonly stdout: Uint8Array;
   readonly stderr: string;
+  readonly timedOut: boolean;
 }
 
 /** Runs `argv` to its end, or until `timeoutMs` has passed, when it is ended and its stderr says
@@ -534,19 +557,39 @@ async function run(
     child.exited,
   ]);
   limit.clear();
+  const stdout = Buffer.concat(chunks);
   return {
     code,
-    stdout: new Uint8Array(Buffer.concat(chunks)),
+    // The concatenated bytes as a plain Uint8Array, with no copy of them.
+    stdout: new Uint8Array(stdout.buffer, stdout.byteOffset, stdout.byteLength),
     stderr: limit.timedOut() ? `${stderr}\ntimed out after ${options.timeoutMs} ms` : stderr,
+    timedOut: limit.timedOut(),
   };
 }
 
-/** Runs `argv` and throws, naming it and its last error lines, when it fails. */
-async function mustRun(
+/** The longest each command that builds a context may run, from one run of each on the pod
+ *  (2026-11-23, warm caches): `tar -xzf` of a 71 MB tarball (this repository's) took 5.1 s, so 10
+ *  minutes is over 100 times that; `bun install --frozen-lockfile --ignore-scripts --filter` of a
+ *  plugin took 2.0 s with bun's cache filled, and 15 minutes leaves room for an empty cache that
+ *  downloads every package; `bun run build` took 1.1 s, so 10 minutes; the role prompt's `go test`
+ *  took 8.4 s with Go's build cache filled, and 15 minutes leaves room for an empty one. */
+export const COMMAND_TIMEOUT_MS = {
+  tar: 600_000,
+  bunInstall: 900_000,
+  bunBuild: 600_000,
+  goTest: 900_000,
+} as const;
+
+/** Runs `argv` and throws, naming it and its last error lines, when it fails; it is ended once
+ *  `timeoutMs` pass (common.ts's `timeLimit`), and throws naming it and the limit (`pastLimit`).
+ *  Exported for context.test.ts. */
+export async function mustRun(
   argv: readonly string[],
+  timeoutMs: number,
   options: { readonly cwd?: string; readonly env?: Record<string, string | undefined> } = {}
 ): Promise<Ran> {
-  const ran = await run(argv, options);
+  const ran = await run(argv, { ...options, timeoutMs });
+  if (ran.timedOut) throw new Error(pastLimit(argv.join(" "), timeoutMs));
   if (ran.code !== 0) {
     const tail = ran.stderr.trim().split("\n").slice(-12).join("\n");
     throw new Error(`\`${argv.join(" ")}\` failed with exit ${ran.code}: ${tail}`);
@@ -583,13 +626,13 @@ function writeBlob(file: string, mode: string, bytes: Uint8Array): void {
 /** The most blobs, and the most bytes, one GraphQL read of blobs asks for. */
 const BLOB_BATCH = 50;
 const BLOB_BATCH_BYTES = 4_000_000;
-/** The longest one `gh` read may run: an API read, and a tarball. A read ended at its limit is sent
- *  again, as common.ts's `GhRetries` sends a read that failed for a transient reason. */
-const GH_READ_TIMEOUT_MS = 120_000;
+/** The longest the gh read of a repository's tarball may run; each other gh read runs at most
+ *  copies.ts's GH_CALL_TIMEOUT_MS. A read ended at its limit is sent again, as common.ts's
+ *  `GhRetries` sends a read that failed for a transient reason. */
 const GH_TARBALL_TIMEOUT_MS = 900_000;
 /** The most files a skill at a repository's root (a profile path of `.`) is read with: a root of
  *  more is a repository, not a skill's directory, and is never read whole for one. */
-export const ROOT_SKILL_FILES = 200;
+const ROOT_SKILL_FILES = 200;
 
 /** The refusal of a skill at the root of `repo` at `commit` whose root holds `count` files, or
  *  `count` and more (`more`): more than ROOT_SKILL_FILES. */
@@ -669,7 +712,7 @@ export function ghSource(
   // Every gh call waits for a place in the runner's one bound on gh processes (common.ts's
   // `ghLimiter`) before it starts, so the wait is not counted as a call running.
   const ghRun = (argv: readonly string[]) =>
-    ghLimiter().run(() => counted(() => run(argv, { timeoutMs: GH_READ_TIMEOUT_MS })));
+    ghLimiter().run(() => counted(() => run(argv, { timeoutMs: GH_CALL_TIMEOUT_MS })));
   // A rate limit's reset is read with the gh of these reads, as common.ts's
   // `untilInstallationReset` reads it.
   const resetIo = {
@@ -683,7 +726,7 @@ export function ghSource(
   // the call sent again as `GhRetries.send` says (`splits`: a GraphQL batch of more than one
   // blob); throws naming `command` and each try's error when none does. A refusal for the primary
   // rate limit waits for the reset of the installation that refused the call, the one of the
-  // owner it names (common.ts's `rateLimitWait` and `untilInstallationReset`).
+  // owner it names (common.ts's `installationRateWait`).
   const retried = async <T extends { readonly code: number; readonly stderr: string }>(
     command: string,
     args: readonly string[],
@@ -692,8 +735,7 @@ export function ghSource(
   ): Promise<T> => {
     const ran = await retries.send(attempt, {
       splits,
-      rateWait: (stderr, refused) =>
-        rateLimitWait(stderr, refused, () => untilInstallationReset(args, resetIo)),
+      rateWait: installationRateWait(args, resetIo),
     });
     if (ran.code !== 0) {
       throw new Error(`\`${command}\` failed: ${firstLine(ran.stderr) || `gh exited ${ran.code}`}`);
@@ -732,7 +774,10 @@ export function ghSource(
           })
         )
       );
-      await mustRun(["tar", "-xzf", archive, "-C", dest, "--strip-components=1"]);
+      await mustRun(
+        ["tar", "-xzf", archive, "-C", dest, "--strip-components=1"],
+        COMMAND_TIMEOUT_MS.tar
+      );
     } finally {
       rmSync(archive, { force: true });
     }
@@ -794,6 +839,25 @@ export function ghSource(
   const levels = new Map<string, Promise<{ tree: TreeEntry[]; truncated: boolean }>>();
   const levelOf = (repo: string, sha: string) =>
     keptRead(levels, `${repo}@${sha}`, TREE_LEVELS, () => treeRead(repo, sha, false));
+  // One level of the tree `sha` of `repo` at `commit`, the tree of `at` ("" the root), read for
+  // `named` (the directory `walk` reads, or the parent of the path `link` looks up): an
+  // UnreadableDirectory naming `named` when GitHub cuts even that one level short.
+  const levelAlone = async (
+    repo: string,
+    commit: string,
+    named: string,
+    sha: string,
+    at: string
+  ): Promise<TreeEntry[]> => {
+    const read = await levelOf(repo, sha);
+    if (!read.truncated) return read.tree;
+    throw new UnreadableDirectory(
+      repo,
+      commit,
+      named,
+      `${repo} at ${commit}: ${named} cannot be read: GitHub cuts the tree of ${at === "" ? "the root" : at} short even one level at a time`
+    );
+  };
   // The blob entries under `dir` of `repo` at `commit`, a commit whose recursive tree GitHub cuts
   // short, at their paths in the repository, with no whole repository read: `dir`'s tree found by
   // one-level reads from the root along its path, then its own recursive tree, or, where GitHub
@@ -804,22 +868,13 @@ export function ghSource(
   // short even read alone.
   const walk = async (repo: string, commit: string, dir: string): Promise<BlobEntry[]> => {
     const root = dir === ".";
-    // One level of the tree `sha`, which is the tree of `at` ("" the root).
-    const level = async (sha: string, at: string): Promise<TreeEntry[]> => {
-      const read = await levelOf(repo, sha);
-      if (!read.truncated) return read.tree;
-      throw new UnreadableDirectory(
-        repo,
-        commit,
-        dir,
-        `${repo} at ${commit}: ${dir} cannot be read: GitHub cuts the tree of ${at === "" ? "the root" : at} short even one level at a time`
-      );
-    };
     let sha = commit;
     let at = "";
     if (!root) {
       for (const name of dir.split("/")) {
-        const entry = (await level(sha, at)).find((each) => each.path === name);
+        const entry = (await levelAlone(repo, commit, dir, sha, at)).find(
+          (each) => each.path === name
+        );
         if (entry?.type !== "tree") {
           throw new UnreadableDirectory(
             repo,
@@ -842,7 +897,7 @@ export function ghSource(
     for (let trees = [{ sha, at }]; trees.length > 0; ) {
       const levels = await mapLimit(trees, 4, async (tree) => ({
         parent: tree.at,
-        entries: await level(tree.sha, tree.at),
+        entries: await levelAlone(repo, commit, dir, tree.sha, tree.at),
       }));
       trees = [];
       for (const { parent, entries } of levels) {
@@ -865,10 +920,15 @@ export function ghSource(
     return inside === "." ? "" : `${inside}/`;
   };
   // Each blob a GraphQL batch gave whole, by its id: its bytes, and the files of the directories
-  // read ahead still to be written from it, each as `<repo>@<commit>\0<dir>/\0<path>` (a file under
-  // two such directories is written once for each). It is dropped once the last is written, or
-  // released (`prefetch`'s release).
+  // read ahead still to be written from it, each as its `fileKey` (a file under two such
+  // directories is written once for each). It is dropped once the last is written, or released
+  // (`prefetch`'s release).
   const blobs = new Map<string, { readonly bytes: Uint8Array; readonly waiting: Set<string> }>();
+  // The file `file` of `repo` at `commit` under the directory `prefix` (`prefixOf`) as `blobs`
+  // holds it: `prefetch` adds it and `tree` marks it written, so a blob is let go only when both
+  // build it alike.
+  const fileKey = (repo: string, commit: string, prefix: string, file: string) =>
+    `${repo}@${commit}\0${prefix}\0${file}`;
   /** Marks the file `key` of the blob `sha` written, or no longer to be written; drops the blob
    *  when no file waits on it. */
   const done = (sha: string, key: string) => {
@@ -913,7 +973,7 @@ export function ghSource(
         if (prefix === "" && entries.length > ROOT_SKILL_FILES) continue;
         for (const entry of entries) {
           if (!/^[0-9a-f]{40}$/.test(entry.sha) || !entry.path.startsWith(prefix)) continue;
-          const key = `${repo}@${commit}\0${prefix}\0${entry.path}`;
+          const key = fileKey(repo, commit, prefix, entry.path);
           mine.set(entry.sha, (mine.get(entry.sha) ?? new Set()).add(key));
           const held = blobs.get(entry.sha);
           if (held !== undefined) held.waiting.add(key);
@@ -962,23 +1022,13 @@ export function ghSource(
         // read one level at a time from the root along its path, as `walk` reads a directory; a
         // level GitHub cuts short even alone is an UnreadableDirectory, as in `walk`.
         const parent = path.posix.dirname(file);
-        const level = async (sha: string, at: string): Promise<TreeEntry[]> => {
-          const read = await levelOf(repo, sha);
-          if (!read.truncated) return read.tree;
-          throw new UnreadableDirectory(
-            repo,
-            commit,
-            parent,
-            `${repo} at ${commit}: ${parent} cannot be read: GitHub cuts the tree of ${at === "" ? "the root" : at} short even one level at a time`
-          );
-        };
-        let listed = await level(commit, "");
+        let listed = await levelAlone(repo, commit, parent, commit, "");
         let at = "";
         for (const name of parent === "." ? [] : parent.split("/")) {
           const tree = listed.find((each) => each.path === name);
           if (tree?.type !== "tree") return undefined;
           at = at === "" ? name : `${at}/${name}`;
-          listed = await level(tree.sha, at);
+          listed = await levelAlone(repo, commit, parent, tree.sha, at);
         }
         entry = listed.find((each) => each.path === path.posix.basename(file));
       }
@@ -1008,7 +1058,7 @@ export function ghSource(
         const held = blobs.get(entry.sha);
         const bytes = held?.bytes ?? (await api(`repos/${repo}/git/blobs/${entry.sha}`, true));
         writeBlob(path.join(dest, entry.path.slice(prefix.length)), entry.mode, bytes);
-        if (held !== undefined) done(entry.sha, `${repo}@${commit}\0${prefix}\0${entry.path}`);
+        if (held !== undefined) done(entry.sha, fileKey(repo, commit, prefix, entry.path));
       });
     },
   };
@@ -1148,12 +1198,14 @@ async function buildPlugin(tree: string, pluginPath: string, dest: string): Prom
   const rootFile = path.join(tree, "package.json");
   const root: Manifest = existsSync(rootFile) ? JSON.parse(readFileSync(rootFile, "utf8")) : {};
   if (pluginPath !== "" && root.workspaces !== undefined && lockfile(tree)) {
-    await mustRun([...install, "--filter", `./${pluginPath}`], { cwd: tree });
+    await mustRun([...install, "--filter", `./${pluginPath}`], COMMAND_TIMEOUT_MS.bunInstall, {
+      cwd: tree,
+    });
   } else if (lockfile(dir)) {
-    await mustRun(install, { cwd: dir });
+    await mustRun(install, COMMAND_TIMEOUT_MS.bunInstall, { cwd: dir });
   }
   if (typeof manifest.scripts?.build === "string") {
-    await mustRun(["bun", "run", "build"], { cwd: dir });
+    await mustRun(["bun", "run", "build"], COMMAND_TIMEOUT_MS.bunBuild, { cwd: dir });
   }
   const files = strings(manifest.files);
   if (files.length === 0) {
@@ -1273,6 +1325,7 @@ async function composeParts(
     );
     await mustRun(
       ["go", "test", "-count=1", "-run", "^TestSkillCutsCompose$", `./internal/${name}/`],
+      COMMAND_TIMEOUT_MS.goTest,
       {
         cwd: moduleDir,
         env: {
@@ -1465,22 +1518,6 @@ const HOME_AGENTS_NAMED = /^(?:\$\{?HOME\}?|~)\/\.omp\/agents(?:\/|$)/;
  *  dotfiles repository's installers/lib.sh defines), or `ln` and its flags. */
 const LINK_LINE = /^\s*(?:ensure_link|ln((?:\s+-[A-Za-z-]+)+))\s+(\S+)\s+(\S+)\s*(?:#.*)?$/;
 
-/** The shell variables an installer script assigns on a line of their own, the last of each name
- *  winning, as copies.ts's `shellVariables` reads them: a quoted string, a command substitution
- *  in quotes, or one bare word. */
-function scriptVariables(text: string): Map<string, string> {
-  const vars = new Map<string, string>();
-  for (const match of text.matchAll(
-    /^\s*(?:local\s+|export\s+|readonly\s+)?([A-Za-z_]\w*)=(\S.*)$/gm
-  )) {
-    const value = (match[2] ?? "").trim();
-    if (/^"\$\(.*\)"$|^"[^"]*"$|^'[^']*'$|^[^\s"'(]+$/.test(value)) {
-      vars.set(match[1] ?? "", value.replace(/^(["'])(.*)\1$/s, "$2"));
-    }
-  }
-  return vars;
-}
-
 /** An installer's path word with its quotes taken off and each variable the script assigns put
  *  in, five deep at most: the text it comes to, and the path in the repository it names
  *  (`inRepository`) when that text opens with a variable the script does not assign or one that
@@ -1512,7 +1549,7 @@ function installerAgents(text: string): {
   readonly links: Partial<Record<HomeAgents, { readonly dir: string; readonly line: number }>>;
   readonly homeNamed: readonly number[];
 } {
-  const vars = scriptVariables(text);
+  const vars = shellVariables(text);
   const links: Partial<Record<HomeAgents, { dir: string; line: number }>> = {};
   const homeNamed: number[] = [];
   for (const [index, line] of text.split("\n").entries()) {
@@ -1598,11 +1635,21 @@ type LinkedPath =
   | { readonly path: string; readonly via: readonly string[] }
   | { readonly outside: { readonly link: string; readonly target: string } };
 
+/** The path in its repository that the symbolic link `link` (a path in the repository) with the
+ *  target `target` leads to, taken from the link's directory; undefined when the target is not in
+ *  the repository (an absolute path, or one above the repository's root). */
+export function linkTargetPath(link: string, target: string): string | undefined {
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(link), target));
+  return path.posix.isAbsolute(target) || resolved === ".." || resolved.startsWith("../")
+    ? undefined
+    : resolved;
+}
+
 /** Where `file` of `repo` at `commit` leads, as Oh My Pi's stat reaches it: while the repository
  *  holds the path as a symbolic link (`RepoSource.link`), the link's target, taken from the
  *  link's directory, LINK_HOPS in a row at most, with each link followed (`<link> -> <target>`);
- *  or the first such link whose target is not in the repository (an absolute path, or one above
- *  the repository's root), which no read of the repository gives. */
+ *  or the first such link whose target is not in the repository (`linkTargetPath`), which no read
+ *  of the repository gives. */
 async function followLinks(
   source: RepoSource,
   repo: string,
@@ -1614,10 +1661,8 @@ async function followLinks(
   for (let hops = 0; hops < LINK_HOPS; hops++) {
     const target = await source.link?.(repo, commit, at);
     if (target === undefined) break;
-    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(at), target));
-    if (path.posix.isAbsolute(target) || resolved === ".." || resolved.startsWith("../")) {
-      return { outside: { link: at, target } };
-    }
+    const resolved = linkTargetPath(at, target);
+    if (resolved === undefined) return { outside: { link: at, target } };
     via.push(`${at} -> ${target}`);
     at = resolved === "." ? "" : resolved;
   }
@@ -1752,12 +1797,12 @@ async function projectAgents(
 }
 
 /** The commit at which a subagent's session read the pool directories of `repo`, the last
- *  commit at or before its start, as the evidence item `read times of <repo>` that build.ts writes
- *  for a pool's host names it: the commit after "its pool directories at" in its text. Undefined
- *  when the case has no such item. */
+ *  commit at or before its start, as the evidence item READ_TIMES_ITEM of `repo` that build.ts
+ *  writes for a pool's host names it: the commit after "its pool directories at" in its text.
+ *  Undefined when the case has no such item. */
 function poolCommit(c: ContextCase, repo: string): string | undefined {
   const item = c.evidence?.find(
-    (each) => each.item.toLowerCase() === `read times of ${repo}`.toLowerCase()
+    (each) => each.item.toLowerCase() === `${READ_TIMES_ITEM}${repo}`.toLowerCase()
   );
   return /\bits pool directories at ([0-9a-f]{7,40})\b/.exec(item?.source ?? "")?.[1];
 }
@@ -1768,7 +1813,10 @@ function poolCommit(c: ContextCase, repo: string): string | undefined {
  *  `/root`; undefined when no such item names one. */
 function underHome(c: ContextCase): boolean | undefined {
   for (const each of c.evidence ?? []) {
-    if (!each.item.startsWith("session repository ") && each.item !== "no session repository") {
+    if (
+      !each.item.startsWith(SESSION_REPOSITORY_ITEM) &&
+      each.item !== NO_SESSION_REPOSITORY_ITEM
+    ) {
       continue;
     }
     const cwd = /\bworking directory (\/[^\s,;]+)/.exec(each.source)?.[1];
@@ -1878,7 +1926,7 @@ async function devboxAgents(
       }
       const { what, as } = HOME_AGENTS_WORDS[kind];
       leftOut[kind].push(
-        `${what}: the profile holds ${repo} at ${commits.join(" and ")}, its ${links.map((link) => `${link.linkedBy} at ${link.commit}`).join(" and ")} ${links.length === 1 ? "links" : "each link"} a directory as ${as}, and no evidence item "read times of ${repo}" names the commit of the subagent's start, when Oh My Pi reads that directory, so the context reads none`
+        `${what}: the profile holds ${repo} at ${commits.join(" and ")}, its ${links.map((link) => `${link.linkedBy} at ${link.commit}`).join(" and ")} ${links.length === 1 ? "links" : "each link"} a directory as ${as}, and no evidence item "${READ_TIMES_ITEM}${repo}" names the commit of the subagent's start, when Oh My Pi reads that directory, so the context reads none`
       );
     }
     for (const { commit, read } of reads) {
@@ -1915,25 +1963,25 @@ async function devboxAgents(
   };
 }
 
-/** The directory `link` names, read through the cache, as an agent directory of `kind` that the
- *  record calls `as`. Throws naming the case when it cannot be read. */
+/** The directory `link` names, read through the cache, as the agent directory `which` of the
+ *  home: Oh My Pi's user agents for `user`, a project's agents for `home` (`~/.omp/agents`), the
+ *  record naming it in HOME_AGENTS_WORDS' words. Throws naming the case when it cannot be read. */
 async function linkedAgents(
   c: ContextCase,
   builds: Builds,
   source: RepoSource,
   link: AgentLink,
-  kind: AgentDefinition["source"],
-  as: string
+  which: HomeAgents
 ): Promise<AgentDir> {
   try {
     return {
       ...link,
-      source: kind,
+      source: which === "user" ? "user" : "project",
       dir: await repoDirectory(builds, source, link.repo, link.commit, link.path),
     };
   } catch (error) {
     throw new Error(
-      `case ${c.id}: ${link.path} of ${link.repo} at ${link.commit}, which ${link.linkedBy} links as ${as}, could not be read: ${messageFor(error)}`
+      `case ${c.id}: ${link.path} of ${link.repo} at ${link.commit}, which ${link.linkedBy} links as ${HOME_AGENTS_WORDS[which].as}, could not be read: ${messageFor(error)}`
     );
   }
 }
@@ -1961,13 +2009,11 @@ async function agentDirs(
     project.dir ??
     (inCheckout || home === undefined
       ? undefined
-      : await linkedAgents(c, builds, source, home, "project", HOME_AGENTS_WORDS.home.as));
+      : await linkedAgents(c, builds, source, home, "home"));
   return {
     dirs: [
       ...(nearest === undefined ? [] : [nearest]),
-      ...(user === undefined
-        ? []
-        : [await linkedAgents(c, builds, source, user, "user", HOME_AGENTS_WORDS.user.as)]),
+      ...(user === undefined ? [] : [await linkedAgents(c, builds, source, user, "user")]),
       ...plugins.map(({ plugin, tree }) => ({
         source: "plugin" as const,
         dir: path.join(tree, plugin.path, "agents"),
@@ -2013,11 +2059,7 @@ function agentIn(context: string, dirs: readonly AgentDir[]): AgentDefinition | 
       const frontmatter = readFrontmatter(text);
       if (frontmatter.name !== agent || typeof frontmatter.description !== "string") continue;
       const named = frontmatter.autoloadSkills;
-      const listed = Array.isArray(named)
-        ? named.filter((each): each is string => typeof each === "string")
-        : typeof named === "string"
-          ? named.split(",")
-          : [];
+      const listed = typeof named === "string" ? named.split(",") : strings(named);
       return {
         name: agent,
         source: at.source,
@@ -2094,9 +2136,11 @@ export async function buildContext(
   mkdirSync(skillsDir, { recursive: true });
   mkdirSync(workspace, { recursive: true });
 
-  // Each copy of the case's skill's source, under its own name or a namespace, is the arm's
-  // directory (cases.ts's `testedCopy`); every other skill is its repository's.
-  const tested = testedCopy(arm.profileSkills, arm.skill);
+  // Each copy of the case's skill's source, under its own name or a namespace, is installed from
+  // the arm's directory (arms.ts's `installedFromArm`); every other skill is its repository's. An
+  // arm with no skill directory (`none`) installs no copy from it: a copy it lists under the case's
+  // skill's name is another source's (arms.ts's `Arm.relisted`).
+  const fromArm = installedFromArm(arm);
   // The repository skills the cache lacks, read ahead per repository and commit: one tree and a
   // GraphQL batch per BLOB_BATCH blobs, where each file would take a call of its own. Each is read
   // at the directory `skillReadDir` gives, kept by its cache key: its own, or the one its link
@@ -2105,7 +2149,9 @@ export async function buildContext(
   const readDirs = new Map<string, Extract<LinkedPath, { path: string }>>();
   for (const skill of arm.profileSkills) {
     const key = cacheKey(skill.repo, skill.commit, skill.path);
-    if (tested(skill) || existsSync(path.join(options.cacheDir, "skills", key))) continue;
+    if (fromArm(skill) !== undefined || existsSync(path.join(options.cacheDir, "skills", key))) {
+      continue;
+    }
     const read = await skillReadDir(c, source, skill);
     readDirs.set(key, read);
     const id = `${skill.repo}@${skill.commit}`;
@@ -2138,11 +2184,9 @@ export async function buildContext(
         mkdirSync(parent, { recursive: true });
         if (!namespacedDirs.includes(parent)) namespacedDirs.push(parent);
       }
-      if (tested(skill)) {
-        if (arm.skillDir === undefined) {
-          throw new Error(`case ${c.id}: arm ${arm.name} has no skill`);
-        }
-        cpSync(arm.skillDir, dir, { recursive: true, verbatimSymlinks: true });
+      const armDir = fromArm(skill);
+      if (armDir !== undefined) {
+        cpSync(armDir, dir, { recursive: true, verbatimSymlinks: true });
         skillRecords.push({ name: listed, from: "arm" });
       } else {
         const key = cacheKey(skill.repo, skill.commit, skill.path);

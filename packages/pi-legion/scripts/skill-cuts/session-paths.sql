@@ -1,3 +1,4 @@
+SET LOCAL statement_timeout = '15min';
 -- The paths of the session files a load task names by its path's SHA-256, so build.ts can pull
 -- each by its path (pull.sql): `build-tasks --reprofile` finds each session task's session this
 -- way, since a tasks file keeps a session's path hash (cases.ts's `pathHash`) and not its path. It

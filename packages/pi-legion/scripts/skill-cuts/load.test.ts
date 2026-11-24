@@ -15,7 +15,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { skillHeaderPath } from "../skill-scenarios/transcript";
-import { LISTING_MEASURE, ListingMeasure } from "./build";
+import { ListingMeasure } from "./build";
 import {
   armPromptBlocks,
   type CaptureRecord,
@@ -42,7 +42,6 @@ import {
   claudeHarnessRules,
   claudeListing,
   FailedRun,
-  firstMessageLoad,
   type Host,
   LOAD_MODEL,
   LoadRun,
@@ -50,7 +49,11 @@ import {
   loadFailedRunFile,
   loadProfile,
   loadRunFile,
+  messageLoad,
+  mustRun,
   namesSkill,
+  type RecordedListing,
+  recordedLines,
   renamedSkill,
   runLoad,
   skillName,
@@ -69,7 +72,8 @@ import {
   startRecorder,
 } from "./recorder";
 import { sendOrder } from "./replay";
-import type { TaskLabel } from "./score";
+import { LISTING_MEASURE_ITEM, type TaskLabel } from "./score";
+import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 
 // The load test (load.ts). Its detection rows read the request bodies of the pinned
 // hosts and the gateway's replies to them (testdata/CAPTURE.md): F2, the body Oh My Pi 18.18.6
@@ -360,7 +364,7 @@ describe("a run loads the skill when its first assistant message reads it", () =
   ];
   test.each(rows)("%s", (_name, host, content, skill, want) => {
     expect(ALPHA_PATH).toEndWith("/alpha/SKILL.md");
-    expect(firstMessageLoad(host, content, skill)).toEqual(want as never);
+    expect(messageLoad(host, content, skill)).toEqual(want as never);
   });
 
   test("Claude Code's listing gives each plugin skill as <plugin>:<name> with its description (F3)", () => {
@@ -381,6 +385,13 @@ describe("a run loads the skill when its first assistant message reads it", () =
  *  <skill>`, or `reads past last round`. */
 type RunKind = boolean | `sent by ${string}` | "reads past last round";
 
+/** The outcome a made-up run of `kind` came to. */
+function outcomeOf(kind: RunKind): LoadRun["outcome"] {
+  if (kind === true) return "loaded";
+  if (kind === false) return "not loaded";
+  return kind.startsWith("sent by ") ? "sent by" : "reads past last round";
+}
+
 /** The runs of one task, each of `kinds`, as its run file keeps them. */
 function runsOf(label: TaskLabel, kinds: readonly RunKind[]): LoadRun[] {
   return kinds.map((kind, index) => {
@@ -392,14 +403,7 @@ function runsOf(label: TaskLabel, kinds: readonly RunKind[]): LoadRun[] {
       source: "written",
       host: "omp",
       name: "alpha",
-      outcome:
-        kind === true
-          ? "loaded"
-          : kind === false
-            ? "not loaded"
-            : sentBy !== null
-              ? "sent by"
-              : "reads past last round",
+      outcome: outcomeOf(kind),
       loadedBy: kind === true ? "read skill://alpha" : null,
       sentBy,
       skillReads: "answered",
@@ -610,6 +614,18 @@ describe("--name tests the skill under another name", () => {
     );
   });
 
+  // Catches: a SKILL.md that starts with a byte order mark read as UTF-8 with the mark kept, so no
+  // frontmatter was found and the copy was refused, where Oh My Pi reads the file (dropping the
+  // mark) and its frontmatter.
+  test("a SKILL.md that starts with a byte order mark is renamed, the mark kept where it is", () => {
+    const dir = path.join(scratch, "rename", "marked");
+    writeTree(dir, { "SKILL.md": `\uFEFF${ALPHA_SKILL}` });
+    const copy = renamedSkill(dir, "omega", path.join(scratch, "rename", "copies"));
+    expect(readFileSync(path.join(copy, "SKILL.md"), "utf8")).toBe(
+      `\uFEFF${ALPHA_SKILL.replace("name: alpha", "name: omega")}`
+    );
+  });
+
   test("a recorded prompt under another name changes only the name of the skill's listing line (F1's subagent)", () => {
     const renamed = renamedListingBlocks(SUBAGENT.systemPrompt, "beta", "beta-renamed");
     const line = "- beta: Use when asked for the beta greeting of the fixture project.";
@@ -622,6 +638,67 @@ describe("--name tests the skill under another name", () => {
     expect(renamedListingBlocks(SUBAGENT.systemPrompt, "delta", "omega")).toEqual(
       SUBAGENT.systemPrompt
     );
+  });
+});
+
+describe("a load lists a skill under its session's recorded line only where the arm's name and text are the session's", () => {
+  const ALPHA_TEXT = "Use when a task asks for the alpha checklist of the made-up project.";
+  const listing: RecordedListing = {
+    source: { kind: "session" },
+    lines: [
+      { name: "alpha", text: "Use for the alpha checklist, as the session listed it." },
+      { name: "beta", text: "Use for the beta greeting, as the session listed it." },
+    ],
+    tested: {
+      repo: "acme/skills",
+      commit: "0123456789abcdef0123456789abcdef01234567",
+      path: "skills/alpha",
+      name: "alpha",
+    },
+  };
+  const alphaLine = { name: "alpha", text: listing.lines[0]?.text, from: "session" };
+  const betaLine = { name: "beta", text: listing.lines[1]?.text, from: "session" };
+  const own = { name: "alpha", ownName: "alpha", description: ALPHA_TEXT };
+  test.each([
+    [
+      "the tested skill under its own name and the session's text keeps its line, given with that text, and every other skill keeps its own",
+      own,
+      ALPHA_TEXT,
+      [{ ...alphaLine, description: ALPHA_TEXT }, betaLine],
+    ],
+    [
+      "a name test's proposed name gets a drawn hint though the session recorded a line: only the other skills keep theirs",
+      { ...own, name: "omega" },
+      ALPHA_TEXT,
+      [betaLine],
+    ],
+    [
+      "a text that differs from the session's copy's gets a drawn hint",
+      { ...own, description: `${ALPHA_TEXT} It names the new text.` },
+      ALPHA_TEXT,
+      [betaLine],
+    ],
+    [
+      "a session copy whose text is not known gives the tested skill no line",
+      own,
+      undefined,
+      [betaLine],
+    ],
+  ])("%s", (_name, tested, sessionDescription, want) => {
+    expect(recordedLines(listing, tested, sessionDescription)).toEqual(want);
+  });
+
+  test("a subagent's listing names its path hash as each line's source, and a profile that keeps no listing gives no line", () => {
+    const hash = "a".repeat(64);
+    const subagent: RecordedListing = {
+      source: { kind: "subagent", pathHash: hash },
+      lines: listing.lines,
+    };
+    expect(recordedLines(subagent, own, ALPHA_TEXT)).toEqual([
+      { ...alphaLine, from: `subagent ${hash}`, description: ALPHA_TEXT },
+      { ...betaLine, from: `subagent ${hash}` },
+    ]);
+    expect(recordedLines(undefined, own, ALPHA_TEXT)).toEqual([]);
   });
 });
 
@@ -759,10 +836,36 @@ const BETA_PROFILE = {
   plugins: [],
   contextFiles: [],
 };
+/** BETA_PROFILE with a Claude Code layout: beta in the plugin acme-tools of acme-market, which
+ *  takes the tested skill too. */
+const BETA_CLAUDE_PROFILE = {
+  ...BETA_PROFILE,
+  claude: {
+    marketplace: "acme-market",
+    plugins: [{ name: "acme-tools", skills: ["beta"] }],
+    skillPlugin: "acme-tools",
+  },
+};
 const GAMMA_PROFILE = {
   skills: [{ repo: "acme/skills", commit: COMMIT, path: "skills/gamma", name: "gamma" }],
   plugins: [],
   contextFiles: [],
+};
+/** The made-up commit of acme/legion a Legion project's daemon image was built from; a Legion
+ *  profile of beta whose plugin is of acme/legion at COMMIT; and the evidence item build-tasks
+ *  writes for that project (context.ts's DAEMON_IMAGE_ITEM), naming DAEMON_COMMIT. */
+const DAEMON_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
+const LEGION_BETA_PROFILE = {
+  ...BETA_PROFILE,
+  plugins: [
+    { repo: "acme/legion", commit: COMMIT, path: "plugins/skills-only", name: "skills-only" },
+  ],
+  context: "legion:acme:implementer",
+};
+const DAEMON_DIGEST = "8".repeat(64);
+const DAEMON_ITEM: EvidenceItem = {
+  item: "the daemon image's commit of acme/legion",
+  source: `acme/infra:legion/projects/10-ACME.yaml at ${COMMIT} gives the project ACME the daemonImage registry.example/acme/daemon@sha256:${DAEMON_DIGEST}; gh api repos/acme/legion/attestations/sha256:${DAEMON_DIGEST} names git+https://github.com/acme/legion@refs/heads/main at ${DAEMON_COMMIT}, so the role prompt is composed from acme/legion at ${DAEMON_COMMIT}: the Legion daemon of a pod composes its role prompt as it was at the commit its daemon image was built from`,
 };
 /** The user-level context file of a devbox profile (build.ts: Claude Code's user memory of the
  *  repository that installs its dev box's units), in the made-up acme/skills. */
@@ -873,6 +976,13 @@ function saveCaptures(
   }
 }
 
+/** The record fields over saveCaptures' of a capture that lists alpha alone and sends no beta
+ *  header. */
+const ALPHA_LISTED = {
+  listing: [{ name: "alpha", hint: "Use for the alpha checklist." }],
+  requestHeaders: { "anthropic-version": "2023-06-01" },
+};
+
 /** A capture's context record that installed no copy of a skill (context.ts's `installedCopies`
  *  reads its `skills`). */
 const NO_COPIES = { skills: [] };
@@ -902,7 +1012,7 @@ function measureItem(recorded: number | null, missing: string[] = []): EvidenceI
         ? "the made-up session records no system prompt, and the store holds no subagent of it"
         : "the made-up session recorded its system prompt",
   });
-  return { item: LISTING_MEASURE, source: JSON.stringify(measure) };
+  return { item: LISTING_MEASURE_ITEM, source: JSON.stringify(measure) };
 }
 
 /** Writes beside the tasks file `tasks` the summary build-tasks writes (`<tasks>.summary.json`):
@@ -1192,6 +1302,98 @@ describe("skill-cuts load with saved captures", () => {
     );
     expect(recorder.requests.length).toBe(before);
   });
+});
+
+// Catches: a summary and a report that do not say where each task's listing line of the tested
+// skill came from, so a verdict that rests on drawn hints reads as one that rests on the lines
+// the sessions recorded.
+test("the summary names, for each task, the line its capture lists the tested skill under and where that line came from, and counts them; the report gives how many tasks list it under a recorded line and how many under a draw, and on Claude Code under its description", async () => {
+  const dir = path.join(scratch, "listed-under");
+  const made = setup(dir);
+  const skill = path.join(dir, "alpha");
+  writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+  const tasks = path.join(dir, "tasks.jsonl");
+  const lines = [
+    { id: "need-1", text: NEED, label: "need", source: "written" },
+    { id: "near-1", text: NEAR, label: "near-miss", source: "written" },
+  ];
+  writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+  const profile = path.join(dir, "profile.json");
+  writeFileSync(profile, JSON.stringify(BETA_CLAUDE_PROFILE));
+  const args = (host: Host, out: string) => [
+    "load",
+    ...["--config", made.config, "--key-file", made.keyFile, "--skill", skill, "--tasks", tasks],
+    ...["--host", host, "--profile", profile, "--out", out, "--runs", "1"],
+    ...["--scratch", path.join(dir, "scratch"), "--cache-dir", path.join(dir, "cache")],
+  ];
+  const ALPHA_HINT = "Use for the alpha checklist.";
+  /** A capture record's line of alpha and of beta, each from `source`. */
+  const hints = (source: string) => ({
+    hints: [
+      { skill: "alpha", hint: ALPHA_HINT, key: "k1", ompKey: "o1", written: false, source },
+      {
+        skill: "beta",
+        hint: "Use for the beta greeting.",
+        key: "k2",
+        ompKey: "o2",
+        written: false,
+        source,
+      },
+    ],
+  });
+  answer = () => TEXT;
+
+  const ompOut = path.join(dir, "omp");
+  saveCaptures(ompOut, lines.slice(0, 1), hints("recorded (session)"));
+  saveCaptures(ompOut, lines.slice(1), hints("drawn (draw 1)"));
+  const omp = await cli(args("omp", ompOut));
+  expect({ code: omp.code, stderr: omp.stderr }).toEqual({ code: 0, stderr: "" });
+  expect(omp.stdout).toContain(
+    "load: the listing line of alpha: 1 tasks list it under the line their session recorded, 1 under a hint of draw 1\n"
+  );
+  const summaryOf = (out: string) =>
+    z
+      .looseObject({
+        tasks: z.array(z.looseObject({ id: z.string(), listedUnder: z.unknown() })),
+        listedUnder: z.unknown(),
+      })
+      .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")));
+  const ompSummary = summaryOf(ompOut);
+  expect(ompSummary.tasks.map((task) => [task.id, task.listedUnder])).toEqual([
+    ["need-1", { source: "recorded (session)", line: ALPHA_HINT }],
+    ["near-1", { source: "drawn (draw 1)", line: ALPHA_HINT }],
+  ]);
+  expect(ompSummary.listedUnder).toEqual({ recorded: 1, drawn: 1, description: 0, none: 0 });
+
+  // Claude Code lists the skill under its description: no hint is drawn or recorded there.
+  const claudeOut = path.join(dir, "claude");
+  const listed = "Use when a task asks for the alpha checklist of the made-up project.";
+  for (const { id, text } of lines) {
+    const files = loadCapturePaths(claudeOut, "claude", id);
+    writeTree(path.dirname(files.body), {
+      [path.basename(files.body)]: JSON.stringify({
+        ...F2,
+        messages: [{ role: "user", content: [{ type: "text", text }] }],
+      }),
+      [path.basename(files.record)]: JSON.stringify({
+        requestHeaders: { "anthropic-version": "2023-06-01" },
+        listed,
+        listedSource: "description (Claude Code)",
+        harness: { head: null, replaced: [] },
+        context: NO_COPIES,
+      }),
+    });
+  }
+  const claude = await cli(args("claude", claudeOut));
+  expect({ code: claude.code, stderr: claude.stderr }).toEqual({ code: 0, stderr: "" });
+  expect(claude.stdout).toContain(
+    "load: the listing line of alpha: 2 tasks list it under its description, since Claude Code lists no hint\n"
+  );
+  const claudeSummary = summaryOf(claudeOut);
+  expect(claudeSummary.tasks.map((task) => task.listedUnder)).toEqual(
+    Array(2).fill({ source: "description (Claude Code)", line: listed })
+  );
+  expect(claudeSummary.listedUnder).toEqual({ recorded: 0, drawn: 0, description: 2, none: 0 });
 });
 
 // The skill reads rule (the architect, 2026-11-22T18:58Z and 18:59:51Z): a load run answers a
@@ -1563,14 +1765,7 @@ describe("skill-cuts load answers skill reads as the behaviour replay does", () 
   });
 
   test("a Claude Code run ends at its first message, which its record says: a Read of another skill's SKILL.md is not answered", async () => {
-    const s = readsTest("claude-first", BETA_SKILL, "claude", {
-      ...BETA_PROFILE,
-      claude: {
-        marketplace: "acme-market",
-        plugins: [{ name: "acme-tools", skills: ["beta"] }],
-        skillPlugin: "acme-tools",
-      },
-    });
+    const s = readsTest("claude-first", BETA_SKILL, "claude", BETA_CLAUDE_PROFILE);
     const betaPath = "/config/plugins/cache/acme-market/acme-tools/0.0.0/skills/beta/SKILL.md";
     answer = () => [
       { type: "tool_use", id: "toolu_read_beta", name: "Read", input: { file_path: betaPath } },
@@ -1836,7 +2031,8 @@ describe("skill-cuts load applies the listing rule", () => {
     const summary = z
       .looseObject({ listing: z.unknown(), dispatch: z.unknown() })
       .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")));
-    expect(summary.dispatch).toEqual({ carryBlock: 2, assumed: 1, legionRole: 1, transcript: 0 });
+    // No transcript count: a load test has no transcript messages for arms.ts's `dispatchOf`.
+    expect(summary.dispatch).toEqual({ carryBlock: 2, assumed: 1, legionRole: 1 });
   });
 });
 
@@ -1852,25 +2048,8 @@ test("a saved capture whose role prompt was composed at another commit than the 
   const tasks = path.join(dir, "tasks.jsonl");
   writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
   const profile = path.join(dir, "profile.json");
-  writeFileSync(
-    profile,
-    JSON.stringify({
-      ...BETA_PROFILE,
-      plugins: [
-        { repo: "acme/legion", commit: COMMIT, path: "plugins/skills-only", name: "skills-only" },
-      ],
-      context: "legion:acme:implementer",
-    })
-  );
-  /** The made-up commit of acme/legion that the project's daemon image was built from. */
-  const DAEMON_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
-  const digest = "8".repeat(64);
-  writeTasksSummary(tasks, {}, measureItem(null), [
-    {
-      item: "the daemon image's commit of acme/legion",
-      source: `acme/infra:legion/projects/10-ACME.yaml at ${COMMIT} gives the project ACME the daemonImage registry.example/acme/daemon@sha256:${digest}; gh api repos/acme/legion/attestations/sha256:${digest} names git+https://github.com/acme/legion@refs/heads/main at ${DAEMON_COMMIT}, so the role prompt is composed from acme/legion at ${DAEMON_COMMIT}: the Legion daemon of a pod composes its role prompt as it was at the commit its daemon image was built from`,
-    },
-  ]);
+  writeFileSync(profile, JSON.stringify(LEGION_BETA_PROFILE));
+  writeTasksSummary(tasks, {}, measureItem(null), [DAEMON_ITEM]);
   /** A capture record's context whose role prompt Compose ran at `commit` of acme/legion. */
   const recordAt = (commit: string, commitOf?: "daemon image" | "plugin") => ({
     context: {
@@ -1938,6 +2117,33 @@ test("a load capture is saved under the old arm", () => {
   );
 });
 
+// Catches: the skill's SKILL.md read as UTF-8 with a leading byte order mark kept, so no `---` was
+// found at its start and the name fell back to the directory's, where Oh My Pi drops the mark
+// (`Bun.file(…).text()`) and reads the frontmatter name.
+test("the skill's name is read from a SKILL.md that starts with a byte order mark, as Oh My Pi reads it", () => {
+  const marked = path.join(scratch, "bom", "folder");
+  writeTree(marked, {
+    "SKILL.md": "\uFEFF---\nname: lookup\ndescription: Use when a lookup is due.\n---\n",
+  });
+  expect(skillName(marked)).toBe("lookup");
+});
+
+// Catches: Claude Code's `--version` and `claude plugin` commands run with no limit, so one that
+// never exits held the load test for ever.
+test("a Claude Code setup command that never exits is ended at its limit, and fails naming the command and the limit", async () => {
+  const root = path.join(scratch, "claude-hangs");
+  mkdirSync(root, { recursive: true });
+  const claude = path.join(root, "claude");
+  writeFileSync(claude, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  const started = performance.now();
+  await expect(
+    mustRun([claude, "plugin", "install", "a@b"], { PATH: "/usr/bin:/bin" }, 200)
+  ).rejects.toThrow(
+    `\`${claude} plugin install a@b\` ran past its limit of 200 ms, so it was ended`
+  );
+  expect(performance.now() - started).toBeLessThan(3_000);
+});
+
 test("a profile skill with a namespace is checked under <namespace>/<name>: it may share the tested skill's name and another skill's, and Claude Code, whose layout places skills by their bare name, refuses it naming it", () => {
   const dir = path.join(scratch, "namespaced-profile");
   mkdirSync(dir, { recursive: true });
@@ -1976,6 +2182,40 @@ test("a profile skill with a namespace is checked under <namespace>/<name>: it m
 });
 
 describe("skill-cuts load refuses or stops on its own rules", () => {
+  // Catches: a second draw asked of Claude Code, which lists each skill under its description and
+  // so draws no hint: its runs would be a first draw's again under another name.
+  test("--hint-draw above 1 on Claude Code is refused (exit 2), naming why, and a --hint-draw that is no whole number of 1 or more is refused on either host, before any model call", async () => {
+    const dir = path.join(scratch, "hint-draw-refused");
+    const { common } = hostInputs(dir);
+    const profile = path.join(dir, "profile.json");
+    writeFileSync(profile, JSON.stringify(BETA_CLAUDE_PROFILE));
+    const before = recorder.requests.length;
+    const claude = await cli([
+      "load",
+      ...common,
+      ...["--host", "claude", "--profile", profile, "--hint-draw", "2"],
+    ]);
+    expect({ code: claude.code, stderr: claude.stderr }).toEqual({
+      code: 2,
+      stderr:
+        "skill-cuts: --hint-draw 2 is refused on Claude Code: it lists each skill under its description, not under a hint a model writes, so it has no hint to draw again\n",
+    });
+    for (const [host, draw] of [
+      ["omp", "0"],
+      ["omp", "1.5"],
+      ["claude", "two"],
+    ]) {
+      const ran = await cli([
+        "load",
+        ...common,
+        ...["--host", String(host), "--profile", profile, "--hint-draw", String(draw)],
+      ]);
+      expect(ran.code).toBe(2);
+      expect(ran.stderr).toContain(`--hint-draw ${draw} is not a whole number of 1 or more`);
+    }
+    expect(recorder.requests.length).toBe(before);
+  });
+
   test("an openai/<id> model on Oh My Pi with no --hint-model and no saved capture is refused before any model call", async () => {
     const dir = path.join(scratch, "openai-no-hint");
     const { common } = hostInputs(dir);
@@ -2054,17 +2294,7 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
     const before = recorder.requests.length;
     // dispatch-first on Claude Code, whose Envoy plugin puts it in from a hook no load test runs.
     const claudeProfile = path.join(dir, "claude.json");
-    writeFileSync(
-      claudeProfile,
-      JSON.stringify({
-        ...BETA_PROFILE,
-        claude: {
-          marketplace: "acme-market",
-          plugins: [{ name: "acme-tools", skills: ["beta"] }],
-          skillPlugin: "acme-tools",
-        },
-      })
-    );
+    writeFileSync(claudeProfile, JSON.stringify(BETA_CLAUDE_PROFILE));
     const onClaude = await cli([
       "load",
       ...common,
@@ -2142,20 +2372,7 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
     const profile = path.join(dir, "profile.json");
     writeFileSync(profile, JSON.stringify(BETA_PROFILE));
     const out = path.join(dir, "out");
-    const files = loadCapturePaths(out, "omp", "need-1");
-    writeTree(path.dirname(files.body), {
-      [path.basename(files.body)]: JSON.stringify({
-        ...F2,
-        messages: [{ role: "user", content: [{ type: "text", text: NEED }] }],
-      }),
-      [path.basename(files.record)]: JSON.stringify({
-        listing: [{ name: "alpha", hint: "Use for the alpha checklist." }],
-        requestHeaders: { "anthropic-version": "2023-06-01" },
-        hintCalls: [],
-        harness: { head: null, replaced: [] },
-        context: NO_COPIES,
-      }),
-    });
+    saveCaptures(out, [{ id: "need-1", text: NEED }], ALPHA_LISTED);
     answer = () => TEXT;
     const stopped = await runLoad({
       io: { out: () => {}, err: () => {}, peakRssBytes: () => 3 * 2 ** 20 },
@@ -2180,6 +2397,7 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
       source: localSource(dir),
       scratch: path.join(dir, "scratch"),
       cacheDir: path.join(dir, "cache"),
+      hintDraw: 1,
       configFiles: [],
       claude: "claude",
       requestLog: path.join(dir, "requests.jsonl"),
@@ -2211,22 +2429,11 @@ test("a task's seconds count its own capture, its group's runs and its writes, a
   const profile = path.join(dir, "profile.json");
   writeFileSync(profile, JSON.stringify(BETA_PROFILE));
   const out = path.join(dir, "out");
-  for (const id of ids) {
-    const files = loadCapturePaths(out, "omp", id);
-    writeTree(path.dirname(files.body), {
-      [path.basename(files.body)]: JSON.stringify({
-        ...F2,
-        messages: [{ role: "user", content: [{ type: "text", text: NEED }] }],
-      }),
-      [path.basename(files.record)]: JSON.stringify({
-        listing: [{ name: "alpha", hint: "Use for the alpha checklist." }],
-        requestHeaders: { "anthropic-version": "2023-06-01" },
-        hintCalls: [],
-        harness: { head: null, replaced: [] },
-        context: NO_COPIES,
-      }),
-    });
-  }
+  saveCaptures(
+    out,
+    ids.map((id) => ({ id, text: NEED })),
+    ALPHA_LISTED
+  );
   // t2's saved body is a pipe whose writer, once t2's capture opens it, waits 1.5 s before it
   // writes, so t2's capture, read back from it, takes that long, and t1's takes none of it.
   const slow = loadCapturePaths(out, "omp", "t2").body;
@@ -2260,6 +2467,7 @@ test("a task's seconds count its own capture, its group's runs and its writes, a
     source: localSource(dir),
     scratch: path.join(dir, "scratch"),
     cacheDir: path.join(dir, "cache"),
+    hintDraw: 1,
     configFiles: [],
     claude: "claude",
     requestLog: path.join(dir, "requests.jsonl"),
@@ -2302,39 +2510,11 @@ test("a task whose context needs a directory GitHub cuts short even read alone i
   );
   const profile = path.join(dir, "profile.json");
   writeFileSync(profile, JSON.stringify(BETA_PROFILE));
-  const [skills, beta] = ["1".repeat(40), "2".repeat(40)];
   // acme/skills at COMMIT, as GitHub lists a repository of too many entries: its recursive tree
   // cut short, then skills/beta's, and skills/beta's one level even read alone.
-  const answers: Record<string, object> = {
-    [`repos/acme/skills/git/trees/${COMMIT}?recursive=1`]: { tree: [], truncated: true },
-    [`repos/acme/skills/git/trees/${COMMIT}`]: {
-      tree: [{ path: "skills", mode: "040000", type: "tree", sha: skills }],
-      truncated: false,
-    },
-    [`repos/acme/skills/git/trees/${skills}`]: {
-      tree: [{ path: "beta", mode: "040000", type: "tree", sha: beta }],
-      truncated: false,
-    },
-    [`repos/acme/skills/git/trees/${beta}?recursive=1`]: { tree: [], truncated: true },
-    [`repos/acme/skills/git/trees/${beta}`]: { tree: [], truncated: true },
-  };
   const gh = path.join(dir, "gh");
   const log = path.join(dir, "gh-calls.jsonl");
-  writeFileSync(
-    gh,
-    `#!${process.execPath}
-import { appendFileSync } from "node:fs";
-const answers = ${JSON.stringify(answers)};
-const route = process.argv.at(-1) ?? "";
-appendFileSync(${JSON.stringify(log)}, route + "\\n");
-if (answers[route] === undefined) {
-  process.stderr.write("gh: Not Found (HTTP 404)\\n");
-  process.exit(1);
-}
-process.stdout.write(JSON.stringify(answers[route]));
-`,
-    { mode: 0o755 }
-  );
+  writeGhStandIn(gh, log, truncatedSkillsTree(COMMIT));
   // An Oh My Pi that answers --version: the context is built before it runs any capture.
   const ompStandIn = path.join(dir, "omp");
   writeFileSync(ompStandIn, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });
@@ -2372,6 +2552,7 @@ process.stdout.write(JSON.stringify(answers[route]));
       cacheDir: path.join(dir, "cache"),
       omp: ompStandIn,
       models,
+      hintDraw: 1,
       configFiles: [],
       claude: "claude",
       requestLog: path.join(dir, "requests.jsonl"),
@@ -2454,22 +2635,11 @@ describe("skill-cuts load sends a profile's tasks' runs in one order, each with 
     );
     const profile = path.join(dir, "profile.json");
     writeFileSync(profile, JSON.stringify(BETA_PROFILE));
-    for (const [index, id] of ids.entries()) {
-      const files = loadCapturePaths(out, "omp", id);
-      writeTree(path.dirname(files.body), {
-        [path.basename(files.body)]: JSON.stringify({
-          ...F2,
-          messages: [{ role: "user", content: [{ type: "text", text: texts3[index] }] }],
-        }),
-        [path.basename(files.record)]: JSON.stringify({
-          listing: [{ name: "alpha", hint: "Use for the alpha checklist." }],
-          requestHeaders: { "anthropic-version": "2023-06-01" },
-          hintCalls: [],
-          harness: { head: null, replaced: [] },
-          context: NO_COPIES,
-        }),
-      });
-    }
+    saveCaptures(
+      out,
+      ids.map((id, index) => ({ id, text: texts3[index] })),
+      ALPHA_LISTED
+    );
     args = [
       "load",
       ...["--config", made.config, "--key-file", made.keyFile, "--skill", skill],
@@ -2902,6 +3072,153 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
     HOST_ROW_TIMEOUT_MS
   );
 
+  // Catches (the architect, 2026-11-23T07:11Z): a load that draws a hint for a skill whose line
+  // its session recorded, or that lists the session's line of the tested skill under a proposed
+  // name or for a text the session's copy did not have.
+  test(
+    "a profile's recorded listing gives each skill its recorded line, and the tested skill its own only under its name and the session's text: a proposed name and a changed text get drawn hints, and the summary and the report say which",
+    async () => {
+      const dir = path.join(scratch, "omp-recorded");
+      const { out, common } = hostInputs(dir);
+      const tested = path.join(dir, "tested");
+      const models = path.join(dir, "models.yml");
+      writeFileSync(models, ANTHROPIC_MODELS);
+      const ALPHA_LINE = "Use for the alpha checklist, as the session listed it.";
+      const BETA_LINE = "Use for the beta greeting, as the session listed it.";
+      const profile = path.join(dir, "profile.json");
+      writeFileSync(
+        profile,
+        JSON.stringify({
+          ...BETA_PROFILE,
+          recordedListing: {
+            source: { kind: "session" },
+            lines: [
+              { name: "alpha", text: ALPHA_LINE },
+              { name: "beta", text: BETA_LINE },
+            ],
+            // The session's copy of alpha: acme/skills holds ALPHA_SKILL there, the tested text.
+            tested: { repo: "acme/skills", commit: COMMIT, path: "skills/alpha", name: "alpha" },
+          },
+        })
+      );
+      // A tested text whose description the session's copy did not have.
+      const changed = path.join(dir, "changed");
+      writeTree(changed, {
+        "SKILL.md": ALPHA_SKILL.replace(
+          "the made-up project.",
+          "the made-up project and its steps."
+        ),
+        "references/x.md": ALPHA_X,
+      });
+      answer = () => TEXT;
+      /** A load into `<dir>/<name>` of `skill`, with `extra`: what it printed, its capture's
+       *  listing, and its summary's line of the tested skill. */
+      const load = async (name: string, skill: string, extra: readonly string[] = []) => {
+        const at = path.join(dir, name);
+        const given = common.map((arg) => (arg === out ? at : arg === tested ? skill : arg));
+        const ran = await cli([
+          "load",
+          ...given,
+          ...["--host", "omp", "--profile", profile, "--omp", String(omp), "--models", models],
+          ...extra,
+        ]);
+        expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+        const body = readFileSync(loadCapturePaths(at, "omp", "need-1").body, "utf8");
+        const summary = z
+          .looseObject({ tasks: z.array(z.looseObject({ listedUnder: z.unknown() })) })
+          .parse(JSON.parse(readFileSync(path.join(at, "summary.json"), "utf8")));
+        return {
+          said: ran.stdout,
+          listing: Object.fromEntries(skillListing(JSON.parse(body))),
+          listedUnder: summary.tasks[0]?.listedUnder,
+        };
+      };
+      const counts = (name: string, recorded: number, drawn: number) =>
+        `load: the listing line of ${name}: ${recorded} tasks list it under the line their session recorded, ${drawn} under a hint of draw 1\n`;
+
+      const own = await load("own", tested);
+      expect(own.listing).toEqual({ alpha: ALPHA_LINE, beta: BETA_LINE });
+      expect(own.listedUnder).toEqual({ source: "recorded (session)", line: ALPHA_LINE });
+      expect(own.said).toContain(counts("alpha", 1, 0));
+
+      const renamed = await load("renamed", tested, ["--name", "omega"]);
+      const omegaHint = "Use for the omega work, stand-in hint.";
+      expect(renamed.listing).toEqual({ omega: omegaHint, beta: BETA_LINE });
+      expect(renamed.listedUnder).toEqual({ source: "drawn (draw 1)", line: omegaHint });
+      expect(renamed.said).toContain(counts("omega", 0, 1));
+
+      const text = await load("changed", changed);
+      const alphaHint = "Use for the alpha work, stand-in hint.";
+      expect(text.listing).toEqual({ alpha: alphaHint, beta: BETA_LINE });
+      expect(text.listedUnder).toEqual({ source: "drawn (draw 1)", line: alphaHint });
+      expect(text.said).toContain(counts("alpha", 0, 1));
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  // Catches: a capture failed by the read of the session copy's description where no line of its
+  // listing uses it: a recorded listing with no line of the tested skill, or a test under another
+  // name, whose lines are the same whatever the description.
+  test(
+    "the session copy's description is read only where the recorded line of the tested skill can be listed under its name: a failing read fails a capture that uses it, and no other",
+    async () => {
+      const dir = path.join(scratch, "omp-description-read");
+      const { out, common } = hostInputs(dir);
+      // The session copy's SKILL.md is a directory, so its read fails, and not as a missing file.
+      mkdirSync(path.join(dir, "repos", "acme/skills", COMMIT, "skills/broken/SKILL.md"), {
+        recursive: true,
+      });
+      const models = path.join(dir, "models.yml");
+      writeFileSync(models, ANTHROPIC_MODELS);
+      const ALPHA_LINE = "Use for the alpha checklist, as the session listed it.";
+      const BETA_LINE = "Use for the beta greeting, as the session listed it.";
+      answer = () => TEXT;
+      /** A load into `<dir>/<name>` under a profile whose recorded listing holds `lines`, its
+       *  session's copy of alpha the broken one, with `extra`. */
+      const load = async (
+        name: string,
+        lines: readonly { name: string; text: string }[],
+        extra: readonly string[] = []
+      ) => {
+        const profile = path.join(dir, `${name}.json`);
+        writeFileSync(
+          profile,
+          JSON.stringify({
+            ...BETA_PROFILE,
+            recordedListing: {
+              source: { kind: "session" },
+              lines,
+              tested: { repo: "acme/skills", commit: COMMIT, path: "skills/broken", name: "alpha" },
+            },
+          })
+        );
+        const at = path.join(dir, name);
+        return await cli([
+          "load",
+          ...common.map((arg) => (arg === out ? at : arg)),
+          ...["--host", "omp", "--profile", profile, "--omp", String(omp), "--models", models],
+          ...extra,
+        ]);
+      };
+      const alphaLine = { name: "alpha", text: ALPHA_LINE };
+      const betaLine = { name: "beta", text: BETA_LINE };
+      // No line of alpha, or alpha tested under another name: the copy is not read.
+      const noLine = await load("no-line", [betaLine]);
+      expect({ code: noLine.code, stderr: noLine.stderr }).toEqual({ code: 0, stderr: "" });
+      const renamed = await load("renamed", [alphaLine, betaLine], ["--name", "omega"]);
+      expect({ code: renamed.code, stderr: renamed.stderr }).toEqual({ code: 0, stderr: "" });
+      // A line of alpha under its own name: read, and its failure fails the capture, naming it.
+      const used = await load("used", [alphaLine, betaLine]);
+      expect(used.code).toBe(1);
+      expect(used.stderr).toContain("load: task need-1 (need, written): ");
+      expect(used.stderr).toContain("EISDIR");
+      expect(existsSync(loadCapturePaths(path.join(dir, "used"), "omp", "need-1").body)).toBe(
+        false
+      );
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
   // Catches: a load test of dispatch-first under another name whose capture fails as the Envoy
   // plugin finds no file of that name to read, or that lists the skill under its own name, or
   // sends no block of it though the plugin puts one into each request.
@@ -3233,8 +3550,6 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
     async () => {
       const dir = path.join(scratch, "omp-daemon-commit");
       const { out, common } = hostInputs(dir);
-      /** The made-up commit of acme/legion that the project's daemon image was built from. */
-      const DAEMON_COMMIT = "fedcba9876543210fedcba9876543210fedcba98";
       const repos = path.join(dir, "repos");
       writeTree(path.join(repos, "acme/legion", COMMIT), {
         ...daemonFiles("The role part at the plugin's commit."),
@@ -3247,28 +3562,8 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       const models = path.join(dir, "models.yml");
       writeFileSync(models, ANTHROPIC_MODELS);
       const profile = path.join(dir, "profile.json");
-      writeFileSync(
-        profile,
-        JSON.stringify({
-          ...BETA_PROFILE,
-          plugins: [
-            {
-              repo: "acme/legion",
-              commit: COMMIT,
-              path: "plugins/skills-only",
-              name: "skills-only",
-            },
-          ],
-          context: "legion:acme:implementer",
-        })
-      );
-      const digest = "8".repeat(64);
-      writeTasksSummary(path.join(dir, "tasks.jsonl"), {}, measureItem(null), [
-        {
-          item: "the daemon image's commit of acme/legion",
-          source: `acme/infra:legion/projects/10-ACME.yaml at ${COMMIT} gives the project ACME the daemonImage registry.example/acme/daemon@sha256:${digest}; gh api repos/acme/legion/attestations/sha256:${digest} names git+https://github.com/acme/legion@refs/heads/main at ${DAEMON_COMMIT}, so the role prompt is composed from acme/legion at ${DAEMON_COMMIT}: the Legion daemon of a pod composes its role prompt as it was at the commit its daemon image was built from`,
-        },
-      ]);
+      writeFileSync(profile, JSON.stringify(LEGION_BETA_PROFILE));
+      writeTasksSummary(path.join(dir, "tasks.jsonl"), {}, measureItem(null), [DAEMON_ITEM]);
       answer = () => TEXT;
       const ran = await cli([
         "load",
@@ -3308,18 +3603,7 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
         { id: "near-1", text: NEAR, label: "near-miss", source: "written", profile: "other.json" },
       ]);
       const profile = path.join(dir, "profile.json");
-      writeFileSync(
-        profile,
-        JSON.stringify({
-          ...BETA_PROFILE,
-          contextFiles: [USER_FILE],
-          claude: {
-            marketplace: "acme-market",
-            plugins: [{ name: "acme-tools", skills: ["beta"] }],
-            skillPlugin: "acme-tools",
-          },
-        })
-      );
+      writeFileSync(profile, JSON.stringify({ ...BETA_CLAUDE_PROFILE, contextFiles: [USER_FILE] }));
       const other = path.join(dir, "other.json");
       writeFileSync(
         other,
@@ -3390,6 +3674,7 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
             userMemory: z.unknown(),
             sessionRepository: z.unknown(),
             placements: z.unknown(),
+            listedSource: z.unknown(),
           })
           .parse(JSON.parse(readFileSync(files.record, "utf8")));
         expect(record.userMemory).toEqual(memory);
@@ -3406,6 +3691,8 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
           Object.keys(record.requestHeaders).every((name) => name.startsWith("anthropic-"))
         ).toBe(true);
         expect([record.profile, record.profileDigest]).toEqual([file, sha256(file)]);
+        // Claude Code lists the skill under its description: no hint is drawn or recorded.
+        expect(record.listedSource).toBe("description (Claude Code)");
         expect(savedRuns(out, id)).toMatchObject([
           {
             outcome: "loaded",
@@ -3433,15 +3720,7 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
       const profile = path.join(dir, "profile.json");
       writeFileSync(
         profile,
-        JSON.stringify({
-          ...BETA_PROFILE,
-          contextFiles: [USER_FILE, PROJECT_FILE],
-          claude: {
-            marketplace: "acme-market",
-            plugins: [{ name: "acme-tools", skills: ["beta"] }],
-            skillPlugin: "acme-tools",
-          },
-        })
+        JSON.stringify({ ...BETA_CLAUDE_PROFILE, contextFiles: [USER_FILE, PROJECT_FILE] })
       );
       answer = () => [
         {
@@ -3512,11 +3791,7 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
           ...BETA_PROFILE,
           ...PROJ_CHECKOUT,
           skills: [...BETA_PROFILE.skills, KAPPA, LAMBDA],
-          claude: {
-            marketplace: "acme-market",
-            plugins: [{ name: "acme-tools", skills: ["beta"] }],
-            skillPlugin: "acme-tools",
-          },
+          claude: BETA_CLAUDE_PROFILE.claude,
         })
       );
       answer = () => [

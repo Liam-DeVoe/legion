@@ -1,3 +1,4 @@
+SET LOCAL statement_timeout = '15min';
 -- The transcript pull of build.ts's `pullTranscript`: one session file's bytes, by its path, as
 -- slices of 1 MiB and at most 3 bytes more, a page of slices a call, paging by place. `pullSql` of
 -- countsql.ts fills it; psql-rows.ts's `PullCheck` checks each row as it comes and gives its
