@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math/rand/v2"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -175,13 +176,16 @@ func TestRotationsJoinTheVerbsOfTexts(t *testing.T) {
 // each group that they use, so its Rotations reads those sets and no held text again, whatever it
 // would keep of one: the held texts followed by more texts that add no set to a group, each held text
 // again and texts made of the parts of different held texts, each group's part of one, in an order of
-// their own, give the same Held, so its value holds nothing of a text but the sets of its groups; and
-// its Rotations, asked after other texts are read into another Held, is still the answer for its own,
-// so it reads no text kept outside its value. And its Rotations is Rotations as its comment defines
-// it, each held text read for each set of own verbs: for 20,000 sets of own verbs and of 0 to 40 held
-// texts, drawn at random from the verbs of the synonym groups, the two agree. The cases hold groups
-// that a held text uses each verb of and groups it does not (counted), so both answers of the rule
-// are read.
+// their own, give the same Held, so its value holds nothing of a text but the sets of its groups.
+// HeldOf allocates no more for heldCopiesTexts texts followed by heldCopies copies of them than for
+// those texts alone, less than a byte for each copy where a copy of a text takes 8, so it keeps no
+// copy of the texts, in its value or outside it. And its Rotations, asked after the caller's slice
+// of held texts is written over and other texts are read into another Held, is still the answer
+// for its own, so it reads neither the caller's texts again nor texts that another HeldOf read. And
+// its Rotations is Rotations as its comment defines it, each held text read for each set of own
+// verbs: for 20,000 sets of own verbs and of 0 to 40 held texts, drawn at random from the verbs of
+// the synonym groups, the two agree. The cases hold groups that a held text uses each verb of and
+// groups it does not (counted), so both answers of the rule are read.
 func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 	definition := func(own Verbs, held []Verbs) Verbs {
 		all := own
@@ -199,6 +203,17 @@ func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 		every |= group
 	}
 	draw := func(random *rand.Rand) Verbs { return Verbs(random.Uint64()&random.Uint64()) & every }
+	texts, drawTexts := make([]Verbs, heldCopiesTexts), rand.New(rand.NewPCG(4179, 22))
+	for index := range texts {
+		texts[index] = draw(drawTexts)
+	}
+	copies := slices.Repeat(texts, heldCopies+1)
+	heldSink = HeldOf(copies)
+	alone, withCopies := heldAllocates(texts), heldAllocates(copies)
+	if grown := int64(withCopies) - int64(alone); grown >= int64(len(copies)-len(texts)) {
+		t.Errorf("HeldOf allocates %d bytes for %d texts and %d for them followed by %d copies, %d more: want less than a byte for each copy, as a Held that keeps no copy of its texts allocates",
+			alone, len(texts), withCopies, len(copies)-len(texts), grown)
+	}
 	random := rand.New(rand.NewPCG(4179, 21))
 	rotated, kept := 0, 0
 	for range 20_000 {
@@ -223,7 +238,11 @@ func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 		if again := HeldOf(slices.Concat(held, more)); !reflect.DeepEqual(again, read) {
 			t.Fatalf("held %b: the held texts followed by %b, which add no set of verbs to a group, give the Held %+v, and alone %+v: want the same, a Held that keeps nothing of a text but its groups' sets", held, more, again, read)
 		}
-		// Other texts, drawn as the held ones are, read into another Held before read's Rotations.
+		// The caller's slice written over with other texts, and other texts, drawn as the held ones
+		// are, read into another Held, before read's Rotations.
+		for index := range held {
+			held[index] = draw(random)
+		}
 		others := make([]Verbs, len(held)+1)
 		for index := range others {
 			others[index] = draw(random)
@@ -238,10 +257,31 @@ func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 			kept++
 		}
 	}
-	t.Logf("20,000 cases: %d rotate a group, %d rotate none where the verbs together use two of a group", rotated, kept)
+	t.Logf("HeldOf allocates %d bytes for %d texts and %d for them and %d copies; 20,000 cases: %d rotate a group, %d rotate none where the verbs together use two of a group",
+		alone, len(texts), withCopies, len(copies)-len(texts), rotated, kept)
 	if rotated == 0 || kept == 0 {
 		t.Errorf("%d cases rotate a group and %d rotate none beside two verbs of a group: the test reads too little", rotated, kept)
 	}
+}
+
+// heldCopiesTexts is how many texts the allocation check of Held draws, and heldCopies how many
+// copies of them follow them: a copy of them all would take 8 bytes for each, over 5 MiB.
+const (
+	heldCopiesTexts = 40
+	heldCopies      = 16_384
+)
+
+// heldSink keeps each Held that heldAllocates reads, so that no allocation of HeldOf is left out.
+var heldSink Held
+
+// heldAllocates is the bytes that the heap gives HeldOf of held, from the process's count of every
+// byte allocated (runtime.MemStats.TotalAlloc), read before and after the call.
+func heldAllocates(held []Verbs) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	heldSink = HeldOf(held)
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
 }
 
 // TestWordsAreWhatSteLintLints holds Words to the text that ste-lint's line loop lints, as words:
