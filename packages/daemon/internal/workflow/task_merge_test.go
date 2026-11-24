@@ -179,11 +179,11 @@ func TestOnlyTheLastMergeWaitsForTheIssuesBeneath(t *testing.T) {
 	}
 
 	childLeavesDone(t, pool, engine)
-	// Until Tasks 20 and 21 land, the child's leave leaves b at its merge: closeAwaitingMerge reads
-	// the issue's merge pull request (record.Store.MergePullRequest), which reads the one task no
-	// task needs, and this plan has two. Task 20 reads MergePullRequest on TasksThatMerge and Task 21
-	// reads the pull request of the task at its merge. They turn this assertion into "b is done at its
-	// merge, and the issue is done and leaves the workflow".
+	// The child's leave leaves b at its merge for now: closeAwaitingMerge reads the issue's merge
+	// pull request (record.Store.MergePullRequest), which reads the one task no task needs, and this
+	// plan has two. Once MergePullRequest reads each task that merges, and closeAwaitingMerge reads
+	// the pull request of the task at its merge, this assertion becomes "b is done at its merge, and
+	// the issue is done and leaves the workflow".
 	assertTask(t, tasksOf(t, pool, engine, root.Key), "b", record.TaskRunning, atMerge)
 }
 

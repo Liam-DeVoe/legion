@@ -79,7 +79,7 @@ func TestAnAgentFreedByATaskWithNoNextActGoesToItsWaiterAtTheSettle(t *testing.T
 	assertActs(t, pool, root.Key, "k", "x step 1", "y step 1")
 }
 
-// The retro of x runs before the step of y in the session of k (R6). x and y each have the one step
+// The retro of x runs before the step of y in the session of k. x and y each have the one step
 // `implementer:k` and both merge. x's step starts on k and y's waits for k, with nothing of it
 // started. x's step passes by its transition and the fact's settle: the transition moves x into its
 // retro and starts it on k before the settle hands k on, so y's step keeps its wait. x's retro
@@ -88,8 +88,8 @@ func TestAnAgentFreedByATaskWithNoNextActGoesToItsWaiterAtTheSettle(t *testing.T
 // y's retro.
 //
 // The fault it catches is the free agent handed to y's waiting step before the next act of x, whose
-// step on it just ended (its control: start without the exemption of the retro, the slice below's
-// AgentWaiter rule alone, under which x's retro waits, y's step starts at the settle, and k's acts
+// step on it just ended (its control: start without the exemption of the retro, the rule of the
+// longest waiter alone, under which x's retro waits, y's step starts at the settle, and k's acts
 // are x's step, then y's step).
 func TestTheRetroOfXRunsBeforeTheStepOfYInSessionK(t *testing.T) {
 	pool, engine, root := xAndYOnK(t, []string{"implementer:k"}, []claim.Agent{"k"})
@@ -203,8 +203,8 @@ func TestTwoMergesOfOneIssueAreOneAtATime(t *testing.T) {
 // starts on k.
 //
 // The fault it catches is a task whose steps keep returning holding its agent from a waiter with no
-// bound (its control: the exemption of M5 over any next act of x, under which x's review starts on
-// k ahead of y).
+// bound (its control: the exemption of the retro over any next act of x, under which x's review
+// starts on k ahead of y).
 func TestAReturningTaskDoesNotHoldItsAgentFromAWaiter(t *testing.T) {
 	pool, engine, root := xAndYOnK(t, []string{"implementer:k", "reviewer:k"}, []claim.Agent{"k", "k"})
 
