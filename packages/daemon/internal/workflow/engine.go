@@ -878,7 +878,23 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	if err != nil || ancestor == "" {
 		return err
 	}
-	return e.notice(ctx, tx, child.Key, ChildUnderAcceptedParentNotice(child.Key, ancestor))
+	// Planted fault, a control of a test, never merged: the notice's text depends on the plan the
+	// ancestor walks. Where the ancestor's line holds a reviewer step, it names the reviewed head.
+	above, err := e.store.Issue(ctx, tx, ancestor)
+	if err != nil || above == nil {
+		return err
+	}
+	w, err := e.walk(ctx, tx, *above)
+	if err != nil {
+		return err
+	}
+	notice := ChildUnderAcceptedParentNotice(child.Key, ancestor)
+	for _, step := range w.Line {
+		if step == phase.Reviewing {
+			notice.Reason = strings.Replace(notice.Reason, "whose head the last step of its task passed", "whose reviewed head", 1)
+		}
+	}
+	return e.notice(ctx, tx, child.Key, notice)
 }
 
 // drawExperiments draws every issue-unit experiment the project declares (Config.Experiments)
