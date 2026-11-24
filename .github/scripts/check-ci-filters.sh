@@ -171,14 +171,17 @@
 #      that sets lookup-only at all, or whose restore-keys are not exactly its key followed by
 #      `-`; any other actions/cache/restore of ci-caches.yaml that is not `lookup-only: true`
 #      or that carries restore-keys; and an actions/cache/restore of any workflow of the
-#      directory whose family no actions/cache/save of any workflow writes. ci-caches.yaml fills
+#      directory whose family no actions/cache/save of a workflow or of a composite action of
+#      .github/actions writes (a save that names its restore's cache-primary-key writes that
+#      restore's family; one whose family cannot be read is named in the refusal, which then says
+#      that no save it can read writes the family). ci-caches.yaml fills
 #      the entries ci.yaml restores, and a key or a path that drifts apart makes every restore
 #      miss silently: nothing fails, every job just rebuilds from nothing what the fill already
 #      built. A save is matched to a restore by
 #      family, the key's text up to its first `${{`, which is the Go version the entry is keyed
 #      on. A family ci.yaml restores that ci-caches.yaml does not save is no failure when another
 #      workflow saves it: go-docs is saved by docs-site.yaml, the build job docs-pages.yaml shares
-#      with ci.yaml's docs job. A family no workflow saves is one, since a misspelled family name
+#      with ci.yaml's docs job. A family no save writes is one, since a misspelled family name
 #      (go-envoy-tests- for go-envoy-test) would otherwise be a family of its own that nothing
 #      holds, and its restore would miss on every run.
 #      A save's own hashFiles() is evaluated after the build, which can change the files it
