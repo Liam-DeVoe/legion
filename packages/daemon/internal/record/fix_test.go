@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 const (
@@ -66,7 +67,7 @@ func TestASecondOpenFixOfATaskIsRefused(t *testing.T) {
 			t.Fatalf("after the second refusal the store holds %d fixes, want fix 1 alone", n)
 		}
 	})
-	err := st.Tx(ctx, func(tx pgx.Tx) error {
+	err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `insert into task_fixes (issue, generation, task, fix, state, check_id, head, place)
 			values ($1, 3, 'a', 2, 'reading', $2, $3, 1)`, fixIssue, fixCheck, fixHeadY)
 		return err
