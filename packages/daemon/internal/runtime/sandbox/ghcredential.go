@@ -696,6 +696,7 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 // moment must not cost.
 func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runtime.SpawnSpec) (bool, error) {
 	_, acts, err := runtime.Acting(ctx, r.actsAs, spec.Claim)
+	acts = true // control 1b: the acting branch always true
 	if err != nil || acts {
 		return false, err
 	}
