@@ -1,5 +1,8 @@
 package main
 
+//ci:reads .github/workflows/release.yaml TestTheReleaseListNamesEveryEnvoyPackageLegionLinks reads LEGION_VERSION_ARGS under ../../../.. and holds it to go list -deps
+//ci:reads .github/go-release-targets.json TestTheReleaseListNamesEveryEnvoyPackageLegionLinks reads the legion targets (legionReleaseTargets), one go list -deps for each
+
 import (
 	"encoding/json"
 	"os"
