@@ -3514,6 +3514,34 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
+// 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 232; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above 228), and a reading of
+// the 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. The forward merge of 2026-11-24 that brought in e14345bf
+// brought main's 228 (INFRA-1575's entry above), and a reading of the 137 open heads that change
+// this file, between 2026-11-24T09:36:47Z and 09:39:37Z, found 240 declared by #3831 and 229 to
+// 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
+// main's 228 that no other open pull request declares. Read main's own number and every open head
+// again at the next merge rather than from this line.)
+//
 // 234: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
 // resume_agent, compact and fresh session of one agent, named by its issue and role) it lacked, the
 // four the operator already has, as controller routes beside `claims/fresh-session` and
@@ -3596,11 +3624,11 @@ package api
 // `CONTROLLER_REQUIRED` to `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The
 // five routes' request records start at this contract
 // (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No key and no value of any
-// other answer moved, so this contract's records of every other answer are 228's, under its own
+// other answer moved, so this contract's records of every other answer are 232's, under its own
 // number. agentActionsContract is now the last number of answers.go's SupportedContracts,
 // after shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract,
-// cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract and
-// intakeGiveUpsContract, and a renumber of this
+// cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract
+// and 232, and a renumber of this
 // entry moves that constant with it.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
@@ -3715,7 +3743,9 @@ package api
 // (read at the head of each of the 492 open pull requests, 2026-11-24T10:02:56Z to 10:05:20Z).
 // The merge of main `e01affc8`, which still declares 228, keeps 234: no open head but this one
 // declares it (read at the head of each of the 483 open pull requests, 2026-11-24T11:35:13Z to
-// 11:37:36Z).
+// 11:37:36Z). The merge of main `3dbaa2b2`, which declares 232 (#5271, the entry above), keeps 234:
+// 229 to 233 are other open pull requests', and no open head but this one declares 234 (read at the
+// head of each of the 478 open pull requests, 2026-11-24T12:32:36Z to 12:35:22Z).
 // Read the base's own number and every open head again at the next merge rather than from
 // this line.)
 const DaemonAPIVersion = 234
