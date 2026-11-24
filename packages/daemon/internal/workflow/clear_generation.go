@@ -101,7 +101,7 @@ func (e *Engine) dropSupersededChanges(ctx context.Context, tx pgx.Tx, tree stri
 		e.logOnCommit(ctx, "workflow: a queued changes request finished unpublished at its generation's clear: "+
 			"the person's approval followed it", "row", request.Row, "kind", request.Kind,
 			"issue", request.Issue, "root", tree, "ref", request.Notice.Ref,
-			"version", request.Notice.Version, "approved", superseded.By)
+			"version", request.Notice.Version, "approved", superseded.By.Version)
 	}
 	if len(spent) == 0 {
 		return nil

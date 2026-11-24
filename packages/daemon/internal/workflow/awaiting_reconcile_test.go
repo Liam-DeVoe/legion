@@ -204,7 +204,7 @@ func TestAnActAlreadyRecordedTellsTheArchitectInPlace(t *testing.T) {
 // the person.
 func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
-	version := 3
+	version, later := 3, 4
 	asks := []record.RootAsk{
 		{Issue: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, Open: false, ByTree: true, Seq: 8},
 		{Issue: "LEGION-208", Ask: "ask-still", Kind: record.AskQuestion, Open: true, WaitingOn: "human", ByTree: true, Seq: 6},
@@ -246,6 +246,40 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: &version},
 			want:    []string{"Your primary document version 3 on LEGION-208 was approved.", DesignApprovedWake},
+		},
+		{
+			// INFRA-3136 R2, review round 16: the approval that answered is the predicate's to judge
+			// (SupersedingApproval), not the gate's. A newer version closed the gate and keeps the
+			// approval of version 3 as the one below the latest, so that approval still stands.
+			name: "an approval that answered the wait, below a newer version",
+			waiting: record.Awaiting{GateVersion: 3, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByApproval,
+				AnsweredDetail: "version 3", AnsweredVersion: 3},
+			step: record.DesignStepSpec,
+			gate: &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 4, ApprovedVersion: &version},
+			want: []string{"Your primary document version 3 on LEGION-208 was approved.",
+				"The approval of version 3 stands, and the primary document is now at version 4, which is not approved.",
+				"register that version with register_gate"},
+			not: []string{"no longer stands", DesignApprovedWake},
+		},
+		{
+			name: "an approval that answered the wait, replaced by a later approval",
+			waiting: record.Awaiting{GateVersion: 3, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByApproval,
+				AnsweredDetail: "version 3", AnsweredVersion: 3},
+			step: record.DesignStepSpec,
+			gate: &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 4, ApprovedVersion: &later},
+			want: []string{"Your primary document version 3 on LEGION-208 was approved. That approval no longer stands: a later approval, of version 4, replaced it.",
+				"Your primary document is approved at version 4", DesignApprovedWake},
+			not: []string{"The approval of version"},
+		},
+		{
+			name: "an approval that answered the wait, cleared by a later changes request",
+			waiting: record.Awaiting{GateVersion: 3, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByApproval,
+				AnsweredDetail: "version 3", AnsweredVersion: 3},
+			step: record.DesignStepSpec,
+			gate: &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3},
+			want: []string{"Your primary document version 3 on LEGION-208 was approved. That approval no longer stands: a later changes request cleared it.",
+				"Your primary document is not approved at version 3"},
+			not: []string{"The approval of version", DesignApprovedWake},
 		},
 		{
 			name:    "a changes request with the gate closed",

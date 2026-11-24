@@ -143,7 +143,7 @@ func TestADeliveryWrittenBackUnconfirmedHoldsWhatItsConfirmationTold(t *testing.
 
 // A decision a taken-back confirmation puts back is put back as the delivery named it, with its
 // review's sequence, the document reviewed and its version (record.DecisionMark.Seq, Artifact
-// and Version), so the resend asks it whether a later approval superseded it as the row was asked
+// and Version), so the resend asks it whether it is still the person's word as the row was asked
 // before the confirmation told it (workflow.SupersedingApproval), of the document and the version
 // the person reviewed.
 func TestADecisionPutBackKeepsItsReviewsSequenceDocumentAndVersion(t *testing.T) {

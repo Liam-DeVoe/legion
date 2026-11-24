@@ -1261,10 +1261,11 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // sent as the text it holds.
 //
 // Every kept decision and kept approval the task still names is asked again at this send, against
-// the gates as the record holds them now (workflow.SupersedingApproval): a person who approved since
-// has answered what the sentence would tell or ask them, so the sentence is dropped
-// (workflow.KeptDecisionsTask), and the row of a decision it superseded is deleted in the same
-// write (workflow.ForgetSuperseded).
+// the gates as the record holds them now (workflow.SupersedingApproval): one that is no longer the
+// person's word — a changes request a later approval answered, or an approval a later approval
+// replaced or a later changes request cleared — would tell or ask them what they have since
+// decided otherwise, so the sentence is dropped (workflow.KeptDecisionsTask), and the row of such a
+// decision is deleted in the same write (workflow.ForgetSuperseded).
 func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error) {
 	if len(d.Resume) > 0 {
 		task, err := w.resumeTaskNow(ctx, c, d)
@@ -1361,13 +1362,13 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return d.Task, d.Kept, d.News, nil
 	}
 	// A task that carries the root's own first task keeps it: a decision leaving this tree, or one
-	// a later approval answered, says nothing about whether the tree has been taken up, and a
-	// rewrite from the decisions alone would hand a fresh architect the empty task that instruction
-	// exists to replace. Which task carries it is the entry the delivery is of, never the task's
-	// text (workflow.NarrowRootTask says why). A root the record now shows past admitted under its
-	// own power is served no first task, so its rewrite is the decisions' own; with no root
-	// recorded there is nothing to write one from either, so the rewrite is the decisions' own
-	// there too, as it always was.
+	// that is no longer the person's word (workflow.SupersedingApproval), says nothing about whether
+	// the tree has been taken up, and a rewrite from the decisions alone would hand a fresh
+	// architect the empty task that instruction exists to replace. Which task carries it is the
+	// entry the delivery is of, never the task's text (workflow.NarrowRootTask says why). A root
+	// the record now shows past admitted under its own power is served no first task, so its
+	// rewrite is the decisions' own; with no root recorded there is nothing to write one from
+	// either, so the rewrite is the decisions' own there too, as it always was.
 	task := decided
 	if root != nil {
 		task = workflow.NarrowRootTask(start, d.Entry, decided)
@@ -1416,10 +1417,10 @@ func (w *workflowRuntime) narrowedNews(ctx context.Context, c supervise.Claim, d
 // resumeTaskNow is the resume task delivery d carries the wait of (supervise.Delivery.Resume),
 // written from the record as it stands now: the root's gates and its ask mirror rows, read in one
 // transaction, rendered by the one rule (workflow.ResumeAwaitedRootTask), which asks of every
-// review it names whether the person's approval followed it (workflow.SupersedingApproval), and of
-// every approval request whether the gate's approval answered it. A read that fails returns its
-// error, as the kept-decisions answer above does: the machine sends nothing then, and the next
-// trigger asks again.
+// review it names, a changes request or an approval, whether it is still the person's word
+// (workflow.SupersedingApproval), and of every approval request whether the gate's approval
+// answered it. A read that fails returns its error, as the kept-decisions answer above does: the
+// machine sends nothing then, and the next trigger asks again.
 func (w *workflowRuntime) resumeTaskNow(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, error) {
 	var waiting record.Awaiting
 	if err := json.Unmarshal(d.Resume, &waiting); err != nil {

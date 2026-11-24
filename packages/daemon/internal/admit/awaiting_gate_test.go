@@ -1199,6 +1199,11 @@ func TestAReviewARegistrationCarriesAnswersTheRootItWaitsFor(t *testing.T) {
 				t.Fatalf("register gate v4: %v", err)
 			}
 			assertResumed(t, pool)
+			// The wait the resume answered records the version the review was of, which its task
+			// asks the person's word at each send (workflow.SupersedingApproval).
+			if row := architectRow(t, pool, "LEGION-100"); row.EntryAwaiting == nil || row.EntryAwaiting.AnsweredVersion != 4 {
+				t.Fatalf("the wait the resume answered = %+v, want it to record version 4, the version the review was of", row.EntryAwaiting)
+			}
 			applyFact(t, pool, admission, "live-review", tc.live)
 			// The gate seed's read of the same review follows, under an id of its own.
 			applyFact(t, pool, admission, "seeded-review", tc.live)

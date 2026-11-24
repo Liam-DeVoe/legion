@@ -847,8 +847,8 @@ type SilentIssue struct {
 // instead (workflow.HandOverKept), and one that finishes undelivered any other way leaves it all
 // for the architect's next ready to name again. Decided is written again at the delivery from
 // Kept, each decision asked again of the gates as the delivery reads them
-// (workflow.SupersedingApproval), so it names no decision the person's approval followed while the
-// row waited.
+// (workflow.SupersedingApproval), so it names no decision that stopped being the person's word
+// while the row waited.
 //
 // Relaunch is the sentence of what the last let-go of the architect's process ended, which the
 // ready that queued the row carried (intake.ClaimReady.Relaunch), and empty for every other

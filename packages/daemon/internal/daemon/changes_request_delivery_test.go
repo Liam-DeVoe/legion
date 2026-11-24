@@ -358,10 +358,10 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 				t.Fatalf("told the controller %v, want %v; log %s", told, tc.told, logged.String())
 			}
 			// An approval's relay that finds the gate holds no approval names no version that
-			// replaced it: the line says the gate no longer holds it, and names none approved.
+			// replaced it: the line says the gate no longer holds it, and names no approved version.
 			unheld := textLines(logged.String(), `msg="outbox parked decision not relayed: the gate no longer holds the approval it reports"`)
-			if tc.cleared != (len(unheld) == 1) || tc.cleared && !strings.Contains(unheld[0], "version=3 approved=none") {
-				t.Fatalf("logged %q, want one line that the gate no longer holds the approval (%t), naming version 3 and none approved",
+			if tc.cleared != (len(unheld) == 1) || tc.cleared && (!strings.Contains(unheld[0], "version=3") || strings.Contains(unheld[0], "approved=")) {
+				t.Fatalf("logged %q, want one line that the gate no longer holds the approval (%t), naming version 3 and no approved version",
 					unheld, tc.cleared)
 			}
 			dropped := textLines(logged.String(), `msg="outbox parked changes request finished without publishing`)

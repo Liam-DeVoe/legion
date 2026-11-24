@@ -65,12 +65,13 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 }
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
-// it was written. It reads a changes request's version (awaiting_answered_version) only beside the
-// answer it was written with: a daemon of an earlier release writes a later answer and leaves the
-// version as it was, and that answer then reads as one with no version (PutIssue). The four
-// issues.memory_* columns are no part of it: what a unit was drawn is an assignment row of its own
-// (AssignmentsOf, AssignmentsFor), and nothing this release's daemon runs reads the columns but the
-// back-fill of 20261111045636_experiment_assignments.
+// it was written. It reads the version of the review that answered a wait, a changes request's or
+// an approval's (awaiting_answered_version), only beside the answer it was written with: a daemon
+// of an earlier release writes a later answer and leaves the version as it was, and that answer
+// then reads as one with no version (PutIssue). The four issues.memory_* columns are no part of
+// it: what a unit was drawn is an assignment row of its own (AssignmentsOf, AssignmentsFor), and
+// nothing this release's daemon runs reads the columns but the back-fill of
+// 20261111045636_experiment_assignments.
 const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), case when awaiting_answered_version_at = awaiting_answered_at then coalesce(awaiting_answered_version, 0) else 0 end, awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
@@ -1577,7 +1578,7 @@ func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string
 		return fmt.Errorf("%s: %w", describe, err)
 	}
 	if err := forget(ctx, tx, tree, owed, queued); err != nil {
-		return fmt.Errorf("%s: forget what a later approval superseded: %w", describe, err)
+		return fmt.Errorf("%s: forget what is no longer the person's word: %w", describe, err)
 	}
 	return nil
 }

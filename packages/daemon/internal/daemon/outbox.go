@@ -1917,8 +1917,8 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 // front of it the sentence of what the architect's last process ended that the row was queued
 // with (record.CatchUp.Relaunch), which stays the row's. Decided is written again in that read
 // from the decisions the row claimed, each asked of the gates as they stand then
-// (workflow.SupersedingApproval), so a decision the person's approval followed while the row waited is
-// not named. The order is the fence's: whether a newer catch-up supersedes this one
+// (workflow.SupersedingApproval), so a decision that stopped being the person's word while the row
+// waited is not named. The order is the fence's: whether a newer catch-up supersedes this one
 // (catchUpSuperseded) is read on the payload as the row holds it, before anything is replaced,
 // because the fence compares the row's Generation and Launch with the row's issue and its
 // architect's claim as they are now, and a payload composed from the issue now would compare the

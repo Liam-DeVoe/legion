@@ -3,8 +3,59 @@ package workflow
 import (
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
+
+// A person's approval stands while the gate's row holds the approval's document and its approved
+// version is the approval's (SupersedingApproval's own rule for an approval): through a new
+// version that closes the gate, which keeps that approval as the one below the latest, and no
+// longer once the person approves a later version, which replaces it, or requests changes, which
+// clears it. An approval of a version the gate never approved names no approval at all, and
+// neither does one of a document the step no longer records. Where it no longer stands the answer
+// names the approval the gate holds in its place, and none where the gate holds none.
+func TestAnApprovalStandsWhileTheGateStillRecordsItsVersionApproved(t *testing.T) {
+	gate := record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepSpec, ArtifactID: "artifact", LatestVersion: 4}
+	approved := classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, 4, record.EventMark{Seq: 10})
+	closed := classify.ApplyDesignGateEvent(approved, classify.DesignGateVersion, 5, record.EventMark{})
+	approvedLater := classify.ApplyDesignGateEvent(closed, classify.DesignGateApproved, 5, record.EventMark{Seq: 12})
+	for _, tc := range []struct {
+		name     string
+		gate     record.DesignGate
+		artifact string
+		to       int
+		stands   bool
+		// by is the version the answer names in the approval's place, 0 for none.
+		by int
+	}{
+		{name: "the approval of the version the gate holds approved", gate: approved, to: 4, stands: true},
+		{name: "a new version closed the gate since", gate: closed, to: 4, stands: true},
+		{name: "the person approved the new version", gate: approvedLater, to: 4, by: 5},
+		{name: "that later approval", gate: approvedLater, to: 5, stands: true},
+		{name: "the person requested changes on the new version", gate: classify.ApplyDesignGateEvent(closed, classify.DesignGateChangesRequested, 5,
+			record.EventMark{Seq: 12}), to: 4},
+		{name: "an approval of a version the gate never approved", gate: approved, to: 5, by: 4},
+		{name: "a gate that records no approval", gate: gate, to: 4},
+		{name: "an approval of a document the step no longer records", gate: approved, artifact: "another artifact", to: 4, by: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			artifact := tc.artifact
+			if artifact == "" {
+				artifact = gate.ArtifactID
+			}
+			got := SupersedingApproval(&tc.gate, true, Decision{Kind: record.DecisionDesignApproved, Step: record.DesignStepSpec,
+				Artifact: artifact, Version: tc.to})
+			by := 0
+			if got != nil && got.By != nil {
+				by = got.By.Version
+			}
+			if (got == nil) != tc.stands || by != tc.by {
+				t.Fatalf("SupersedingApproval(%#v, an approval of %q at %d) = %+v (by %d), want stands %t, by %d", tc.gate, artifact, tc.to,
+					got, by, tc.stands, tc.by)
+			}
+		})
+	}
+}
 
 // SupersedingApproval asks the gate it is handed only when that gate is of the step the review is of
 // (Decision.Step). A person's changes request on the decisions document, answered by an approval

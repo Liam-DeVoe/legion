@@ -164,9 +164,10 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 // names the act in the task its architect resumes with (resumeTask). The detail is the act's
 // own: the ask a person acted on, the version and reason of the review that answered, or who
 // took the question away, so a later act of the same kind does not rename it. reviewed is the
-// version a changes request that answered reviewed, 0 for any other act: it is recorded beside
-// the detail (record.Awaiting.AnsweredVersion), so the resume asks whether an approval followed
-// that review of a number and not of the detail's words.
+// version a person's review that answered was of — the version a changes request reviewed or an
+// approval approved — and 0 for any other act: it is recorded beside the detail
+// (record.Awaiting.AnsweredVersion), so the resume asks whether that review is still the person's
+// word (SupersedingApproval) of a number and not of the detail's words.
 func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, by record.Answer, detail string, reviewed int) error {
 	at := e.now()
 	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail, root.Awaiting.AnsweredVersion = &at, by, detail, reviewed

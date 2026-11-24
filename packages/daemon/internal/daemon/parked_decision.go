@@ -74,10 +74,10 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 				r.log.Info("outbox parked decision not relayed: its root has no record", args...)
 			case superseded != nil && superseded.By == nil:
 				r.log.Info("outbox parked decision not relayed: the gate no longer holds the approval it reports",
-					append(args, "version", notice.Version, "approved", superseded.By)...)
+					append(args, "version", notice.Version)...)
 			case superseded != nil:
 				r.log.Info("outbox parked decision not relayed: the person's approval followed it",
-					append(args, "version", notice.Version, "approved", superseded.By)...)
+					append(args, "version", notice.Version, "approved", superseded.By.Version)...)
 			case outcome == record.RelaySent:
 				r.log.Info("outbox parked decision sent to the controller", args...)
 			case outcome == record.RelayKept:
@@ -133,8 +133,8 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 // release puts on every design decision's notice and on the relay of one
 // (workflow.NoticeSuperseded). A notice an earlier release queued carries no mark and no
 // document, and is asked at its version alone. The line each caller logs for a decision that no
-// longer stands names the approved version that took its place, or none where no approval did
-// (workflow.Supersession.By).
+// longer stands names the approved version that took its place, and no approved version where no
+// approval did (workflow.Supersession.By).
 func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (*workflow.Supersession, error) {
 	gates, err := r.records.GatesOf(ctx, tx, issue)
 	if err != nil {

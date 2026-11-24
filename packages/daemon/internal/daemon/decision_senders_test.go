@@ -20,9 +20,10 @@ import (
 const senderModule = "github.com/sjawhar/legion/daemon/internal/"
 
 // decisionPredicate is the one predicate that decides whether a person's recorded decision on a
-// design document is still their word (workflow.SupersedingApproval), and decisionRule and
-// approvalRule the two rules it asks, of a changes request (classify.ReviewSuperseded) and of an
-// approval (classify.DesignApprovalStands), each as go/types names it (types.Func.FullName).
+// design document is still their word (workflow.SupersedingApproval), and decisionRule the rule it
+// asks of a changes request (classify.ReviewSuperseded), each as go/types names it
+// (types.Func.FullName). The predicate's rule for an approval is a comparison in its own body,
+// which no other function can ask, so the walk reads nothing for it.
 // resumeSend is the daemon's render of a start that carries a person's answered wait
 // (record.SuperviseRequest's Awaiting) at each send of its task, and resumeSendCaller the send of
 // a held task that asks it for such a delivery. newsSend is the daemon's ask, at each send of a
@@ -30,7 +31,6 @@ const senderModule = "github.com/sjawhar/legion/daemon/internal/"
 const (
 	decisionPredicate = senderModule + "workflow.SupersedingApproval"
 	decisionRule      = senderModule + "classify.ReviewSuperseded"
-	approvalRule      = senderModule + "classify.DesignApprovalStands"
 	resumeSend        = "(*" + senderModule + "daemon.workflowRuntime).resumeTaskNow"
 	resumeSendCaller  = "(*" + senderModule + "daemon.workflowRuntime).rootTask"
 	newsSend          = senderModule + "daemon.itemStands"
@@ -97,6 +97,10 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 	{"asks for no revision now", "workflow.resumeTask"},
 	// A changes request the gate records as told after the wait began.
 	{"A person then requested changes to your", "workflow.resumeTask"},
+	// The approval that answered the wait, when the person's word has moved past it.
+	{"That approval no longer stands", "workflow.resumeTask"},
+	// That approval, when it stands below a newer version.
+	{"The approval of version", "workflow.resumeTask"},
 	// The decisions kept while nobody in the tree could hear them.
 	{"a person decided on the tree", "workflow.KeptDecisionsTask"},
 	// The kept approval of a version the document has moved past.
@@ -105,7 +109,7 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 
 // Every sender of a person's design decision asks the one predicate whether that decision is
 // still the person's word (workflow.SupersedingApproval), so no sender decides it for itself and
-// no sender asks either rule itself (dispatch://INFRA-3136/spec R2).
+// no sender asks the changes-request rule itself (dispatch://INFRA-3136/spec R2).
 // A sender is a function of internal/workflow, internal/daemon or internal/admit, outside its
 // tests, whose body
 //
@@ -172,10 +176,12 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // there for a new sender to read. Such a function passes only where storedTaskReaders names it,
 // with why its read sends no person's review.
 //
-// And each rule is asked by the predicate alone: the changes-request rule
-// (classify.ReviewSuperseded) by it and by the one reading of an approval request (ruleAskers),
-// and the approval rule (classify.DesignApprovalStands) by it and nothing else, so the guards the
-// predicate holds, which its doc lists, live in one place.
+// And the changes-request rule (classify.ReviewSuperseded) is asked by the predicate and by the
+// one reading of an approval request alone (ruleAskers), so the guards the predicate holds, which
+// its doc lists, live in one place. That rule is classify's, so it is exported, and two functions
+// of workflow ask it, so no shape of the code keeps a third function from asking it; only this
+// reading does. The rule for an approval needs no such reading: it is a comparison in the
+// predicate's own body, which no other function can ask.
 //
 // This test reads its sites from the source because no chokepoint can make a sender ask: the
 // predicate is the one place the answer is decided, but a notice is a plain struct literal any
@@ -202,9 +208,9 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 			t.Errorf("%s no longer holds the review sentence %q: name the phrase it renders now in decisionReviewSentences", sentence.renderer, sentence.phrase)
 		}
 	}
-	if predicate := walk.byName[decisionPredicate]; predicate == nil || !predicate.asks || !predicate.asksApproval {
-		t.Fatalf("the walk found no %s asking %s and %s: it reads the predicate under that name", short(decisionPredicate),
-			short(decisionRule), short(approvalRule))
+	if predicate := walk.byName[decisionPredicate]; predicate == nil || !predicate.asks {
+		t.Fatalf("the walk found no %s asking %s: it reads the predicate under that name", short(decisionPredicate),
+			short(decisionRule))
 	}
 	senders := walk.decisionSenders()
 	for _, s := range senders {
@@ -231,11 +237,6 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 				t.Errorf("%s (%s) asks %s itself: ask %s, which holds the guards that choose whether the rule is asked of a review, so "+
 					"no copy of them can drift", f.short(), f.at, short(decisionRule), short(decisionPredicate))
 			}
-		}
-		if f.asksApproval && f.name != decisionPredicate {
-			t.Errorf("%s (%s) asks %s itself: ask %s, which holds the guards that choose whether the rule is asked of an approval, so "+
-				"no sender decides for itself whether a person's approval is still their word", f.short(), f.at, short(approvalRule),
-				short(decisionPredicate))
 		}
 		if len(f.storedTasks) > 0 {
 			why, named := storedTaskReaders[f.name]
@@ -318,8 +319,6 @@ type decisionFunc struct {
 	queuesResume bool
 	// publishes are the positions where the body hands a record.Notice to one of envoyPublishes.
 	publishes []string
-	// asksApproval is whether the body names classify.DesignApprovalStands.
-	asksApproval bool
 }
 
 func (f *decisionFunc) short() string { return short(f.name) }
@@ -550,7 +549,6 @@ func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 	}
 	f.calls = callsIn(fn.Body)
 	f.asks = slices.Contains(f.calls, decisionRule)
-	f.asksApproval = slices.Contains(f.calls, approvalRule)
 	f.picks = slices.Contains(f.calls, senderModule+"record.SpecDecision")
 	assigned := localAssignments(info, fn.Body)
 	// written is every field selector an assignment writes, which reads nothing of the field. The

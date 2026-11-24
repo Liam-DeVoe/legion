@@ -169,7 +169,7 @@ func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, issues []record
 			}
 			e.logOnCommit(ctx, "workflow: the design gate of a root waiting on a person is open, which answers its wait", "issue", root.Key,
 				"version", version, "ask", root.Awaiting.Ask)
-			if err := e.answerWait(ctx, tx, root, record.AnsweredByApproval, fmt.Sprintf("version %d", version), 0); err != nil {
+			if err := e.answerWait(ctx, tx, root, record.AnsweredByApproval, fmt.Sprintf("version %d", version), version); err != nil {
 				return answered, err
 			}
 			answered = true
@@ -681,18 +681,21 @@ const DesignApprovedWake = "this resume is your design-approved wake"
 // resumeTask is the task an answered root's architect resumes with: what answered its wait
 // (Awaiting.AnsweredBy) and that act's own detail (Awaiting.AnsweredDetail, recorded when the wait
 // was answered, so a later act of the same kind does not rename it); how the document of the step
-// in question stands at the resume, read from that step's gate now, so an approval a newer
-// version superseded, or a gate closed again since, is said as it is, and an open gate is said as
-// the design-approved wake (DesignApprovedWake) — a changes request a later approval superseded
-// asks for no revision; a changes request the gate records as told after the wait began that did
-// not answer it, which no notice told (tellChangesOnce); what is still with the person (withHuman)
-// and what waits on the architect (a tree question, or the closed gate's approval request, on the
-// agent's turn). Handing back is advice only while the gate is not open, since an open gate moves
-// the root to planning, where a hand-back starts no wait; the request's own thread is named only
-// while the request is open. armed says whether the design gate is armed: with it off, no approval
-// is asked for, register_gate is never the advice, and an open gate is no person's approval. A
-// wait the gates.design: off rule answered (gateOffAnswer) is never said to be approved: under an
-// armed gate it is said as answered while the gate was off.
+// in question stands at the resume, read from that step's gate now, so a gate closed again since
+// is said as it is, and an open gate is said as the design-approved wake (DesignApprovedWake) — a
+// person's review that answered is asked whether it is still their word (SupersedingApproval), so
+// an approval a later approval replaced or a later changes request cleared is said to stand no
+// longer, one that stands below a newer version is said to stand, and a changes request a later
+// approval superseded asks for no revision; a changes request the gate records as told after the
+// wait began that did not answer it, which no notice told (tellChangesOnce); what is still with the
+// person (withHuman) and what waits on the architect (a tree question, or the closed gate's
+// approval request, on the agent's turn). Handing back is advice only while the gate is not open,
+// since an open gate moves the root to planning, where a hand-back starts no wait; the request's
+// own thread is named only while the request is open. armed says whether the design gate is armed:
+// with it off, no approval is asked for, register_gate is never the advice, and an open gate is no
+// person's approval. A wait the gates.design: off rule answered (gateOffAnswer) is never said to
+// be approved, nor asked about as a person's approval: under an armed gate it is said as answered
+// while the gate was off.
 //
 // Every sentence about the gate names step's own document (record.DesignStep.Document), which is
 // the document gate holds and the one whose version it prints: under a deployment that gates the
@@ -705,6 +708,14 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	gateClosed := gate != nil && !gateOpen
 	version, gateOff := strings.CutSuffix(waiting.AnsweredDetail, gateOffAnswer)
 	gateOff = gateOff && waiting.AnsweredBy == record.AnsweredByApproval
+	// approved says a person's approval answered the wait, and replaced is the predicate's answer
+	// for that approval, nil while it stands. It is asked of the gate in question alone
+	// (SupersedingApproval), filed under step, as the changes request below is.
+	approved := waiting.AnsweredBy == record.AnsweredByApproval && armed && !gateOff
+	var replaced *Supersession
+	if approved {
+		replaced = SupersedingApproval(gate, armed, answeredApproval(step, waiting))
+	}
 	var task strings.Builder
 	switch waiting.AnsweredBy {
 	case record.AnsweredByApproval:
@@ -714,6 +725,16 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 				key, document, version)
 		case armed:
 			fmt.Fprintf(&task, "Your %s %s on %s was approved.", document, version, key)
+			// An approval the gate no longer holds is named as what took its place: the approval
+			// the gate holds now (Supersession.By), or, where it holds none, the changes request
+			// that cleared it (classify.ApplyDesignGateEvent).
+			switch {
+			case replaced == nil:
+			case replaced.By != nil:
+				fmt.Fprintf(&task, " That approval no longer stands: a later approval, of version %d, replaced it.", replaced.By.Version)
+			default:
+				task.WriteString(" That approval no longer stands: a later changes request cleared it.")
+			}
 		case gateOpen:
 			fmt.Fprintf(&task, "Your %s %s on %s is registered, and the design gate is off, so it needs no approval.", document, version, key)
 		default:
@@ -778,8 +799,11 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case !armed:
 		fmt.Fprintf(&task, " The design gate is closed at version %d, as no registration of that version has opened it: when the %s is ready, "+
 			"register it at its current version, which opens the gate with no approval.", gate.LatestVersion, document)
-	case waiting.AnsweredBy == record.AnsweredByApproval && !gateOff:
-		fmt.Fprintf(&task, " That approval no longer stands: the %s is at version %d and is not approved.", document, gate.LatestVersion)
+	case approved && replaced == nil && gate.ApprovedVersion != nil:
+		// The approval that answered still stands, and the gate is closed: a newer version of the
+		// document, which no person has approved, closed it.
+		fmt.Fprintf(&task, " The approval of version %d stands, and the %s is now at version %d, which is not approved.",
+			*gate.ApprovedVersion, document, gate.LatestVersion)
 	default:
 		fmt.Fprintf(&task, " Your %s is not approved at version %d.", document, gate.LatestVersion)
 	}
@@ -858,6 +882,17 @@ func answeredReview(step record.DesignStep, waiting record.Awaiting, gate *recor
 		review.Mark = gate.ApprovedMark
 	}
 	return review
+}
+
+// answeredApproval is the approval that answered waiting as the resume asks SupersedingApproval
+// about it: of step's document, the document the wait records (record.Awaiting.Artifact; "" for a
+// wait on a question, which names none and is asked of the document the gate holds), at the
+// version the answer recorded beside its detail (record.Awaiting.AnsweredVersion; 0 for an answer
+// a daemon of an earlier release wrote, which is then asked at the version the gate holds
+// approved, as a sender that knows no version asks). An approval is asked at no mark: a person who
+// approves the same version again gives the same word again.
+func answeredApproval(step record.DesignStep, waiting record.Awaiting) Decision {
+	return Decision{Kind: record.DecisionDesignApproved, Step: step, Artifact: waiting.Artifact, Version: waiting.AnsweredVersion}
 }
 
 // recordedDecline is the decline the mirror holds for ask, nil where no person declined it: it

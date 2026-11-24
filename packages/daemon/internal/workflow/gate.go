@@ -287,7 +287,7 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 	if superseded := SupersedingApproval(gateOf(gates, step), e.gatesStep(step), Decision{Kind: record.DecisionDesignChangesRequested, Step: step,
 		Artifact: artifact, Version: version, Mark: mark}); superseded != nil {
 		e.logOnCommit(ctx, "workflow: a changes request an approval followed is not told", "issue", key, "version", version,
-			"approved", superseded.By)
+			"approved", superseded.By.Version)
 		return nil
 	}
 	place := "none"
@@ -406,9 +406,14 @@ func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, key string, f
 			"version", fact.Version, "review_seq", fact.Mark.Seq, "since_seq", waiting.Since.Seq)
 		return false, nil
 	}
+	// The review that answers records the version it is of (answerWait): the one a changes request
+	// reviewed or an approval approved. A newer version is no review, and records none.
 	reviewed := 0
-	if fact.Kind == intake.DispatchArtifactChangesRequested {
+	switch {
+	case fact.Kind == intake.DispatchArtifactChangesRequested:
 		by, detail, reviewed = record.AnsweredByChanges, changesDetail(fact.Version, fact.Reason), fact.Version
+	case by == record.AnsweredByApproval:
+		reviewed = fact.Version
 	}
 	e.logOnCommit(ctx, "workflow: a person's review or a newer spec version answered a root's wait", "issue", issue.Key,
 		"version", fact.Version, "event", fact.Kind, "ask", waiting.Ask, "waited_version", waiting.GateVersion)
@@ -461,7 +466,7 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 	case onGate && fact.DispatchVersion > waited && fact.RequestWaitsOnAgent:
 		by, version = record.AnsweredByVersion, fact.DispatchVersion
 	case classify.DesignGateOpen(gate) && fact.ApprovedVersion >= waited && (onGate || placedAfter(*issue, fact.ApprovedMark)):
-		by, version = record.AnsweredByApproval, fact.ApprovedVersion
+		by, version, reviewed = record.AnsweredByApproval, fact.ApprovedVersion, fact.ApprovedVersion
 	case changesRequested && fact.ChangesRequestedVersion >= waited && !placedAfter(*issue, fact.ChangesRequestedMark):
 		e.logOnCommit(ctx, "workflow: a registration read a changes request given before the wait began, which answers no wait", "issue", issue.Key,
 			"version", fact.ChangesRequestedVersion, "review_seq", fact.ChangesRequestedMark.Seq, "since_seq", waiting.Since.Seq)

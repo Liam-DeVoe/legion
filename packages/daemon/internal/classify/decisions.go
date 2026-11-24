@@ -1539,10 +1539,10 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // does not come after (record.EventMark.After). Such an approval is the person's decision in the
 // review's place, whichever approval request carried it, so nothing of the review is left to tell
 // or to act on. Every sender of a task or a notice about a person's recorded decision, the news
-// of an approved version included, reaches this rule and DesignApprovalStands through one
-// predicate, workflow's SupersedingApproval, asked from the gates as the record holds them at that
-// moment. That predicate's doc lists the guards that choose which of the two rules is asked of a
-// decision.
+// of an approved version included, reaches this rule through one predicate, workflow's
+// SupersedingApproval, which holds the rule for an approval itself and is asked from the gates as
+// the record holds them at that moment. That predicate's doc lists the guards that choose which of
+// the two rules is asked of a decision.
 //
 // An approval request the ask mirror holds is asked the same way (workflow's requestStands, the
 // one other caller, since a request is the architect's and no person's decision): the mirror
@@ -1559,24 +1559,6 @@ func ReviewSuperseded(gate record.DesignGate, version int, mark record.EventMark
 	}
 	approved := *gate.ApprovedVersion
 	return approved > version || approved == version && !mark.After(gate.ApprovedMark)
-}
-
-// DesignApprovalStands is the approval rule of that answer: it reports whether an approval of
-// version to of the document artifact is still the gate's. It stands while the gate's row holds
-// that document and its approved version is to. Where the step now records another document (a
-// registration that named one since), a later approval has replaced it, or a changes request has
-// cleared it (ApplyDesignGateEvent), it is no longer the person's word: a task or a notice that
-// named it would tell of a version the person has since decided otherwise on. A new version that
-// closed the gate since leaves it standing: the gate keeps that approval as the version a person
-// approved below the latest. It reads no mark: a person who approves the same version again gives
-// the same word again.
-//
-// Its one caller is workflow's SupersedingApproval, which every sender of a task or a notice about
-// a person's approval asks, the news of an approved version among them, so the guards that choose
-// whether it is asked live in one place. It is named for the design gate because ApprovalStands
-// already answers the pull request's question of a review.
-func DesignApprovalStands(gate record.DesignGate, artifact string, to int) bool {
-	return gate.ArtifactID == artifact && gate.ApprovedVersion != nil && *gate.ApprovedVersion == to
 }
 
 // DesignGateOpen reports whether a human approved the gate's current document version. It

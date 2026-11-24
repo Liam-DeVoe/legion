@@ -122,11 +122,11 @@ func TestAWaitRoundTripsAndOnlyItsOwnWritersMoveTheSequences(t *testing.T) {
 	})
 }
 
-// The version of the changes request that answered a wait is recorded beside the answer
+// The version of the review that answered a wait is recorded beside the answer
 // (Awaiting.AnsweredVersion) and read back as written. A daemon of an earlier release names
 // neither of its columns, so its write of a later answer leaves the old version beside a moment
 // that is no longer the answer's, and that answer reads as one with no version rather than with
-// the version of the review before it. An answer that is no changes request records none.
+// the version of the review before it. An answer that is no review records none.
 func TestAnAnswersReviewedVersionIsReadOnlyBesideTheAnswerItWasWrittenWith(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
