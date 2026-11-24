@@ -557,9 +557,9 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
         `mark ${scroller.mark || "none"}, last content y ${scroller.last?.y.join("-") ?? "none"}, ` +
         `${scroller.covers.length} covers`
     ),
-    ...reading.problems.covers,
-    ...reading.problems.short,
-    ...reading.problems.navigation,
+    // Every clause's problems, so that a clause added to `FootEndProblems` is compared too.
+    // `read()` leaves `unsettled` empty: only the comparison below fills it.
+    ...Object.values(reading.problems).flat(),
   ];
   const first = read();
   await frames(2);
