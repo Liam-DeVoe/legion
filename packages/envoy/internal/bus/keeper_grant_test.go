@@ -29,8 +29,8 @@ func keeperTestClock() *steppedClock {
 }
 
 // deniedKeeper is a keeper of three copies on a three-member cluster whose NATS user may publish
-// every subject but one, behind a relay in front of member 0 that counts the sends of another
-// subject, with its own clock and the log captured.
+// every subject but one, behind a relay in front of member 0 that counts the sends of one subject,
+// which may be the denied one, with its own clock and the log captured.
 type deniedKeeper struct {
 	js     nats.JetStreamContext
 	relay  *unansweredRelay
@@ -244,16 +244,11 @@ var (
 	insufficientAnswer = &nats.APIError{Code: 500, ErrorCode: nats.JSErrCodeInsufficientResourcesErr, Description: "insufficient resources"}
 )
 
-// keeperLines counts the keeper's lines about its buckets.
-type keeperLines struct {
-	refusals, failures, covers, raises int
-}
-
 // keeperState is what a row of a bucket pass reads: the reads and the updates of the refused
-// bucket's stream, and the keeper's lines.
+// bucket's stream, and the counts of the keeper's lines about its buckets.
 type keeperState struct {
-	reads, updates int
-	lines          keeperLines
+	reads, updates                     int
+	refusals, failures, covers, raises int
 }
 
 // keeperPassRow is a row over a keeper's bucket pass (keepBuckets) on a stand-in JetStream, with
@@ -298,8 +293,8 @@ func (r *keeperPassRow) want(when string, want keeperState) {
 	got := keeperState{reads: r.js.reads[r.stream], updates: r.js.updates[r.stream]}
 	r.js.mu.Unlock()
 	count := func(message string) int { return len(r.logs.recordsWithMsg(r.t, message)) }
-	got.lines = keeperLines{refusals: count(keeperGrantRefusedMsg), failures: count(keeperRaiseFailedMsg),
-		covers: count(keeperGrantCoversMsg), raises: count(keeperRaisedMsg)}
+	got.refusals, got.failures = count(keeperGrantRefusedMsg), count(keeperRaiseFailedMsg)
+	got.covers, got.raises = count(keeperGrantCoversMsg), count(keeperRaisedMsg)
 	if got != want {
 		r.t.Fatalf("%s: %+v, want %+v", when, got, want)
 	}
@@ -312,23 +307,22 @@ func TestTheKeeperAsksABucketItsGrantRefusesOncePerBackoff(t *testing.T) {
 	const granted, refused = "envoy_granted", "envoy_refused"
 	r := newKeeperPassRow(t, refused, granted, refused)
 	r.js.set(r.stream, 0, readRefusal(refused), nil)
-	refusedOnce := keeperLines{refusals: 1}
 
 	for range 4 {
 		r.pass()
 	}
-	r.want("over four passes", keeperState{reads: 1, lines: refusedOnce})
+	r.want("over four passes", keeperState{reads: 1, refusals: 1})
 	if got := r.reads(granted); got != 4 {
 		t.Fatalf("reads of the granted bucket over four passes = %d, want 4: a refusal holds only its own bucket", got)
 	}
 	r.clock.Advance(keeperNoGrantBackoff - time.Nanosecond)
 	r.pass()
-	r.want("a nanosecond before the backoff passed", keeperState{reads: 1, lines: refusedOnce})
+	r.want("a nanosecond before the backoff passed", keeperState{reads: 1, refusals: 1})
 	r.clock.Advance(time.Nanosecond)
 	r.pass()
-	r.want("once the backoff passed", keeperState{reads: 2, lines: refusedOnce})
+	r.want("once the backoff passed", keeperState{reads: 2, refusals: 1})
 	r.pass()
-	r.want("on the pass after the second refusal, which holds the bucket again", keeperState{reads: 2, lines: refusedOnce})
+	r.want("on the pass after the second refusal, which holds the bucket again", keeperState{reads: 2, refusals: 1})
 
 	warning := r.logs.recordsWithMsg(t, keeperGrantRefusedMsg)[0]
 	if warning["bucket"] != refused || warning["probe_again_in"] != keeperNoGrantBackoff.String() {
@@ -346,32 +340,32 @@ func TestTheKeeperLogsTheAskThatEndsABucketsBackoff(t *testing.T) {
 
 	r.js.set(r.stream, 0, readRefusal(refused), nil)
 	r.pass()
-	r.want("after the refusal", keeperState{reads: 1, lines: keeperLines{refusals: 1}})
+	r.want("after the refusal", keeperState{reads: 1, refusals: 1})
 
 	r.js.set(r.stream, 0, errors.New("nats: connection closed"), nil)
 	r.clock.Advance(keeperNoGrantBackoff)
 	r.pass()
-	r.want("after a failure that is no answer, at the end of the backoff", keeperState{reads: 2, lines: keeperLines{refusals: 1, failures: 1}})
+	r.want("after a failure that is no answer, at the end of the backoff", keeperState{reads: 2, refusals: 1, failures: 1})
 	if failure := r.logs.recordsWithMsg(t, keeperRaiseFailedMsg)[0]; failure["bucket"] != refused {
 		t.Fatalf("the failure line = %v, want it for %s", failure, refused)
 	}
 	r.pass()
-	r.want("on the pass after that failure", keeperState{reads: 3, lines: keeperLines{refusals: 1, failures: 2}})
+	r.want("on the pass after that failure", keeperState{reads: 3, refusals: 1, failures: 2})
 
 	r.js.set(r.stream, 0, nil, nil)
 	r.pass()
-	r.want("after the answer", keeperState{reads: 4, lines: keeperLines{refusals: 1, failures: 2, covers: 1}})
+	r.want("after the answer", keeperState{reads: 4, refusals: 1, failures: 2, covers: 1})
 	if covered := r.logs.recordsWithMsg(t, keeperGrantCoversMsg)[0]; covered["bucket"] != refused {
 		t.Fatalf("the grant line = %v, want it for %s", covered, refused)
 	}
 	r.pass()
-	r.want("on the pass after the answer", keeperState{reads: 5, lines: keeperLines{refusals: 1, failures: 2, covers: 1}})
+	r.want("on the pass after the answer", keeperState{reads: 5, refusals: 1, failures: 2, covers: 1})
 
 	r.js.set(r.stream, 0, readRefusal(refused), nil)
 	r.pass()
-	r.want("after a refusal once more", keeperState{reads: 6, lines: keeperLines{refusals: 2, failures: 2, covers: 1}})
+	r.want("after a refusal once more", keeperState{reads: 6, refusals: 2, failures: 2, covers: 1})
 	r.pass()
-	r.want("on the pass after that refusal", keeperState{reads: 6, lines: keeperLines{refusals: 2, failures: 2, covers: 1}})
+	r.want("on the pass after that refusal", keeperState{reads: 6, refusals: 2, failures: 2, covers: 1})
 	if got := r.reads(granted); got != 7 {
 		t.Fatalf("reads of the granted bucket over seven passes = %d, want 7", got)
 	}
@@ -387,38 +381,38 @@ func TestARefusalEndsAtAnyAnswerTheServerGivesTheRefusedRequest(t *testing.T) {
 
 	r.js.set(r.stream, 0, readRefusal(refused), nil)
 	r.pass()
-	r.want("after the read's refusal", keeperState{reads: 1, lines: keeperLines{refusals: 1}})
+	r.want("after the read's refusal", keeperState{reads: 1, refusals: 1})
 	r.js.set(r.stream, 0, nats.ErrStreamNotFound, nil)
 	r.clock.Advance(keeperNoGrantBackoff)
 	r.pass()
-	r.want("after the answer that the bucket is not there", keeperState{reads: 2, lines: keeperLines{refusals: 1, covers: 1}})
+	r.want("after the answer that the bucket is not there", keeperState{reads: 2, refusals: 1, covers: 1})
 
 	r.js.set(r.stream, 0, readRefusal(refused), nil)
 	r.pass()
-	r.want("after the read's refusal again", keeperState{reads: 3, lines: keeperLines{refusals: 2, covers: 1}})
+	r.want("after the read's refusal again", keeperState{reads: 3, refusals: 2, covers: 1})
 	r.js.set(r.stream, 0, notEnabledAnswer, nil)
 	r.clock.Advance(keeperNoGrantBackoff)
 	r.pass()
-	r.want("after an API error to the read", keeperState{reads: 4, lines: keeperLines{refusals: 2, failures: 1, covers: 2}})
+	r.want("after an API error to the read", keeperState{reads: 4, refusals: 2, failures: 1, covers: 2})
 
 	r.js.set(r.stream, 1, nil, updateRefusal(refused))
 	r.pass()
-	r.want("after the update's refusal", keeperState{reads: 5, updates: 1, lines: keeperLines{refusals: 3, failures: 1, covers: 2}})
+	r.want("after the update's refusal", keeperState{reads: 5, updates: 1, refusals: 3, failures: 1, covers: 2})
 	if text, _ := r.logs.recordsWithMsg(t, keeperGrantRefusedMsg)[2]["error"].(string); !strings.Contains(text, updateSubject(refused)) {
 		t.Fatalf("the third refusal line names %q, want the update %s", text, updateSubject(refused))
 	}
 	r.js.set(r.stream, 0, nil, insufficientAnswer)
 	r.clock.Advance(keeperNoGrantBackoff)
 	r.pass()
-	r.want("after an API error to the update", keeperState{reads: 6, updates: 2, lines: keeperLines{refusals: 3, failures: 2, covers: 3}})
+	r.want("after an API error to the update", keeperState{reads: 6, updates: 2, refusals: 3, failures: 2, covers: 3})
 
 	r.js.set(r.stream, 0, nil, updateRefusal(refused))
 	r.pass()
-	r.want("after the update's refusal again", keeperState{reads: 7, updates: 3, lines: keeperLines{refusals: 4, failures: 2, covers: 3}})
+	r.want("after the update's refusal again", keeperState{reads: 7, updates: 3, refusals: 4, failures: 2, covers: 3})
 	r.js.set(r.stream, 0, readRefusal(refused), updateRefusal(refused))
 	r.clock.Advance(keeperNoGrantBackoff)
 	r.pass()
-	r.want("after the read's refusal while the update's episode runs", keeperState{reads: 8, updates: 3, lines: keeperLines{refusals: 5, failures: 2, covers: 3}})
+	r.want("after the read's refusal while the update's episode runs", keeperState{reads: 8, updates: 3, refusals: 5, failures: 2, covers: 3})
 	if text, _ := r.logs.recordsWithMsg(t, keeperGrantRefusedMsg)[4]["error"].(string); !strings.Contains(text, openSubject(refused)) {
 		t.Fatalf("the fifth refusal line names %q, want the read %s", text, openSubject(refused))
 	}
@@ -433,40 +427,39 @@ func TestARefusalEndsAtAnyAnswerTheServerGivesTheRefusedRequest(t *testing.T) {
 func TestAnUpdateRefusalEndsOnlyAtAnAnsweredUpdate(t *testing.T) {
 	const granted, refused = "envoy_granted", "envoy_refused"
 	r := newKeeperPassRow(t, refused, granted, refused)
-	refusedOnce := keeperLines{refusals: 1}
 
 	r.js.set(r.stream, 1, nil, updateRefusal(refused))
 	r.pass()
-	r.want("after the update's refusal", keeperState{reads: 1, updates: 1, lines: refusedOnce})
+	r.want("after the update's refusal", keeperState{reads: 1, updates: 1, refusals: 1})
 	r.pass()
-	r.want("on the pass after it, inside the backoff", keeperState{reads: 1, updates: 1, lines: refusedOnce})
+	r.want("on the pass after it, inside the backoff", keeperState{reads: 1, updates: 1, refusals: 1})
 
 	r.js.set(r.stream, 3, nil, updateRefusal(refused))
 	r.clock.Advance(keeperNoGrantBackoff)
 	r.pass()
-	r.want("after the operator's raise", keeperState{reads: 2, updates: 1, lines: refusedOnce})
+	r.want("after the operator's raise", keeperState{reads: 2, updates: 1, refusals: 1})
 	r.pass()
-	r.want("on the pass after the operator's raise", keeperState{reads: 3, updates: 1, lines: refusedOnce})
+	r.want("on the pass after the operator's raise", keeperState{reads: 3, updates: 1, refusals: 1})
 
 	r.js.set(r.stream, 0, nats.ErrStreamNotFound, updateRefusal(refused))
 	r.pass()
-	r.want("after an answer that the bucket is not there", keeperState{reads: 4, updates: 1, lines: refusedOnce})
+	r.want("after an answer that the bucket is not there", keeperState{reads: 4, updates: 1, refusals: 1})
 
 	r.js.set(r.stream, 1, nil, updateRefusal(refused))
 	r.pass()
-	r.want("after the bucket was lowered again", keeperState{reads: 5, updates: 2, lines: refusedOnce})
+	r.want("after the bucket was lowered again", keeperState{reads: 5, updates: 2, refusals: 1})
 	r.pass()
-	r.want("on the pass after that refusal", keeperState{reads: 5, updates: 2, lines: refusedOnce})
+	r.want("on the pass after that refusal", keeperState{reads: 5, updates: 2, refusals: 1})
 
 	r.js.set(r.stream, 0, nil, nil)
 	r.clock.Advance(keeperNoGrantBackoff)
 	r.pass()
-	r.want("after the update the server answered", keeperState{reads: 6, updates: 3, lines: keeperLines{refusals: 1, covers: 1, raises: 1}})
+	r.want("after the update the server answered", keeperState{reads: 6, updates: 3, refusals: 1, covers: 1, raises: 1})
 	if raised := r.logs.recordsWithMsg(t, keeperRaisedMsg)[0]; raised["bucket"] != refused || raised["replicas"] != "1 -> 3" {
 		t.Fatalf("the raise line = %v, want %s raised 1 -> 3", raised, refused)
 	}
 	r.pass()
-	r.want("on the pass after the raise", keeperState{reads: 7, updates: 3, lines: keeperLines{refusals: 1, covers: 1, raises: 1}})
+	r.want("on the pass after the raise", keeperState{reads: 7, updates: 3, refusals: 1, covers: 1, raises: 1})
 	if got := r.reads(granted); got != 9 {
 		t.Fatalf("reads of the granted bucket over nine passes = %d, want 9", got)
 	}
