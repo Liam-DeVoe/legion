@@ -600,50 +600,6 @@ test("a refused plan surfaces its code and every reason in its sentence", async 
   expect(requests).toHaveLength(1);
 });
 
-// register_plan's request can end while the daemon reads or checks the plan (contract 242), and
-// the daemon then answers 503 PLAN_CHECK_STOPPED, the golden its route test writes: it decided
-// nothing and recorded nothing, and the same call can be sent again. The code makes the answer the
-// daemon's own, so the restart retry hands it back after one attempt, with the daemon's sentence
-// and no word of an attempt that may have been applied. The fault is the 503 with no code that
-// contracts 219 and 220 answered, which daemonUnreachable reads as a proxy's dropped attempt:
-// retried for ten minutes, then reported as one that may have been applied.
-test("register_plan's 503 PLAN_CHECK_STOPPED is the daemon's answer, handed back once and never read as a dropped attempt", async () => {
-  const stopped = daemonFixture("plan-check-stopped.json");
-  const { fetch, requests } = daemon(() => Response.json(stopped, { status: 503 }));
-  const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: CONTRACT,
-    fetch,
-  });
-  let clock = 0;
-  const waits: number[] = [];
-  const refused = await retryWhileDaemonRestarts(
-    "register_plan",
-    () =>
-      client.planRegister({
-        grantId: "grant-208",
-        issue: "LEGION-209",
-        artifactId: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
-        version: 5,
-      }),
-    {
-      now: () => clock,
-      sleep: async (ms: number) => {
-        waits.push(ms);
-        clock += ms;
-      },
-    }
-  ).catch((caught: unknown) => caught);
-
-  expect(refused).toBeInstanceOf(LegionDaemonApiError);
-  expect(refused).toMatchObject({ status: 503, code: "PLAN_CHECK_STOPPED", detail: stopped.error });
-  expect(daemonUnreachable(refused)).toBeUndefined();
-  expect((refused as Error).message).toBe(
-    `POST /legion/v1/plans/register failed with 503 PLAN_CHECK_STOPPED: ${String(stopped.error)}`
-  );
-  expect(requests).toHaveLength(1);
-  expect(waits).toEqual([]);
-});
-
 // The daemon refuses a returnTo on a completion that fails no step (RETURN_TO_NEEDS_FAIL); the
 // request's schema refuses it the same, so it never leaves the pane.
 test("a completion naming returnTo without the verdict fail is refused before it goes", async () => {

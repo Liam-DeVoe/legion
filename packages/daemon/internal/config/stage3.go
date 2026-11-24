@@ -1,7 +1,6 @@
 package config
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -344,13 +343,7 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 		steps = append(steps, parsed[0])
 	}
 	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-	// The loader serves no request whose end could stop the check, and a plan of one task with no
-	// need has no cycle to look for, so the check runs to its end.
-	invalid, err := plan.Validate(context.Background(), task, plan.Deployment{Roles: plan.BuiltinRoles()})
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", key, err)
-	}
-	refusals := append(plan.Supported(task), invalid...)
+	refusals := append(plan.Supported(task), plan.Validate(task, plan.Deployment{Roles: plan.BuiltinRoles()})...)
 	if len(refusals) > 0 {
 		reasons := make([]string, len(refusals))
 		for i, refusal := range refusals {

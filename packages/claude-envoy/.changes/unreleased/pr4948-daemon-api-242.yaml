@@ -1,6 +1,0 @@
-kind: Changed
-body: |-
-    The plugin declares daemon API contract 242.
-time: 2026-11-23T22:20:03Z
-custom:
-    Issue: pr4948

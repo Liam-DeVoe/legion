@@ -8,7 +8,7 @@ import (
 // planOf is the plan FromBlocks reads from blocks, which the test fails on when it cannot.
 func planOf(t *testing.T, version int, blocks ...Block) Plan {
 	t.Helper()
-	p, err := FromBlocks(t.Context(), "plan-md", version, blocks)
+	p, err := FromBlocks("plan-md", version, blocks)
 	if err != nil {
 		t.Fatalf("FromBlocks(version %d): %v", version, err)
 	}

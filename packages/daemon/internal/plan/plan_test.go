@@ -104,7 +104,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 		t.Fatalf("StepsOf(a task of a sub-owner) = %+v, want no step", got)
 	}
 	for _, attributes := range []map[string]string{nil, {"steps": ""}, {"steps": "  "}} {
-		p, err := FromBlocks(t.Context(), "plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: attributes, Text: "Do the change."}})
+		p, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: attributes, Text: "Do the change."}})
 		if err != nil {
 			t.Fatalf("FromBlocks(%v): %v", attributes, err)
 		}
@@ -114,7 +114,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 		if r := Supported(p); len(r) != 0 {
 			t.Fatalf("Supported(%v) = %+v, want none", attributes, r)
 		}
-		if r := validated(t, p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
+		if r := Validate(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
 			t.Fatalf("Validate(%v) = %+v, want none", attributes, r)
 		}
 		if got := StepsOf(p.Tasks[0], defaults); !reflect.DeepEqual(got, defaults) {
@@ -129,7 +129,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 // `plan_role` block is a role the plan defines, named by its id. Every other block is the
 // document's prose and no part of the plan.
 func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
-	p, err := FromBlocks(t.Context(), "plan-md", 3, []Block{
+	p, err := FromBlocks("plan-md", 3, []Block{
 		{ID: "intro", Type: "paragraph", Text: "Why the issue is split so."},
 		{ID: "d", Type: "plan_task", Attributes: map[string]string{
 			"needs":  "dispatch://ACME-1/artifact/plan-md#b-f1 dispatch://ACME-1/artifact/plan-md#b-c@v2",
@@ -159,7 +159,7 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	// `merges` is read by its presence: only the word false says the task does not merge, so a
 	// bare attribute is never read as a task that keeps its work back.
 	for value, want := range map[string]bool{"false": false, "": true, "true": true} {
-		p, err := FromBlocks(t.Context(), "plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: map[string]string{"merges": value, "steps": "implementer"}}})
+		p, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: map[string]string{"merges": value, "steps": "implementer"}}})
 		if err != nil || p.Tasks[0].Merges != want {
 			t.Fatalf("FromBlocks(merges=%q) = %+v, %v, want Merges %v", value, p.Tasks, err, want)
 		}
@@ -167,7 +167,7 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 
 	// The blocks FromBlocks cannot read at all: steps outside the grammar, a task or a role with
 	// no id, and one id on two blocks of the plan.
-	if _, err := FromBlocks(t.Context(), "plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: map[string]string{"steps": "implementer Reviewer"}}}); err == nil ||
+	if _, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Attributes: map[string]string{"steps": "implementer Reviewer"}}}); err == nil ||
 		!strings.Contains(err.Error(), "task a") || !strings.Contains(err.Error(), `"Reviewer"`) {
 		t.Fatalf("FromBlocks(steps outside the grammar) error = %v, want one naming task a and the word", err)
 	}
@@ -177,12 +177,12 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 		"two tasks, one id":         {{ID: "a", Type: "plan_task"}, {ID: "a", Type: "plan_task"}},
 		"a task and a role, one id": {{ID: "a", Type: "plan_task"}, {ID: "a", Type: RoleBlockType}},
 	} {
-		if p, err := FromBlocks(t.Context(), "plan-md", 1, blocks); err == nil {
+		if p, err := FromBlocks("plan-md", 1, blocks); err == nil {
 			t.Errorf("FromBlocks(%s) = %+v, want an error", name, p)
 		}
 	}
 	// A document with no task block is read, as a plan with no task, which Validate refuses.
-	if p, err := FromBlocks(t.Context(), "plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}}); err != nil || len(p.Tasks) != 0 {
+	if p, err := FromBlocks("plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}}); err != nil || len(p.Tasks) != 0 {
 		t.Fatalf("FromBlocks(no task block) = %+v, %v, want a plan with no task and no error", p, err)
 	}
 }

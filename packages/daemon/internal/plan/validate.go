@@ -1,7 +1,6 @@
 package plan
 
 import (
-	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -25,12 +24,10 @@ const notYet = " This release of Legion does not carry it out yet."
 // of tasks that need each other (cycles), named by its first task in id order with the chain from
 // that task. It refuses no plan for a step the plan lacks. The other refusals of a plan no release
 // carries out need an attribute or a block that Supported refuses in this release, so the release
-// that lifts that refusal adds them here. Its one error is ctx's, once ctx ends before the check
-// of cycles is done: an owner writes the plan, and register_plan checks it before the fact lock,
-// where only the request's own end can stop it.
-func Validate(ctx context.Context, p Plan, d Deployment) ([]Refusal, error) {
+// that lifts that refusal adds them here.
+func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
-		return []Refusal{{Reason: noTask}}, nil
+		return []Refusal{{Reason: noTask}}
 	}
 	defined := make(map[string]bool, len(p.RoleBlocks))
 	for _, role := range p.RoleBlocks {
@@ -51,10 +48,7 @@ func Validate(ctx context.Context, p Plan, d Deployment) ([]Refusal, error) {
 				"step %d of task %s names the role %s, which neither the deployment nor the plan defines.", i+1, task.ID, step.Role)})
 		}
 	}
-	found, err := cycles(ctx, p.Tasks)
-	if err != nil {
-		return nil, err
-	}
+	found, _ := cycles(p.Tasks)
 	for _, cycle := range found {
 		chain := make([]string, len(cycle))
 		for i, id := range cycle {
@@ -62,25 +56,7 @@ func Validate(ctx context.Context, p Plan, d Deployment) ([]Refusal, error) {
 		}
 		refusals = append(refusals, Refusal{Task: cycle[0], Reason: fmt.Sprintf("task %s needs itself: %s.", cycle[0], strings.Join(chain, ", "))})
 	}
-	return refusals, nil
-}
-
-// contextSteps is how many steps of a pass over a plan's tasks and needs pass between two reads
-// of its context: register_plan reads each need (FromBlocks) and checks the cycles (Validate)
-// before the fact lock, where only the request's own end can stop them. Each step is one task or
-// one need, so a pass whose request has ended stops within that many.
-const contextSteps = 1024
-
-// endedEvery is the read of ctx such a pass makes at each of its steps: ctx's error at every
-// contextSteps-th step, and nil at every other.
-func endedEvery(ctx context.Context) func() error {
-	steps := 0
-	return func() error {
-		if steps++; steps%contextSteps != 0 {
-			return nil
-		}
-		return ctx.Err()
-	}
+	return refusals
 }
 
 // cycles is one cycle of needs for each set of tasks that need each other: each strongly
@@ -93,13 +69,9 @@ func endedEvery(ctx context.Context) func() error {
 // every need, which named the shortest cycle through each one, was quadratic on a ring of tasks,
 // and Dispatch takes an owner's plan of 10,000 of them. Each cycle starts at its set's first task,
 // and the cycles are in the order of those tasks' ids. A need is a task id (FromBlocks); one that
-// names no task of tasks closes no cycle. cycles reads ctx as it goes and answers ctx's error
-// once ctx has ended.
-func cycles(ctx context.Context, tasks []Task) ([][]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	ended := endedEvery(ctx)
+// names no task of tasks closes no cycle. steps is the work of the two passes: each task and each
+// need components visits, and each need cycleFrom follows.
+func cycles(tasks []Task) (found [][]string, steps int) {
 	at := make(map[string]int, len(tasks))
 	for i, task := range tasks {
 		at[task.ID] = i
@@ -112,10 +84,7 @@ func cycles(ctx context.Context, tasks []Task) ([][]string, error) {
 			}
 		}
 	}
-	component, count, err := components(needs, ended)
-	if err != nil {
-		return nil, err
-	}
+	component, count, steps := components(needs)
 	// Each component's first task in id order, and whether it holds a cycle.
 	first := make([]int, count)
 	members := make([]int, count)
@@ -132,15 +101,12 @@ func cycles(ctx context.Context, tasks []Task) ([][]string, error) {
 	for i := range parent {
 		parent[i] = -1
 	}
-	var found [][]string
 	for c := range count {
 		if members[c] == 1 && !itself[c] {
 			continue
 		}
-		path, err := cycleFrom(needs, component, parent, first[c], ended)
-		if err != nil {
-			return nil, err
-		}
+		path, followed := cycleFrom(needs, component, parent, first[c])
+		steps += followed
 		cycle := make([]string, len(path))
 		for i, task := range path {
 			cycle[i] = tasks[task].ID
@@ -148,14 +114,14 @@ func cycles(ctx context.Context, tasks []Task) ([][]string, error) {
 		found = append(found, cycle)
 	}
 	slices.SortFunc(found, slices.Compare)
-	return found, nil
+	return found, steps
 }
 
 // components numbers the strongly connected components of the graph in which task i needs each
 // task of needs[i], by Tarjan's algorithm kept on explicit stacks, so a chain of 10,000 needs
-// costs no call stack: component[i] is task i's component, of count in all. It reads ended once
-// for each task and each need, and answers its error once it has one.
-func components(needs [][]int, ended func() error) (component []int, count int, err error) {
+// costs no call stack: component[i] is task i's component, of count in all. steps is how many
+// times its loop runs: once for each need and once for the finish of each task.
+func components(needs [][]int) (component []int, count, steps int) {
 	const unvisited = -1
 	// order is the order each task was first reached in, and low the earliest order reached from
 	// it through the tasks still on the stack.
@@ -184,9 +150,7 @@ func components(needs [][]int, ended func() error) (component []int, count int, 
 		}
 		enter(root)
 		for len(visiting) > 0 {
-			if err := ended(); err != nil {
-				return nil, 0, err
-			}
+			steps++
 			top := &visiting[len(visiting)-1]
 			if top.next < len(needs[top.task]) {
 				needed := needs[top.task][top.next]
@@ -220,31 +184,29 @@ func components(needs [][]int, ended func() error) (component []int, count int, 
 			count++
 		}
 	}
-	return component, count, nil
+	return component, count, steps
 }
 
 // cycleFrom is the shortest cycle from task back to task inside its component: the tasks from
 // task to the last before it again, each needing the next, found breadth first with each task's
 // needs in the order its block writes them. parent holds -1 for each task of the component;
 // cycleFrom marks the tasks it reaches there, and no later call reads those marks, since each
-// component is searched once. It reads ended once for each need it follows.
-func cycleFrom(needs [][]int, component, parent []int, task int, ended func() error) ([]int, error) {
+// component is searched once. followed is how many needs it follows.
+func cycleFrom(needs [][]int, component, parent []int, task int) (path []int, followed int) {
 	parent[task] = task
 	queue := []int{task}
 	for head := 0; head < len(queue); head++ {
 		at := queue[head]
 		for _, needed := range needs[at] {
-			if err := ended(); err != nil {
-				return nil, err
-			}
+			followed++
 			if needed == task {
-				path := []int{at}
+				path = []int{at}
 				for at != task {
 					at = parent[at]
 					path = append(path, at)
 				}
 				slices.Reverse(path)
-				return path, nil
+				return path, followed
 			}
 			if component[needed] == component[task] && parent[needed] < 0 {
 				parent[needed] = at

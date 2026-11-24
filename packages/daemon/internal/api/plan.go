@@ -153,14 +153,8 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// FromBlocks read each need as the task it names, so a need that names no task is Validate's,
 	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
 	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
-	// yet, then what no release can. Validate checks a plan its owner wrote, before the fact lock,
-	// so it runs on the request's context and stops when the request ends, recording nothing.
-	invalid, err := plan.Validate(r.Context(), given, plan.Deployment{Roles: plan.BuiltinRoles()})
-	if err != nil {
-		s.planCheckStopped(w, r, err, req.Issue, artifactID, req.Version)
-		return
-	}
-	refusals := append(plan.Supported(given), invalid...)
+	// yet, then what no release can.
+	refusals := append(plan.Supported(given), plan.Validate(given, plan.Deployment{Roles: plan.BuiltinRoles()})...)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
@@ -247,24 +241,11 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 	s.applyFact(w, r, requestFactID("tasks/stop"), intake.TaskStopped{Issue: req.Issue, Task: req.Task, By: grant.Claim, Generation: recorded.Generation}, EmptyResponse{})
 }
 
-// planCheckStopped answers a register_plan whose request ended while the plan was read
-// (plan.FromBlocks) or checked (plan.Validate), each before the fact lock and on the request's
-// context: 503 PLAN_CHECK_STOPPED (version.go's 242). The request ended before the check of the
-// plan was done, Legion decided nothing and recorded nothing, and the same call can be sent
-// again. The code is what tells a client this is the daemon's answer and not a proxy's dropped
-// attempt, which pi-shared's daemonUnreachable reads a 503 with no code as.
-func (s *server) planCheckStopped(w http.ResponseWriter, r *http.Request, err error, issue, artifactID string, version int) {
-	s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", issue, "artifact", artifactID, "version", version)
-	s.writeFailure(w, r, http.StatusServiceUnavailable, "PLAN_CHECK_STOPPED",
-		"register_plan stopped before it finished reading and checking the plan, because its request ended: Legion decided nothing and recorded nothing, and the same call can be sent again")
-}
-
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
-// read as a plan on the request's context (plan.FromBlocks). A block the plan's grammar cannot
-// read is a refused plan whose one reason names the block; a Dispatch that gives no blocks cannot
-// show Legion a plan at all; a request that ends during the read is answered as one that ends
-// during the check (planCheckStopped). Every refusal records nothing.
+// read as a plan (plan.FromBlocks). A block the plan's grammar cannot read is a refused plan
+// whose one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at
+// all. Every refusal records nothing.
 func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID string, version int, issue string) (plan.Plan, bool) {
 	document, err := s.dispatch.PlanDocument(r.Context(), artifactID, version)
 	switch {
@@ -284,11 +265,7 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 	for i, block := range document.Blocks {
 		blocks[i] = plan.Block{ID: block.ID, Type: block.Type, Attributes: block.Attributes, Text: block.Text}
 	}
-	given, err := plan.FromBlocks(r.Context(), artifactID, version, blocks)
-	if ended := r.Context().Err(); ended != nil && errors.Is(err, ended) {
-		s.planCheckStopped(w, r, err, issue, artifactID, version)
-		return plan.Plan{}, false
-	}
+	given, err := plan.FromBlocks(artifactID, version, blocks)
 	if err != nil {
 		s.writeRefusal(w, r, intake.PlanRefused([]plan.Refusal{{Reason: err.Error() + "."}}))
 		return plan.Plan{}, false

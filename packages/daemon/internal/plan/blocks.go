@@ -1,7 +1,6 @@
 package plan
 
 import (
-	"context"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -29,12 +28,10 @@ type Block struct {
 // task and each `plan_role` block a role the plan defines, in the document's order, and every
 // other block is skipped. Each task's needs are the ids of the tasks they name (resolveNeeds), so
 // no plan holds a need as a word. A document with no task block is read as a plan with no task,
-// which Validate refuses. It answers an error for a block it cannot read at all: a task or a role
-// with no id, one id on two such blocks, and a task whose `steps` is outside the grammar
-// (ParseSteps); the error names the block. Its one other error is ctx's, once ctx ends before
-// every need is read: register_plan reads the plan an owner wrote before the fact lock, where only
-// the request's own end can stop it.
-func FromBlocks(ctx context.Context, artifactID string, version int, blocks []Block) (Plan, error) {
+// which Validate refuses. It answers an error only for a block it cannot read at all: a task or a
+// role with no id, one id on two such blocks, and a task whose `steps` is outside the grammar
+// (ParseSteps); the error names the block.
+func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
 	typeOf := map[string]string{}
 	for _, block := range blocks {
@@ -58,7 +55,7 @@ func FromBlocks(ctx context.Context, artifactID string, version int, blocks []Bl
 		}
 		p.Tasks = append(p.Tasks, task)
 	}
-	return resolveNeeds(p, endedEvery(ctx))
+	return resolveNeeds(p), nil
 }
 
 // taskOf is one `plan_task` block as a task. `needs` is its words, each kept whole; `merges` is
@@ -86,41 +83,32 @@ func taskOf(block Block) (Task, error) {
 // decoded as Dispatch encodes a block id (neededID), or the word itself where it holds no "#b-".
 // The ids keep the order the block writes the words in, and a task a block names twice is needed
 // once. A word whose id is no task of p stays in Task.Unresolved, once however often the block
-// writes it, and Validate refuses it. It reads ended once for each word, and answers its error
-// once it has one.
-func resolveNeeds(p Plan, ended func() error) (Plan, error) {
+// writes it, and Validate refuses it.
+func resolveNeeds(p Plan) Plan {
 	ids := make(map[string]bool, len(p.Tasks))
 	for _, task := range p.Tasks {
 		ids[task.ID] = true
 	}
 	tasks := make([]Task, len(p.Tasks))
 	for i, task := range p.Tasks {
-		needs, unresolved, err := resolved(task.Needs, ids, ended)
-		if err != nil {
-			return Plan{}, err
-		}
-		task.Needs, task.Unresolved = needs, unresolved
+		task.Needs, task.Unresolved = resolved(task.Needs, ids)
 		tasks[i] = task
 	}
 	p.Tasks = tasks
-	return p, nil
+	return p
 }
 
 // resolved is one task's `needs` words as the ids of the tasks of ids they name, and the words
 // that name none, each kept once in the block's order. Each word is looked up in a set of what
 // is kept already, so the read takes time linear in the words: a scan of the kept list for each
-// word, which it replaced, was quadratic in the words of one block, and register_plan reads a
-// plan before the fact lock, where one `needs` attribute within Dispatch's document limit holds
-// tens of thousands of words.
-func resolved(words []string, ids map[string]bool, ended func() error) (needs, unresolved []string, err error) {
+// word was quadratic in the words of one block, and one `needs` attribute within Dispatch's
+// document limit holds hundreds of thousands of words.
+func resolved(words []string, ids map[string]bool) (needs, unresolved []string) {
 	if len(words) == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
 	needed, left := map[string]bool{}, map[string]bool{}
 	for _, word := range words {
-		if err := ended(); err != nil {
-			return nil, nil, err
-		}
 		id := neededID(word)
 		switch {
 		case !ids[id]:
@@ -133,7 +121,7 @@ func resolved(words []string, ids map[string]bool, ended func() error) (needs, u
 			needs = append(needs, id)
 		}
 	}
-	return needs, unresolved, nil
+	return needs, unresolved
 }
 
 // pin is the `@v<N>` that pins a reference to version N, as Dispatch reads one.
