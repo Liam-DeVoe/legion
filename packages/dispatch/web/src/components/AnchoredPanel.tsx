@@ -52,6 +52,46 @@ const EDGE: CSSProperties = {
  *  (`PANEL_ATTRIBUTE`). */
 const PANEL_MARK = { [PANEL_ATTRIBUTE]: "" };
 
+/** The values of `overflow-y` that cut what a box holds at the box's edge: a scroll box's, and
+ *  a box's that hides what overflows it. */
+const CUTS_OVERFLOW: ReadonlySet<string> = new Set(["auto", "clip", "hidden", "scroll"]);
+
+/** The top and bottom, in the window, of what `box` shows of what it holds: inside its border
+ *  and above a horizontal scrollbar. */
+function shownSpan(box: Element): { bottom: number; top: number } {
+  const top = box.getBoundingClientRect().top + box.clientTop;
+  return { bottom: top + box.clientHeight, top };
+}
+
+/**
+ * Scrolls `panel` the least that shows `control`, which has just taken the focus inside it, whole
+ * in the panel's box: up to its top edge where it starts above the box, down to its bottom edge
+ * where it ends below, and not at all where it stands whole. Chromium and WebKit scroll a control
+ * the focus reaches into view themselves; Firefox leaves one that is partly in sight cut at the
+ * box's edge (Remove Waiting on you filter in the Inbox's `+N more` panel, 19 px below it at
+ * 390x664). Only the panel's box scrolls: this sets its `scrollTop` rather than call
+ * `scrollIntoView`, which scrolls the window too.
+ *
+ * A control inside a box of its own that cuts it - a scroll box inside the panel - is shown as
+ * far as that box shows it: what the box cuts off is drawn nowhere, so no scroll of the panel can
+ * show it, and the panel scrolls the least that shows the drawn part whole. A control that box
+ * shows none of scrolls the panel nothing: no scroll of the panel shows it until the box itself
+ * scrolls to it.
+ */
+function showWhole(panel: HTMLElement, control: Element): void {
+  let { bottom, top } = control.getBoundingClientRect();
+  for (let box = control.parentElement; box !== null && box !== panel; box = box.parentElement) {
+    if (!CUTS_OVERFLOW.has(getComputedStyle(box).overflowY)) continue;
+    const cut = shownSpan(box);
+    top = Math.max(top, cut.top);
+    bottom = Math.min(bottom, cut.bottom);
+  }
+  if (top > bottom) return;
+  const shown = shownSpan(panel);
+  if (top < shown.top) panel.scrollTop -= shown.top - top;
+  else if (bottom > shown.bottom) panel.scrollTop += bottom - shown.bottom;
+}
+
 /** What dismissed a panel, which `onDismiss` hands its host: Escape, Tab or Shift+Tab past its
  *  last or first control, a pointer press outside it and its anchor, or its anchor gone from the
  *  page or drawn nowhere. A host whose next move depends on how the reader left - the Agents
@@ -86,6 +126,10 @@ export type PanelDismissal = "escape" | "gone" | "press" | "tab";
  * too, but a press there is no press outside this panel: the reader picking a value is still in
  * the panel they picked it from. Escape and Tab stay each panel's own, so Escape in the inner
  * list closes that list alone.
+ *
+ * A control the focus reaches inside the panel stands whole in the panel's box, which scrolls the
+ * least that shows it, in every engine (`showWhole`); a focus in a panel opened from inside this
+ * one is that panel's own, and scrolls this one nothing.
  *
  * The panel's element carries the keymap's `PANEL_ATTRIBUTE`, so a key pressed anywhere inside
  * it fires only the page's bindings that fire in a text field (`inEditable`): a radio or a
@@ -242,14 +286,20 @@ export function AnchoredPanel({
       (focusableIn(panel)[0] ?? panel).focus();
     inside.current = panel?.contains(document.activeElement) === true;
     // Every move of the focus: onto one of the panel's two edges, which is answered here, or
-    // anywhere else, which is noted.
+    // anywhere else, which is noted, and which, on a control of the panel's own, shows that
+    // control whole in the panel's box (`showWhole`). That is read here rather than by a focus
+    // handler on the panel's element: React hands that handler the focus of a panel opened from
+    // inside this one too, as it carries an event through a portal along its own tree, while the
+    // page tells them apart, since the inner panel stands outside this one in the body.
     const followFocus = (event: FocusEvent) => {
       const target = event.target;
       const edge =
         target === startEdge.current ? "start" : target === endEdge.current ? "end" : undefined;
       const open = panelRef.current;
       if (edge === undefined) {
-        inside.current = target instanceof Node && open?.contains(target) === true;
+        const own = open !== null && target instanceof Node && open.contains(target);
+        inside.current = own;
+        if (own && target !== open && target instanceof Element) showWhole(open, target);
         return;
       }
       if (open === null) return;

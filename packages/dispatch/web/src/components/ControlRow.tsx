@@ -1,7 +1,6 @@
 import {
   Children,
   cloneElement,
-  type FocusEvent,
   Fragment,
   isValidElement,
   type KeyboardEvent,
@@ -230,21 +229,6 @@ function deleteChip(event: KeyboardEvent<HTMLElement>): void {
   target.click();
 }
 
-/** A chip that takes the focus in the panel of `+N more` stands whole in the panel's box: the
- *  panel scrolls the least that shows it, so a chip already whole scrolls nothing. Chromium and
- *  WebKit scroll the focused chip into view themselves; Firefox leaves one that is partly in
- *  sight cut at the panel's edge. Only the panel's own box scrolls: this sets its `scrollTop`
- *  rather than call `scrollIntoView`, which scrolls the window too. */
-function showFocusedChip(event: FocusEvent<HTMLElement>): void {
-  const panel = event.currentTarget.parentElement;
-  if (panel === null) return;
-  const shownTop = panel.getBoundingClientRect().top + panel.clientTop;
-  const shownBottom = shownTop + panel.clientHeight;
-  const { bottom, top } = event.target.getBoundingClientRect();
-  if (top < shownTop) panel.scrollTop -= shownTop - top;
-  else if (bottom > shownBottom) panel.scrollTop += bottom - shownBottom;
-}
-
 /** The element of a chip the focus goes to: the chip itself, or the first link or button in the
  *  box a page drew its own chip in. */
 function focusableOf(chip: Element): HTMLElement | null {
@@ -334,8 +318,7 @@ export interface ControlRowProps {
  * with its own remove action. Each chip is drawn once, in the line or in the panel, so no id is
  * drawn twice. The panel's focus follows every panel's rules: it opens with the focus on its
  * first chip, and Escape, or Tab or Shift+Tab past its last or first chip, close it and hand the
- * focus back to `+N more`. A chip that takes the focus in it stands whole in the panel's box,
- * which scrolls the least that shows it, in every engine (`showFocusedChip`).
+ * focus back to `+N more`.
  *
  * A chip or **Clear filters** that is taken off hands the keyboard focus on rather than drop it
  * onto the page, where a keyboard reader would start again from the page's first link for each
@@ -548,7 +531,7 @@ export function ControlRow({
               >
                 {/* The panel's chips, without a box of their own (`contents`), so the panel lays
                     them out one under another. */}
-                {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only act on a chip of the panel, which is a button or a link of its own: they note which chip a click takes off, press the focused chip on Delete, and scroll the panel to the chip that takes the focus, so the list needs no role of its own. */}
+                {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only act on a chip of the panel, which is a button or a link of its own: they note which chip a click takes off, and press the focused chip on Delete, so the list needs no role of its own. */}
                 <div
                   className="contents"
                   onClickCapture={(event) => {
@@ -560,7 +543,6 @@ export function ControlRow({
                       panelPlace: held.index,
                     };
                   }}
-                  onFocus={showFocusedChip}
                   onKeyDown={deleteChip}
                   ref={panelRef}
                 >

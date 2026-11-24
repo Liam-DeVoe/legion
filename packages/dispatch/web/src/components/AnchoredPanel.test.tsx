@@ -1,9 +1,9 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 // biome-ignore lint/style/noRestrictedImports: the outside press below is a pointerdown with no release, and the Escape that ends an IME composition is a key marked as the input method's; user-event has no form for either.
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymap, useKeymapScope } from "../features/shell/keymap";
@@ -283,6 +283,216 @@ test("a press outside on a control that stops it from propagating still closes t
     fireEvent.pointerDown(screen.getByRole("button", { name: "Stopped" }));
     expect(screen.queryByRole("dialog", { name: "Panel" })).toBeNull();
     expect(dismissals).toEqual(["press"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A panel a host opens from its own anchor, both named `label`. */
+function OpenPanel({ children, label }: { children: ReactNode; label: string }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  return (
+    <>
+      <button onClick={() => setOpen(true)} ref={anchor} type="button">
+        {label}
+      </button>
+      {open ? (
+        <AnchoredPanel
+          anchorRef={anchor}
+          className=""
+          label={label}
+          onDismiss={() => setOpen(false)}
+          role="dialog"
+        >
+          {children}
+        </AnchoredPanel>
+      ) : null}
+    </>
+  );
+}
+
+/** A button for each of `names`. */
+function buttons(names: string[]): ReactNode {
+  return names.map((name) => (
+    <button key={name} type="button">
+      {name}
+    </button>
+  ));
+}
+
+/** An element of an open panel, and where it stands in what the panel holds: its top, in px down
+ *  from the top of what the panel holds, and its height. */
+type Placed = [element: Element, top: number, height: number];
+
+/**
+ * Lays an open panel out as a browser would, which happy-dom does not: its box is 200 px tall at
+ * `at` px down the window inside a 1 px border, so it shows 198 px of the `holds` px it holds.
+ * Each element of `placed` stands where it says, moved up by the panel's `scrollTop`, which stops
+ * at both ends of the scroll, as a browser's does.
+ */
+function layOutPanel(panel: HTMLElement, holds: number, placed: Placed[], at = 100): void {
+  const shown = 198;
+  let scrolled = 0;
+  Object.defineProperties(panel, {
+    clientHeight: { configurable: true, get: () => shown },
+    clientTop: { configurable: true, get: () => 1 },
+    scrollTop: {
+      configurable: true,
+      get: () => scrolled,
+      set: (value: number) => {
+        scrolled = Math.min(Math.max(value, 0), holds - shown);
+      },
+    },
+  });
+  panel.getBoundingClientRect = () => new DOMRect(0, at, 256, 200);
+  for (const [element, top, height] of placed) {
+    element.getBoundingClientRect = () => new DOMRect(9, at + 1 + top - scrolled, 238, height);
+  }
+}
+
+/** `controls` one under another from 8 px into their panel (its padding), 44 px tall and 8 px
+ *  apart. */
+function stacked(controls: Element[]): Placed[] {
+  return controls.map((control, index) => [control, 8 + 52 * index, 44]);
+}
+
+// INFRA-3135, round 26: Firefox left a control the Tab key reached partly outside a scrolled
+// panel's box - Remove Assignee: everyone filter in the Inbox's Filter panel, 19 px below it -
+// where Chromium and WebKit scroll it in themselves. Here no engine scrolls the panel itself.
+test("a control the focus reaches in a panel stands whole in the panel's box, which scrolls the least that shows it, and nothing else scrolls", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <OpenPanel label="Filters">
+      {buttons(["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"])}
+    </OpenPanel>
+  );
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    const panel = screen.getByRole("dialog", { name: "Filters" });
+    // Six controls hold 8 + 6 × 52 px.
+    layOutPanel(panel, 320, stacked(within(panel).getAllByRole("button")));
+    expect(screen.getByRole("button", { name: "Alpha" })).toHaveFocus();
+    // The control each key puts the focus on, and how far the panel has scrolled then: the panel
+    // shows 0-198 px of what it holds, and the fourth control, Delta, stands at 164-208.
+    const walked: [string, number][] = [];
+    for (const shift of [false, false, false, false, false, true, true, true, true, true]) {
+      await user.tab({ shift });
+      walked.push([document.activeElement?.textContent ?? "nothing", panel.scrollTop]);
+    }
+    expect(walked).toEqual([
+      ["Beta", 0],
+      ["Gamma", 0],
+      ["Delta", 10],
+      ["Epsilon", 62],
+      ["Zeta", 114],
+      // Already whole, so nothing scrolls.
+      ["Epsilon", 114],
+      ["Delta", 114],
+      // Gamma, at 112-156, starts 2 px above the box. Back up, each control stands at the box's
+      // top edge, so the first leaves the panel's 8 px of padding above it out of sight.
+      ["Gamma", 112],
+      ["Beta", 60],
+      ["Alpha", 8],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    view.unmount();
+  }
+});
+
+// What a box inside the panel cuts off is drawn nowhere, so no scroll of the panel shows it: the
+// panel shows whole what that box draws of the control.
+test("a control in a scroll box of its own inside the panel: the panel scrolls the least that shows whole what that box shows of it, and nothing for one that box shows none of", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <OpenPanel label="Filters">
+      {buttons(["Before", "Middle"])}
+      <div data-testid="scroll-box" style={{ overflowY: "auto" }}>
+        {buttons(["First", "Second", "Third", "Fourth"])}
+      </div>
+      {buttons(["After"])}
+    </OpenPanel>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    const panel = screen.getByRole("dialog", { name: "Filters" });
+    const box = screen.getByTestId("scroll-box");
+    const [before, middle, first, second, third, fourth, after] =
+      within(panel).getAllByRole("button");
+    // The box stands at 112-232 px of what the panel holds and shows 120 px of its controls,
+    // scrolled to its top: it cuts Third, at 216-260, at 232, and draws nothing of Fourth, at
+    // 268-312. After stands under the box, at 240-284, and the panel holds 292 px.
+    Object.defineProperty(box, "clientHeight", { configurable: true, get: () => 120 });
+    layOutPanel(panel, 292, [
+      [before, 8, 44],
+      [middle, 60, 44],
+      [box, 112, 120],
+      [first, 112, 44],
+      [second, 164, 44],
+      [third, 216, 44],
+      [fourth, 268, 44],
+      [after, 240, 44],
+    ]);
+    expect(before).toHaveFocus();
+    const walked: [string, number][] = [];
+    for (let press = 0; press < 6; press += 1) {
+      await user.tab();
+      walked.push([document.activeElement?.textContent ?? "nothing", panel.scrollTop]);
+    }
+    expect(walked).toEqual([
+      ["Middle", 0],
+      ["First", 0],
+      ["Second", 10],
+      // What the box draws of it, 216-232, stands at the panel's bottom edge.
+      ["Third", 34],
+      // The box draws nothing of it, so nothing scrolls.
+      ["Fourth", 34],
+      ["After", 86],
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A panel opened from inside another - a filter panel's list - is portalled out of it to the body,
+// so a focus there is that panel's own and none of the panel it was opened from.
+test("a control the focus reaches in a panel opened from inside a panel stands whole in its own panel's box, and the panel it was opened from scrolls nothing", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <OpenPanel label="Filters">
+      <OpenPanel label="Assignee">{buttons(["alice", "bob", "carol", "dave", "erin"])}</OpenPanel>
+      {buttons(["Labels", "Status", "Project", "Priority", "Epic"])}
+    </OpenPanel>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    const filters = screen.getByRole("dialog", { name: "Filters" });
+    // Six controls hold 8 + 6 × 52 px: Assignee, which opens the inner panel, and five more.
+    layOutPanel(filters, 320, stacked(within(filters).getAllByRole("button")));
+    await user.click(screen.getByRole("button", { name: "Assignee" }));
+    const assignee = screen.getByRole("dialog", { name: "Assignee" });
+    expect(screen.getByRole("button", { name: "alice" })).toHaveFocus();
+    // Five controls hold 8 + 5 × 52 px, in a box 400 px down the window: each stands below the
+    // Filters panel's box, which would scroll to its end to show any of them.
+    layOutPanel(assignee, 268, stacked(within(assignee).getAllByRole("button")), 400);
+    // The control each Tab puts the focus on, and how far each panel has scrolled then.
+    const walked: [string, number, number][] = [];
+    for (let press = 0; press < 3; press += 1) {
+      await user.tab();
+      walked.push([
+        document.activeElement?.textContent ?? "nothing",
+        assignee.scrollTop,
+        filters.scrollTop,
+      ]);
+    }
+    expect(walked).toEqual([
+      ["bob", 0, 0],
+      ["carol", 0, 0],
+      ["dave", 10, 0],
+    ]);
   } finally {
     view.unmount();
   }
