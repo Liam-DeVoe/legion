@@ -837,11 +837,13 @@ type Config struct {
 	// The token minted for a pod of the account names the account as its service and no person,
 	// holds no OAuth scope, and carries the entry's projects whatever the exchange request names: the
 	// project scope named and its one project, which it writes alone, or the project scope public
-	// and the private projects, beside which it reaches every public project. A request may name
-	// no project or only projects of the entry, and one naming any other is refused. It writes
-	// under the session the entry fixes; an entry that fixes none requires the pod to name its own
-	// session, which a registration (BROKER_POD_REGISTRARS) may choose for it. The session is
-	// everything after the second "=", so it alone may carry one. Refused at start, naming the
+	// and the private projects, beside which it reaches every public project. At this release
+	// Dispatch does not read a public token's list, so such a token writes wherever a token that
+	// names no project may. A request may name no project or only projects of the entry, and one
+	// naming any other is refused. It writes under the session the entry fixes; an entry that
+	// fixes none requires the pod to name its own session, which a registration
+	// (BROKER_POD_REGISTRARS) may choose for it. The session is everything after the second "=", so
+	// it alone may carry one. Refused at start, naming the
 	// setting and the entry: an entry not of that form or with a blank account; an account that is
 	// not system:serviceaccount:<namespace>:<name>, or is a namespace's default account; an
 	// account listed twice; projects of any other spelling; an account BROKER_EXCHANGE_ACCOUNTS or
