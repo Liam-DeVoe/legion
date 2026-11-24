@@ -161,6 +161,36 @@ func TestALauncherThatRefusesTheReadIsAReadThatCouldNotBeMade(t *testing.T) {
 	}
 }
 
+// PodWorkspaceWork's answers before it sends a read (INFRA-341's reviewer's point 13 on R6's
+// review fixes, the half of its point 4 left untested): an issue whose pod the runtime cannot
+// name, here a key that names no Sandbox, and an issue whose Sandbox the runtime does not hold, are
+// each an error that names no pod, never an answer of no work, so the daemon keeps the pod. The
+// control is the pod a launch made, whose launcher says it reads no workspace: an error that names
+// that pod.
+func TestAReadOfAPodTheRuntimeCannotNameOrHoldsNoneOfIsAReadThatCouldNotBeMade(t *testing.T) {
+	g := newRig(t, nil)
+	ctx := context.Background()
+	for _, tc := range []struct{ name, issue, says string }{
+		{"a_pod_the_runtime_cannot_name", "no key", "the runtime cannot say which pod holds it"},
+		{"no_pod", "LEGION-999", "the runtime holds no pod of the issue"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work, err := g.r.PodWorkspaceWork(ctx, tc.issue)
+			if err == nil || !strings.Contains(err.Error(), tc.says) || work.PodUID != "" || work.HoldsWork() || work.Head != "" {
+				t.Fatalf("the read of %q = %+v, %v; want an error that says %q and names no pod", tc.issue, work, err, tc.says)
+			}
+		})
+	}
+	t.Run("control:_a_pod_whose_launcher_reads_no_workspace", func(t *testing.T) {
+		loc := g.spawn(workerSpec(t))
+		pod := loc.Sandbox.PodUID
+		work, err := g.r.PodWorkspaceWork(ctx, testTree)
+		if err == nil || !strings.Contains(err.Error(), "no launcher of pod "+pod) || work.PodUID != pod || work.HoldsWork() {
+			t.Fatalf("the read of %s = %+v, %v; want an error that names its pod %s", testTree, work, err, pod)
+		}
+	})
+}
+
 // unexpectedFrame is a frame the launcher's side of a test did not expect.
 type unexpectedFrame struct{ frame shimwire.Frame }
 
