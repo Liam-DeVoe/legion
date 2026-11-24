@@ -538,8 +538,10 @@ export function createLegionTool(deps: {
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's
     // retry_or_escalate, its register_plan and stop_task, its sign_off and complete_step, and the
-    // controller's operations. tools.test.ts pins stop_task's, sign_off's and complete_step's text
-    // by their terms, and the text after complete_step's exactly.
+    // controller's operations. tools.test.ts pins only stop_task's and sign_off's terms
+    // (STOP_TASK_TERMS, SIGN_OFF_TERMS: each part's opening, its refusal codes, and stop_task's hold
+    // and first-step words). The other checks on this text are that it names envoy_publish and
+    // lacks two retired phrases. No test pins its sentences.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
