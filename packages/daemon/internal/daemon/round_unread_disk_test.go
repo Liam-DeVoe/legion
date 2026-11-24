@@ -104,18 +104,10 @@ func (r *podUpdateRig) keptReason() (string, string) {
 }
 
 // answerRound opens the round over the drift, has the sweep ask each of answering, and has each
-// answer.
+// answer (answerRoundOver).
 func (r *podUpdateRig) answerRound(drift string, answering ...claim.Role) {
 	r.t.Helper()
-	r.drifts(drift)
-	r.tick()
-	for _, role := range answering {
-		r.awaitAsked(role, podUpdateRound)
-	}
-	for _, role := range answering {
-		r.signal(role, "a1b2c3d")
-	}
-	r.settleAll()
+	r.answerRoundOver([]string{drift}, answering...)
 }
 
 // roundEndsKept sweeps until every role of members records no round, and holds the end to one

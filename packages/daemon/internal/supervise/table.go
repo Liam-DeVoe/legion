@@ -331,11 +331,11 @@ func UpdateTask(round, reasons string, endsAt time.Time) string {
 		"If the read finds work that no branch or tag on origin holds, or the read fails, the daemon does not replace the pod: " +
 		"the round ends with no replacement, the pod and its disk stay, and every role keeps working in the pod on its old image and settings. " +
 		"There is one exception. If the pod's disk is a volume that the next pod of this issue mounts, the daemon replaces the pod whatever the read finds, " +
-		"and the work on the disk stays on that volume. Otherwise the daemon deletes the pod and the disk."
+		"and the work on the disk stays on that volume, unless the replacement finds that the volume failed: then it marks the volume for a reset, and the next launch of this issue deletes the volume. Otherwise the daemon deletes the pod and the disk."
 	held := "The daemon holds your next task until your process runs again, or until the round ends with no replacement."
 	if runtime.Breaks(reasons) {
 		read = "This round is over a change that stops each role from working in this pod. So when the round ends, the daemon replaces the pod whatever the workspace holds. " +
-			"Before it replaces the pod, the daemon reads the workspace on the pod's disk and tells the issue's architect what the read found. " +
+			"Before it replaces the pod, the daemon reads the workspace on the pod's disk. If the read finds work that no branch or tag on origin holds, or the read fails, the daemon tells the issue's architect what the read found. " +
 			"The daemon deletes the pod and the disk, unless the disk is a volume that the next pod of this issue mounts."
 		held = "The daemon holds your next task until your process runs again."
 	}

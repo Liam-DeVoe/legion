@@ -51,12 +51,19 @@ func (r *podUpdateRig) refuseWorkspaceTaken() (lift func()) {
 // issue's architect, naming the commit the read before the replacement found.
 func (r *podUpdateRig) wantToldOnce(what string) {
 	r.t.Helper()
+	r.wantToldOnceNaming(what, passedOverCommit)
+}
+
+// wantToldOnceNaming sweeps roundSweeps times and holds the outbox to one workspace-taken notice to
+// the issue's architect, naming naming, what the read before the replacement found.
+func (r *podUpdateRig) wantToldOnceNaming(what, naming string) {
+	r.t.Helper()
 	for range roundSweeps {
 		r.tick()
 	}
 	told := r.architectNotices(record.WorkspaceTakenNotice)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, passedOverCommit) {
-		r.t.Fatalf("the architect was told %+v %s, want one workspace-taken notice naming the commit %s", told, what, passedOverCommit)
+	if len(told) != 1 || !strings.Contains(told[0].Reason, naming) {
+		r.t.Fatalf("the architect was told %+v %s, want one workspace-taken notice naming %s", told, what, naming)
 	}
 }
 

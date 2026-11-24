@@ -1,6 +1,6 @@
 package daemon
 
-// Which rounds break their pod (R7 of dispatch://INFRA-3271, spec v21): INFRA-3118's architect
+// Which rounds break their pod (R7 of dispatch://INFRA-3271, spec v23): INFRA-3118's architect
 // ruled at 04:00Z, on INFRA-341's reviewer's point 2, that a drift of the Kubernetes service
 // account the pod runs as breaks the pod, and that a drift of the leak check digest does not. GPT-6.1
 // Sol's non-blocking point on #5285 at 0259f8af asks that the classification come from a trusted
@@ -13,7 +13,10 @@ package daemon
 //
 // Each round here is over a working copy that holds a change. A round over a drift that breaks the
 // pod replaces the pod after the read and tells the issue's architect what it took; any other
-// round keeps the pod.
+// round keeps the pod. The rig scripts the reasons PodDrift gives, so that the leak check digest's
+// reason carries no mark is the Sandbox runtime's to hold (leak_check_test.go's
+// TestAChangedManifestDigestIsDrift wants that reason exactly), and no row here stands for it
+// (INFRA-341's reviewer's minor point 12 on fa9deb04).
 
 import (
 	"strings"
@@ -25,13 +28,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-const (
-	// leakCheckDrift is the Sandbox runtime's reason for a pod that records another leak check
-	// digest than the configured one.
-	leakCheckDrift = "leak check manifest 1f0e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0, now 2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819"
-	// imageDrift is a drift of the image, which the roles can keep working under.
-	imageDrift = "image legion-worker:v22.16.2, now legion-worker:v22.17.0"
-)
+// imageDrift is a drift of the image, which the roles can keep working under.
+const imageDrift = "image legion-worker:v22.16.2, now legion-worker:v22.17.0"
 
 // answerRoundOver is answerRound over every reason of reasons at once.
 func (r *podUpdateRig) answerRoundOver(reasons []string, answering ...claim.Role) {
@@ -52,12 +50,7 @@ func (r *podUpdateRig) answerRoundOver(reasons []string, answering ...claim.Role
 func (r *podUpdateRig) wantReplacedAndTold(what string) {
 	r.t.Helper()
 	r.awaitReplacement(1, what)
-	for range roundSweeps {
-		r.tick()
-	}
-	if told := r.architectNotices(record.WorkspaceTakenNotice); len(told) != 1 || !strings.Contains(told[0].Reason, roundChangeHead) {
-		r.t.Fatalf("the architect was told %+v %s, want one workspace-taken notice naming the change on %s", told, what, roundChangeHead)
-	}
+	r.wantToldOnceNaming(what, roundChangeHead)
 }
 
 func TestOnlyAReasonThatOpensOnTheMarkMakesARoundBreakItsPod(t *testing.T) {
@@ -70,7 +63,6 @@ func TestOnlyAReasonThatOpensOnTheMarkMakesARoundBreakItsPod(t *testing.T) {
 	}{
 		{name: "a_drift_of_the_account", reasons: []string{podUpdateAccountDrift}, breaks: true},
 		{name: "a_drift_of_the_account_after_a_drift_of_the_image", reasons: []string{imageDrift, podUpdateAccountDrift}, breaks: true},
-		{name: "a_drift_of_the_leak_check_alone", reasons: []string{leakCheckDrift}},
 		{name: "control:_a_value_that_holds_the_mark's_words", reasons: []string{"image legion-worker:" + runtime.BreakingDrift + "v22.16.2, now legion-worker:v22.17.0"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

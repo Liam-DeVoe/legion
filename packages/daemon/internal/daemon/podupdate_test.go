@@ -1087,7 +1087,7 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 // than the configured one, spelled as drift.go builds it: runtime.BreakingDrift + "account " +
 // <the account the pod runs as> + ", now " + <the configured account> (PodDrift, accountDrift),
 // here a pod left on `default` under a configuration that now names `legion-worker`. The mark
-// says the drift breaks the pod (R7 of dispatch://INFRA-3271, spec v21). This round rig scripts
+// says the drift breaks the pod (R7 of dispatch://INFRA-3271, spec v23). This round rig scripts
 // PodDrift, so nothing here reads drift.go: the sandbox package's
 // TestPodDriftNamesTheServiceAccountThePodRunsAs holds that spelling, and this copy of it only
 // makes the round below one opened on the account.

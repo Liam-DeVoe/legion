@@ -702,7 +702,7 @@ func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 // has to give: a pod drifted in the account alone is named for the account and for nothing else.
 //
 // The reason opens on runtime.BreakingDrift, the runtime's mark of a drift that breaks the pod
-// (R7 of dispatch://INFRA-3271, spec v21: INFRA-3118's architect ruled at 04:00Z on 2026-11-24 that
+// (R7 of dispatch://INFRA-3271, spec v23: INFRA-3118's architect ruled at 04:00Z on 2026-11-24 that
 // a pod's account is such a drift). The mark is set here, where the account's drift is decided, so
 // the daemon's update round over it replaces the pod after the read of its workspace, whatever the
 // read finds, and tells the issue's architect what it took (runtime.Breaks).
