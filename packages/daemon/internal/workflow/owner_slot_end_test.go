@@ -12,13 +12,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The end of a step its owner ran gives the owner's slot its own App back at once: on
-// `implementer:owner tester:owner`, the gate's opening, which ends no step, queues no supervise
-// slot_credential, and the owner's report of step 1 ends the owner's implementer step and queues
-// one, of the owner's claim, the architect's role, in the issue's tree, though the owner's next
-// step starts in the same move. When the row runs, it writes the slot only where the role the
-// record then answers acts as the owner's own App, and else nothing (the daemon's
-// slotCredential). Here that role is the tester, which acts as that App.
+// The end of a step its owner ran gives the owner's slot its own App back at once where the step
+// acted as another App: on `implementer:owner tester:owner`, the gate's opening, which ends no step,
+// queues no supervise slot_credential, and the owner's report of step 1 ends the owner's implementer
+// step, which acts as the implement App, and queues one, of the owner's claim, the architect's role,
+// in the issue's tree, though the owner's next step starts in the same move. The owner's report of
+// step 2 ends its tester step, which acts as the review App, the owner's own (appauth.AppRoleFor),
+// and queues none: its slot held its own App through that step.
 func TestTheEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 	owner := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 	pool := migratedPool(t)
@@ -45,6 +45,16 @@ func TestTheEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 		t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
 	}
 	assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(2))
+	written(t, 1)
+
+	tested := ownersReport(root.Key, owner, claim.RoleTester, 2, "test-LEGION-208")
+	tested.Verdict, tested.Entry = "pass", roleRowOf(t, pool, engine, root.Key, claim.RoleTester).Entry
+	if result := apply("step-2", tested); result.Refusal != nil {
+		t.Fatalf("the owner's report of step 2 was refused: %+v", result.Refusal)
+	}
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase == phase.Testing {
+		t.Fatalf("%s still stands in testing after the owner's report of its tester step: this case proves nothing", root.Key)
+	}
 	written(t, 1)
 }
 

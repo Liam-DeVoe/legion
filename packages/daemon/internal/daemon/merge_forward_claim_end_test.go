@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -46,7 +45,8 @@ func architectNoticesQueued(t *testing.T, pool *store.Pool) []record.Notice {
 // next start, since the owner's own steps wait on it: the row stays, nothing is published, and no
 // line says it finished. An ask to a fresh implementer whose claim has retired, and a review to a
 // fresh reviewer whose claim has failed, finish undelivered, and the architect that owns the issue
-// is told by one checks-red notice that names the role the message did not reach.
+// is told by one notice of the kind merge-forward-lost, whose role is the role the message did not
+// reach and whose phase is the phase the issue stays in.
 func TestAMergeForwardMessageIsNotLostToItsClaimsEnd(t *testing.T) {
 	t.Parallel()
 	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
@@ -100,9 +100,9 @@ func TestAMergeForwardMessageIsNotLostToItsClaimsEnd(t *testing.T) {
 			if len(ended) != 1 || ended[0]["state"] != string(tc.state) {
 				t.Fatalf("the row logged %v, want one line of its end naming the %s claim", ended, tc.state)
 			}
-			if len(notices) != 1 || notices[0].Kind != "checks-red" || notices[0].Role != tc.message.Role ||
-				!strings.Contains(notices[0].Reason, "did not reach the "+string(tc.message.Role)) {
-				t.Fatalf("the row queued the notices %+v, want one checks-red to the architect naming the %s it did not reach", notices, tc.message.Role)
+			if len(notices) != 1 || notices[0].Kind != "merge-forward-lost" || notices[0].Role != tc.message.Role || notices[0].Phase != tc.message.Phase {
+				t.Fatalf("the row queued the notices %+v, want one merge-forward-lost to the architect naming the %s it did not reach, in %s",
+					notices, tc.message.Role, tc.message.Phase)
 			}
 		})
 	}
