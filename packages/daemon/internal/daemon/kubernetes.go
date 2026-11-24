@@ -700,7 +700,9 @@ func savedWorkspaceBundle(st *store.Store, project string) runtime.SavedWorkspac
 // project already holds, in the shape the runtime calls it (runtime.HeldWorkspaceBundleDrop).
 // project is the runtime's project token (sandbox.Options.Project). The drop follows the take's
 // project rule (store.Store.DropHeldWorkspaceBundle): a bundle of an issue that project does not
-// record is another project's daemon's, and a pod of this daemon drops none of it.
+// record is another project's daemon's, and a pod of this daemon drops none of it. Each call for
+// an issue that project records also records the pod with its kept volume, which the issue's
+// update round reads (store.Store.PodHoldsEarlierWork).
 func heldWorkspaceBundle(st *store.Store, project string) runtime.HeldWorkspaceBundleDrop {
 	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
 		return st.DropHeldWorkspaceBundle(ctx, project, issue, podUID, keptSince)

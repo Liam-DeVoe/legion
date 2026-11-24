@@ -153,6 +153,11 @@ type podUpdateRig struct {
 	// asked is every update-ask row the sweep has written, by id, kept once read: the lane
 	// deletes each row it finishes, as the outbox does, and asks reads every row ever written.
 	asked map[int64]record.UpdateAsk
+	// keptSince is when the API server made the issue's Sandbox, where that Sandbox owns the
+	// issue's kept volume, as a pod's launcher session reads it (sandbox's keptVolumeSince), and
+	// the zero time while the issue's pods have volumes of their own. Each role's start into a pod
+	// while it is set asks the store what that pod's launcher asks (launcherStarts).
+	keptSince time.Time
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -606,8 +611,26 @@ func (r *podUpdateRig) startInPod(role claim.Role, pod string) {
 		}
 	}
 	r.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
+	r.launcherStarts(pod)
 	r.handle(role, supervise.RequestSpawn{Claim: token})
 	r.registerInto(role, pod)
+}
+
+// launcherStarts is what the launcher of pod asks of the store at a role's start there, before the
+// role runs, where the issue's Sandbox owns a kept volume (keptSince): the drop of a bundle that the
+// volume holds, which records pod with its volume whatever it drops (sandbox's
+// launchers.restoreWorkspace, store.DropHeldWorkspaceBundle). It answers whether the drop deleted a
+// bundle, and false, having asked nothing, where the issue's pods have volumes of their own.
+func (r *podUpdateRig) launcherStarts(pod string) bool {
+	r.t.Helper()
+	if r.keptSince.IsZero() {
+		return false
+	}
+	_, dropped, err := r.st.DropHeldWorkspaceBundle(r.ctx, podUpdateProject, podUpdateIssue, pod, r.keptSince)
+	if err != nil {
+		r.t.Fatalf("the launcher of pod %s asked the store's drop at a role's start: %v", pod, err)
+	}
+	return dropped
 }
 
 // displacedInto is the role's process ending with the pod it ran in and the daemon starting the
@@ -627,6 +650,7 @@ func (r *podUpdateRig) displacedInto(role claim.Role, pod string) {
 	r.conns.Register(token, conn)
 	r.workers[role] = conn
 	r.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
+	r.launcherStarts(pod)
 	r.handle(role, supervise.RuntimeObservation{Observation: runtime.Observation{
 		Locator: *ended, Kind: runtime.Gone, At: r.clock.Now(), Displaced: true,
 	}})
@@ -1746,7 +1770,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	}
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log,
-		listener: r.listener, asked: r.asked}
+		listener: r.listener, asked: r.asked, keptSince: r.keptSince}
 	next.lane = &outbox{project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
 	next.s = s
 	return next

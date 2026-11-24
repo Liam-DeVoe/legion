@@ -555,7 +555,8 @@ const bundleRestoreBound = 2 * time.Minute
 // (launcherSession.keptSince): the release kept that Sandbox, so the volume is the one the work
 // was taken off. Its launcher would refuse the bundle, because the workspace is older than the
 // save, and log a notice that the work was lost, while the bundle held the issue's pod. The drop
-// sends no slice and keeps the take's rules (store.DropHeldWorkspaceBundle). A drop that finds no
+// sends no slice and keeps the take's rules (store.DropHeldWorkspaceBundle), and it records the
+// pod with its kept volume, whatever it drops, for the issue's update round. A drop that finds no
 // such bundle leaves the take to run as for any pod. A drop that fails is logged and the pod is
 // sent nothing, as a take that fails: the row is as it was, and the next start asks again. The
 // drop runs at a role's start, after the pod's launcher connected, and that launcher runs after

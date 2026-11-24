@@ -438,7 +438,9 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 // one attempt is spent drops nothing, and a bundle of an issue the daemon's project does not
 // record drops nothing. A Sandbox created after the save holds a new volume, which a reset made,
 // and its pod restores the bundle. So does a Sandbox created in the save's own second, which the
-// rule cannot order against the save.
+// rule cannot order against the save. The runtime calls it at every role's start in a pod whose
+// Sandbox owns a kept volume, and each call for an issue the daemon's project records also records
+// that pod with its volume for the issue's update round (store.Store.PodHoldsEarlierWork).
 type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceBundle, bool, error)
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with

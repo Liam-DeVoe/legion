@@ -155,8 +155,8 @@ import (
 // claims.last_start_failure on every claim stored ready, working or idle, a column this list's
 // 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
 // (migration_20261123212127_test.go reads it).
-// dispatch://INFRA-4425's pods that took an idle release's work (20261123234016) are applied after
-// all of these; the migration creates workspace_bundle_pods and touches no outbox_kind_check.
+// dispatch://INFRA-4425's record of the disks of an issue's pods (20261123234016) is applied after
+// all of these; the migration creates issue_pod_disks and touches no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -187,9 +187,9 @@ var thisBranchsMigrations = []int{
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the plan
-// of an experiment's draw (20261123165139) and dispatch://INFRA-5463's 20261123212127. That is why
-// the loop below holds the list rather than counting it, so that a version added above any of them
-// is named here rather than read as main's.
+// of an experiment's draw (20261123165139), dispatch://INFRA-5463's 20261123212127 and
+// dispatch://INFRA-4425's 20261123234016. That is why the loop below holds the list rather than
+// counting it, so that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

@@ -16,15 +16,17 @@ import (
 // (workOnRoundPod, dispatch://INFRA-4425/comment/566feff4-2b27-41f2-89a9-b1a333d97ecd). The
 // order table's takeover rows suspend a role the release still holds (supervise's
 // suspendedAgain); this test suspends a woken one, whose launch is under way (supervise's
-// suspended). Control: a rule under which a suspension by the daemon or the operator of a claim an
-// idle release had suspended takes the release's work off it, as the earlier release mark was
-// cleared by such a suspension, fails every row; no row of the order table fails under it.
+// suspended). Control: a rule under which the daemon's or the operator's suspension of a woken
+// claim whose launch is under way takes the pod's earlier work off that claim, so that
+// workOnRoundPod holds of it only where an agent of it registered in the round's pod, while a
+// takeover of a claim the release still holds keeps that work on it, fails every row; no row of
+// the order table fails under it.
 func TestAWokenReleasedRoleSuspendedBeforeAnyPodIsNamedWhereThePodWent(t *testing.T) {
 	for _, by := range []supervise.SuspendSource{supervise.SuspendedByDaemon, supervise.SuspendedByOperator} {
 		for _, end := range []roundPodEnd{endPodGone, endRecreated, endRecreatedRefusing} {
 			t.Run(string(by)+": "+end.String(), func(t *testing.T) {
 				rig := wokenSuspendedTo(t, end, by)
-				wantRoundEnd(t, rig, end, wokenRefused, "implementer (suspended)")
+				wantRoundEnd(t, rig, end, wokenSuspendedBeforeAnyPod, "implementer (suspended)")
 			})
 		}
 	}
@@ -46,7 +48,7 @@ func wokenSuspendedTo(t *testing.T, end roundPodEnd, by supervise.SuspendSource)
 	rig.startInPod(implementer, releasedPod)
 	rig.startInPod(tester, releasedPod)
 	rig.releases(releasedPod, 1, releasedSavedAt, implementer, tester)
-	rig.wakesInto(tester, podUpdatePod, roundPodMadeAt, nil)
+	rig.wakesInto(tester, podUpdatePod, roundPodMadeAt)
 	rig.drifts(podUpdateExchangeDrift)
 
 	rig.tick()
