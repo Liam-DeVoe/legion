@@ -41,8 +41,9 @@ import (
 
 // The refusals of the objects a project group route's path names (dispatch://INFRA-4071/spec R7).
 var (
-	priorityMissingRefusal      = apicode.Refusal{Condition: apicode.PriorityMissing, Code: apicode.PriorityNotFound}
-	nearCopyCheckMissingRefusal = apicode.Refusal{Condition: apicode.NearCopyCheckMissing, Code: apicode.NearCopyCheckNotFound}
+	priorityMissingRefusal           = apicode.Refusal{Condition: apicode.PriorityMissing, Code: apicode.PriorityNotFound}
+	nearCopyCheckMissingRefusal      = apicode.Refusal{Condition: apicode.NearCopyCheckMissing, Code: apicode.NearCopyCheckNotFound}
+	architectureSourceMissingRefusal = apicode.Refusal{Condition: apicode.ArchitectureSourceMissing, Code: apicode.SourceNotFound}
 )
 
 // projectDefaultAssigneeText is what the routes that read or write a project's default assignee
@@ -197,7 +198,7 @@ func (s *server) v2ProjectRows() []routeRow {
 			Body:  requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},
 			Shape: routeShape{Status: http.StatusNoContent},
 			Scope: scopeProject, ProjectOf: projectPathProject,
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal, architectureSourceMissingRefusal},
 		},
 		{
 			Method: http.MethodPut, Pattern: "/projects/{key}/architecture-sources/{owner}/{repo}", Auth: authAny, Versions: onlyV2,

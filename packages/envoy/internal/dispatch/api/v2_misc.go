@@ -41,7 +41,16 @@ import (
 var (
 	sessionGroupMissingRefusal = apicode.Refusal{Condition: apicode.SessionGroupMissing, Code: apicode.SessionGroupNotFound}
 	goingRequestMissingRefusal = apicode.Refusal{Condition: apicode.GoingRequestMissing, Code: apicode.GoingRequestNotFound}
+	deployRunMissingRefusal    = apicode.Refusal{Condition: apicode.DeployRunMissing, Code: apicode.NotFound}
+	runIDMalformedRefusal      = apicode.Refusal{Condition: apicode.RunIDMalformed, Code: apicode.RunIDInput}
 )
+
+// deliveryUnconfiguredRefusal is the refusal of a route that reads the deployment's delivery
+// settings (deliverySettings) on a Dispatch that holds none.
+var deliveryUnconfiguredRefusal = apicode.Refusal{Condition: apicode.DeliveryUnconfigured, Code: apicode.DeliveryNotConfigured}
+
+// queryProjectMalformedRefusal is the refusal of a project filter whose value is no project key.
+var queryProjectMalformedRefusal = apicode.Refusal{Condition: apicode.QueryProjectMalformed, Code: apicode.InvalidProject}
 
 // sessionGroupText is what the three session-group writes say of a group and of who may write
 // one.
@@ -191,7 +200,7 @@ func (s *server) v2MiscRows() []routeRow {
 			Query:       personNodesV2Query{},
 			Shape:       routeShape{Status: http.StatusOK, Response: page[personNode]{}},
 			OAuthScopes: routeScopeSet{model.ScopePerson},
-			Refusals:    listRefusals(),
+			Refusals:    listRefusals(queryProjectMalformedRefusal),
 		},
 		{
 			Method: http.MethodGet, Pattern: "/search-coverage", Auth: authAny, Versions: onlyV2,
@@ -369,7 +378,7 @@ func (s *server) v2MiscRows() []routeRow {
 			Resource: "deploy-runs", Kind: kindItem, Key: "{id}",
 			Shape:    routeShape{Status: http.StatusOK, Response: delivery.DeliveryRunDetailView{}},
 			IDs:      &idRoute{Reason: "a deploy-repository run id, a positive integer and no uuid at all"},
-			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
+			Refusals: []apicode.Refusal{undeclaredKeyRefusal, runIDMalformedRefusal, deployRunMissingRefusal, deliveryUnconfiguredRefusal},
 		},
 		{
 			Method: http.MethodPost, Pattern: "/markdown-round-trips", Auth: authAny, Versions: onlyV2,

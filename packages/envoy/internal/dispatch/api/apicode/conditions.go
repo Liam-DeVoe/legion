@@ -51,6 +51,20 @@ var (
 	// first write of a run makes its record, so only a write that cannot make it meets a missing
 	// step.
 	StepMissing = Condition{"step missing"}
+	// ArchitectureSourceMissing is the {owner}/{repo} of a project's architecture source (DELETE
+	// /api/v2/projects/{key}/architecture-sources/{owner}/{repo}) that names no source of the
+	// project {key} names.
+	ArchitectureSourceMissing = Condition{"architecture source missing"}
+	// DeployRunMissing is the {id} of a deploy run (GET /api/v2/deploy-runs/{id}) that names no
+	// run of the deployment's deploy repository Dispatch holds.
+	DeployRunMissing = Condition{"deploy run missing"}
+)
+
+// The conditions of a path value written in no form the object it names takes.
+var (
+	// RunIDMalformed is the {id} of a deploy run (GET /api/v2/deploy-runs/{id}) that is no
+	// positive integer, the form of a GitHub run id.
+	RunIDMalformed = Condition{"run id malformed"}
 )
 
 // The conditions every v2 route can meet in its query or its loops (R4, R5 and R7 of
@@ -83,6 +97,9 @@ var (
 	QueryVersionMissing = Condition{"query version missing"}
 	// ArtifactNotDocument is an artifact a route reads as a document that is a file or an image.
 	ArtifactNotDocument = Condition{"artifact not a document"}
+	// QueryProjectMalformed is a project a request's query names that is no project key: GET
+	// /api/v2/nodes's project filter.
+	QueryProjectMalformed = Condition{"query project malformed"}
 )
 
 // The conditions of what the caller's credential covers.
@@ -109,4 +126,7 @@ var (
 	// BrokerUnconfigured is a request to a route that relays to the secrets broker, on a Dispatch
 	// configured with none (DISPATCH_AGENT_SECRETS_URL unset).
 	BrokerUnconfigured = Condition{"secrets broker unconfigured"}
+	// DeliveryUnconfigured is a request to a route that reads the deployment's delivery settings,
+	// on a Dispatch that holds none (no delivery_settings row).
+	DeliveryUnconfigured = Condition{"delivery settings unconfigured"}
 )
