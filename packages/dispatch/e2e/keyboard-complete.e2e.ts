@@ -9507,3 +9507,38 @@ test("k-next-item: in the drawer a snooze of two selected rows in a list that sc
 }) => {
   await nextItemBulkNoScrollSteps(page, "the drawer");
 });
+
+// The tester's red row of round 16 (R15): on a phone a tap at the centre of each choice of the
+// status menu lands on that choice. At 9d3e0777 the text box and the foot line are drawn over the
+// first and the last choice.
+/** k-phone for the status: a tap on today's header Status opens its menu, and a tap at the
+ *  centre of each choice lands on that choice, not on the menu's text box or its foot line drawn
+ *  over it (R15: "a tap on a choice writes it"; `MultiSelect`'s `ListMenu`: "The panel is tall
+ *  enough for a menu's choices, each 44 px high, under the box and over the foot line"). */
+// SLOW(>=2s): an issue page on a phone, and its status menu opened by a tap.
+test("k-phone: a tap opens the status menu of today's issue page, and a tap at the centre of each of its choices lands on that choice @phone @phone-only", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = "Ledger rollout";
+  const issue = await createIssue({ project: "CORE", title });
+  await patchIssue(issue.key, { status: "todo" });
+  await openIssue(page, issue.key, title);
+  const status = statusTrigger(page);
+  const menu = listOf(status);
+  await expect(status, "k-phone: the header draws its Status").toBeVisible();
+  await status.tap();
+  await expect(menu, "k-phone: a tap on the Status opens the status menu").toBeVisible();
+  await expect(menu.getByRole("option"), "k-phone: the menu holds the open statuses").toHaveCount(
+    OPEN_STATUSES.length
+  );
+  for (const label of OPEN_STATUSES) {
+    const choice = menu.getByRole("option", { exact: true, name: label });
+    const lands = await choice.evaluate((node) => {
+      const r = node.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit !== null && node.contains(hit);
+    });
+    expect(lands, `k-phone: a tap at the centre of ${label} lands on ${label}`).toBe(true);
+  }
+});
