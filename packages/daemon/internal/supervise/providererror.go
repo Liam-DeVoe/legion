@@ -197,7 +197,9 @@ func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
 		return err
 	}
 	after := promptRetryDelay(p.ProviderErrorRetries)
-	m.arm(TimerPromptRetry, after, p.ID)
+	// CONTROL, never to merge: the wait fires one second before the wait it logs, so the
+	// retry proof must fail at its first rung.
+	m.arm(TimerPromptRetry, after-time.Second, p.ID)
 	m.log.Info("supervise: this provider error can clear; the task goes to the same session again after a wait",
 		"delivery", p.ID, "attempt", p.ProviderErrorRetries, "wait", after, "cause", cause)
 	return nil
