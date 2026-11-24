@@ -656,10 +656,7 @@ func (r *rig) workspace(issue string) string {
 // step that never comes still fails, naming what it waited for.
 func eventually(t *testing.T, what string, done func() bool) {
 	t.Helper()
-	within := testwait.Remaining(t)
-	if !testwait.Holds(within, 50*time.Millisecond, done) {
-		t.Fatalf("timed out after %s waiting for %s", within, what)
-	}
+	testwait.WithinPolling(t, testwait.Remaining(t), 50*time.Millisecond, what, done)
 }
 
 func probe(t *testing.T, rt *Runtime, loc runtime.Locator) runtime.Observation {

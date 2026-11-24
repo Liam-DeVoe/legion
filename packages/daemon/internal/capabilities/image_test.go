@@ -568,21 +568,8 @@ func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
-	started, held := filepath.Join(dir, "started"), filepath.Join(dir, "held")
-	t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
+	ctx, started, held, bound, ran := passedOnceStarted(t, context.DeadlineExceeded)
 	s.install("chromium", "#!/bin/sh\n: >'"+started+"'\nuntil [ -e '"+held+"' ]; do '"+sleep+"' 0.01; done\n")
-	ctx, pass, cancel := testwait.StandInDeadline(context.Background())
-	defer cancel()
-	bound := testwait.Bounded(t, answerBudget, time.Second)
-	ran := make(chan bool, 1)
-	go func() {
-		ran <- testwait.Holds(bound, testwait.Poll, func() bool {
-			_, err := os.Stat(started)
-			return err == nil
-		})
-		pass(context.DeadlineExceeded)
-	}()
 
 	states, err := CheckImage(ctx, s.image("LEGION_TEST_NO_PYTHON=1"))
 
@@ -722,6 +709,29 @@ func TestRunReportsTheCommandsOwnExitWhenAChildHoldsItsOutputPastItsExit(t *test
 // attempt they measured was about 8 s, at a load average of 1,200 on 288 CPUs.
 const answerBudget = 20 * time.Second
 
+// passedOnceStarted is a caller's context whose deadline passes with cause once the command a row
+// runs has written the file started, as a budget passes at a fact (testwait.StandInDeadline), and
+// never before. The command waits for the file held, which the row's cleanup writes. ran answers
+// whether the command started within bound.
+func passedOnceStarted(t *testing.T, cause error) (ctx context.Context, started, held string, bound time.Duration, ran <-chan bool) {
+	t.Helper()
+	dir := t.TempDir()
+	started, held = filepath.Join(dir, "started"), filepath.Join(dir, "held")
+	t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
+	ctx, pass, cancel := testwait.StandInDeadline(context.Background())
+	t.Cleanup(cancel)
+	bound = testwait.Bounded(t, answerBudget, time.Second)
+	startedWithin := make(chan bool, 1)
+	go func() {
+		startedWithin <- testwait.Holds(bound, testwait.Poll, func() bool {
+			_, err := os.Stat(started)
+			return err == nil
+		})
+		pass(cause)
+	}()
+	return ctx, started, held, bound, startedWithin
+}
+
 // A command its budget cuts off is a run that timed out, named with that budget, never an exit of
 // its own, and no run the caller's context cut. The run tells its budget's end from any other by
 // the cause its attempt recorded (errCommandTimeout), so the budget passes here with that cause at
@@ -733,21 +743,8 @@ const answerBudget = 20 * time.Second
 // Chromium only commandTimeout cuts. The command runs until the budget's stop or the row's cleanup
 // ends it, never on a timer of its own.
 func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
-	dir := t.TempDir()
-	started, held := filepath.Join(dir, "started"), filepath.Join(dir, "held")
-	t.Cleanup(func() { _ = os.WriteFile(held, nil, 0o644) })
+	ctx, started, held, bound, ran := passedOnceStarted(t, errCommandTimeout)
 	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
-	ctx, pass, cancel := testwait.StandInDeadline(context.Background())
-	defer cancel()
-	bound := testwait.Bounded(t, answerBudget, time.Second)
-	ran := make(chan bool, 1)
-	go func() {
-		ran <- testwait.Holds(bound, testwait.Poll, func() bool {
-			_, err := os.Stat(started)
-			return err == nil
-		})
-		pass(errCommandTimeout)
-	}()
 
 	r := img.runWithin(ctx, answerBudget, "sh", "-c", `: >"$1"; until [ -e "$2" ]; do sleep 0.01; done`, "sh", started, held)
 

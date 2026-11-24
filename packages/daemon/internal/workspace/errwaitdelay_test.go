@@ -53,7 +53,7 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 // of the test binary's deadline, so it passes nowhere near the git's own exit on a loaded machine.
 // A budget that passes between Go's reap of the git and Wait's read of its context still meets
 // exec's Cancel, whose stop the child in the group takes, so that run reports a kill, as
-// procgroup.Configure says (procgroup.go:85-90); no row holds either answer there.
+// procgroup.Configure's doc says; no row holds either answer there.
 func TestRunReportsTheCommandsOwnFailureWhenAChildInItsGroupHoldsItsOutput(t *testing.T) {
 	dir := t.TempDir()
 	fakeGit := filepath.Join(dir, "git")
@@ -452,15 +452,9 @@ func cancelOnceExists(ctx context.Context, cancel context.CancelFunc, path strin
 // assertions by design (a child standing in for a command's own lingering child).
 func killPIDFile(t *testing.T, pidFile string) {
 	t.Helper()
-	raw, err := os.ReadFile(pidFile)
-	if err != nil {
-		return
+	if pid := pidIn(pidFile); pid > 0 {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		return
-	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
 // heldChild is lines of a fake command's shell script that start a child holding the command's

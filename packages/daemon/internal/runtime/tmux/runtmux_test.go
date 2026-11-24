@@ -353,15 +353,9 @@ func fakeTmuxClient(t *testing.T, dir, body string) string {
 // killPIDFile kills the process named by the PID pidFile holds, left running past a test's own
 // assertions by design (heldChild's child, standing in for what holds a client's pipes).
 func killPIDFile(pidFile string) {
-	raw, err := os.ReadFile(pidFile)
-	if err != nil {
-		return
+	if pid := pidIn(pidFile); pid > 0 {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		return
-	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
 // heldChild is lines of a fake client's shell script that start a child holding the client's
