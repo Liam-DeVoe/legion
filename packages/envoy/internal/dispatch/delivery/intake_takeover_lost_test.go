@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -127,20 +126,22 @@ func awaitTakenOver(t *testing.T, publisher *bus.Client, held *natsgo.ConsumerIn
 	}
 }
 
-// worstPhaseLead is how long before the hold's lapse the worst-phase row aims the standby's poll,
-// and half the window it holds that poll to. A poll aimed at the lapse itself would go out after
-// it -- the run's ticker fires about a millisecond late, and the holder's renewal lands up to a
-// few milliseconds either side of its own tick -- and so take the hold at once, which is the best
-// phase and not the worst. Aimed this far ahead, it went out 5 to 13 ms before the lapse in the
-// runs held_durable.go records, the last poll to find the hold live.
+// worstPhaseLead is how long before the hold's lapse the worst-phase row lets the standby's poll
+// go out (holdReads.holdUntil), and half the window it checks that poll went out in. A poll let go
+// at the lapse itself could reach Postgres after it -- the row reads the lapse off the hold's row,
+// to within half that read's round trip, and the poll's statement takes its own time to arrive --
+// and so take the hold at once, which is the best phase and not the worst. Aimed this far ahead,
+// it went out 5 to 13 ms before the lapse in the runs held_durable.go records, the last poll to
+// find the hold live.
 const worstPhaseLead = 10 * time.Millisecond
 
-// worstPhaseAttempts is how many deaths the worst-phase row places before it fails for having
-// forced the worst phase on none of them. A loaded machine now and then delays the standby's poll,
-// or the row's own read of the holder's renewal, past the windows the row holds them to: in one
-// run of sixty the poll fired about 12 ms late, so its read went out 1.8 ms after the lapse and
-// took the hold at once, which is the best phase.
-const worstPhaseAttempts = 3
+// worstPhaseEarly is how long before the moment the worst-phase row lets the standby's poll go
+// out (worstPhaseLead ahead of the lapse) it puts that poll's tick, by when it starts the
+// standby's run. It is far more than a loaded machine delays a tick -- about 12 ms, in one run of
+// sixty -- so the poll comes before that moment and waits there, rather than going out past the
+// lapse and taking the hold at once; and far less than the standby's read of the hold may wait for
+// its answer (intakeHoldRenew, heldDurable.takeHold), so the wait costs that read nothing.
+const worstPhaseEarly = 100 * time.Millisecond
 
 // worstPhasePoll is how often the worst-phase row's standby polls (heldDurable.bindEvery): three
 // durableBindIntervals. In production the standby polls every durableBindInterval, so without the
@@ -150,10 +151,11 @@ const worstPhaseAttempts = 3
 // shows. While the lapse timer works it changes nothing the row measures: the poll before the lapse
 // still finds the hold live, the timer's attempt at the lapse takes the durable over, and every
 // later poll finds the standby delivering and does nothing. With no lapse timer the standby's next
-// try is its next poll, worstPhasePoll after the one before the lapse: 15 s + 6 s - 10 ms = 20.99 s
-// after the death, 3.99 s past the 17 s bound before the take-over has sent anything. The row's
-// start then falls 1.99 s after the renewal it reads (20 s - 10 ms less three polls), before the
-// renewal the holder dies after.
+// try is its next poll, worstPhasePoll after the tick of the one before the lapse, which comes
+// worstPhaseEarly ahead of the moment the row lets that one go: 15 s - 10 ms - 100 ms + 6 s =
+// 20.89 s after the death, 3.89 s past the 17 s bound before the take-over has sent anything. The
+// row's start then falls 1.89 s after the renewal it reads (20 s - 110 ms less three polls), before
+// the renewal the holder dies after.
 const worstPhasePoll = 3 * durableBindInterval
 
 // A holder that dies is replaced within the bound held_durable.go states at the worst phase there
@@ -164,102 +166,116 @@ const worstPhasePoll = 3 * durableBindInterval
 // measured with no lapse timer, when the standby's next try was its next poll, worstPhasePoll
 // after this one.
 //
-// The phase is forced rather than waited for. The holder renews every intakeHoldRenew from when it
-// took the hold, and the standby polls every worstPhasePoll from when its run starts, so the row
-// reads one renewal off the hold's row, starts the standby's run (newTakeOverProcess builds it
-// unstarted) a whole number of polls before the moment worstPhaseLead ahead of the lapse the next
-// renewal sets, waits for that renewal, and kills the holder as soon as the row shows it. The
-// standby's lease pool notes when each read of the hold went out (holdReads). An attempt misses
-// the worst phase when the holder died more than worstPhaseLead after the renewal, or when no read
-// went out within twice worstPhaseLead before the lapse with a later read taking the hold: a read
-// that finds the hold free is the standby's last, since it holds the hold from then on.
+// The phase is arranged at hooks in the two processes' lease pools, so it is met by construction
+// and not by timing. Once the standby runs, the row arms the holder's pool to cut itself and close
+// the holder's NATS client inside the Exec of the hold's next renewal, the instant Postgres has
+// answered it (cuttableLeases.afterNextRenewal): the hold's row, read then, says when that renewal
+// landed and when the hold lapses. The row then has the standby's pool hold each read of the hold
+// that goes out within worstPhasePoll before the moment worstPhaseLead ahead of that lapse until
+// that moment, and let it go then (holdReads.holdUntil). The standby polls every worstPhasePoll
+// from when its run starts, so the row reads a renewal off the hold's row and starts that run
+// (newTakeOverProcess builds it unstarted) a whole number of polls before worstPhaseEarly ahead of
+// the moment the next renewal sets. The read the pool holds is then one of that run's ticks, early
+// enough that a late tick still comes before the moment, and the standby's next poll comes
+// worstPhasePoll after that tick.
 //
-// A miss is a miss of the row's own setup, never a pass. The row places the death again rather
-// than fail on one, since a loaded machine now and then delays a poll or a read past those windows
-// (worstPhaseAttempts): the standby that took the durable over holds the hold and renews it as the
-// first holder did, so it is the next attempt's holder, and a fresh standby is aimed at its next
-// renewal. The row passes only on an attempt that forced the worst phase and met the bound there,
-// and fails when all worstPhaseAttempts attempts missed. A missed attempt's take-over must meet
-// the bound too, as every death's must, though meeting it proves nothing.
+// The row checks that the phase was met: the holder died within worstPhaseLead of its renewal, the
+// standby's last read before the lapse went out within twice worstPhaseLead of it and found the
+// hold live, and the next read found the hold free and took it, which makes it the standby's last,
+// since the standby holds the hold from then on. A miss is a miss of the row's own setup, never a
+// pass and never a breach of the bound: the row fails at once, as UNARRANGED and with what it
+// observed, and does not try again.
 func TestADeadHolderIsReplacedWithinTheStatedBoundAtTheWorstPhase(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
 	publisher := intakeTestClient(t)
 
-	first := startIntakeProcess(t, pool, natsURL, nil)
+	holder := startIntakeProcess(t, pool, natsURL, nil)
 	awaitBoundDurable(t, publisher)
-	holderLeases, holderClient := first.leases, first.client
-	bound := intakeHoldTTL + durableBindInterval
-	var misses []string
-	for attempt := 1; attempt <= worstPhaseAttempts; attempt++ {
-		held, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		if err != nil {
-			t.Fatalf("read the durable the holder bound: %v", err)
-		}
-		standby := newTakeOverProcess(t, pool, natsURL)
-		// Cuttable, as the first holder's lease pool is, since a standby whose attempt missed is
-		// the next attempt's holder.
-		standbyLeases := &cuttableLeases{pool: standby.intake.leases.(*pgxpool.Pool)}
-		reads := &holdReads{intakeLeases: standbyLeases}
-		standby.intake.leases = reads
-		standby.intake.bindEvery = worstPhasePoll
-
-		renewed := awaitRenewal(t, ctx, pool, readHold(t, ctx, pool), lostReplyPoll)
-		start := renewed.lapse.Add(intakeHoldRenew - worstPhaseLead)
-		for time.Until(start) > worstPhasePoll {
-			start = start.Add(-worstPhasePoll)
-		}
-		// Spun up to rather than slept to: a sleep wakes up to milliseconds late.
-		time.Sleep(time.Until(start) - 10*time.Millisecond)
-		for time.Now().Before(start) {
-		}
-		startIntake(t, standby.intake)
-
-		time.Sleep(time.Until(renewed.landed().Add(intakeHoldRenew - 20*time.Millisecond)))
-		last := awaitRenewal(t, ctx, pool, renewed, 0)
-		abandoned := time.Now()
-		holderLeases.cut.Store(true)
-		holderClient.Close()
-
-		took := awaitTakenOver(t, publisher, held, abandoned, last.lapse).Sub(abandoned)
-		died := abandoned.Sub(last.landed())
-		sent := reads.times()
-		fromLapse := durations(sent, last.lapse)
-		live := -1
-		for i, at := range sent {
-			if at.Before(last.lapse) {
-				live = i
-			}
-		}
-		if died > worstPhaseLead || live < 0 || live == len(fromLapse)-1 || -fromLapse[live] > 2*worstPhaseLead {
-			misses = append(misses, fmt.Sprintf("attempt %d: the holder died %s after its last renewal landed and the standby read the hold at %v from the lapse",
-				attempt, died, fromLapse))
-			t.Logf("%s, which missed the worst phase; the standby took the durable over %s after the holder died", misses[len(misses)-1], took)
-			if took > bound {
-				t.Fatalf("the standby took the durable over %s after the holder died, on attempt %d, which missed the worst phase; want within intakeHoldTTL plus one durableBindInterval (%s) at every phase",
-					took.Round(time.Millisecond), attempt, bound)
-			}
-			holderLeases, holderClient = standbyLeases, standby.client
-			continue
-		}
-		t.Logf("worst phase forced on attempt %d after %d misses: the holder died %s after its last renewal landed; the standby's poll went out %s before the lapse and found the hold live, and its next read, %s after the lapse, took it; the standby took the durable over %s after the holder died",
-			attempt, len(misses), died, -fromLapse[live], fromLapse[live+1], took)
-		if took > bound {
-			t.Fatalf("the standby took the durable over %s after the holder died the instant after a renewal, its poll just before the lapse; want within intakeHoldTTL plus one durableBindInterval (%s)",
-				took.Round(time.Millisecond), bound)
-		}
-		return
+	held, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+	if err != nil {
+		t.Fatalf("read the durable the holder bound: %v", err)
 	}
-	t.Fatalf("the row did not force the worst phase in %d attempts: %s; want the holder dead within %s of its last renewal, and the standby's last read before the lapse within %s of it and a later one taking the hold",
-		worstPhaseAttempts, strings.Join(misses, "; "), worstPhaseLead, 2*worstPhaseLead)
+	standby := newTakeOverProcess(t, pool, natsURL)
+	reads := &holdReads{intakeLeases: standby.intake.leases}
+	standby.intake.leases = reads
+	standby.intake.bindEvery = worstPhasePoll
+
+	renewed := awaitRenewal(t, ctx, pool, readHold(t, ctx, pool), lostReplyPoll)
+	start := renewed.lapse.Add(intakeHoldRenew - worstPhaseLead - worstPhaseEarly)
+	for time.Until(start) > worstPhasePoll {
+		start = start.Add(-worstPhasePoll)
+	}
+	spinUntil(start)
+	startIntake(t, standby.intake)
+
+	death := make(chan time.Time, 1)
+	holder.leases.afterNextRenewal(func() {
+		at := time.Now()
+		holder.leases.cut.Store(true)
+		holder.client.Close()
+		death <- at
+	})
+	var abandoned time.Time
+	select {
+	case abandoned = <-death:
+	case <-time.After(2 * intakeHoldRenew):
+		t.Fatalf("UNARRANGED: no renewal of the holder's hold landed within %s of the standby's start, so the holder never died the instant after one", 2*intakeHoldRenew)
+	}
+	last := readHold(t, ctx, pool)
+	reads.holdUntil(last.lapse.Add(-worstPhaseLead), worstPhasePoll)
+
+	took := awaitTakenOver(t, publisher, held, abandoned, last.lapse).Sub(abandoned)
+	died := abandoned.Sub(last.landed())
+	noted, _ := reads.noted()
+	live := -1
+	for i, read := range noted {
+		if read.forwarded.Before(last.lapse) {
+			live = i
+		}
+	}
+	if died > worstPhaseLead || live < 0 || live != len(noted)-2 ||
+		noted[live].err != nil || noted[live].left <= 0 || last.lapse.Sub(noted[live].forwarded) > 2*worstPhaseLead ||
+		noted[live+1].err != nil || noted[live+1].left > 0 {
+		t.Fatalf("UNARRANGED: the row did not force the worst phase: the holder died %s after its last renewal landed, and the standby's reads of the hold, from the lapse: %s; want the holder dead within %s of its last renewal, the standby's last read before the lapse going out within %s of it and finding the hold live, and the next read, its last, finding the hold free; the standby took the durable over %s after the holder died",
+			died, readsFrom(noted, last.lapse), worstPhaseLead, 2*worstPhaseLead, took)
+	}
+	poll, next := noted[live], noted[live+1]
+	t.Logf("worst phase forced: the holder died %s after its last renewal landed; the standby's poll, sent %s before the lapse, went out %s before it and found the hold live with %s left, and its next read, %s after the lapse, found the hold free and took it; the standby took the durable over %s after the holder died",
+		died, last.lapse.Sub(poll.sent), last.lapse.Sub(poll.forwarded), poll.left, next.forwarded.Sub(last.lapse), took)
+	bound := intakeHoldTTL + durableBindInterval
+	if took > bound {
+		t.Fatalf("the standby took the durable over %s after the holder died the instant after a renewal, its poll just before the lapse; want within intakeHoldTTL plus one durableBindInterval (%s)",
+			took.Round(time.Millisecond), bound)
+	}
+}
+
+// readsFrom is each of reads as a failure reports it, from at: when it went out, when the standby
+// sent it if the row held it, and how long it found the hold had left, or its error.
+func readsFrom(reads []holdRead, at time.Time) string {
+	described := make([]string, len(reads))
+	for i, read := range reads {
+		described[i] = fmt.Sprintf("went out %s", read.forwarded.Sub(at))
+		if read.forwarded.After(read.sent) {
+			described[i] += fmt.Sprintf(" (sent %s)", read.sent.Sub(at))
+		}
+		if read.err != nil {
+			described[i] += fmt.Sprintf(" and failed: %v", read.err)
+		} else {
+			described[i] += fmt.Sprintf(" and found %s left", read.left)
+		}
+	}
+	return strings.Join(described, "; ")
 }
 
 // holdReads is a standby's lease pool that notes each of its reads of its durable's hold, the one
-// statement it sends through QueryRow (duty.HoldToken): when it went out, when its answer was
-// scanned, how long it found the hold had left, and its error. A read that goes out while fail
-// reports true fails as a cut-off process's read does (cutOffRow). It notes each statement it
-// sends through Exec too, which while it holds no hold is its take (duty.TryHold).
+// statement it sends through QueryRow (duty.HoldToken): when the standby sent it, when it went to
+// Postgres, when its answer was scanned, how long it found the hold had left, and its error. A
+// read that goes out while fail reports true fails as a cut-off process's read does (cutOffRow). A
+// read sent inside the window holdUntil sets waits until that window ends, and goes to Postgres
+// then. It notes each statement it sends through Exec too, which while it holds no hold is its
+// take (duty.TryHold).
 type holdReads struct {
 	intakeLeases
 
@@ -267,14 +283,17 @@ type holdReads struct {
 	reads []holdRead
 	execs []leaseExec
 	fail  func(sent time.Time) bool
+	// heldFrom and heldUntil are the window holdUntil set, both zero until it does.
+	heldFrom, heldUntil time.Time
 }
 
-// holdRead is one read of the hold as holdReads noted it: left is how long it found the hold had
-// left, on the database's clock, and answered is zero until its answer is scanned.
+// holdRead is one read of the hold as holdReads noted it: forwarded is when it went to Postgres,
+// which is sent unless holdUntil held it, left is how long it found the hold had left, on the
+// database's clock, and answered is zero until its answer is scanned.
 type holdRead struct {
-	sent, answered time.Time
-	left           time.Duration
-	err            error
+	sent, forwarded, answered time.Time
+	left                      time.Duration
+	err                       error
 }
 
 // leaseExec is one statement a process sent through its lease pool's Exec: when the process sent
@@ -289,12 +308,20 @@ func (r *holdReads) QueryRow(ctx context.Context, sql string, args ...any) pgx.R
 	sent := time.Now()
 	r.mu.Lock()
 	index := len(r.reads)
-	r.reads = append(r.reads, holdRead{sent: sent})
+	r.reads = append(r.reads, holdRead{sent: sent, forwarded: sent})
 	cut := r.fail != nil && r.fail(sent)
+	until := r.heldUntil
+	held := !cut && sent.Before(until) && !sent.Before(r.heldFrom)
 	r.mu.Unlock()
 	if cut {
 		r.answer(index, 0, errCutOff)
 		return cutOffRow{}
+	}
+	if held {
+		spinUntil(until)
+		r.mu.Lock()
+		r.reads[index].forwarded = time.Now()
+		r.mu.Unlock()
 	}
 	return notedHoldRead{row: r.intakeLeases.QueryRow(ctx, sql, args...), reads: r, index: index}
 }
@@ -313,6 +340,22 @@ func (r *holdReads) failWhile(fail func(sent time.Time) bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.fail = fail
+}
+
+// holdUntil holds each read the standby sends within window before until, and lets it go to
+// Postgres at until. A read sent at or after until, or before the window, goes at once.
+func (r *holdReads) holdUntil(until time.Time, window time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.heldFrom, r.heldUntil = until.Add(-window), until
+}
+
+// spinUntil returns at at: it sleeps to a few milliseconds before at and spins through those,
+// since a sleep wakes up to milliseconds late.
+func spinUntil(at time.Time) {
+	time.Sleep(time.Until(at) - 10*time.Millisecond)
+	for time.Now().Before(at) {
+	}
 }
 
 // answer notes the answer of the read at index.
@@ -340,7 +383,7 @@ func (n notedHoldRead) Scan(dest ...any) error {
 	return err
 }
 
-// times is when each read went out, in order.
+// times is when the standby sent each read, in order.
 func (r *holdReads) times() []time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
