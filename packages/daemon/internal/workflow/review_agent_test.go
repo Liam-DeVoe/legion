@@ -59,7 +59,7 @@ func reviewerStepFour(t *testing.T, pool *pgxpool.Pool, engine *Engine, tester c
 // own in the first plan, and in the second agent a, which runs step 5 too. Before, step 4's first
 // round was named step 2's commit as its own, so key s read only the change past a commit another
 // agent approved.
-func TestAReviewerStepOfAnotherAgentReadsTheWholeChangeAtItsFirstRound(t *testing.T) {
+func TestAnAgentsFirstReviewerStepReadsTheWholeChangeAtItsFirstRound(t *testing.T) {
 	for _, steps := range [][]string{
 		{"implementer:a", "reviewer", "tester:s", "reviewer:s"},
 		{"implementer:a", "reviewer:a", "tester:s", "reviewer:s", "reviewer:a"},
