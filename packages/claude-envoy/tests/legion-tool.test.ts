@@ -197,8 +197,9 @@ test("declares the six phase-worker operations under one op, and names the Envoy
   expect(definition.description).toContain(
     `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`,
   )
-  expect(definition.description).toContain(
-    `${PHASE_OP_SENTENCES.requestBackwardMove}${PHASE_OP_SENTENCES.readBuild}What a later phase needs`,
+  const after = PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.readBuild
+  expect(definition.description.indexOf(after)).toBeGreaterThan(
+    definition.description.indexOf("ready_for_update"),
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })

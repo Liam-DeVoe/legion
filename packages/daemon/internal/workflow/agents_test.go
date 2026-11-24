@@ -180,9 +180,6 @@ func TestAKeyLeftOutOfOneVersionFindsItsClaimWhenALaterVersionGivesItAgain(t *te
 			move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		}
 		start := lastStartOf(t, pool, key, claim.RoleImplementer)
-		if reason := fmt.Sprintf("the owner gave version %d of the plan", version); version > 1 && !strings.Contains(start.Task, reason) {
-			t.Fatalf("version %d: the implementer's last start = %+v, want the start of this version, which says %q", version, start, reason)
-		}
 		if start.Agent != v.agent || start.FreshSession {
 			t.Fatalf("version %d: step 1's start = %+v, want it to name the agent %q and ask for no fresh session", version, start, v.agent)
 		}

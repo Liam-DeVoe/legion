@@ -710,10 +710,9 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 }
 
 // The ask says when the pod goes and what that costs. It keeps the round's id, the drift and the
-// push instruction, names the moment the round ends in RFC 3339 UTC, says that every answer
-// brings that moment forward only while no agent is in a turn and no agent reports background work,
-// and that no answer delays it, and names what goes with the pod then, each subagent, each
-// background job and each named service that still runs included. It names the five steps in
+// push instruction, names the moment the round ends in RFC 3339 UTC, says that no answer delays
+// it, and names what goes with the pod then, each subagent, each background job and each named
+// service that still runs included. It names the five steps in
 // their order (dispatch://INFRA-4203 R2): push every commit to keep, let each subagent and each
 // background job finish or stop it and push what it made, put a scratch file needed as evidence
 // on Dispatch, answer, and end the turn. It says the four things beside the steps: the round does
@@ -734,10 +733,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"Push every commit that you want to keep to this issue's branch.",
 		`Call the ` + "`legion`" + ` tool with op: "ready_for_update" and round: "` + testRound + `".`,
 		"The round ends at 2026-11-13T12:30:00Z (UTC).",
-		"If every agent the round asks answers, the round can end before that moment.",
-		"It then ends once the last report of each agent in the pod names no subagent and no background job that runs, and no agent of the issue is in a turn.",
 		"Your plugin sends that report at the end of each turn.",
-		"If an agent does not answer, the round still ends at 2026-11-13T12:30:00Z.",
 		"A turn in progress does not delay that moment.",
 		"A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.",
 		"If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again with round: \"" + testRound + "\" before you end that turn.",

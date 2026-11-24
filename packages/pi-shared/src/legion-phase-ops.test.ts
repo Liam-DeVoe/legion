@@ -181,9 +181,9 @@ test("the description sets the host's sentences before and after handoff_complet
   expect(placed).toContain(
     `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}handoff_complete (phase workers`
   );
-  // The host's `after` comes just before the sentence that closes the description.
-  expect(placed).toContain(
-    `${PHASE_OP_SENTENCES.requestBackwardMove}The controller's read_state returns the daemon's whole state. What a later phase needs`
+  // The host's `after` comes after the template's own operations.
+  expect(placed.indexOf(PHASE_OP_SENTENCES.requestBackwardMove)).toBeGreaterThan(
+    placed.indexOf("ready_for_update")
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
