@@ -32,7 +32,7 @@ func TestAnOwnersFreshSessionIsToldTheMergeForwardStillAskedOfIt(t *testing.T) {
 			r.started(t, "step", 1, true)
 			r.relaunched(t, ownerHoldLaunch, ownerHoldSession)
 			r.askedOf(t, r.owner, phase.Reviewing)
-			if err := r.sent(t, mergeForwardAsk(r.owner, phase.Reviewing)); err != nil {
+			if err := r.told(t, mergeForwardAsk(r.owner, phase.Reviewing)); err != nil {
 				t.Fatalf("the ask to the owner in its session = %v", err)
 			}
 			if got := r.published(); len(got) != 1 {

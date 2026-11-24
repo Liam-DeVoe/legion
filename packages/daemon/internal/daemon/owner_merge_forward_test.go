@@ -67,20 +67,6 @@ func (r *ownerHoldRig) lands(t *testing.T, reviewAsked bool) {
 	}
 }
 
-// sent runs one merge-forward message of LEGION-1 through the executor as the runner does, and
-// deletes the row where the executor finished it. It answers the executor's error.
-func (r *ownerHoldRig) sent(t *testing.T, message record.MergeForwardMessage) error {
-	t.Helper()
-	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", message, r.now))
-	err := r.runner.execute(context.Background(), row)
-	if err == nil {
-		if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
-			t.Fatalf("finish row %d: %v", row.ID, err)
-		}
-	}
-	return err
-}
-
 // mergeForwardAsk is the ask of a merge forward in at to the implementer's claim token.
 func mergeForwardAsk(token claim.Token, at phase.Phase) record.MergeForwardMessage {
 	return record.MergeForwardMessage{Role: claim.RoleImplementer, Claim: token, Step: record.MergeForwardAsk, Head: mergeForwardHead, Base: "main",
@@ -170,7 +156,7 @@ func TestAMergeForwardAskedOfTheOwnerWaitsForTheImplementApp(t *testing.T) {
 		}
 		r.askedOf(t, implementer, phase.Reviewing)
 		r.rt.ScriptSlotHolds(runtime.ErrSlotCredentialPending)
-		if err := r.sent(t, mergeForwardAsk(implementer, phase.Reviewing)); err != nil {
+		if err := r.told(t, mergeForwardAsk(implementer, phase.Reviewing)); err != nil {
 			t.Fatalf("the ask to the implementer = %v, want it delivered", err)
 		}
 		if got := r.published(); len(got) != 1 || got[0] != notify.RoleTopicPrefix+string(implementer) {
@@ -252,7 +238,7 @@ func TestTheReviewOfAMergeForwardReachesTheOwnerOnceItsSlotHoldsTheReviewApp(t *
 		r.started(t, "retro", 0, true)
 		r.askedOf(t, r.owner, phase.Merging)
 		r.rt.ScriptSlotHolds(nil)
-		if err := r.sent(t, mergeForwardAsk(r.owner, phase.Merging)); err != nil {
+		if err := r.told(t, mergeForwardAsk(r.owner, phase.Merging)); err != nil {
 			t.Fatalf("the ask in merging = %v", err)
 		}
 		if got := slotCalls(r.rt, r.owner); strings.Join(got, ",") != "WriteSlotCredential,SlotHoldsCredential implementer" {

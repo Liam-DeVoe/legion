@@ -89,11 +89,12 @@ func (r *ownerHoldRig) started(t *testing.T, kind string, at int, ended bool) {
 	}
 }
 
-// told runs one notice of LEGION-1 through the executor as the runner does, and deletes the row
-// where the executor finished it, as the runner does. It answers the executor's error.
-func (r *ownerHoldRig) told(t *testing.T, notice record.Notice) error {
+// told runs one row of LEGION-1 holding payload, a notice or a merge-forward message, through the
+// executor as the runner does, and deletes the row where the executor finished it, as the runner
+// does. It answers the executor's error.
+func (r *ownerHoldRig) told(t *testing.T, payload record.OutboxPayload) error {
 	t.Helper()
-	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", notice, r.now))
+	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", payload, r.now))
 	err := r.runner.execute(context.Background(), row)
 	if err == nil {
 		if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
