@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"math/bits"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -280,13 +279,23 @@ func xidLocalPolicy(t *testing.T) xidPolicy {
 // xidPreferredNode is the lowest node both in allowed, the nodes the thread may use, and in
 // hasMemory, the nodes with memory: set_mempolicy takes a preferred node only from both. found is
 // false where no node is in both.
+// RED (scratch, not for merge): the choice 8ea0e4f97ff made, the first node
+// /sys/devices/system/node/online names, or 0 where it cannot be read, whatever the thread may use
+// and whatever has memory.
 func xidPreferredNode(allowed, hasMemory [16]uint64) (node int, found bool) {
-	for word := range allowed {
-		if both := allowed[word] & hasMemory[word]; both != 0 {
-			return word*64 + bits.TrailingZeros64(both), true
-		}
+	online, err := os.ReadFile("/sys/devices/system/node/online")
+	if err != nil {
+		return 0, true
 	}
-	return 0, false
+	digits := strings.TrimSpace(string(online))
+	if end := strings.IndexAny(digits, "-,"); end >= 0 {
+		digits = digits[:end]
+	}
+	node, err = strconv.Atoi(digits)
+	if err != nil || node < 0 || node >= 16*64 {
+		return 0, true
+	}
+	return node, true
 }
 
 // xidNodesWithMemory is the set of nodes with memory, from what reading xidHasMemoryPath gave: its
