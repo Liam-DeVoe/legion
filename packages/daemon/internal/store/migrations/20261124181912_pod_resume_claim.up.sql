@@ -1,4 +1,4 @@
--- 20261123203838_pod_resume_claim.up.sql — the claim a wake brought back, on its resume, and one
+-- 20261124181912_pod_resume_claim.up.sql — the claim a wake brought back, on its resume, and one
 -- open resume per claim.
 --
 -- pod_resumes.claim is the token of the claim the wake that took the resume brings back
@@ -49,7 +49,7 @@
 -- drop index if exists pod_resumes_one_open_per_role;
 -- create unique index pod_resumes_one_open_per_role on pod_resumes (project, issue, role) where first_turn_at is null and closed_at is null;
 -- alter table pod_resumes drop column if exists claim;
--- delete from schema_version where version = 20261123203838;
+-- delete from schema_version where version = 20261124181912;
 -- commit;
 alter table pod_resumes add column claim text not null default '';
 update pod_resumes set claim = 'legion-' || project || '-' || lower(issue) || '-' || role;

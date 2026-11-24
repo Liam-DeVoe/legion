@@ -11,7 +11,7 @@ import (
 
 // roleChangeVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const roleChangeVersion = 20261123203841
+const roleChangeVersion = 20261124181915
 
 // The record that a claim took another role is kept on the claim's own row
 // (supervise.Claim.RoleChange), because the first prompt in the new role, which tells the agent

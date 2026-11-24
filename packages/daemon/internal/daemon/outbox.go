@@ -1591,7 +1591,7 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 // ended after the queue is gone from it, and two claim changes of one issue never publish a stale
 // set. It is sent whole, empty included, since it replaces what Dispatch holds, so a role whose
 // claim ended leaves the set with no delete route. Two claims of one issue can hold one role, and
-// each is a holder of it: a Dispatch before 20261123203843 refuses such a set (400
+// each is a holder of it: a Dispatch before 20261124181916 refuses such a set (400
 // INVALID_ROLE_HOLDER), which ends the row, and the set lands at the next publication once
 // Dispatch has that release.
 //

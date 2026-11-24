@@ -11,9 +11,9 @@ import (
 
 // releaseSuspendsClaimsVersion is the version of the migration this file tests, so the test can
 // migrate through everything before it whatever lands beside it.
-const releaseSuspendsClaimsVersion = 20261123203840
+const releaseSuspendsClaimsVersion = 20261124181914
 
-// 20261123203840 makes a release's mark name the claims it suspended by their tokens. A mark in
+// 20261124181914 makes a release's mark name the claims it suspended by their tokens. A mark in
 // flight names roles: it is rewritten to the token of every claim of the issue that holds one of
 // them, which is the set the release before matched, so three claims of the implementer's role all
 // stand in it and the architect, whose role it does not name, does not. pod_releases gains

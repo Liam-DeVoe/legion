@@ -3589,7 +3589,7 @@ package api
 // that suspended none and on one recorded before this release: a release's mark matches the claims
 // it suspended by their tokens, so two claims of one role are two claims, and `roles` names each
 // role once. A resume of the same answer names the token of the claim its wake brought back in a
-// new key, `resumes.*.claim` (api.ResumeRecord), absent on a wake recorded before 20261123203838:
+// new key, `resumes.*.claim` (api.ResumeRecord), absent on a wake recorded before 20261124181912:
 // each claim of a role can be woken, and the stranded report reads a wake by that claim. A caller
 // below 222 is served each release and each resume without these keys (withoutRecordClaims). A
 // claim view of the state and of the issue record names its claim's token, `token`

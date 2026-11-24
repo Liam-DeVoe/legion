@@ -1,4 +1,4 @@
--- 20261123203840_release_suspends_claims.up.sql — a release's mark and its record name the claims
+-- 20261124181914_release_suspends_claims.up.sql — a release's mark and its record name the claims
 -- it suspended by their tokens, not by their roles.
 --
 -- issue_releases.suspended (20261102170500) held the roles whose claims the release's own stops
@@ -38,7 +38,7 @@
 -- and finds the claim of a role by the token it builds from that role. The role a claim stores is
 -- not that role where this release moved the claim to the step its key works
 -- (supervise.Machine.Rerole writes claims.role): it is the step's role, the last part of another
--- claim's token. This way back runs before 20261123203837's, which puts each claim back in its
+-- claim's token. This way back runs before 20261124181911's, which puts each claim back in its
 -- token's role. It then drops pod_releases.claims and deletes this migration's version row, which
 -- is what makes the version the store reports that release's own again, and is owed to the
 -- roll-forward, which then runs this file again. What the way back costs is the claims each record
@@ -47,7 +47,7 @@
 -- begin;
 -- update issue_releases m set suspended = coalesce((select array_agg(r.role order by r.first) from (select substring(t.token from '^legion-[^-]+-[^-]+-[0-9]+-(.+)$') as role, min(t.n) as first from unnest(m.suspended) with ordinality t(token, n) group by 1) r where r.role is not null), '{}');
 -- alter table pod_releases drop column if exists claims;
--- delete from schema_version where version = 20261123203840;
+-- delete from schema_version where version = 20261124181914;
 -- commit;
 update issue_releases m set suspended = coalesce((select array_agg(c.token order by c.token)
   from claims c where c.project = m.project and c.issue = m.issue and c.role = any(m.suspended)), '{}');

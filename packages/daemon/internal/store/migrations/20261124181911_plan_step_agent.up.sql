@@ -1,4 +1,4 @@
--- 20261123203837_plan_step_agent.up.sql — the name of the agent of each step of a plan (record's
+-- 20261124181911_plan_step_agent.up.sql — the name of the agent of each step of a plan (record's
 -- agents.go and plan.go).
 --
 -- plan_steps.agent is record.PlanStep.Agent: the name of the step's agent, the last part of its
@@ -56,7 +56,7 @@
 --   alter table plan_steps drop column if exists agent;
 --   alter table plan_steps drop column if exists leave_session;
 --   drop table if exists plan_key_names;
---   delete from schema_version where version = 20261123203837;
+--   delete from schema_version where version = 20261124181911;
 --   commit;
 --   SQL
 --

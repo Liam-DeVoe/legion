@@ -1354,7 +1354,7 @@ type SuperviseRequest struct {
 	// The end of a start marked with the pod that still refuses the claim asks the workflow for no
 	// further start (the daemon outbox's startRowEnded, which says why). Every other start carries
 	// none. The release before decodes strictly (DisallowUnknownFields), so the way back of
-	// 20261123203837_plan_step_agent deletes the key from each queued row before that release boots.
+	// 20261124181911_plan_step_agent deletes the key from each queued row before that release boots.
 	RefusedPod string `json:"refusedPod,omitempty"`
 	// LeaveSession is the session a start's claim must not resume: the session the claim recorded
 	// when the step was written whose agent took a name a key's agent held in an earlier generation
@@ -1362,7 +1362,7 @@ type SuperviseRequest struct {
 	// still records it, so the agent starts in a session of its own, and a claim that runs it is
 	// suspended first (the daemon outbox's start, supervise's revive); a claim that records another
 	// session has left it already, and the start resumes that one. Every other start carries none.
-	// The release before decodes strictly, so the way back of 20261123203837_plan_step_agent deletes
+	// The release before decodes strictly, so the way back of 20261124181911_plan_step_agent deletes
 	// the key from each queued row before that release boots.
 	LeaveSession string `json:"leaveSession,omitempty"`
 }
