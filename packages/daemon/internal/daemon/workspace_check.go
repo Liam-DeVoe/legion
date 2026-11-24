@@ -456,23 +456,32 @@ func declineMessage(issue string, work runtime.WorkspaceWork) string {
 	return strings.Join(found, " ")
 }
 
-// workFound is what a read that found work found, in sentences: the change in the working copy,
-// and the commits on a working copy or a bookmark that origin does not hold, by id up to
-// shimwire.MaxWorkspaceWorkCommits of them and by count all of them.
+// workFound is what a read that found work found, in sentences, of a workspace that still holds it
+// (workSentences): the change in the working copy, and the commits on a working copy or a bookmark
+// that origin does not hold.
 func workFound(work runtime.WorkspaceWork) []string {
+	return workSentences(work, "holds", "on a working copy or a bookmark that origin does not hold")
+}
+
+// workSentences is the work a read found, in the sentences of a notice: the change in the working
+// copy, and the commits that origin does not hold, by id up to shimwire.MaxWorkspaceWorkCommits of
+// them and by count all of them. holds is the verb of each sentence, and unheld says, after the
+// commits, that origin does not hold them: a workspace that still holds the work says what it
+// holds (workFound), and one a replacement took says what it held (readFound).
+func workSentences(work runtime.WorkspaceWork, holds, unheld string) []string {
 	var found []string
 	if work.Changed {
-		found = append(found, fmt.Sprintf("The working copy holds a change (commit %s).", work.Head))
+		found = append(found, fmt.Sprintf("The working copy %s a change (commit %s).", holds, work.Head))
 	}
 	commits := strings.Join(work.Commits, ", ")
 	switch {
 	case work.Count > len(work.Commits):
-		found = append(found, fmt.Sprintf("The workspace holds %d commits on a working copy or a bookmark that origin does not hold. The first %d of these commits are: %s.",
-			work.Count, len(work.Commits), commits))
+		found = append(found, fmt.Sprintf("The workspace %s %d commits %s. The first %d of these commits are: %s.",
+			holds, work.Count, unheld, len(work.Commits), commits))
 	case work.Count == 1:
-		found = append(found, fmt.Sprintf("The workspace holds one commit on a working copy or a bookmark that origin does not hold: %s.", commits))
+		found = append(found, fmt.Sprintf("The workspace %s one commit %s: %s.", holds, unheld, commits))
 	case work.Count > 1:
-		found = append(found, fmt.Sprintf("The workspace holds %d commits on a working copy or a bookmark that origin does not hold: %s.", work.Count, commits))
+		found = append(found, fmt.Sprintf("The workspace %s %d commits %s: %s.", holds, work.Count, unheld, commits))
 	}
 	return found
 }

@@ -435,8 +435,7 @@ func takenPodName(pod string) string {
 
 // readFound is what a workspace-taken notice says the read before the replacement found
 // (workspaceTakenMessage, launchTakenMessage): the error it failed with, or that no read could be
-// made and why, or the change in the working copy and the work commits, by id up to
-// shimwire.MaxWorkspaceWorkCommits of them and by count all of them.
+// made and why, or what the workspace held, in workSentences's sentences.
 func readFound(work runtime.WorkspaceWork, failed error) string {
 	if failed != nil {
 		// The notice is stored and read by the issue's architect, and in its place by the
@@ -445,19 +444,7 @@ func readFound(work runtime.WorkspaceWork, failed error) string {
 		return fmt.Sprintf("No read of the workspace could be made before the replacement. The error of the read, in quotes, is: %s. The daemon does not know if the workspace held work that no branch or tag at origin holds.",
 			readError(failed))
 	}
-	found := []string{"Before the replacement, the daemon read the issue workspace. The read found work that no branch or tag at origin holds."}
-	if work.Changed {
-		found = append(found, fmt.Sprintf("The working copy held a change (commit %s).", work.Head))
-	}
-	commits := strings.Join(work.Commits, ", ")
-	switch {
-	case work.Count > len(work.Commits):
-		found = append(found, fmt.Sprintf("The workspace held %d commits that no branch or tag at origin holds. The first %d of these commits are: %s.",
-			work.Count, len(work.Commits), commits))
-	case work.Count == 1:
-		found = append(found, fmt.Sprintf("The workspace held one commit that no branch or tag at origin holds: %s.", commits))
-	case work.Count > 1:
-		found = append(found, fmt.Sprintf("The workspace held %d commits that no branch or tag at origin holds: %s.", work.Count, commits))
-	}
+	found := append([]string{"Before the replacement, the daemon read the issue workspace. The read found work that no branch or tag at origin holds."},
+		workSentences(work, "held", "that no branch or tag at origin holds")...)
 	return strings.Join(found, " ")
 }
