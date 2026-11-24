@@ -57,6 +57,10 @@ type SlotRule struct {
 	WaitStopsPhase bool
 	// Order is the order of the waiting line (Waiting).
 	Order LineOrder
+	// RankBy is what the line reads wherever it places issues by the board (Waiting's byRank): the
+	// board's Dispatch rank, the daemon's own (RankBoard), or each issue's arrival in the line
+	// (RankArrival, LineFacts.Arrivals), for a deployment whose board is not kept current.
+	RankBy RankSource
 	// Take is what a start may take from the cap (admit's capLets).
 	Take StartTake
 	// Conflict is what a head that conflicts with its base does once a second read confirms the
@@ -88,6 +92,37 @@ const (
 	// moment its work came back: an issue the daemon started early that gave its slot back stands
 	// ahead, when its work comes back, of the returned issues it started before.
 	LineReturnedByFirstSlot LineOrder = "returned_by_first_slot"
+	// LineReworkFirst is a person's rule of 2026-11-23: work that came back goes first, each issue
+	// by the moment of its first slot in its current generation (LineFacts.FirstSlots), so work in
+	// progress is burned down first in, first out; then the issues of trees already started that
+	// have not started themselves, each tree by the moment its root first took a slot and each
+	// issue by its own arrival (LineFacts.Arrivals); and only then the trees not yet opened, by the
+	// board (RankBy).
+	LineReworkFirst LineOrder = "rework_first"
+	// LineArrival is one queue in arrival order, with no part and no rank: every issue of the line,
+	// started or not, by the moment it arrived in the line in its current generation
+	// (LineFacts.Arrivals), first in, first out.
+	LineArrival LineOrder = "arrival"
+	// LineReturnedByRootRank places the issues whose work came back by their tree root's place on
+	// the board (RankBy) and then by the moment their work came back, where an issue sent back from
+	// a phase past the review that keeps no slot keeps the moment it gave its slot up there
+	// (LineFacts.GaveUp) rather than the moment it was sent back.
+	LineReturnedByRootRank LineOrder = "returned_by_root_rank"
+)
+
+// RankSource is what the waiting line places issues by where it reads the board, a SlotRule's
+// choice.
+type RankSource string
+
+const (
+	// RankBoard is the daemon's own: the tree root's Dispatch rank and then the issue's own
+	// (RankLess).
+	RankBoard RankSource = "board"
+	// RankArrival places by arrival in the line instead: the tree root's and then the issue's own
+	// moment of arrival in its current generation (LineFacts.Arrivals), an issue the facts hold no
+	// arrival of by its first slot (LineFacts.FirstSlots) and then by the moment its record last
+	// moved (Issue.MovedAt); a tie falls to the key.
+	RankArrival RankSource = "arrival"
 )
 
 // StartTake is what a start may take from the cap, a SlotRule's choice.
@@ -133,6 +168,7 @@ var MainRule = SlotRule{
 	WaitGrace:             0,
 	WaitStopsPhase:        false,
 	Order:                 LineReturnedOldestFirst,
+	RankBy:                RankBoard,
 	Take:                  TakeOwnSlot,
 	Conflict:              ConflictMergeForward,
 	ReleaseAtReady:        false,
@@ -262,14 +298,20 @@ func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeG
 
 // SlotRules is every named rule the repository keeps, the daemon's own first, and then the rules
 // the replay's comparison runs beside it: the rules two recorded windows ran under
-// (legion-v20.42.5, legion-v19.57.3) and the seven candidates of the comparison (keep-past-review,
+// (legion-v20.42.5, legion-v19.57.3); the seven candidates of the comparison (keep-past-review,
 // blockers-first, returned-by-rank, cover, wait-grace and wait-grace-1h, one rule at two graces,
-// and returned-by-first-slot). `legion replay rules` prints them. Each answer is built afresh, so a
-// caller that changes a rule it was handed changes no other caller's.
+// and returned-by-first-slot); the three line orders of a comparison of admission rules
+// (rework-first and rework-first-keep, arrival-order, returned-by-root-rank); and five rules that
+// place by arrival where the daemon places by the board (byArrival). `legion replay rules` prints
+// them. Each answer is built afresh, so a caller that changes a rule it was handed changes no other
+// caller's.
 func SlotRules() []SlotRule {
 	return []SlotRule{mainRuleWith(MainRule.Name, func(*SlotRule) {}), windowOneRule(), windowTwoRule(), keepPastReviewRule(),
 		blockersFirstRule(), returnedByRankRule(), coverRule(),
-		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule()}
+		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule(),
+		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), returnedByRootRankRule(),
+		byArrival(windowOneRule()), byArrival(mainRuleWith(MainRule.Name, func(*SlotRule) {})), byArrival(reworkFirstRule()),
+		byArrival(reworkFirstKeepRule()), byArrival(returnedByRootRankRule())}
 }
 
 // The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
@@ -420,6 +462,63 @@ func returnedByFirstSlotRule() SlotRule {
 	return mainRuleWith("returned-by-first-slot", func(rule *SlotRule) {
 		rule.Order = LineReturnedByFirstSlot
 	})
+}
+
+// reworkFirstRule is the daemon's own rule with the line ordered as a person proposed it on
+// 2026-11-23 (LineReworkFirst): work that came back is admitted again before any new work, first
+// in, first out by its first admission; then the work of trees already in progress, by the tree's
+// first admission; and the board decides only among the trees not yet opened. Its reason is that
+// person's: started work should be burned down first, and the board's rank is not trusted to be
+// current. The daemon records no first slot once a slot goes back and no arrival, so a replay keeps
+// both in tables of its own (LineFacts.FirstSlots, LineFacts.Arrivals; admit's RuleTables), and a
+// deployment that adopts this rule needs those records in the daemon's own store first.
+func reworkFirstRule() SlotRule {
+	return mainRuleWith("rework-first", func(rule *SlotRule) {
+		rule.Order = LineReworkFirst
+	})
+}
+
+// reworkFirstKeepRule is rework-first with the slot kept in accepting, retro and merging too, as
+// keep-past-review keeps it, so work sent back past the review never waits for a slot at all.
+func reworkFirstKeepRule() SlotRule {
+	return mainRuleWith("rework-first-keep", func(rule *SlotRule) {
+		rule.Order = LineReworkFirst
+		rule.KeepsSlotIn = everyWorkflowPhase()
+	})
+}
+
+// arrivalOrderRule is the daemon's own rule with the line one queue in arrival order and no rank
+// at all (LineArrival, RankArrival): the plainest first in, first out, beside which every rule that
+// reads the board shows what the board's order changes.
+func arrivalOrderRule() SlotRule {
+	return mainRuleWith("arrival-order", func(rule *SlotRule) {
+		rule.Order = LineArrival
+		rule.RankBy = RankArrival
+	})
+}
+
+// returnedByRootRankRule is the daemon's own rule with the returned part ordered by the tree
+// root's place on the board and then by the moment the work came back, an issue sent back from a
+// phase past the review keeping the moment it gave its slot up there (LineReturnedByRootRank). Its
+// reason is another tree's architect's proposal of 2026-11-23: an issue sent back from accepting
+// stood 126th of 128 in the returned part, behind lower-ranked work, and keeping the slot past the
+// review would have held 34 of 157 slots where no worker ran. The daemon keeps no such moment once
+// the slot goes back, so a replay keeps it in a table of its own (LineFacts.GaveUp, admit's
+// RuleTables).
+func returnedByRootRankRule() SlotRule {
+	return mainRuleWith("returned-by-root-rank", func(rule *SlotRule) {
+		rule.Order = LineReturnedByRootRank
+	})
+}
+
+// byArrival is rule, named rule's name with "-by-arrival", placing by arrival wherever it places by
+// the board (RankArrival): the same rule with the board's rank taken out, which shows how much a
+// board that is not kept current moves the rule's result. Its commit is rule's.
+func byArrival(rule SlotRule) SlotRule {
+	rule.Name += "-by-arrival"
+	rule.KeepsSlotIn = slices.Clone(rule.KeepsSlotIn)
+	rule.RankBy = RankArrival
+	return rule
 }
 
 // SlotRuleNamed is the rule SlotRules keeps under name, and whether it keeps one.

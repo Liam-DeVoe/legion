@@ -19,18 +19,37 @@ import (
 // run records beyond the daemon's own tables (admit.RuleTables), over the tables the replay makes
 // in its own database (replayTables): the merger's ready marks the rule legion-v19.57.3 gives the
 // slot back at, which the replay's handler writes (ReadyMark), the covers that stand under the
-// rule cover, which the pass itself keeps, and the first slots the rule returned-by-first-slot
-// places the returned part by, which the pass's read of its facts keeps. A rule that reads none
-// of them reads nothing here.
+// rule cover, which the pass itself keeps, the first slots the rules that place by first slot read
+// (returned-by-first-slot, rework-first), the arrivals the rules that place by arrival read, and the
+// moments a slot was given up past the review that returned-by-root-rank reads, which the pass's
+// read of its facts keeps. A rule that reads none of them reads nothing here.
 type ruleTables struct{}
 
 var _ admit.RuleTables = ruleTables{}
 
-// readsFirstSlots says whether rule places the line's returned part by each issue's first slot
-// in its current generation (record.LineReturnedByFirstSlot), which the replay keeps in a table of
-// its own (replay_first_slots), since the daemon keeps no slot's moment once the slot goes back.
+// readsFirstSlots says whether rule places the line by each issue's first slot in its current
+// generation — the returned part of record.LineReturnedByFirstSlot and of record.LineReworkFirst,
+// and an issue with no arrival kept under a rule that places by arrival (readsArrivals) — which
+// the replay keeps in a table of its own (replay_first_slots), since the daemon keeps no slot's
+// moment once the slot goes back.
 func readsFirstSlots(rule record.SlotRule) bool {
-	return rule.OrMain().Order == record.LineReturnedByFirstSlot
+	rule = rule.OrMain()
+	return rule.Order == record.LineReturnedByFirstSlot || readsArrivals(rule)
+}
+
+// readsArrivals says whether rule places issues by the moment each arrived in the line in its
+// current generation (record.LineReworkFirst, record.LineArrival, record.RankArrival), which the
+// replay keeps in a table of its own (replay_arrivals), since the daemon keeps no such moment.
+func readsArrivals(rule record.SlotRule) bool {
+	rule = rule.OrMain()
+	return rule.Order == record.LineReworkFirst || rule.Order == record.LineArrival || rule.RankBy == record.RankArrival
+}
+
+// readsGaveUp says whether rule places the returned part by the moment each issue gave its slot up
+// in a phase past the review (record.LineReturnedByRootRank), which the replay keeps in a table of
+// its own (replay_gave_up), since the daemon keeps no slot's moment once the slot goes back.
+func readsGaveUp(rule record.SlotRule) bool {
+	return rule.OrMain().Order == record.LineReturnedByRootRank
 }
 
 // ReadRuleFacts adds the ready marks, the first slots, the waits beneath and the covers the facts'
@@ -40,6 +59,11 @@ func readsFirstSlots(rule record.SlotRule) bool {
 // returned part by first slots, the slot each holder holds now is first kept as its generation's
 // first where the table holds none for that generation (keepFirstSlots), and each issue's first
 // slot at the generation it stands at is then read (record.LineFacts.FirstSlots). Under a rule
+// that places by arrival, each of issues is first kept as arriving at the moment its record last
+// moved where the table holds no arrival for its generation (keepArrivals), and each arrival is
+// then read (record.LineFacts.Arrivals). Under a rule that places the returned part by the moment
+// a slot was given up past the review, that moment is kept and read the same way (keepGaveUp,
+// record.LineFacts.GaveUp). Under a rule
 // whose start may take a cover, an issue standing in accepting whose sign-off the workflow held at
 // its generation and its architect's entry (HeldSignOff), and an issue standing in merging whose
 // pull request record is merged (readMerged), wait on the issues beneath them still in the
@@ -71,6 +95,26 @@ func (ruleTables) ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.
 			return err
 		}
 		facts.FirstSlots = first
+	}
+	if readsArrivals(rule) {
+		if err := keepArrivals(ctx, tx, issues); err != nil {
+			return err
+		}
+		arrived, err := readGenerationTimes(ctx, tx, "replay_arrivals", "arrived_at", issues)
+		if err != nil {
+			return fmt.Errorf("read the arrivals: %w", err)
+		}
+		facts.Arrivals = arrived
+	}
+	if readsGaveUp(rule) {
+		if err := keepGaveUp(ctx, tx, rule, issues); err != nil {
+			return err
+		}
+		gave, err := readGenerationTimes(ctx, tx, "replay_gave_up", "gave_up_at", issues)
+		if err != nil {
+			return fmt.Errorf("read the slots given up past the review: %w", err)
+		}
+		facts.GaveUp = gave
 	}
 	if rule.Take != record.TakeCover {
 		return nil
@@ -229,6 +273,110 @@ func readFirstSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue) (map[
 		first[key] = at.UTC()
 	}
 	return first, rows.Err()
+}
+
+// keepArrivals keeps the moment each of issues arrived in the line in the generation it stands at,
+// where the table holds none for that issue and generation: the moment its record last moved,
+// read at the first pass after the record was written, which is the moment the record was written
+// (a store built with the replay's clock stamps it there), so the first pass that reads an issue
+// keeps its arrival before any pass can place it. The start state's issues are kept before the
+// first pass from the record's own entries (keepArrival, driver.arrivalBefore).
+func keepArrivals(ctx context.Context, tx pgx.Tx, issues []record.Issue) error {
+	if len(issues) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		keys = append(keys, issue.Key)
+	}
+	if _, err := tx.Exec(ctx, `insert into replay_arrivals (issue, generation, arrived_at)
+		select key, generation, moved_at from issues where key = any($1)
+		on conflict (issue, generation) do nothing`, keys); err != nil {
+		return fmt.Errorf("keep the arrivals: %w", err)
+	}
+	return nil
+}
+
+// keepArrival keeps at as issue's arrival in the line in the generation it stands at, where the
+// table holds none: the start state's arrival of an issue, as the record's entry of the run it
+// stands in shows it (driver.arrivalBefore), which the issue's record, written at the window's
+// start, does not carry.
+func keepArrival(ctx context.Context, tx pgx.Tx, issue record.Issue, at time.Time) error {
+	if _, err := tx.Exec(ctx, `insert into replay_arrivals (issue, generation, arrived_at) values ($1, $2, $3)
+		on conflict (issue, generation) do nothing`, issue.Key, int64(issue.Generation), at); err != nil {
+		return fmt.Errorf("keep the arrival of %s: %w", issue.Key, err)
+	}
+	return nil
+}
+
+// keepGaveUp keeps, for each of issues that stands in a phase rule keeps no slot in
+// (record.SlotRule.InSlotlessPhase) and holds no slot, the moment it gave its slot up there, where
+// the table holds none for its generation: the moment its record last moved, read at the first
+// pass after its move into that phase, which is the move that took the slot back. An issue that
+// holds a slot again has its moment cleared first, so a later visit past the review keeps its own.
+// The start state's issues past the review are kept before the first pass from the record's own
+// slot lines (keepGaveUpAt, driver.gaveUpBefore).
+func keepGaveUp(ctx context.Context, tx pgx.Tx, rule record.SlotRule, issues []record.Issue) error {
+	if _, err := tx.Exec(ctx, `delete from replay_gave_up g using slots s where s.issue = g.issue`); err != nil {
+		return fmt.Errorf("clear the slots given up past the review of the issues holding one again: %w", err)
+	}
+	var keys []string
+	for _, issue := range issues {
+		if record.InWorkflow(issue) && rule.InSlotlessPhase(issue) {
+			keys = append(keys, issue.Key)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `insert into replay_gave_up (issue, generation, gave_up_at)
+		select i.key, i.generation, i.moved_at from issues i
+		where i.key = any($1) and not exists (select 1 from slots s where s.issue = i.key)
+		on conflict (issue, generation) do nothing`, keys); err != nil {
+		return fmt.Errorf("keep the slots given up past the review: %w", err)
+	}
+	return nil
+}
+
+// keepGaveUpAt keeps at as the moment issue gave its slot up past the review in the generation it
+// stands at, where the table holds none: the start state's moment, as the record's last slot line
+// before the window's start shows it (driver.gaveUpBefore).
+func keepGaveUpAt(ctx context.Context, tx pgx.Tx, issue record.Issue, at time.Time) error {
+	if _, err := tx.Exec(ctx, `insert into replay_gave_up (issue, generation, gave_up_at) values ($1, $2, $3)
+		on conflict (issue, generation) do nothing`, issue.Key, int64(issue.Generation), at); err != nil {
+		return fmt.Errorf("keep the slot %s gave up past the review: %w", issue.Key, err)
+	}
+	return nil
+}
+
+// readGenerationTimes is the moment table's column holds for each of issues in the generation it
+// stands at, by key; an issue the table holds no row of at that generation has none. The table and
+// the column are the replay's own names, never an input's.
+func readGenerationTimes(ctx context.Context, tx pgx.Tx, table, column string, issues []record.Issue) (map[string]time.Time, error) {
+	times := make(map[string]time.Time)
+	if len(issues) == 0 {
+		return times, nil
+	}
+	keys := make([]string, 0, len(issues))
+	generations := make([]int64, 0, len(issues))
+	for _, issue := range issues {
+		keys, generations = append(keys, issue.Key), append(generations, int64(issue.Generation))
+	}
+	rows, err := tx.Query(ctx, `select t.issue, t.`+pgx.Identifier{column}.Sanitize()+` from `+pgx.Identifier{table}.Sanitize()+` t
+		join unnest($1::text[], $2::bigint[]) as i(issue, generation) on i.issue = t.issue and i.generation = t.generation`, keys, generations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var at time.Time
+		if err := rows.Scan(&key, &at); err != nil {
+			return nil, err
+		}
+		times[key] = at.UTC()
+	}
+	return times, rows.Err()
 }
 
 // KeepCovers makes covers the table's covers: the ones that ended go and the new ones are written,

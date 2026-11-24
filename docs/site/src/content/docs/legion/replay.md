@@ -662,6 +662,11 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `wait-grace` | `main` with a wait on another issue that gives the slot back only after five minutes, for the reason that a deployment reported: a started issue whose `blocked_by` link was set and taken off within a minute lost its slot and stood last of 79 in the line's returned part. | `0d3786da` |
 | `wait-grace-1h` | `wait-grace` with a grace of one hour, so that the comparison shows beside it what a longer grace keeps and what it costs. | `0d3786da` |
 | `returned-by-first-slot` | `main` with a returned issue placed in the line by its first slot in its current generation, not by the time at which its work came back, for the reason that a deployment reported: a started issue sent back from merging for one forward merge stood last of 76 in the returned part, and the issue of the one-minute wait last of 79. | `0d3786da` |
+| `rework-first` | `main` with the line ordered as a person proposed it: work that came back first, by its first slot in its current generation (first in, first out), then the issues of trees already started that have not started themselves, by the tree's first slot, and only then the trees not yet opened, by the board. The reason: started work should be burned down first, and the board's rank is not trusted to be current. The daemon records no first slot after a slot goes back and no arrival, so a replay keeps both in tables of its own. | `0d3786da` |
+| `rework-first-keep` | `rework-first` with the slot kept in accepting, retro and merging, as `keep-past-review` keeps it. | `0d3786da` |
+| `arrival-order` | `main` with the line one queue in arrival order, with no part ahead of another and no rank, which shows what the board's order changes. | `0d3786da` |
+| `returned-by-root-rank` | `main` with the returned part ordered by the tree root's place on the board and then by the time at which the work came back, where an issue sent back from accepting, retro or merging keeps the time at which it gave its slot up there. The reason: an issue sent back from accepting stood 126th of 128 in the returned part, and keeping the slot past the review would have held 34 of 157 slots with no worker. A replay keeps the time a slot was given up in a table of its own. | `0d3786da` |
+| `legion-v20.42.5-by-arrival`, `main-by-arrival`, `rework-first-by-arrival`, `rework-first-keep-by-arrival`, `returned-by-root-rank-by-arrival` | The named rule with each place it reads the board's rank read by arrival instead: the tree root's and then the issue's own arrival in the line in its current generation. They show how much a board that is not kept current moves each rule. | the named rule's |
 
 The commit of `main` is the commit at which the rule was first written as a value.
 A rule built on `main` that changes one choice carries the same commit, the code that its other choices come from.
@@ -675,6 +680,7 @@ main (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line places by: board
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -686,6 +692,7 @@ legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line places by: board
   a start takes: own_slot
   a conflicting head: moves_back_conflict
   the slot goes back at the ready mark: false
@@ -697,6 +704,7 @@ legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line places by: board
   a start takes: own_slot
   a conflicting head: moves_back_checks_red
   the slot goes back at the ready mark: true
@@ -708,6 +716,7 @@ keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line places by: board
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -719,6 +728,7 @@ blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: blockers_first
+  the line places by: board
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -730,6 +740,7 @@ returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_by_rank
+  the line places by: board
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -741,6 +752,7 @@ cover (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line places by: board
   a start takes: cover
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -752,6 +764,7 @@ wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 5m0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line places by: board
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -763,6 +776,7 @@ wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 1h0m0s
   a wait stops the phase under way: false
   the line's order: returned_oldest_first
+  the line places by: board
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
@@ -774,6 +788,115 @@ returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a wait gives the slot back after: 0s
   a wait stops the phase under way: false
   the line's order: returned_by_first_slot
+  the line places by: board
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: rework_first
+  the line places by: board
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: rework_first
+  the line places by: board
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: arrival
+  the line places by: arrival
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+returned-by-root-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_by_root_rank
+  the line places by: board
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+legion-v20.42.5-by-arrival (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  the line places by: arrival
+  a start takes: own_slot
+  a conflicting head: moves_back_conflict
+  the slot goes back at the ready mark: false
+
+main-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  the line places by: arrival
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+rework-first-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: rework_first
+  the line places by: arrival
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+rework-first-keep-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: rework_first
+  the line places by: arrival
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+
+returned-by-root-rank-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_by_root_rank
+  the line places by: arrival
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false

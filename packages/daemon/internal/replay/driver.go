@@ -806,6 +806,16 @@ func (d *driver) seed() error {
 					}
 				}
 			}
+			if arrived := d.arrivalBefore(issue.Key); !arrived.IsZero() && readsArrivals(d.rule) {
+				if err := keepArrival(ctx, tx, issue, arrived); err != nil {
+					return err
+				}
+			}
+			if gave := d.gaveUpBefore(issue.Key); !gave.IsZero() && readsGaveUp(d.rule) && d.rule.InSlotlessPhase(issue) {
+				if err := keepGaveUpAt(ctx, tx, issue, gave); err != nil {
+					return err
+				}
+			}
 		}
 		claims, err := d.st.ClaimsTx(ctx, tx)
 		if err != nil {
@@ -832,6 +842,37 @@ func (d *driver) firstSlotBefore(key string) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+// arrivalBefore is when key entered the workflow in the run it stands in at the window's start,
+// the record's entry of that run, which the rules that place by arrival read as its arrival in the
+// line; zero where the record shows no entry before then.
+func (d *driver) arrivalBefore(key string) time.Time {
+	iss, ok := d.trace.Issues[key]
+	if !ok {
+		return time.Time{}
+	}
+	if entry := iss.entryAt(d.window.From.Add(-time.Nanosecond)); entry != nil {
+		return entry.At
+	}
+	return time.Time{}
+}
+
+// gaveUpBefore is when key last gave a slot back before the window's start, the end of its last
+// slot that ended by then, which the rule returned-by-root-rank reads as the moment an issue
+// standing past the review at the start gave its slot up there; zero where none ended by then.
+func (d *driver) gaveUpBefore(key string) time.Time {
+	iss, ok := d.trace.Issues[key]
+	if !ok {
+		return time.Time{}
+	}
+	var last time.Time
+	for _, span := range iss.Slots {
+		if !span.End.IsZero() && !span.End.After(d.window.From) && span.End.After(last) {
+			last = span.End
+		}
+	}
+	return last
 }
 
 // placeByAnchor places the recorded event events[i] by its anchor, as no piece of work places it:

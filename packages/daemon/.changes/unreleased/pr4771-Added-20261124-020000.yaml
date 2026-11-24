@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+    `legion replay` compares more admission-line orders. `rework-first` admits work that came back
+    first, first in, first out by its first slot, then the unstarted work of trees already started,
+    and only then new trees by the board; `rework-first-keep` adds the slot kept past the review;
+    `arrival-order` is one queue in arrival order with no rank; `returned-by-root-rank` orders work
+    that came back by its tree root's rank and keeps, for a send-back past the review, the time it
+    gave its slot up. Each rule that reads the board also has a `-by-arrival` form that reads arrival
+    in its place. `legion replay run --cap <n>` replays a window at another admission cap, and
+    `legion replay validate --main-only` runs the main branch alone.

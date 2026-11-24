@@ -585,6 +585,18 @@ type LineFacts struct {
 	// which the pass reads in here (admit's RuleTables), and an issue it holds none of is placed by
 	// the moment its work came back. Nil under every other rule.
 	FirstSlots map[string]time.Time
+	// Arrivals is, under a rule that places issues by their arrival (SlotRule.Order LineReworkFirst
+	// or LineArrival, SlotRule.RankBy RankArrival), the moment each issue arrived in the line in its
+	// current generation, by key: the moment the daemon first recorded it there. The daemon keeps no
+	// such moment (an issue's MovedAt moves with each move) and runs no such rule; a replay under one
+	// keeps them in a table of its own database (admit's RuleTables). Nil under every other rule.
+	Arrivals map[string]time.Time
+	// GaveUp is, under a rule that places the returned part by the moment each issue gave its slot
+	// up past the review (SlotRule.Order LineReturnedByRootRank), that moment, by key, for each
+	// issue that gave its slot up in a phase the rule keeps none in and has held none since. The
+	// daemon keeps no such moment and runs no such rule; a replay under one keeps them in a table of
+	// its own database (admit's RuleTables). Nil under every other rule.
+	GaveUp map[string]time.Time
 }
 
 // KeepsSlot is the phase half of the facts' rule (SlotRule.KeepsSlot), with the merger's ready
@@ -1590,25 +1602,62 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// board's order, which the starting part is read in under every rule: a root of its own tree
 	// compares by its own rank, which is its tree root's, and a child takes its tree root's place
 	// in the board's order and then its own. It is a strict order of distinct issues (RankLess
-	// breaks a tie of ranks by key), so a part sorted by it alone needs no tie of its own.
-	order := facts.Rule.OrMain().Order
-	byRank := func(left, right Issue) bool {
-		if left.Tree != right.Tree {
-			return RankLess(byKey[left.Tree], byKey[right.Tree])
+	// breaks a tie of ranks by key), so a part sorted by it alone needs no tie of its own. Under a
+	// rule that places by arrival where the daemon places by the board (SlotRule.RankBy,
+	// RankArrival), byRank compares the tree roots' arrivals and then the issues' own instead
+	// (arrivalOf), a tie falling to the key, so it stays a strict order.
+	rule := facts.Rule.OrMain()
+	order := rule.Order
+	arrivalOf := func(issue Issue) time.Time {
+		if at, kept := facts.Arrivals[issue.Key]; kept {
+			return at
+		}
+		if at, kept := facts.FirstSlots[issue.Key]; kept {
+			return at
+		}
+		return issue.MovedAt
+	}
+	rootLess := func(left, right Issue) bool {
+		if rule.RankBy == RankArrival {
+			if a, b := arrivalOf(left), arrivalOf(right); !a.Equal(b) {
+				return a.Before(b)
+			}
+			return left.Key < right.Key
 		}
 		return RankLess(left, right)
 	}
-	// A rule that places work that came back by its first slot (LineReturnedByFirstSlot) places
-	// each entry by the moment of its issue's first slot in its current generation where the facts
-	// hold one (LineFacts.FirstSlots), and by the moment its work came back where they hold none;
-	// a tie of those moments falls to the daemon's own order below.
-	if order == LineReturnedByFirstSlot {
+	byRank := func(left, right Issue) bool {
+		if left.Tree != right.Tree {
+			if rule.RankBy == RankArrival {
+				return rootLess(rootOf(byKey, left), rootOf(byKey, right))
+			}
+			return RankLess(byKey[left.Tree], byKey[right.Tree])
+		}
+		return rootLess(left, right)
+	}
+	// A rule that places work that came back by its first slot (LineReturnedByFirstSlot, and the
+	// returned part of LineReworkFirst) places each entry by the moment of its issue's first slot
+	// in its current generation where the facts hold one (LineFacts.FirstSlots), and by the moment
+	// its work came back where they hold none; a tie of those moments falls to the daemon's own
+	// order below. A rule that places it by its tree root's place on the board
+	// (LineReturnedByRootRank) places an issue that gave its slot up past the review by the moment
+	// it gave it up there (LineFacts.GaveUp) where that is before the moment it was sent back.
+	switch order {
+	case LineReturnedByFirstSlot, LineReworkFirst:
 		for i := range returned {
 			first, kept := facts.FirstSlots[returned[i].entry.Issue.Key]
 			if !kept {
 				first = returned[i].at
 			}
 			returned[i].first = first
+		}
+	case LineReturnedByRootRank:
+		for i := range returned {
+			if gave, kept := facts.GaveUp[returned[i].entry.Issue.Key]; kept && gave.Before(returned[i].at) {
+				returned[i].first = gave
+			} else {
+				returned[i].first = returned[i].at
+			}
 		}
 	}
 	sort.Slice(returned, func(i, j int) bool {
@@ -1619,6 +1668,14 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// under a rule that places it by first slots.
 		if order == LineReturnedByRank {
 			return byRank(left.entry.Issue, right.entry.Issue)
+		}
+		// A rule that places it by its tree root's place on the board (LineReturnedByRootRank)
+		// compares the roots first, and the moments below only within one root's place.
+		if order == LineReturnedByRootRank {
+			leftRoot, rightRoot := rootOf(byKey, left.entry.Issue), rootOf(byKey, right.entry.Issue)
+			if leftRoot.Key != rightRoot.Key {
+				return rootLess(leftRoot, rightRoot)
+			}
 		}
 		if !left.first.Equal(right.first) {
 			return left.first.Before(right.first)
@@ -1645,12 +1702,42 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			}
 		}
 	}
+	// A rule that burns down work in progress first (LineReworkFirst) places the issues of trees
+	// already open that have not started themselves (LineFirstPhase) ahead of the trees not yet
+	// opened (LineQueuedRoot), each tree by the moment its root first took a slot in its current
+	// generation (LineFacts.FirstSlots, arrivalOf where the facts hold none) and each issue within
+	// a tree by its own arrival; the trees not yet opened stand by the board after them.
+	treeStarted := func(issue Issue) time.Time {
+		root := rootOf(byKey, issue)
+		if at, kept := facts.FirstSlots[root.Key]; kept {
+			return at
+		}
+		return arrivalOf(root)
+	}
 	sort.Slice(starting, func(i, j int) bool {
 		left, right := starting[i].Issue, starting[j].Issue
 		_, leftFirst := waitedOn[left.Key]
 		_, rightFirst := waitedOn[right.Key]
 		if leftFirst != rightFirst {
 			return leftFirst
+		}
+		if order == LineReworkFirst {
+			leftOpen, rightOpen := starting[i].Kind == LineFirstPhase, starting[j].Kind == LineFirstPhase
+			if leftOpen != rightOpen {
+				return leftOpen
+			}
+			if leftOpen {
+				if a, b := treeStarted(left), treeStarted(right); !a.Equal(b) {
+					return a.Before(b)
+				}
+				if left.Tree != right.Tree {
+					return left.Tree < right.Tree
+				}
+				if a, b := arrivalOf(left), arrivalOf(right); !a.Equal(b) {
+					return a.Before(b)
+				}
+				return left.Key < right.Key
+			}
 		}
 		return byRank(left, right)
 	})
@@ -1673,7 +1760,28 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		starting[i].Part, starting[i].PartPlace, starting[i].RootRank =
 			PartStarting, i+1, byKey[starting[i].Issue.Tree].Rank
 	}
-	return append(line, starting...), heldRows
+	line = append(line, starting...)
+	// A rule with one queue in arrival order (LineArrival) keeps each entry's part and its place
+	// in it, which say what kind of work it is, and orders the whole line by each issue's arrival
+	// (arrivalOf), with no part ahead of another and no rank; a tie falls to the key.
+	if order == LineArrival {
+		sort.SliceStable(line, func(i, j int) bool {
+			if a, b := arrivalOf(line[i].Issue), arrivalOf(line[j].Issue); !a.Equal(b) {
+				return a.Before(b)
+			}
+			return line[i].Issue.Key < line[j].Issue.Key
+		})
+	}
+	return line, heldRows
+}
+
+// rootOf is issue's tree root's record among byKey, or a record that holds only the root's key
+// where byKey holds none, so a comparison of roots reads the key and an empty rank.
+func rootOf(byKey map[string]Issue, issue Issue) Issue {
+	if root, ok := byKey[issue.Tree]; ok {
+		return root
+	}
+	return Issue{Key: issue.Tree}
 }
 
 // FirstPhaseMayStart says whether issue stands where its first phase can start: at admitted,
