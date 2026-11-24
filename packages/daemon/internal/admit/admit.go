@@ -1917,7 +1917,10 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 // reads it. The engine leaves alone a parent held for any other reason, in retro or in merging,
 // whose pull request has merged, or whose phase's role stands on an entry a role's move back raised
 // out of retro or merging (record.PhaseRow.EntryFrom), and a second pass finds a moved parent in
-// awaiting_children already, so it sends nothing again.
+// awaiting_children already, so it sends nothing again. The stop also leaves alone a member of a
+// re-admitted tree whose root still owes its members their return (record.Issue.MembersOwed): no
+// worker of this generation took its phase, and the return, later in this pass or at the root's
+// promotion, holds its start under the same rule (startMidPhaseMembers).
 //
 // It runs before the releases (promoteHolds), so the slot a stopped parent held is freed on this
 // very pass by the one rule for a phase that keeps none (releaseSlots, record.NeedsSlot), and the
@@ -1945,6 +1948,18 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 	owed := make(map[string][]record.OwedStart, len(facts.OwedRows))
 	for _, start := range facts.OwedRows {
 		owed[start.Issue] = append(owed[start.Issue], start)
+	}
+	// A member of a re-admitted tree whose root still owes its members their return is no started
+	// parent yet: no worker of this generation took its phase, and the return decides its start,
+	// holding it where an open child stands under it (startMidPhaseMembers, workflow's
+	// StartPromotedWorker). So the pass's stop, which retires a worker's task and tells its role
+	// that its phase ended, leaves such a member alone. The mark is on the root alone
+	// (record.Issue.MembersOwed).
+	returning := make(map[string]bool)
+	for _, issue := range issues {
+		if issue.MembersOwed {
+			returning[issue.Key] = true
+		}
 	}
 	wrote := false
 	for _, parent := range parents {
@@ -1980,7 +1995,7 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 				return wrote, fmt.Errorf("keep the open children of %s's wait: %w", parent.Key, err)
 			}
 			wrote = wrote || kept
-		case open:
+		case open && !returning[parent.Tree]:
 			moved, err := a.engine.StopForChildren(ctx, tx, parent, wait.Open, owed[parent.Key])
 			if err != nil {
 				return wrote, fmt.Errorf("move %s to awaiting_children: %w", parent.Key, err)
@@ -3177,9 +3192,15 @@ func promotedByEarlierRelease(root record.Issue, holds bool) bool {
 // The roles are enumerated as every other sweep of them does, over claim.Roles (the engine's
 // everyClaim).
 //
-// What an issue waits on is deliberately not read here: every member this starts is mid-phase,
-// work already under way, and a member standing at admitted is passed over, since nothing of it
-// has run in this generation and its first phase is the waiting line's to start.
+// What an issue waits on is not read here but for one wait: every member this starts is
+// mid-phase, work already under way, and a member standing at admitted is passed over, since
+// nothing of it has run in this generation and its first phase is the waiting line's to start.
+// The one wait is R9's (dispatch://INFRA-3320): a member under the tree's root with an open
+// Dispatch child under it does not get its phase worker back, and moves to awaiting_children
+// holding that start (workflow's StartPromotedWorker), whether this runs at the root's promotion
+// or at the pass that finds the tree running first. The root's own carried phase starts, as k12
+// rules, and the first pass after the promotion stops it as any started parent with an open child
+// (childrenWaits).
 //
 // root is the tree's root as returnOwedMembers has it, and issues the pass's own records, which
 // carry that root as the pass read it. The caller passes both and appends nothing: the root is
@@ -3314,25 +3335,39 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				return err
 			}
 		}
-		for _, held := range standing.roles {
-			run := runs[held.token]
-			if held.role != standing.owner {
-				// No claim row, so the role has never run: there is no session to bring back and
-				// no task this start could carry, and the one it would make could only ever be
-				// woken by a message.
-				if run.Claim == nil {
-					continue
-				}
-				if err := a.enqueue(ctx, tx, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree, Role: held.role,
-					Generation: member.Generation, Phase: member.Phase}, now); err != nil {
-					return err
-				}
+		// The phase's own worker is started first, because R9 can hold that start: a member with
+		// an open Dispatch child under it moves to awaiting_children holding it, and no worker is
+		// launched (workflow's StartPromotedWorker). Such a member then brings no other role back
+		// and starts no step, as one the walk found waiting already does, so it is read again to
+		// learn where the start left it.
+		held := false
+		for _, owned := range standing.roles {
+			if owned.role != standing.owner || !workflow.StartFor(runs[owned.token], root, member.Generation, member.Phase) {
 				continue
 			}
-			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
+			if err := a.engine.StartPromotedWorker(ctx, tx, member, owned.role); err != nil {
+				return err
+			}
+			stood, err := a.store.Issue(ctx, tx, member.Key)
+			if err != nil {
+				return err
+			}
+			if stood != nil && stood.Phase == phase.AwaitingChildren {
+				member, held = *stood, true
+			}
+		}
+		for _, other := range standing.roles {
+			if held {
+				break
+			}
+			// No claim row, so the role has never run: there is no session to bring back and no
+			// task this start could carry, and the one it would make could only ever be woken by
+			// a message.
+			if other.role == standing.owner || runs[other.token].Claim == nil {
 				continue
 			}
-			if err := a.engine.StartPromotedWorker(ctx, tx, member, held.role); err != nil {
+			if err := a.enqueue(ctx, tx, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree, Role: other.role,
+				Generation: member.Generation, Phase: member.Phase}, now); err != nil {
 				return err
 			}
 		}

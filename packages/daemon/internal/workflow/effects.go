@@ -743,6 +743,13 @@ func entryWork(issue record.Issue, row record.PhaseRow, at Standing) string {
 // (record.SuperviseRequest.ResumeTask), and it sends the task enter stored (startMarks.stored).
 // The entry it raises is of no move back: the promotion hands the role the phase it already
 // stands in, and moves the issue nowhere.
+//
+// R9 holds this start as it holds every other start of planning through accepting: a member under
+// the tree's root with an open Dispatch child under it moves to awaiting_children holding the
+// start, with the resume task as its held task, and no worker is launched and no entry raised
+// (holdPromotedStart). The tree's own root is not held, as k12 rules for a root handed over
+// carrying its phase. The caller reads the member again to tell the two apart, since a held
+// member brings no other role back and starts no step (admit's startMidPhaseMembers).
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
@@ -750,6 +757,10 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	}
 	task, err := e.resumeTaskOn(ctx, tx, issue, w)
 	if err != nil {
+		return err
+	}
+	held, err := e.holdPromotedStart(ctx, tx, issue, w, role, task)
+	if err != nil || held {
 		return err
 	}
 	entry, sent, err := e.enter(ctx, tx, issue, &w, role, task, "", false, false)

@@ -1394,9 +1394,10 @@ func (GateSeed) OutboxKind() OutboxKind { return OutboxKindGateSeed }
 // a fact of its own rather than the gate seed's: a person's approval of the version opens the
 // step, a changes request, a newer version, the request's close with no approval or the
 // ancestor's leave ends the wait, and a request still waiting changes nothing. The row's issue is
-// the root. A registration queues one, so does the boot for every pending step of the project,
-// whatever phase its root stands in, and so does an event that reaches such a step with no read of
-// Dispatch on it (workflow's readBasisLater).
+// the root. One is queued whenever the daemon must learn what Dispatch shows of such a wait and
+// cannot read it in the fact at hand: when the step is registered on the request, for every such
+// step of the project at the daemon's boot, whatever phase its root stands in, and when an event
+// reaches the step with no read of Dispatch on it.
 type PendingBasisSeed struct {
 	// Step and ArtifactID are the root's step and its own document the step was registered on.
 	Step       DesignStep `json:"step"`
@@ -1415,9 +1416,8 @@ type PendingBasisSeed struct {
 func (PendingBasisSeed) OutboxKind() OutboxKind { return OutboxKindPendingBasisSeed }
 
 // PendingBasisSeedOf is the seed of gate, a step that waits on an ancestor's approval request
-// (DesignGate.PendingOnBasis), for the root generation that registered it: what a registration
-// queues (workflow's tellRegisteredBasis), what the boot queues for every such step, and what an
-// event with no read of Dispatch queues for each step it reaches (workflow's readBasisLater).
+// (DesignGate.PendingOnBasis), for the root generation that registered it: the one row every
+// queue of such a read writes, so each reads the same ancestor, version and request.
 func PendingBasisSeedOf(gate DesignGate, generation uint64) PendingBasisSeed {
 	return PendingBasisSeed{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID, BasisArtifactID: gate.Basis.ArtifactID,
 		BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: generation}
