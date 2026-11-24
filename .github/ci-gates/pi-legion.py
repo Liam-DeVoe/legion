@@ -7,7 +7,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
 ], reads=reads(
     ("packages/pi-legion/**", f"{at('pi-legion', 'Test pi-legion')} in packages/pi-legion"),
-    ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:77,319 and legion-role-claim.test.ts:14,100 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1072"),
+    ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:77,78,330,3131 and legion-role-claim.test.ts:14,15,102 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1265"),
     ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:352 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :30) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-48 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
     ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:43), outside the package it builds"),
     ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
