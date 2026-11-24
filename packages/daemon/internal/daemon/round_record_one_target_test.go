@@ -226,3 +226,37 @@ func TestAReplacementThroughAProcessThatALaunchOvertookTellsTheLaunchsRead(t *te
 		t.Fatalf("the store holds %d records of the round's pod once its notice is queued, want none", records)
 	}
 }
+
+// The Legion reviewer's Important 3 on #5285 at acda4d1e: two records of one target stand at one
+// sweep, each written over a read of its own before the act that took the pod. The sweep finishes
+// the target once: the round ends once, on one "the round is over" line, and the architect is told
+// once, from the newer read, the last one recorded before the pod was taken.
+func TestTwoRecordsOfOneTargetAtOneSweepEndTheRoundOnceFromTheNewerRead(t *testing.T) {
+	t.Parallel()
+	rig := podlessBreakingRound(t)
+	for _, work := range []runtime.WorkspaceWork{
+		{Head: passedOverHead, Commits: []string{launchReadCommit}, Count: 1},
+		roundUnpushed,
+	} {
+		read := workspaceRead{round: podUpdateRound, by: viaIssue, at: rig.clock.Now(), work: work}
+		if _, ok := rig.s.recordRoundReplacement(rig.ctx, podUpdateIssue, podUpdateRound, podUpdatePod, roundBreakingDrift, read); !ok {
+			t.Fatal("record the round's replacement")
+		}
+	}
+	rig.rt.ScriptSuspendedOver(podUpdatePod)
+	rig.awaitSwept(claim.RoleImplementer, "its round to end as the replacement its records name", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	for range roundSweeps {
+		rig.tick()
+	}
+	if over := loggedLines(t, rig.logs.String(), podUpdateReplacedLine); len(over) != 1 {
+		t.Errorf("the round was logged over %d times, want once: %+v", len(over), over)
+	}
+	told := rig.architectNotices(record.WorkspaceTakenNotice)
+	if len(told) != 1 || !strings.Contains(told[0].Reason, passedOverCommit) || strings.Contains(told[0].Reason, launchReadCommit) {
+		t.Fatalf("the architect was told %+v, want one workspace-taken notice naming the newer read's commit %s and not the older's %s",
+			told, passedOverCommit, launchReadCommit)
+	}
+	if records := rig.replacementRecords(); records != 0 {
+		t.Fatalf("the store holds %d records once the notice is queued, want none", records)
+	}
+}
