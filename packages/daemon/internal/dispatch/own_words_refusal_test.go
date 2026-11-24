@@ -31,11 +31,11 @@ func refusingDispatch(t *testing.T, status int, code, said string) *HTTPClient {
 	return New(server.URL, dispatchToken)
 }
 
-// offRouteRefusal is the refusal the daemon's client prints (dispatchError) for Dispatch's 409
-// code and said, answered to a request the daemon's client never makes: body, the client's own
-// shape, sent with method to path, a route of Dispatch's where the names of body the public-name
-// table scopes to the daemon's writes are not public.
-func offRouteRefusal(t *testing.T, method, path string, body any, code, said string) string {
+// offRouteRefusal is the refusal the daemon's client prints (dispatchError) for Dispatch's status
+// and coded refusal code and said, answered to a request the daemon's client never makes: body,
+// sent with method to path, a route of Dispatch's where the names of body the public-name table
+// scopes to the daemon's writes are not public.
+func offRouteRefusal(t *testing.T, method, path string, body any, status int, code, said string) string {
 	t.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -51,11 +51,11 @@ func offRouteRefusal(t *testing.T, method, path string, body any, code, said str
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer, err := oauth2call.ReadAnswer(&http.Response{StatusCode: http.StatusConflict, Body: io.NopCloser(bytes.NewReader(refusal)), Request: request}, 1<<10)
+	answer, err := oauth2call.ReadAnswer(&http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(refusal)), Request: request}, 1<<10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return dispatchError(http.StatusConflict, oauth2call.StatusLine(http.StatusConflict), answer).Error()
+	return dispatchError(status, oauth2call.StatusLine(status), answer).Error()
 }
 
 // requireWords requires got, a refusal as the daemon prints it, to hold each of prints and none
@@ -130,7 +130,7 @@ func TestTheDaemonsSessionPrintsInDispatchsRefusalOfItsOwnWrites(t *testing.T) {
 		{"below the role holders", http.MethodPut, "/api/v1/issues/" + ownWordsKey + "/role-holders/extra", roleHoldersWrite{Holders: []RoleHolder{}, Actor: actor}},
 	} {
 		t.Run("off "+c.name, func(t *testing.T) {
-			got := offRouteRefusal(t, c.method, c.path, c.body, "ISSUE_CLAIMED", "issue is claimed by another session")
+			got := offRouteRefusal(t, c.method, c.path, c.body, http.StatusConflict, "ISSUE_CLAIMED", "issue is claimed by another session")
 			requireWords(t, got, nil, []string{"session"})
 		})
 	}
@@ -197,7 +197,7 @@ func TestTheRolesAndStepKindsPrintInDispatchsRefusalOfRoleHolderAndStepWrites(t 
 			roleHoldersWrite{Holders: holders, Actor: actor}, []string{"reviewer"}},
 	} {
 		t.Run("off "+c.name, func(t *testing.T) {
-			requireWords(t, offRouteRefusal(t, c.method, c.path, c.body, "STEP_INPUT", c.said), nil, c.redacted)
+			requireWords(t, offRouteRefusal(t, c.method, c.path, c.body, http.StatusBadRequest, "STEP_INPUT", c.said), nil, c.redacted)
 		})
 	}
 }
