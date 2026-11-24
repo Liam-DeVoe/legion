@@ -4,26 +4,35 @@ body: |-
     slots. It replays a recorded window of a project's daemon through the daemon's own admission
     pass, under a slot rule that the caller names, on a simulated clock. It reports the issues
     finished, the started work that waits for a slot, the priority that holders take and the other
-    delays, and names each assumption that a result rests on. `collect` and `collect-merges` collect
-    a window from the daemon's log lines, from Dispatch and from GitHub, with GET requests alone.
-    `neutralize` renames the private names of a window for test data. `run` replays a window, and
-    `scorecard` reads the same measures from the record of a window. `validate` checks a replay
-    against the record, `forecast` checks it against a recorded change of the rule, and `compare`
-    compares the rules on two windows. `rules` prints the ten rules that a replay can run, each
-    with its commit. Three of them come from a deployment's reported cases: `wait-grace` keeps a
-    holder's slot through a wait on another issue for its first five minutes, `wait-grace-1h` keeps
-    it for its first hour, and `returned-by-first-slot` places the issues whose work came back by
-    their first slot. The daemon keeps no first slot after a slot goes back, so a replay keeps it
-    in a table of its own. For each rule with a grace, `compare` names how many of the waits that
-    gave a slot back in each window's record the grace keeps the slot through, and the slot-hours
-    that it keeps. The tool writes nothing to a running daemon, to Dispatch or to GitHub. The page
-    "Replaying a recorded window" of the docs says how to collect a window and how to run each
-    command, and gives each measure, each rule and each assumption.
+    delays, and names each assumption that a result rests on. `collect` collects a window from the
+    daemon's log lines and from Dispatch, and its `--after` adds a run-out past the window's end, so
+    a replay runs the work recorded after the end while it measures the window alone.
+    `collect-merges` adds each base branch's first-parent history from GitHub. Both send GET
+    requests alone. `neutralize` renames the private names of a window for test data. `run`
+    replays a window, and `scorecard` reads the same measures from the record of a window.
+    `validate` checks a replay against the record (`--main-only` runs the main branch alone, with
+    its seeds), `forecast` checks it against a recorded change of the rule, and `compare` compares
+    the rules on two windows, gives the reason for each rule, and writes each issue's first slot
+    and done time under each rule beside the record. `rules` prints the eighteen rules that a
+    replay can run, each with its commit: the daemon's own, the rules of three recorded windows
+    (`legion-v20.42.5`, `legion-v19.57.3` and `legion-v22.14.1`), and fourteen candidates. Among
+    the candidates, `wait-grace` and `wait-grace-1h` keep a holder's slot through a wait on another
+    issue for its first five minutes or its first hour, `returned-by-first-slot`, `rework-first`
+    and `rework-first-keep` place returned work first, `arrival-order` places every issue by its
+    arrival, `priority-first` places the line by Dispatch priority, `p0-at-once` starts a P0 issue
+    above the cap, `idle-return-1h` gives back the slot of a holder that waits on its children or
+    on a person once none of its roles has had a turn for an hour, and `p0-idle` joins the last
+    two. The daemon keeps no first slot or arrival after a slot
+    goes back, so a replay keeps them in tables of its own. For each rule with a grace, `compare`
+    names how many of the waits that gave a slot back in each window's record the grace keeps the
+    slot through, and the slot-hours that it keeps. The tool writes nothing to a running daemon, to
+    Dispatch or to GitHub. The page "Replaying a recorded window" of the docs says how to collect a
+    window and how to run each command, and gives each measure, each rule and each assumption.
 
     `legion state` prints a `slots:` line under its admission line. It says what each holder of a
     slot does now (`working`, `stopped`, `person`, `issue` or `idle`, each with the oldest time in
     it), how many started issues wait for a slot, in two readings, and how many holders rank below
-    the first issue that waits for one. From daemon API contract 232, `legion state --json` carries
+    the first issue that waits for one. From daemon API contract 240, `legion state --json` carries
     the same reading as `admission.slots`, each slot carries its holder's `state` and `since`, and
     each issue carries its `rank` and `rootRank`. A caller of an older contract gets the state
     without them. The controller's tick notice carries the reading as `slots`.
