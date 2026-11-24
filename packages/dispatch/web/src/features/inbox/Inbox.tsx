@@ -2001,9 +2001,11 @@ function InboxBody({
    * and the reader scrolling a list with the panel shut must pay for none of it.
    */
   const renderFilterControls = (): ReactNode => {
-    // What each filter control counts against: a row that survives every narrowing but that
-    // control's own, so a reader opening Priority is told what each priority holds inside the
-    // list they have already narrowed, and ticking a value never empties the list by surprise.
+    // What each filter control counts: the rows that every filter that is on keeps, but for that
+    // control's own, so a reader opening Priority is told what each priority holds under the
+    // filters they have already set. The typed text is no filter here, as on `main`: the counts
+    // leave it out, as Clear filters leaves it standing, so a value whose rows the text hides
+    // still counts them.
     const matchesOtherFields = (row: InboxListRow, field: InboxFilterField | "assignee"): boolean =>
       INBOX_FILTER_FIELDS.every(
         (other) => other === field || inFieldFilter(row, other, filters[other], viewer)
