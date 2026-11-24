@@ -355,7 +355,10 @@ type Postgres struct {
 
 // StartPostgres starts the rig's PostgreSQL server (kind_sandbox_start_postgres) in the cluster
 // and returns its URLs once it accepts connections: a session store's database, which the pods of
-// the test reach, and the store of a daemon the test process runs.
+// the test reach, and the store of a daemon the test process runs. The pod's readiness says the
+// server answers inside the cluster; the node port answers only once kube-proxy has written its
+// rules, a moment later (run 45418898603's tree-stage4b leg was refused on it 0.1 s after the pod
+// was ready), so it also waits up to postgresNodePortWithin for a connection to the node port.
 func (r *Rig) StartPostgres(t *testing.T) Postgres {
 	t.Helper()
 	r.shell(t, "kind_sandbox_start_postgres", postgresPassword)
@@ -368,8 +371,25 @@ func (r *Rig) StartPostgres(t *testing.T) Postgres {
 	url := func(host, port string) string {
 		return "postgres://postgres:" + postgresPassword + "@" + net.JoinHostPort(host, port) + "/postgres?sslmode=disable"
 	}
+	host := net.JoinHostPort(node, port)
+	deadline := time.Now().Add(postgresNodePortWithin)
+	for {
+		conn, err := net.DialTimeout("tcp", host, 2*time.Second)
+		if err == nil {
+			_ = conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rig's PostgreSQL is ready in the cluster, but its node port %s took no connection within %s: %v", host, postgresNodePortWithin, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	return Postgres{InCluster: url(address, "5432"), Host: url(node, port)}
 }
+
+// postgresNodePortWithin bounds StartPostgres's wait for the node port, which kube-proxy programs
+// in seconds on a rig whose pod is already ready.
+const postgresNodePortWithin = time.Minute
 
 // leakCheckToken is the read token LeakCheck's Source presents, and the one its repository takes.
 const leakCheckToken = "ghs_kind-leak-check-not-a-secret"
