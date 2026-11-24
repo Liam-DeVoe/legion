@@ -55,6 +55,15 @@ const (
 	evalPageDefault = 50
 	evalPageMax     = 200
 
+	// evalRepoMax is the most repositories an eval read's `repo` names, a repository the query
+	// repeats counted once, and evalRepoBytes the most bytes one of them holds, the bound of a
+	// reading's attributes.repo (evals' key bound): a longer name is the repository of no stored
+	// row. Every statement of the read sends the list, and at these bounds it takes at most
+	// 100 × (512 + 4) bytes, about 50 KiB of the 256 KiB a statement sends (evals'
+	// statementBytes), as a slug's 512 bytes keep each statement of a write under it.
+	evalRepoMax   = 100
+	evalRepoBytes = 512
+
 	codeEvalNotFound           = "EVAL_NOT_FOUND"
 	codeIdempotencyKeyRequired = "IDEMPOTENCY_KEY_REQUIRED"
 	codeReadingAppendOnly      = "READING_APPEND_ONLY"
@@ -622,17 +631,34 @@ func namedOnce(query url.Values, key string) error {
 }
 
 // parseEvalRepos reads `repo`, repeatable: the repositories whose day rows a read folds in place
-// of the project's own. An empty value names no repository and is refused, and so is one starting
+// of the project's own, each once, in the order the query first names it. An empty value names no
+// repository and is refused, and so is one of more than evalRepoBytes bytes, and one starting
 // with ':', which the stored rows keep the day rows of what a repository attributes and of what
 // reaches a project only through its default repository under (evals.OwnerKey,
-// legionfacts.DefaultRepo): no repository is called that, and a read names repositories alone.
+// legionfacts.DefaultRepo): no repository is called that, and a read names repositories alone. A
+// query naming more than evalRepoMax repositories is refused, so the list stays a small part of
+// each statement of the read that sends it.
 func parseEvalRepos(query url.Values) ([]string, error) {
-	repos := query["repo"]
-	if slices.Contains(repos, "") {
+	named := query["repo"]
+	if slices.Contains(named, "") {
 		return nil, errors.New("repo names a repository, and an empty repo names none")
 	}
-	if at := slices.IndexFunc(repos, func(repo string) bool { return strings.HasPrefix(repo, ":") }); at >= 0 {
-		return nil, fmt.Errorf("repo names a repository, and %q is no repository name", repos[at])
+	if at := slices.IndexFunc(named, func(repo string) bool { return len(repo) > evalRepoBytes }); at >= 0 {
+		return nil, fmt.Errorf("repo %q holds %d bytes, and a repository name holds at most %d", evals.BoundedField(named[at]), len(named[at]), evalRepoBytes)
+	}
+	if at := slices.IndexFunc(named, func(repo string) bool { return strings.HasPrefix(repo, ":") }); at >= 0 {
+		return nil, fmt.Errorf("repo names a repository, and %q is no repository name", named[at])
+	}
+	var repos []string
+	seen := make(map[string]bool, len(named))
+	for _, repo := range named {
+		if !seen[repo] {
+			seen[repo] = true
+			repos = append(repos, repo)
+		}
+	}
+	if len(repos) > evalRepoMax {
+		return nil, fmt.Errorf("repo names %d repositories, and a read takes at most %d", len(repos), evalRepoMax)
 	}
 	return repos, nil
 }

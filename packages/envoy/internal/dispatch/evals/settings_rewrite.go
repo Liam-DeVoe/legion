@@ -363,27 +363,49 @@ type memberAt struct {
 
 // readMembers reads every member of projects under families counted under one of deployRepos on
 // one of days, by its key, and none where days is empty. eval_day_members_day (project_key,
-// family, day) keys its filter of the days.
+// family, day) keys its filter of the days. projects (every project and owner key) and days (every
+// day of the history a rewrite builds) grow with the history, so each goes in cuts
+// (statementChunks), each statement one cut of each: the projects in cuts of at most half of
+// statementBytes, all in one where they fit, and the days in cuts of what the rest of a statement
+// holds. A member stands on one day, so no two statements read it.
 func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos []string, days []time.Time) (map[memberKey]memberAt, error) {
 	held := map[memberKey]memberAt{}
 	if len(families) == 0 || len(projects) == 0 || len(deployRepos) == 0 || len(days) == 0 {
 		return held, nil
 	}
-	rows, err := s.database.Pool.Query(ctx, `
-		select project_key, family, deploy_repo, row_key, day, repo, shipped_by from eval_day_members
-		where project_key = any($1) and family = any($2) and deploy_repo = any($3) and day = any($4::date[])
-	`, projects, families, deployRepos, days)
-	if err != nil {
-		return nil, fmt.Errorf("read the members of %v: %w", families, err)
+	projectBytes := 0
+	for i := range projects {
+		projectBytes += textBytes(&projects[i])
 	}
-	var key memberKey
-	var at memberAt
-	if _, err := pgx.ForEachRow(rows, []any{&key.project, &key.family, &key.deployRepo, &key.rowKey, &at.day, &at.repo, &at.shippedBy}, func() error {
-		at.day = measures.Midnight(at.day)
-		held[key] = at
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the members of %v: %w", families, err)
+	// A cut of the projects takes at most reserve bytes, the rest of a statement its other lists:
+	// statementChunks closes a cut at statementBytes, counted from statementBytes-reserve.
+	reserve := min(projectBytes, statementBytes/2)
+	base := paramBytes(4) + reserve
+	for _, list := range [][]string{families, deployRepos} {
+		for i := range list {
+			base += textBytes(&list[i])
+		}
+	}
+	dayBytes := func(*time.Time) int { return 4 + 8 }
+	for named := range statementChunks(projects, statementBytes-reserve, textBytes) {
+		for dates := range statementChunks(days, base, dayBytes) {
+			rows, err := s.database.Pool.Query(ctx, `
+				select project_key, family, deploy_repo, row_key, day, repo, shipped_by from eval_day_members
+				where project_key = any($1) and family = any($2) and deploy_repo = any($3) and day = any($4::date[])
+			`, named, families, deployRepos, dates)
+			if err != nil {
+				return nil, fmt.Errorf("read the members of %v: %w", families, err)
+			}
+			var key memberKey
+			var at memberAt
+			if _, err := pgx.ForEachRow(rows, []any{&key.project, &key.family, &key.deployRepo, &key.rowKey, &at.day, &at.repo, &at.shippedBy}, func() error {
+				at.day = measures.Midnight(at.day)
+				held[key] = at
+				return nil
+			}); err != nil {
+				return nil, fmt.Errorf("read the members of %v: %w", families, err)
+			}
+		}
 	}
 	return held, nil
 }
@@ -506,7 +528,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// owners is the delivery family's owners (refresh.owners), and the owner keys the rewritten
 	// history counts rows for that the store holds none of yet, added below once it is attributed.
 	owners := slices.Clone(r.owners)
-	firsts := make(map[string]map[evalKey]time.Time, len(owners))
+	var firsts map[string]map[evalKey]time.Time
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
 			history, err = delivery.ReadHistoryRows(ctx, pool, names, judged, end)
@@ -516,15 +538,13 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			input, err = r.store.deliveryInputStart(ctx, every)
 			return err
 		},
-		func(ctx context.Context) error {
+		func(ctx context.Context) (err error) {
+			zeros := make(map[string][]DayRow, len(owners))
 			for _, project := range owners {
-				first, err := r.store.firstDays(ctx, project, ZeroDeliveryDay(next, project, r.today, every).Rows, nil)
-				if err != nil {
-					return err
-				}
-				firsts[project] = first
+				zeros[project] = ZeroDeliveryDay(next, project, r.today, every).Rows
 			}
-			return nil
+			firsts, err = r.store.firstDays(ctx, zeros, nil)
+			return err
 		},
 		func(ctx context.Context) (err error) {
 			walks, err = r.store.readWalks(ctx)
@@ -732,7 +752,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 						first := r.first[walkKey{family: walkDelivery, project: project}]
 						own.Rows = dropUnshipped(own.Rows, first, day)
 						full := own
-						if computed(day) {
+						if computed(day) && begunBy(first, day) {
 							full = own.WithZeros(zerosFrom(ZeroDeliveryDay(next, project, day, names).Rows, first, day))
 						}
 						if from, held := heldFrom[project]; len(full.Rows) == 0 && (!held || day.Before(from)) {
@@ -802,14 +822,15 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if err := writeMovedMembers(ctx, tx, stored, members, written); err != nil {
 		return err
 	}
-	for _, project := range slices.Sorted(maps.Keys(spans)) {
-		moved := make(map[string]daySpan, len(slugs))
+	moved := make(map[string]map[string]daySpan, len(spans))
+	for project, span := range spans {
+		moved[project] = make(map[string]daySpan, len(slugs))
 		for _, slug := range slugs {
-			moved[EvalID(project, slug)] = spans[project]
+			moved[project][EvalID(project, slug)] = span
 		}
-		if err := foldFiguresInTx(ctx, tx, r.build, project, moved); err != nil {
-			return err
-		}
+	}
+	if err := foldFiguresInTx(ctx, tx, r.build, moved); err != nil {
+		return err
 	}
 	if err := recordBuiltUnder(ctx, tx, next); err != nil {
 		return err
@@ -1129,8 +1150,9 @@ func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, 
 // not among, as deleteStaleDays deletes them. It sends each project's days with that project's
 // evals and rows, the rows in statements of at most statementBytes of parameters as
 // deleteStaleDays cuts them (staleRuns), each reading the stored rows of its own range of keys,
-// so the statements together delete what one would. Its statements are planned with merge joins
-// off, and the setting then given back the value it held.
+// and a project's days, every day of the history it rewrites, in cuts where they would pass their
+// reserve (writtenReserve, writtenCuts), so the statements together delete what one would. Its
+// statements are planned with merge joins off, and the setting then given back the value it held.
 func deleteStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, days []time.Time, slugs, deployRepos []string, held []DayRow) error {
 	if len(projects) == 0 || len(deployRepos) == 0 {
 		return nil
@@ -1167,8 +1189,9 @@ func deleteStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, 
 		for i := range dates {
 			writtenProjects[i] = project
 		}
+		limit := writtenReserve(writtenProjects, nil)
 		evalIDs := make([]string, len(slugs))
-		base := paramBytes(12, writerComputation) + len(dates)*(4+len(project)+4+8)
+		base := paramBytes(12, writerComputation) + limit
 		for i, slug := range slugs {
 			evalIDs[i] = EvalID(project, slug)
 			base += 4 + len(evalIDs[i])
@@ -1176,6 +1199,7 @@ func deleteStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, 
 		for _, repo := range deployRepos {
 			base += 4 + len(repo)
 		}
+		cuts := writtenCuts(writtenProjects, dates, nil, nil, nil, limit)
 		for _, run := range staleRuns(rows[project], base, settingsKeyBytes) {
 			count := len(run.rows)
 			heldProjects, heldEvals, heldDeployRepos := make([]string, count), make([]string, count), make([]string, count)
@@ -1184,9 +1208,11 @@ func deleteStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, 
 				heldProjects[i], heldEvals[i], heldDeployRepos[i] = row.ProjectKey, row.EvalID, row.DeployRepo
 				heldSeries[i], heldRepos[i], heldDays[i] = row.Series, row.Repo, measures.Midnight(row.Day)
 			}
-			if _, err := tx.Exec(ctx, deleteStaleSettingsDaysStatement, writtenProjects, dates, heldProjects, heldEvals, heldSeries, heldRepos, heldDays,
-				evalIDs, writerComputation, heldDeployRepos, deployRepos, settingsKey(run.from), settingsKey(run.until)); err != nil {
-				return fmt.Errorf("delete the day rows of %s a settings change leaves no longer held: %w", project, err)
+			for _, cut := range cuts {
+				if _, err := tx.Exec(ctx, deleteStaleSettingsDaysStatement, cut.projects, cut.dates, heldProjects, heldEvals, heldSeries, heldRepos, heldDays,
+					evalIDs, writerComputation, heldDeployRepos, deployRepos, settingsKey(run.from), settingsKey(run.until)); err != nil {
+					return fmt.Errorf("delete the day rows of %s a settings change leaves no longer held: %w", project, err)
+				}
 			}
 		}
 	}

@@ -1082,7 +1082,11 @@ func (r *refresh) writeDelivery(ctx context.Context, read deliveryRead, project 
 	}
 	built := read.Rows(project)
 	built.Rows = dropUnshipped(built.Rows, first, read.Day)
-	day := built.WithZeros(zerosFrom(ZeroDeliveryDay(*r.settings, project, read.Day, read.repos).Rows, first, read.Day))
+	var zeros []DayRow
+	if begunBy(first, read.Day) {
+		zeros = zerosFrom(ZeroDeliveryDay(*r.settings, project, read.Day, read.repos).Rows, first, read.Day)
+	}
+	day := built.WithZeros(zeros)
 	if len(day.Rows) == 0 && !r.walkHeld[key] {
 		return nil
 	}
@@ -1256,7 +1260,8 @@ func (r *refresh) sinceOf(ctx context.Context, project string) (LegionSince, err
 // and a day before the walk's own first days holds no row of it, whatever rows a day the walk now
 // builds held before: a whole walk over the same inputs holds the same. A rebuild's walk reads the
 // first input days its batches found and recorded instead (rebuildFirsts): the days before its
-// batch are the ones it staged, not the stored ones.
+// batch are the ones it staged, not the stored ones. A batch reads those of every project it
+// writes at its begin (beginBatch, loadWalkFirsts); a project it finds after, here.
 func (r *refresh) firstOf(ctx context.Context, family, project string) (map[evalKey]time.Time, error) {
 	if !r.walking {
 		return r.storedFirst(ctx, family, project)
@@ -1265,32 +1270,55 @@ func (r *refresh) firstOf(ctx context.Context, family, project string) (map[eval
 	if first, ok := r.walkFirst[key]; ok {
 		return first, nil
 	}
-	var first map[evalKey]time.Time
+	if err := r.loadWalkFirsts(ctx, family, []string{project}); err != nil {
+		return nil, err
+	}
+	return r.walkFirst[key], nil
+}
+
+// loadWalkFirsts reads the walk's first input days of family (firstOf) of each of projects in one
+// read, and keeps them for the walk's batch (walkFirst): a rebuild's walk's that its batches
+// recorded (rebuildFirsts, of every project where projects are more than one), each project's
+// marked as one whose first days the batch records (stageBatch.loaded); or the store's of the days
+// before the batch's first (readFirsts). Each project's is what a read of it alone answers.
+func (r *refresh) loadWalkFirsts(ctx context.Context, family string, projects []string) error {
+	if len(projects) == 0 {
+		return nil
+	}
+	var firsts map[string]map[evalKey]time.Time
 	if r.staging != nil {
-		r.staging.loaded[project] = true
-		found, err := r.store.rebuildFirsts(ctx, r.staging.rebuild.id, family, project)
-		if err != nil {
-			return nil, err
+		one := ""
+		if len(projects) == 1 {
+			one = projects[0]
 		}
-		first = found[project]
-		if first == nil {
-			first = map[evalKey]time.Time{}
+		found, err := r.store.rebuildFirsts(ctx, r.staging.rebuild.id, family, one)
+		if err != nil {
+			return err
+		}
+		firsts = make(map[string]map[evalKey]time.Time, len(projects))
+		for _, project := range projects {
+			r.staging.loaded[project] = true
+			if firsts[project] = found[project]; firsts[project] == nil {
+				firsts[project] = map[evalKey]time.Time{}
+			}
 		}
 	} else {
 		var before *time.Time
-		if from, ok := r.walkFrom[walkOf(family, project)]; ok {
+		if from, ok := r.walkFrom[walkOf(family, projects[0])]; ok {
 			before = &from
 		}
 		var err error
-		if first, err = r.readFirst(ctx, family, project, before); err != nil {
-			return nil, err
+		if firsts, err = r.readFirsts(ctx, family, projects, before); err != nil {
+			return err
 		}
 	}
 	if r.walkFirst == nil {
 		r.walkFirst = map[walkKey]map[evalKey]time.Time{}
 	}
-	r.walkFirst[key] = first
-	return first, nil
+	for project, first := range firsts {
+		r.walkFirst[walkKey{family: family, project: project}] = first
+	}
+	return nil
 }
 
 // storedFirst is the first input day of each eval of family that project holds a row of, by eval
@@ -1300,33 +1328,58 @@ func (r *refresh) firstOf(ctx context.Context, family, project string) (map[eval
 // It is where a walk begins (deliveryStart, legionStart), so the walk rewrites every day holding a
 // row of its family.
 func (r *refresh) storedFirst(ctx context.Context, family, project string) (map[evalKey]time.Time, error) {
-	key := walkKey{family: family, project: project}
-	if first, ok := r.first[key]; ok {
-		return first, nil
-	}
-	first, err := r.readFirst(ctx, family, project, nil)
+	firsts, err := r.storedFirsts(ctx, family, []string{project})
 	if err != nil {
 		return nil, err
 	}
-	r.first[key] = first
-	return first, nil
+	return firsts[project], nil
 }
 
-// readFirst reads the first day of each of project's evals of family before before (every day,
-// where it is nil), as storedFirst says.
-func (r *refresh) readFirst(ctx context.Context, family, project string, before *time.Time) (map[evalKey]time.Time, error) {
-	var zero []DayRow
+// storedFirsts is storedFirst of each of projects, by project, those the pass has not read yet
+// read in one read (readFirsts).
+func (r *refresh) storedFirsts(ctx context.Context, family string, projects []string) (map[string]map[evalKey]time.Time, error) {
+	firsts := make(map[string]map[evalKey]time.Time, len(projects))
+	var unread []string
+	for _, project := range projects {
+		if first, ok := r.first[walkKey{family: family, project: project}]; ok {
+			firsts[project] = first
+		} else {
+			unread = append(unread, project)
+		}
+	}
+	read, err := r.readFirsts(ctx, family, unread, nil)
+	if err != nil {
+		return nil, err
+	}
+	for project, first := range read {
+		r.first[walkKey{family: family, project: project}] = first
+		firsts[project] = first
+	}
+	return firsts, nil
+}
+
+// readFirsts reads the first day of each of projects' evals of family before before (every day,
+// where it is nil), as storedFirst says, in one read (firstDays), by project.
+func (r *refresh) readFirsts(ctx context.Context, family string, projects []string, before *time.Time) (map[string]map[evalKey]time.Time, error) {
+	if len(projects) == 0 {
+		return map[string]map[evalKey]time.Time{}, nil
+	}
+	zeros := make(map[string][]DayRow, len(projects))
 	switch family {
 	case walkDelivery:
 		kept, err := r.keptRepos(ctx)
 		if err != nil {
 			return nil, err
 		}
-		zero = ZeroDeliveryDay(*r.settings, project, r.today, deployRepoNames(kept)).Rows
+		for _, project := range projects {
+			zeros[project] = ZeroDeliveryDay(*r.settings, project, r.today, deployRepoNames(kept)).Rows
+		}
 	case walkLegion:
-		zero = ZeroLegionDay(project, r.today, legionDaySlugs...).Rows
+		for _, project := range projects {
+			zeros[project] = ZeroLegionDay(project, r.today, legionDaySlugs...).Rows
+		}
 	}
-	return r.store.firstDays(ctx, project, zero, before)
+	return r.store.firstDays(ctx, zeros, before)
 }
 
 // zerosFrom is each of zeros whose eval's first input day, of its deploy repository's rows, is on
@@ -1340,6 +1393,17 @@ func zerosFrom(zeros []DayRow, first map[evalKey]time.Time, day time.Time) []Day
 		}
 	}
 	return kept
+}
+
+// begunBy reports whether first holds a first input day on or before day: where it holds none,
+// zerosFrom keeps none of a day's zero rows, which its writer then need not build.
+func begunBy(first map[evalKey]time.Time, day time.Time) bool {
+	for _, since := range first {
+		if !day.Before(since) {
+			return true
+		}
+	}
+	return false
 }
 
 // noteBuilt moves the first input day of each eval built holds an all-repositories row of (of each
@@ -1514,8 +1578,9 @@ func (r *refresh) batchKey(key walkKey) walkKey {
 }
 
 // beginBatch begins a batch of the walk key from from through through: the walk's first input days
-// are read anew of the days before from (firstOf), and the days of the batch that hold rows of its
-// family (walkHeld) are read, once for the batch.
+// of every project the batch writes are read anew of the days before from, in one read
+// (loadWalkFirsts), and the days of the batch that hold rows of its family (walkHeld) are read,
+// once for the batch.
 func (r *refresh) beginBatch(ctx context.Context, key walkKey, from, through time.Time) error {
 	if r.walkFrom == nil {
 		r.walkFrom, r.walkFirst, r.walkHeld = map[walkKey]time.Time{}, map[walkKey]map[evalKey]time.Time{}, map[builtDay]bool{}
@@ -1525,8 +1590,8 @@ func (r *refresh) beginBatch(ctx context.Context, key walkKey, from, through tim
 	if key.family == walkLegion {
 		projects, slugs = []string{key.project}, legionDaySlugs
 	}
-	for _, project := range projects {
-		delete(r.walkFirst, walkKey{family: key.family, project: project})
+	if err := r.loadWalkFirsts(ctx, key.family, projects); err != nil {
+		return err
 	}
 	held, err := r.store.heldDays(ctx, key.family, projects, slugs, from, through)
 	if err != nil {
@@ -1539,8 +1604,8 @@ func (r *refresh) beginBatch(ctx context.Context, key walkKey, from, through tim
 // deliveryStart is the first input day of the delivery walk, the UTC midnight of the earliest of
 // the first merge of a pull request, the first start of a run of a kept repository (keptRepos) and
 // the first day any project holds a delivery or CI row of, nil where none exists. Every project's
-// first days are taken together, so the walk begins at a midnight however many projects there
-// are, none included.
+// first days are taken together, in one read (storedFirsts), so the walk begins at a midnight
+// however many projects there are, none included.
 func (r *refresh) deliveryStart(ctx context.Context) (*time.Time, error) {
 	kept, err := r.keptRepos(ctx)
 	if err != nil {
@@ -1550,12 +1615,12 @@ func (r *refresh) deliveryStart(ctx context.Context) (*time.Time, error) {
 	if err != nil {
 		return nil, err
 	}
+	stored, err := r.storedFirsts(ctx, walkDelivery, r.owners)
+	if err != nil {
+		return nil, err
+	}
 	firsts := map[evalKey]time.Time{}
-	for _, project := range r.owners {
-		first, err := r.storedFirst(ctx, walkDelivery, project)
-		if err != nil {
-			return nil, err
-		}
+	for _, first := range stored {
 		// An eval id names its project, so no two projects' entries share a key.
 		maps.Copy(firsts, first)
 	}
@@ -1627,7 +1692,7 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 	if err != nil {
 		return err
 	}
-	for _, project := range slices.Clone(r.owners) {
+	for _, project := range r.owners {
 		if err := r.writeDelivery(ctx, read, project); err != nil {
 			return err
 		}

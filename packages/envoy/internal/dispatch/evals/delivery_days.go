@@ -677,13 +677,20 @@ func (a attribution) pushRuns(runs []delivery.DeliveryRun, deploys []dayDeploy) 
 // read already, it reads the projects of the issues named by those with no inputs; of a PR-checks
 // run's pull request, whose row it has not read, the project of the issue its row names where its
 // row holds no inputs. The three reads depend on none of each other, and are read side by side;
-// none is made where it has nothing to read.
+// none is made where it has nothing to read. Each sends its list in statements of at most
+// statementBytes (statementChunks): a span's and a settings rewrite's pull requests are every one
+// the history holds, which grow with it.
 func readAttribution(ctx context.Context, s *Store, prs []delivery.DeliveryPullRequest, checks []delivery.DeliveryRun) (attribution, error) {
 	pool := s.database.Pool
 	var resolve []delivery.PullRequestKey
 	var keys []string
 	keyed := map[string][]string{}
-	members, repos, numbers := []string{}, []string{}, []int32{}
+	// checked is a PR-checks run's pull request: its row key, its repository and its number.
+	type checked struct {
+		member, repo string
+		number       int32
+	}
+	var pulls []checked
 	named := map[string]bool{}
 	for _, pr := range prs {
 		member := PullRequestMember(pr.Repo, pr.Number)
@@ -711,51 +718,67 @@ func readAttribution(ctx context.Context, s *Store, prs []delivery.DeliveryPullR
 		}
 		named[member] = true
 		resolve = append(resolve, delivery.PullRequestKey{Repo: run.Repo, Number: *run.PRNumber})
-		members, repos, numbers = append(members, member), append(repos, run.Repo), append(numbers, int32(*run.PRNumber))
+		pulls = append(pulls, checked{member: member, repo: run.Repo, number: int32(*run.PRNumber)})
 	}
-	var resolved map[delivery.PullRequestKey][]delivery.ResolvedCandidate
+	resolved := map[delivery.PullRequestKey][]delivery.ResolvedCandidate{}
 	issueProjects, checkProjects := map[string]string{}, map[string]string{}
 	var reads []func(context.Context) error
 	if len(resolve) > 0 {
-		reads = append(reads, func(ctx context.Context) (err error) {
-			resolved, err = s.attributor.ResolvedCandidates(ctx, pool, resolve)
-			return err
-		})
-	}
-	if len(keys) > 0 {
 		reads = append(reads, func(ctx context.Context) error {
-			rows, err := pool.Query(ctx, `select key, project_key from issues where key = any($1)`, keys)
-			if err != nil {
-				return fmt.Errorf("read the projects of the pull requests' issues: %w", err)
-			}
-			var key, project string
-			if _, err := pgx.ForEachRow(rows, []any{&key, &project}, func() error {
-				issueProjects[key] = project
-				return nil
-			}); err != nil {
-				return fmt.Errorf("read the projects of the pull requests' issues: %w", err)
+			size := func(pull *delivery.PullRequestKey) int { return 4 + len(pull.Repo) + 4 + 4 }
+			for chunk := range statementChunks(resolve, paramBytes(2), size) {
+				found, err := s.attributor.ResolvedCandidates(ctx, pool, chunk)
+				if err != nil {
+					return err
+				}
+				maps.Copy(resolved, found)
 			}
 			return nil
 		})
 	}
-	if len(members) > 0 {
+	if len(keys) > 0 {
 		reads = append(reads, func(ctx context.Context) error {
-			rows, err := pool.Query(ctx, `
-				select given.member, issue.project_key
-				from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
-				join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
-				join issues issue on issue.key = request.issue_key
-				where request.attribution_title_keys is null
-			`, members, repos, numbers)
-			if err != nil {
-				return fmt.Errorf("read the issues of the %d pull requests the PR-checks runs are of: %w", len(members), err)
+			for chunk := range statementChunks(keys, paramBytes(1), textBytes) {
+				rows, err := pool.Query(ctx, `select key, project_key from issues where key = any($1)`, chunk)
+				if err != nil {
+					return fmt.Errorf("read the projects of the pull requests' issues: %w", err)
+				}
+				var key, project string
+				if _, err := pgx.ForEachRow(rows, []any{&key, &project}, func() error {
+					issueProjects[key] = project
+					return nil
+				}); err != nil {
+					return fmt.Errorf("read the projects of the pull requests' issues: %w", err)
+				}
 			}
-			var member, project string
-			if _, err := pgx.ForEachRow(rows, []any{&member, &project}, func() error {
-				checkProjects[member] = project
-				return nil
-			}); err != nil {
-				return fmt.Errorf("read the issues of the %d pull requests the PR-checks runs are of: %w", len(members), err)
+			return nil
+		})
+	}
+	if len(pulls) > 0 {
+		reads = append(reads, func(ctx context.Context) error {
+			size := func(pull *checked) int { return 4 + len(pull.member) + 4 + len(pull.repo) + 4 + 4 }
+			for chunk := range statementChunks(pulls, paramBytes(3), size) {
+				members, repos, numbers := make([]string, len(chunk)), make([]string, len(chunk)), make([]int32, len(chunk))
+				for i, pull := range chunk {
+					members[i], repos[i], numbers[i] = pull.member, pull.repo, pull.number
+				}
+				rows, err := pool.Query(ctx, `
+					select given.member, issue.project_key
+					from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
+					join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
+					join issues issue on issue.key = request.issue_key
+					where request.attribution_title_keys is null
+				`, members, repos, numbers)
+				if err != nil {
+					return fmt.Errorf("read the issues of the %d pull requests the PR-checks runs are of: %w", len(pulls), err)
+				}
+				var member, project string
+				if _, err := pgx.ForEachRow(rows, []any{&member, &project}, func() error {
+					checkProjects[member] = project
+					return nil
+				}); err != nil {
+					return fmt.Errorf("read the issues of the %d pull requests the PR-checks runs are of: %w", len(pulls), err)
+				}
 			}
 			return nil
 		})
@@ -1087,7 +1110,7 @@ func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.
 	if err := upsertDays(ctx, tx, []DayRow{row}, builtBy); err != nil {
 		return err
 	}
-	if err := foldFiguresInTx(ctx, tx, builtBy, project, map[string]daySpan{evalID: {first: date, last: date}}); err != nil {
+	if err := foldFiguresInTx(ctx, tx, builtBy, map[string]map[string]daySpan{project: {evalID: {first: date, last: date}}}); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

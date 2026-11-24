@@ -165,8 +165,18 @@ func (r *refresh) figureChanges(ctx context.Context, limit int) error {
 // moveFigureCursor moves the figures' change cursor to cursor (its ReadAt stamping the row, as the
 // refresher's change cursor is stamped, commitPage), and, where restart is set, begins a rebuild
 // of the figures of every project whose figures are built (replaceRebuild), in one transaction: a
-// change the lost cursor passed is read by no other pass, whichever build's process runs it.
+// change the lost cursor passed is read by no other pass, whichever build's process runs it. The
+// walks that rebuild walks are read on the pool before the transaction begins (servedWalks), as
+// commitPage reads a rebuild's, so the pass holds one connection at a time.
 func (r *refresh) moveFigureCursor(ctx context.Context, cursor delivery.ChangeCursor, restart bool) error {
+	var walks []walkKey
+	if restart {
+		served, err := r.servedWalks(ctx)
+		if err != nil {
+			return err
+		}
+		walks = slices.DeleteFunc(served, func(key walkKey) bool { return key.family != walkFigures })
+	}
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the stored figures' change cursor: %w", err)
@@ -179,11 +189,6 @@ func (r *refresh) moveFigureCursor(ctx context.Context, cursor delivery.ChangeCu
 		return fmt.Errorf("move the stored figures' change cursor: %w", err)
 	}
 	if restart {
-		walks, err := r.servedWalks(ctx)
-		if err != nil {
-			return err
-		}
-		walks = slices.DeleteFunc(walks, func(key walkKey) bool { return key.family != walkFigures })
 		if err := replaceRebuild(ctx, tx, rebuildCursor, r.build, walks); err != nil {
 			return err
 		}
@@ -265,10 +270,21 @@ func (r *refresh) noteWalked(family, project string, day time.Time) {
 // the change log folds them (figureChanges).
 //
 // An owner key's walked days (owners.go) are folded into the figures of each project whose read
-// folds its rows (readersOf), with that project's own.
+// folds its rows (readersOf, one read of every owner key walked), with that project's own.
 func (r *refresh) foldWalked(ctx context.Context) error {
 	walked := r.walked
 	r.walked = nil
+	var owners []string
+	for key := range walked {
+		if isOwner(key.project) {
+			owners = append(owners, key.project)
+		}
+	}
+	slices.Sort(owners)
+	readers, err := readersOf(ctx, r.store.database.Pool, slices.Compact(owners))
+	if err != nil {
+		return err
+	}
 	byProject := map[string]map[string]daySpan{}
 	for key, span := range walked {
 		slugs := legionDaySlugs
@@ -277,11 +293,7 @@ func (r *refresh) foldWalked(ctx context.Context) error {
 		}
 		projects := []string{key.project}
 		if isOwner(key.project) {
-			readers, err := readersOf(ctx, r.store.database.Pool, key.project)
-			if err != nil {
-				return err
-			}
-			projects = readers
+			projects = readers[key.project]
 		}
 		for _, project := range projects {
 			if byProject[project] == nil {

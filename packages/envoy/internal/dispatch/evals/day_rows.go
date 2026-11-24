@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -120,14 +119,15 @@ func (s *Store) writeProjectDays(ctx context.Context, family dayFamily, days []P
 		for _, day := range days {
 			written[day.Project] = written[day.Project].widen(measures.Midnight(day.Day))
 		}
-		for _, project := range slices.Sorted(maps.Keys(written)) {
-			spans := make(map[string]daySpan, len(family.slugs))
+		spans := make(map[string]map[string]daySpan, len(written))
+		for project, span := range written {
+			spans[project] = make(map[string]daySpan, len(family.slugs))
 			for _, slug := range family.slugs {
-				spans[EvalID(project, slug)] = written[project]
+				spans[project][EvalID(project, slug)] = span
 			}
-			if err := foldFiguresInTx(ctx, tx, builtBy, project, spans); err != nil {
-				return err
-			}
+		}
+		if err := foldFiguresInTx(ctx, tx, builtBy, spans); err != nil {
+			return err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -205,13 +205,85 @@ func writtenDays(days []ProjectDay) (projects []string, dates []time.Time) {
 
 // writtenBytes is the most bytes the projects and days of writtenDays add to a statement's
 // parameters, as pgx encodes them in binary: in each of the two arrays 4 bytes of length and the
-// element, a date at most 8.
-func writtenBytes(projects []string) int {
+// element, a date at most 8; and, where slugs names evals, the id of each of those evals of each
+// project, once, with its 4 bytes of length (writtenCut.evalIDs).
+func writtenBytes(projects, slugs []string) int {
 	bytes := 0
+	held := map[string]bool{}
 	for _, project := range projects {
 		bytes += 4 + len(project) + 4 + 8
+		if !held[project] {
+			held[project] = true
+			bytes += evalIDsBytes(project, slugs)
+		}
 	}
 	return bytes
+}
+
+// evalIDsBytes is the bytes the ids of slugs' evals of project take in an array's parameter, each
+// with its 4 bytes of length.
+func evalIDsBytes(project string, slugs []string) int {
+	bytes := 0
+	for _, slug := range slugs {
+		bytes += 4 + len(EvalID(project, slug))
+	}
+	return bytes
+}
+
+// writtenReserve is the most bytes the days written of projects (writtenDays), with the ids of
+// slugs' evals of their projects, take of the parameters of one statement of a run (memberRuns,
+// staleRuns): all of them, where they take at most half of statementBytes; and otherwise half,
+// which each cut of them then takes at most (writtenCuts). The days a page writes grow with its
+// changes and their projects, and every owner key's days with them.
+func writtenReserve(projects, slugs []string) int {
+	return min(writtenBytes(projects, slugs), statementBytes/2)
+}
+
+// writtenCut is one statement's part of the days written: their projects and days, pairwise, and
+// the ids of the write's evals of those projects, where it names evals.
+type writtenCut struct {
+	projects []string
+	dates    []time.Time
+	evalIDs  []string
+}
+
+// writtenCuts is the days written (projects and dates, pairwise, as writtenDays answers them)
+// whose project a run's range of keys can hold keys of, from the project of its first key through
+// that of its bound (first and last, nil for no bound: every key orders by its project first), cut
+// in their order into parts of at most limit bytes (writtenBytes), each with the ids of slugs'
+// evals of its projects: one part where they fit, which a run whose range holds every key is sent
+// whole. A statement of a run reads the stored keys of its range of the days it is sent alone, so
+// a day of a project outside the range would read keys the range then filters out, and the parts
+// of the days of one run together read what all of them would.
+func writtenCuts(projects []string, dates []time.Time, first, last *string, slugs []string, limit int) []writtenCut {
+	var cuts []writtenCut
+	var cut writtenCut
+	bytes, held := 0, map[string]bool{}
+	for i, project := range projects {
+		if first != nil && project < *first || last != nil && project > *last {
+			continue
+		}
+		n := 4 + len(project) + 4 + 8
+		if !held[project] {
+			n += evalIDsBytes(project, slugs)
+		}
+		if len(cut.projects) > 0 && bytes+n > limit {
+			cuts = append(cuts, cut)
+			cut, bytes, held = writtenCut{}, 0, map[string]bool{}
+			n = 4 + len(project) + 4 + 8 + evalIDsBytes(project, slugs)
+		}
+		if !held[project] {
+			held[project] = true
+			for _, slug := range slugs {
+				cut.evalIDs = append(cut.evalIDs, EvalID(project, slug))
+			}
+		}
+		cut.projects, cut.dates, bytes = append(cut.projects, project), append(cut.dates, dates[i]), bytes+n
+	}
+	if len(cut.projects) > 0 {
+		cuts = append(cuts, cut)
+	}
+	return cuts
 }
 
 // dayMember is one item a project's day counted, with the project and the day, as a write of
@@ -235,11 +307,11 @@ type memberRun struct {
 // memberRuns is the members of days, in the byte order of their keys, cut into the runs one
 // statement each takes, as staleRuns cuts the rows of the days: each run's parameters take at most
 // statementBytes in any of the statements of the days' members (leftDays, the upsert and
-// goneMembersDeleteStatement), with the days written (writtenDays) and families as their other
-// parameters. The runs' ranges cover every key once, so a stored member a day no longer holds is
-// in one run's range and among that run's members of that day nowhere, and the statements of the
-// runs together find what one statement would. With no member it is one run of none over every
-// key: the days hold no item any more.
+// goneMembersDeleteStatement), with a cut of the days written (writtenReserve, writtenCuts) and
+// families as their other parameters. The runs' ranges cover every key once, so a stored member a
+// day no longer holds is in one run's range and among that run's members of that day nowhere, and
+// the statements of the runs together find what one statement would. With no member it is one run
+// of none over every key: the days hold no item any more.
 func memberRuns(days []ProjectDay, families []string) []memberRun {
 	var ordered []dayMember
 	for _, day := range days {
@@ -253,7 +325,7 @@ func memberRuns(days []ProjectDay, families []string) []memberRun {
 		return 7*4 + len(member.project) + 8 + len(member.Family) + len(member.DeployRepo) + len(member.RowKey) + len(member.Repo) + len(member.ShippedBy)
 	}
 	projects, _ := writtenDays(days)
-	base, widest := paramBytes(11, KindDelivery)+writtenBytes(projects), 0
+	base, widest := paramBytes(11, KindDelivery)+writtenReserve(projects, nil), 0
 	for _, family := range families {
 		base += 4 + len(family)
 	}
@@ -278,6 +350,20 @@ func memberRuns(days []ProjectDay, families []string) []memberRun {
 		}
 	}
 	return runs
+}
+
+// written is the cuts of the days written (projects and dates, pairwise) whose project the run's
+// range of keys can hold keys of (writtenCuts), each of at most limit bytes: the days a statement
+// of the run is sent, one cut a statement.
+func (run memberRun) written(projects []string, dates []time.Time, limit int) []writtenCut {
+	var first, last *string
+	if run.from != nil {
+		first = &run.from[0]
+	}
+	if run.until != nil {
+		last = &run.until[0]
+	}
+	return writtenCuts(projects, dates, first, last, nil, limit)
 }
 
 // compareMembers orders members by the bytes of their keys: family, deploy repository and row key.
@@ -323,24 +409,28 @@ func leftDaysArgs(projects []string, dates []time.Time, run memberRun, families 
 
 // leftDays reads each day an item of days would leave were they written (leftDaysStatement), as
 // the stored members stand: the days a page writes with them (refresh.nameLeft), every project's
-// in one statement a run of their members (memberRuns).
+// in one statement a run of their members (memberRuns) and a cut of the days written of its range
+// (memberRun.written).
 func (s *Store) leftDays(ctx context.Context, days []ProjectDay, families []string) ([]projectDay, error) {
 	if len(days) == 0 {
 		return nil, nil
 	}
 	projects, dates := writtenDays(days)
+	limit := writtenReserve(projects, nil)
 	var left []projectDay
 	for _, run := range memberRuns(days, families) {
-		rows, err := s.database.Pool.Query(ctx, leftDaysStatement, leftDaysArgs(projects, dates, run, families)...)
-		if err != nil {
-			return nil, fmt.Errorf("read the days the items of %s left: %w", daysNamed(days), err)
-		}
-		var one projectDay
-		if _, err := pgx.ForEachRow(rows, []any{&one.project, &one.day}, func() error {
-			left = append(left, projectDay{project: one.project, day: measures.Midnight(one.day)})
-			return nil
-		}); err != nil {
-			return nil, fmt.Errorf("read the days the items of %s left: %w", daysNamed(days), err)
+		for _, cut := range run.written(projects, dates, limit) {
+			rows, err := s.database.Pool.Query(ctx, leftDaysStatement, leftDaysArgs(cut.projects, cut.dates, run, families)...)
+			if err != nil {
+				return nil, fmt.Errorf("read the days the items of %s left: %w", daysNamed(days), err)
+			}
+			var one projectDay
+			if _, err := pgx.ForEachRow(rows, []any{&one.project, &one.day}, func() error {
+				left = append(left, projectDay{project: one.project, day: measures.Midnight(one.day)})
+				return nil
+			}); err != nil {
+				return nil, fmt.Errorf("read the days the items of %s left: %w", daysNamed(days), err)
+			}
 		}
 	}
 	slices.SortFunc(left, func(a, b projectDay) int {
@@ -353,13 +443,14 @@ func (s *Store) leftDays(ctx context.Context, days []ProjectDay, families []stri
 // writeProjectDay writes them: the days their items leave recorded owed, the members upserted
 // where their day, repository or shipping run moved, those of each day it no longer holds deleted,
 // and what the days owed of families cleared. Each of the three takes the members of every day a
-// run at a time (memberRuns), so no statement's parameters pass statementBytes however many items
-// the days count: every run's left days are recorded before any member moves, then every run is
-// upserted, then every run's range loses what each day no longer holds. A day the write's other
-// days took an item from is among them, and their write clears what it owed with theirs. Where two
-// days of one project count one item (countedTwice), which one statement cannot upsert twice, the
-// days are written one after another in tx, the later in the days' order taking the item, as
-// writes of the days in transactions of their own leave it.
+// run at a time (memberRuns), with the days written of the run's range, in cuts where they would
+// pass their reserve (memberRun.written), so no statement's parameters pass statementBytes however
+// many items and days the write holds: every run's left days are recorded before any member
+// moves, then every run is upserted, then every run's range loses what each day no longer holds.
+// A day the write's other days took an item from is among them, and their write clears what it
+// owed with theirs. Where two days of one project count one item (countedTwice), which one
+// statement cannot upsert twice, the days are written one after another in tx, the later in the
+// days' order taking the item, as writes of the days in transactions of their own leave it.
 func writeDayMembersIn(ctx context.Context, tx pgx.Tx, days []ProjectDay, families []string) error {
 	if len(days) == 0 {
 		return nil
@@ -374,6 +465,7 @@ func writeDayMembersIn(ctx context.Context, tx pgx.Tx, days []ProjectDay, famili
 	}
 	named := daysNamed(days)
 	projects, dates := writtenDays(days)
+	limit := writtenReserve(projects, nil)
 	runs := memberRuns(days, families)
 	// An item this write takes from another day leaves that day's rows counting it until the day
 	// is written again: one it moves here from the day it was counted on, and, for a pull request
@@ -383,8 +475,10 @@ func writeDayMembersIn(ctx context.Context, tx pgx.Tx, days []ProjectDay, famili
 	// pass that fails before it rewrites that day still finds it (owedDays) where no stored member
 	// names it any more.
 	for _, run := range runs {
-		if _, err := tx.Exec(ctx, leftDaysOwedStatement, leftDaysArgs(projects, dates, run, families)...); err != nil {
-			return fmt.Errorf("record the days the items of %s left: %w", named, err)
+		for _, cut := range run.written(projects, dates, limit) {
+			if _, err := tx.Exec(ctx, leftDaysOwedStatement, leftDaysArgs(cut.projects, cut.dates, run, families)...); err != nil {
+				return fmt.Errorf("record the days the items of %s left: %w", named, err)
+			}
 		}
 	}
 	type columns struct {
@@ -422,18 +516,27 @@ func writeDayMembersIn(ctx context.Context, tx pgx.Tx, days []ProjectDay, famili
 	}
 	for _, run := range runs {
 		c := of(run)
-		if _, err := tx.Exec(ctx, goneMembersDeleteStatement, projects, dates, families, c.projects, c.families, c.deployRepos, c.keys, c.days,
-			run.from, run.until); err != nil {
-			return fmt.Errorf("delete the items %s no longer counts: %w", named, err)
+		for _, cut := range run.written(projects, dates, limit) {
+			if _, err := tx.Exec(ctx, goneMembersDeleteStatement, cut.projects, cut.dates, families, c.projects, c.families, c.deployRepos, c.keys, c.days,
+				run.from, run.until); err != nil {
+				return fmt.Errorf("delete the items %s no longer counts: %w", named, err)
+			}
 		}
 	}
-	// This write is the rewrite the days owed of its families.
-	if _, err := tx.Exec(ctx, `
-		delete from eval_days_owed owed
-		using unnest($1::text[], $2::date[]) as written(project_key, day)
-		where owed.project_key = written.project_key and owed.family = any($3) and owed.day = written.day
-	`, projects, dates, families); err != nil {
-		return fmt.Errorf("clear what %s owed: %w", named, err)
+	// This write is the rewrite the days owed of its families, in cuts of the days written where
+	// they pass a statement's bound.
+	base := paramBytes(3)
+	for i := range families {
+		base += textBytes(&families[i])
+	}
+	for _, cut := range writtenCuts(projects, dates, nil, nil, nil, statementBytes-base) {
+		if _, err := tx.Exec(ctx, `
+			delete from eval_days_owed owed
+			using unnest($1::text[], $2::date[]) as written(project_key, day)
+			where owed.project_key = written.project_key and owed.family = any($3) and owed.day = written.day
+		`, cut.projects, cut.dates, families); err != nil {
+			return fmt.Errorf("clear what %s owed: %w", named, err)
+		}
 	}
 	return nil
 }
@@ -600,25 +703,20 @@ func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) e
 // (migration 20261117100014), so a view of the row's numbers wakes to it. The readings write's rows
 // of those evals (an eval a register write made logged for a while) are its own, and stay as they
 // are. The rows held grow with the days, so they go in statements of at most statementBytes of
-// parameters (staleRuns), all in tx, each with every day written and reading the stored rows of
-// its own range of keys: the statements together delete what one would.
+// parameters (staleRuns), all in tx, each reading the stored rows of its own range of keys of the
+// days written whose project the range can hold, with the ids of the evals of those projects
+// alone, in cuts where those would pass their reserve (writtenReserve, writtenCuts): the
+// statements together delete what one would.
 func deleteStaleDays(ctx context.Context, tx pgx.Tx, days []ProjectDay, slugs []string) error {
 	projects, dates := writtenDays(days)
-	var evalIDs []string
-	base := paramBytes(11, writerComputation) + writtenBytes(projects)
-	for _, project := range slices.Compact(slices.Sorted(slices.Values(projects))) {
-		for _, slug := range slugs {
-			evalID := EvalID(project, slug)
-			evalIDs, base = append(evalIDs, evalID), base+4+len(evalID)
-		}
-	}
+	limit := writtenReserve(projects, slugs)
 	var held []*DayRow
 	for i := range days {
 		for j := range days[i].Rows {
 			held = append(held, &days[i].Rows[j])
 		}
 	}
-	for _, run := range staleRuns(held, base, settingsKeyBytes) {
+	for _, run := range staleRuns(held, paramBytes(11, writerComputation)+limit, settingsKeyBytes) {
 		count := len(run.rows)
 		heldProjects, heldEvals, heldDeployRepos := make([]string, count), make([]string, count), make([]string, count)
 		heldSeries, heldRepos, heldDays := make([]string, count), make([]string, count), make([]time.Time, count)
@@ -626,9 +724,18 @@ func deleteStaleDays(ctx context.Context, tx pgx.Tx, days []ProjectDay, slugs []
 			heldProjects[i], heldEvals[i], heldDeployRepos[i] = row.ProjectKey, row.EvalID, row.DeployRepo
 			heldSeries[i], heldRepos[i], heldDays[i] = row.Series, row.Repo, measures.Midnight(row.Day)
 		}
-		if _, err := tx.Exec(ctx, deleteStaleDaysStatement, projects, dates, evalIDs, writerComputation, heldProjects, heldEvals, heldDeployRepos,
-			heldSeries, heldRepos, heldDays, settingsKey(run.from), settingsKey(run.until)); err != nil {
-			return fmt.Errorf("delete the day rows %s no longer holds: %w", daysNamed(days), err)
+		var first, last *string
+		if run.from != nil {
+			first = &run.from.ProjectKey
+		}
+		if run.until != nil {
+			last = &run.until.ProjectKey
+		}
+		for _, cut := range writtenCuts(projects, dates, first, last, slugs, limit) {
+			if _, err := tx.Exec(ctx, deleteStaleDaysStatement, cut.projects, cut.dates, cut.evalIDs, writerComputation, heldProjects, heldEvals,
+				heldDeployRepos, heldSeries, heldRepos, heldDays, settingsKey(run.from), settingsKey(run.until)); err != nil {
+				return fmt.Errorf("delete the day rows %s no longer holds: %w", daysNamed(days), err)
+			}
 		}
 	}
 	return nil

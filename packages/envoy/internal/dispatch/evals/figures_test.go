@@ -685,6 +685,109 @@ func TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass(t *testing.T) {
 	r.expectRewrites(t, "the next pass of a build with the figures", state, true, nil)
 }
 
+// TestAWriteFoldsEachReaderOverEverySpanItsKeysWrote: one write of the day rows of several keys
+// (writeProjectDays) folds a project's stored figures, in its own transaction, over every span its
+// own write and the writes of the owner keys it reads name, each span as it was written. The
+// write moves a project's own row of one day and a row two days later of an owner key the project
+// reads: the project's stored day figures of both days are then the fold of the rows that stand;
+// and those of the day between, whose row a build that writes no figures moved before the write,
+// stand as they stood, since no write named that day.
+func TestAWriteFoldsEachReaderOverEverySpanItsKeysWrote(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedHistories(t)
+	r.leaveInputsUnread(t)
+	r.settle(t)
+	ctx := t.Context()
+	stored := r.dayRows(t)
+	keys := slices.Sorted(maps.Keys(stored))
+	// folded is key's listed all-repositories delivery rows of day, the rows its figures fold.
+	folded := func(key string, day time.Time) []DayRow {
+		var rows []DayRow
+		for _, line := range keys {
+			row := stored[line]
+			if row.ProjectKey == key && row.Day.Equal(day) && row.Listed && row.Repo == "" && slices.Contains(deliveryDaySlugs, slugOf(key, row.EvalID)) {
+				rows = append(rows, row)
+			}
+		}
+		return rows
+	}
+	readers := r.ownerReaders(t)
+	var owner, project string
+	var first, between, last time.Time
+search:
+	for _, key := range slices.Sorted(maps.Keys(readers)) {
+		for _, reader := range readers[key] {
+			for day := refresherToday; !day.Before(refresherToday.AddDate(0, 0, -10)); day = day.AddDate(0, 0, -1) {
+				if len(folded(key, day)) > 0 && len(folded(reader, day.AddDate(0, 0, -1))) > 0 && len(folded(reader, day.AddDate(0, 0, -2))) > 0 {
+					owner, project, first, between, last = key, reader, day.AddDate(0, 0, -2), day.AddDate(0, 0, -1), day
+					break search
+				}
+			}
+		}
+	}
+	if owner == "" {
+		t.Fatal("no project reads an owner key holding a row two days after a day of the project's own rows, with a day of them between")
+	}
+	// dayOf is key's stored rows and items of the delivery family on day, as a write of the day
+	// sends them again, with the value of one of the rows its figures fold moved, which it answers.
+	dayOf := func(key string, day time.Time) (ProjectDay, DayRow) {
+		written := ProjectDay{Project: key, Day: day}
+		for _, line := range keys {
+			if row := stored[line]; row.ProjectKey == key && row.Day.Equal(day) && slices.Contains(deliveryDaySlugs, slugOf(key, row.EvalID)) {
+				written.Rows = append(written.Rows, row)
+			}
+		}
+		moved := folded(key, day)[0]
+		for i := range written.Rows {
+			if rowKey(written.Rows[i]) == rowKey(moved) {
+				written.Rows[i].N++
+			}
+		}
+		rows, err := r.database.Pool.Query(ctx, `
+			select family, deploy_repo, row_key, repo, shipped_by from eval_day_members where project_key = $1 and day = $2 and family = any($3)
+		`, key, day, deliveryDayFamilies)
+		if err != nil {
+			t.Fatalf("read the items of %s on %s: %v", key, day.Format(time.DateOnly), err)
+		}
+		var member Member
+		if _, err := pgx.ForEachRow(rows, []any{&member.Family, &member.DeployRepo, &member.RowKey, &member.Repo, &member.ShippedBy}, func() error {
+			written.Members = append(written.Members, member)
+			return nil
+		}); err != nil {
+			t.Fatalf("read the items of %s on %s: %v", key, day.Format(time.DateOnly), err)
+		}
+		return written, moved
+	}
+	own, ownMoved := dayOf(project, first)
+	owned, ownedMoved := dayOf(owner, last)
+	gap := folded(project, between)[0]
+	r.exec(t, "move a row of the day between as a build with no figures does", `
+		update eval_days set n = n + 1, updated_at = now()
+		where project_key = $1 and eval_id = $2 and writer = $3 and deploy_repo = $4 and series = $5 and repo = '' and day = $6
+	`, project, gap.EvalID, writerComputation, gap.DeployRepo, gap.Series, between)
+	before := r.storedFigures(t)
+	if err := r.registry.writeProjectDays(ctx, deliveryFamily, []ProjectDay{own, owned}, r.build, true); err != nil {
+		t.Fatalf("write %s's day %s and %s's day %s: %v", project, first.Format(time.DateOnly), owner, last.Format(time.DateOnly), err)
+	}
+	after, truth := r.storedFigures(t), r.truthFigures(t)
+	for _, line := range []string{
+		dayFigureLine(project, ownMoved.DeployRepo, first, ownMoved.EvalID),
+		dayFigureLine(project, ownedMoved.DeployRepo, last, asReader(owner, project, ownedMoved.EvalID)),
+	} {
+		if row, held := after[line]; !held || !row.same(truth[line]) || before[line].same(truth[line]) {
+			t.Errorf("the stored row of %s is held %t and the fold of the rows that stand %t after the write, and was before it %t; want it folded by the write",
+				line, held, row.same(truth[line]), before[line].same(truth[line]))
+		}
+	}
+	gapLine := dayFigureLine(project, gap.DeployRepo, between, gap.EvalID)
+	if was, held := before[gapLine]; !held || was.same(truth[gapLine]) || after[gapLine].xmin != was.xmin {
+		t.Errorf("the stored row of %s, of the day between that no write named, is held %t and stale %t before the write, written by %s and then by %s; want it left as it stood",
+			gapLine, held, !was.same(truth[gapLine]), was.xmin, after[gapLine].xmin)
+	}
+	t.Logf("%s reads %s: one write of %s's day %s and %s's day %s folded both, and left %s's day %s stale",
+		project, owner, project, first.Format(time.DateOnly), owner, last.Format(time.DateOnly), project, between.Format(time.DateOnly))
+}
+
 // listValues is how the eval list's read states each of project's evals over window and compare
 // (nil for none) of repos (api's readEvalValues): from the stored figures where FiguresOffered
 // offers the read and they answer the eval (StoredFigures.SeriesValues), else from the day rows of

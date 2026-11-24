@@ -486,7 +486,8 @@ func (b *rebuild) widen(project, evalID string, first, last time.Time) {
 
 // writeRows writes the rebuild's day rows in tx: the named days', as writeProjectDays writes them,
 // then the span's moved rows (upsertDays) and the keys its days no longer hold, and every row of a
-// repository that holds no run any more.
+// repository that holds no run any more, of its projects (every project and owner key, which grow
+// with the history) in statements of at most statementBytes, each with the evals of its projects.
 func (b *rebuild) writeRows(ctx context.Context, tx pgx.Tx) error {
 	if err := writeDayRowsIn(ctx, tx, b.days, b.family.slugs, b.build); err != nil {
 		return err
@@ -497,16 +498,24 @@ func (b *rebuild) writeRows(ctx context.Context, tx pgx.Tx) error {
 	if err := deleteDayRows(ctx, tx, b.gone); err != nil {
 		return err
 	}
-	if len(b.goneRepos) > 0 {
+	if len(b.goneRepos) == 0 {
+		return nil
+	}
+	base := paramBytes(3, writerComputation)
+	for i := range b.goneRepos {
+		base += textBytes(&b.goneRepos[i])
+	}
+	size := func(project *string) int { return textBytes(project) + evalIDsBytes(*project, b.family.slugs) }
+	for projects := range statementChunks(b.projects, base, size) {
 		var evalIDs []string
-		for _, project := range b.projects {
+		for _, project := range projects {
 			for _, slug := range b.family.slugs {
 				evalIDs = append(evalIDs, EvalID(project, slug))
 			}
 		}
 		if _, err := tx.Exec(ctx, `
 			delete from eval_days where project_key = any($1) and eval_id = any($2) and writer = $3 and deploy_repo = any($4)
-		`, b.projects, evalIDs, writerComputation, b.goneRepos); err != nil {
+		`, projects, evalIDs, writerComputation, b.goneRepos); err != nil {
 			return fmt.Errorf("delete the day rows of %v, which hold no delivery run any more: %w", b.goneRepos, err)
 		}
 	}
@@ -515,7 +524,7 @@ func (b *rebuild) writeRows(ctx context.Context, tx pgx.Tx) error {
 
 // writeMembers writes the rebuild's members in tx, after its rows: the named days', as
 // writeProjectDays writes them, the span's that moved (writeMovedMembers), and every member of a
-// repository that holds no run any more.
+// repository that holds no run any more, of its projects in statements of at most statementBytes.
 func (b *rebuild) writeMembers(ctx context.Context, tx pgx.Tx) error {
 	if err := writeDayMembersIn(ctx, tx, b.days, b.family.families); err != nil {
 		return err
@@ -523,10 +532,19 @@ func (b *rebuild) writeMembers(ctx context.Context, tx pgx.Tx) error {
 	if err := writeMovedMembers(ctx, tx, b.stored, b.members, b.memberDays); err != nil {
 		return err
 	}
-	if len(b.goneRepos) > 0 {
+	if len(b.goneRepos) == 0 {
+		return nil
+	}
+	base := paramBytes(3)
+	for _, list := range [][]string{b.family.families, b.goneRepos} {
+		for i := range list {
+			base += textBytes(&list[i])
+		}
+	}
+	for projects := range statementChunks(b.projects, base, textBytes) {
 		if _, err := tx.Exec(ctx, `
 			delete from eval_day_members where project_key = any($1) and family = any($2) and deploy_repo = any($3)
-		`, b.projects, b.family.families, b.goneRepos); err != nil {
+		`, projects, b.family.families, b.goneRepos); err != nil {
 			return fmt.Errorf("delete the members of %v, which hold no delivery run any more: %w", b.goneRepos, err)
 		}
 	}
@@ -534,14 +552,9 @@ func (b *rebuild) writeMembers(ctx context.Context, tx pgx.Tx) error {
 }
 
 // fold folds again, in tx, after the rebuild's rows and members, the stored figures of the days
-// whose rows it moved, each project's in turn (foldFiguresInTx).
+// whose rows it moved, each project once, an owner key's into its readers' (foldFiguresInTx).
 func (b *rebuild) fold(ctx context.Context, tx pgx.Tx) error {
-	for _, project := range slices.Sorted(maps.Keys(b.spans)) {
-		if err := foldFiguresInTx(ctx, tx, b.build, project, b.spans[project]); err != nil {
-			return err
-		}
-	}
-	return nil
+	return foldFiguresInTx(ctx, tx, b.build, b.spans)
 }
 
 // MarkRebuild marks tx as a rebuild's write of day rows, before its first write of a day row: the
@@ -682,13 +695,12 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 		}
 		projects = r.owners
 	}
-	firsts, nexts := map[string]map[evalKey]time.Time{}, map[string]*time.Time{}
+	firsts, err := r.storedFirsts(ctx, family.walk, projects)
+	if err != nil {
+		return nil, err
+	}
+	nexts := map[string]*time.Time{}
 	for _, project := range projects {
-		first, err := r.storedFirst(ctx, family.walk, project)
-		if err != nil {
-			return nil, err
-		}
-		firsts[project] = first
 		if nexts[project], err = r.servingNext(ctx, family.walk, project); err != nil {
 			return nil, err
 		}
@@ -745,7 +757,6 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 		return nil, nil
 	}
 	var input spanInput
-	var err error
 	if family.walk == walkDelivery {
 		r.trackKept(tracked, covered, firsts)
 		// A page that only finds a repository's runs gone tracks no key, and reads no history.
@@ -1015,8 +1026,9 @@ func deleteDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow) error {
 // DeliveryDay of it as readDeliveryDay builds it from those rows, and the pull requests' alone
 // where a key no deploy repository moves is active. The PR-checks runs, which the history does
 // not hold, are read of a day only where a pr-ci key is active on it and the repository holds one
-// that day (checkDays, one read of a repository's days), by the read the walk's day makes
-// (delivery.ReadCIRows), with the attribution lists of their pull requests (readAttribution).
+// that day (checkDays, one read of a repository's days), once, since a span builds each day once
+// (buildSpan), by the PR-checks read of a CI read (delivery.ReadCheckRows, ReadCIRows' Checks),
+// with the attribution lists of their pull requests (readAttribution).
 func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[evalKey]*trackedKey, reach time.Time) (spanInput, error) {
 	pool := r.store.database.Pool
 	next := *r.settings
@@ -1086,7 +1098,6 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	for _, repo := range repos {
 		histories[repo.name] = historyOf(repo, history.Deploys[repo.name], prs, production)
 	}
-	checks := map[string]map[time.Time]checkDay{}
 	raw := func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, error) {
 		alone, as, ci := false, map[string]bool{}, map[string]bool{}
 		for project, keys := range active {
@@ -1129,23 +1140,15 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			}
 			one.pushes, one.pushJobs = attribute.pushRuns(h.pushesByDay[day], one.deploys), h.jobs
 			if ci[name] {
-				held, read := checks[name][day]
-				if !read {
-					ciRows, err := delivery.ReadCIRows(ctx, pool, name, day, day.AddDate(0, 0, 1), cardNames)
-					if err != nil {
-						return nil, fmt.Errorf("read the CI runs of %s on %s: %w", name, day.Format(time.DateOnly), err)
-					}
-					checkAttribute, err := readAttribution(ctx, r.store, nil, ciRows.Checks.Runs)
-					if err != nil {
-						return nil, err
-					}
-					if checks[name] == nil {
-						checks[name] = map[time.Time]checkDay{}
-					}
-					held = checkDay{runs: checkAttribute.checkRuns(ciRows.Checks.Runs), jobs: ciRows.Checks.Jobs}
-					checks[name][day] = held
+				checks, err := delivery.ReadCheckRows(ctx, pool, name, day, day.AddDate(0, 0, 1))
+				if err != nil {
+					return nil, fmt.Errorf("read the CI runs of %s on %s: %w", name, day.Format(time.DateOnly), err)
 				}
-				one.checks, one.checkJobs = held.runs, held.jobs
+				checkAttribute, err := readAttribution(ctx, r.store, nil, checks.Runs)
+				if err != nil {
+					return nil, err
+				}
+				one.checks, one.checkJobs = checkAttribute.checkRuns(checks.Runs), checks.Jobs
 			}
 			read.repos, read.days = append(read.repos, name), append(read.days, one)
 		}
@@ -1177,13 +1180,6 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		return rowsOf(rows, key)
 	}
 	return spanInput{raw: raw, zeros: zeros}, nil
-}
-
-// checkDay is one repository's PR-checks runs of a day a span reads, each attributed to its
-// projects, with every job of each.
-type checkDay struct {
-	runs []dayCIRun
-	jobs map[int64][]delivery.DeliveryRunJob
 }
 
 // checkDays is each UTC day from from up to to on which repo holds a PR-checks run: the days a

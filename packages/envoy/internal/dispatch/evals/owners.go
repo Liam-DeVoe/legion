@@ -120,42 +120,58 @@ func readOwners(ctx context.Context, q delivery.Querier) ([]string, error) {
 // the projects its readers are. A key whose staged rows the rebuild abandons stands with no row,
 // as one whose rows all went.
 func recordOwners(ctx context.Context, tx pgx.Tx, keys []string) error {
-	var owners, repos, sharers, lists []string
+	type owner struct{ key, repo, sharers, lists string }
+	var owners []owner
 	for _, key := range slices.Compact(slices.Sorted(slices.Values(keys))) {
 		if repo, shared, carried, ok := parseOwner(key); ok {
-			owners, repos = append(owners, key), append(repos, repo)
-			sharers, lists = append(sharers, strings.Join(shared, ",")), append(lists, strings.Join(carried, ";"))
+			owners = append(owners, owner{key: key, repo: repo, sharers: strings.Join(shared, ","), lists: strings.Join(carried, ";")})
 		}
 	}
-	if len(owners) == 0 {
-		return nil
-	}
-	if _, err := tx.Exec(ctx, `
-		insert into eval_day_owners (owner, repo, sharers, lists)
-		select given.owner, given.repo, coalesce(string_to_array(nullif(given.sharers, ''), ','), '{}'),
-			coalesce(string_to_array(nullif(given.lists, ''), ';'), '{}')
-		from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as given(owner, repo, sharers, lists)
-		order by given.owner collate "C"
-		on conflict do nothing
-	`, owners, repos, sharers, lists); err != nil {
-		return fmt.Errorf("record %d owner keys a rebuild stages rows of: %w", len(owners), err)
+	// The keys grow with the history a rebuild stages, so they go in statements of at most
+	// statementBytes, in key order, the order each inserts them in.
+	size := func(one *owner) int { return 4*4 + len(one.key) + len(one.repo) + len(one.sharers) + len(one.lists) }
+	for chunk := range statementChunks(owners, paramBytes(4), size) {
+		owned, repos, sharers, lists := make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
+		for i, one := range chunk {
+			owned[i], repos[i], sharers[i], lists[i] = one.key, one.repo, one.sharers, one.lists
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into eval_day_owners (owner, repo, sharers, lists)
+			select given.owner, given.repo, coalesce(string_to_array(nullif(given.sharers, ''), ','), '{}'),
+				coalesce(string_to_array(nullif(given.lists, ''), ';'), '{}')
+			from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as given(owner, repo, sharers, lists)
+			order by given.owner collate "C"
+			on conflict do nothing
+		`, owned, repos, sharers, lists); err != nil {
+			return fmt.Errorf("record %d owner keys a rebuild stages rows of: %w", len(owners), err)
+		}
 	}
 	return nil
 }
 
-// readersOf reads in q the projects whose reads fold the rows of owner (eval_project_owners), in
-// key order: for a plain key, the projects whose published default is its repository, less its
-// sharers; for a key that carries lists, the projects eval_owner_readers picks.
-func readersOf(ctx context.Context, q delivery.Querier, owner string) ([]string, error) {
-	rows, err := q.Query(ctx, `select project_key from eval_project_owners where owner = $1 order by project_key collate "C"`, owner)
-	if err != nil {
-		return nil, fmt.Errorf("read the projects that read %s: %w", owner, err)
+// readersOf reads in q the projects whose reads fold the rows of each of owners
+// (eval_project_owners), by owner, each owner's in key order: for a plain key, the projects whose
+// published default is its repository, less its sharers; for a key that carries lists, the
+// projects eval_owner_readers picks. One read for every owner, in statements of at most
+// statementBytes; an owner no project reads has none.
+func readersOf(ctx context.Context, q delivery.Querier, owners []string) (map[string][]string, error) {
+	readers := map[string][]string{}
+	for chunk := range statementChunks(owners, paramBytes(1), textBytes) {
+		rows, err := q.Query(ctx, `
+			select owner, project_key from eval_project_owners where owner = any($1) order by project_key collate "C"
+		`, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("read the projects that read %d owner keys: %w", len(owners), err)
+		}
+		var owner, project string
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &project}, func() error {
+			readers[owner] = append(readers[owner], project)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the projects that read %d owner keys: %w", len(owners), err)
+		}
 	}
-	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the projects that read %s: %w", owner, err)
-	}
-	return projects, nil
+	return readers, nil
 }
 
 // PublishedDefaultIn is the repository project publishes as its default, read in q

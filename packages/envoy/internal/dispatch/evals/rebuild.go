@@ -579,13 +579,24 @@ func (r *refresh) stageDays(ctx context.Context, rb *rebuildState, family dayFam
 		for _, key := range slices.Sorted(maps.Keys(stored)) {
 			rows = append(rows, stagedRow{op: "d", row: stored[key]})
 		}
-		standing, err := r.store.membersByKey(ctx, built)
+		// A member built that stands on one of the days is among onDays already, by its primary key;
+		// only the others are read where they stand.
+		var elsewhere []memberKey
+		for _, key := range built {
+			if _, held := onDays[key]; !held {
+				elsewhere = append(elsewhere, key)
+			}
+		}
+		standing, err := r.store.membersByKey(ctx, elsewhere)
 		if err != nil {
 			return err
 		}
 		for _, key := range built {
 			at := builtAt[key]
-			was, found := standing[key]
+			was, found := onDays[key]
+			if !found {
+				was, found = standing[key]
+			}
 			if found && was.day.Equal(at.day) && was.repo == at.repo && was.shippedBy == at.shippedBy {
 				continue
 			}
@@ -1128,7 +1139,8 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 }
 
 // readStoredFigures reads project's stored range figures ending first through last and its stored
-// day figures of the evals evalIDs of the days before them, by their keys.
+// day figures of the evals evalIDs of the days before them, by their keys: evalIDs, every eval of
+// the project, which no route bounds, in statements of at most statementBytes.
 func readStoredFigures(ctx context.Context, q delivery.Querier, project string, evalIDs []string, first, last time.Time) (map[rangeFigureKey]rangeFigureRow, map[dayFigureKey]dayFigureRow, error) {
 	rows, err := q.Query(ctx, `
 		select days, end_day, eval_id, deploy_repo, fold_key, figures, oldest_updated_at from eval_range_figures
@@ -1148,22 +1160,24 @@ func readStoredFigures(ctx context.Context, q delivery.Querier, project string, 
 	}); err != nil {
 		return nil, nil, fmt.Errorf("read %s's stored range figures: %w", project, err)
 	}
-	rows, err = q.Query(ctx, `
-		select day, eval_id, deploy_repo, fold_key, figures, rows_stamp from eval_day_figures
-		where project_key = $1 and eval_id = any($4) and day >= $2 and day < $3
-	`, project, first.AddDate(0, 0, -1), last, evalIDs)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read %s's stored day figures: %w", project, err)
-	}
 	days := map[dayFigureKey]dayFigureRow{}
-	var day dayFigureRow
-	if _, err := pgx.ForEachRow(rows, []any{&day.day, &day.eval, &day.deployRepo, &day.key, &day.figures, &day.stamp}, func() error {
-		day.day = day.day.UTC()
-		days[day.dayFigureKey] = day
-		day.figures = nil
-		return nil
-	}); err != nil {
-		return nil, nil, fmt.Errorf("read %s's stored day figures: %w", project, err)
+	for chunk := range statementChunks(evalIDs, paramBytes(1, project)+2*(4+8), textBytes) {
+		rows, err = q.Query(ctx, `
+			select day, eval_id, deploy_repo, fold_key, figures, rows_stamp from eval_day_figures
+			where project_key = $1 and eval_id = any($4) and day >= $2 and day < $3
+		`, project, first.AddDate(0, 0, -1), last, chunk)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s's stored day figures: %w", project, err)
+		}
+		var day dayFigureRow
+		if _, err := pgx.ForEachRow(rows, []any{&day.day, &day.eval, &day.deployRepo, &day.key, &day.figures, &day.stamp}, func() error {
+			day.day = day.day.UTC()
+			days[day.dayFigureKey] = day
+			day.figures = nil
+			return nil
+		}); err != nil {
+			return nil, nil, fmt.Errorf("read %s's stored day figures: %w", project, err)
+		}
 	}
 	return ranges, days, nil
 }
