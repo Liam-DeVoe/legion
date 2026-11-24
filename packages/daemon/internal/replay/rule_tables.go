@@ -22,10 +22,34 @@ import (
 // rule cover, which the pass itself keeps, the first slots the rules that place by first slot read
 // (returned-by-first-slot, rework-first), the arrivals the rules that place by arrival read, and the
 // moments a slot was given up past the review that returned-by-root-rank reads, which the pass's
-// read of its facts keeps. A rule that reads none of them reads nothing here.
-type ruleTables struct{}
+// read of its facts keeps. It also gives the rules that read an issue's Dispatch priority
+// (priority-first, p0-lane) each issue's priority as the window's Dispatch events set it by the
+// replay's clock, and the rule idle-return-1h the slot holders that wait idle, read from the claims'
+// turn times. A rule that reads none of them reads nothing here.
+type ruleTables struct {
+	// priorities is each issue's Dispatch priority over the window, by key (priorityBook).
+	priorities priorityBook
+	// now is the replay's clock; nil reads the wall clock, which only a test that reads neither a
+	// priority nor an idleness reaches.
+	now func() time.Time
+}
 
 var _ admit.RuleTables = ruleTables{}
+
+// clock is the moment the pass reads at.
+func (t ruleTables) clock() time.Time {
+	if t.now == nil {
+		return time.Now()
+	}
+	return t.now()
+}
+
+// readsPriorities says whether rule reads each issue's Dispatch priority: a line ordered by
+// priority (record.LinePriorityFirst) or a lane only a P0 may take (record.SlotRule.LaneSlots).
+func readsPriorities(rule record.SlotRule) bool {
+	rule = rule.OrMain()
+	return rule.Order == record.LinePriorityFirst || rule.LaneSlots > 0
+}
 
 // readsFirstSlots says whether rule places the line by each issue's first slot in its current
 // generation — the returned part of record.LineReturnedByFirstSlot and of record.LineReworkFirst,
@@ -70,7 +94,7 @@ func readsGaveUp(rule record.SlotRule) bool {
 // workflow, the set both of the workflow's holds read (record.OpenBeneath;
 // record.LineFacts.BeneathWaits). The covers are the table's whole (record.LineFacts.Covers): a
 // replay runs one project.
-func (ruleTables) ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts *record.LineFacts) error {
+func (t ruleTables) ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts *record.LineFacts) error {
 	rule := facts.Rule.OrMain()
 	if rule.ReadsReadyMark() {
 		ready, err := readMarks(ctx, tx, `select m.issue, m.generation from replay_ready_marks m
@@ -131,6 +155,24 @@ func (ruleTables) ReadRuleFacts(ctx context.Context, tx pgx.Tx, issues []record.
 			return fmt.Errorf("read the slots given up past the review: %w", err)
 		}
 		facts.GaveUp = gave
+	}
+	if readsPriorities(rule) {
+		facts.Priorities = t.priorities.at(t.clock(), issues)
+		if rule.LaneSlots > 0 {
+			facts.LaneEligible = make(map[string]struct{})
+			for _, issue := range issues {
+				if p, known := facts.Priorities[issue.Key]; known && p == 0 && facts.Gates[issue.Tree].Open() {
+					facts.LaneEligible[issue.Key] = struct{}{}
+				}
+			}
+		}
+	}
+	if rule.IdleReturn > 0 {
+		idle, err := readIdle(ctx, tx, issues, *facts, rule.IdleReturn, t.clock())
+		if err != nil {
+			return err
+		}
+		facts.Idle = idle
 	}
 	if rule.Take != record.TakeCover {
 		return nil

@@ -14,11 +14,12 @@ var fortyHex = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // keptRuleNames is the rules the replay's comparison runs, by name, in the order the repository
 // keeps them: the daemon's own first, then the rules two recorded windows ran under, then the
-// candidates of the comparison, then the line orders of a comparison of admission rules and the
-// rules that place by arrival where the daemon places by the board.
+// candidates of the comparison, then the line orders of a comparison of admission rules, the rules
+// that place by arrival where the daemon places by the board, and the priority rules.
 var keptRuleNames = []string{"main", "legion-v20.42.5", "legion-v19.57.3", "keep-past-review", "blockers-first", "returned-by-rank", "cover",
 	"wait-grace", "wait-grace-1h", "returned-by-first-slot", "rework-first", "rework-first-keep", "arrival-order", "returned-by-root-rank",
-	"legion-v20.42.5-by-arrival", "main-by-arrival", "rework-first-by-arrival", "rework-first-keep-by-arrival", "returned-by-root-rank-by-arrival"}
+	"legion-v20.42.5-by-arrival", "main-by-arrival", "rework-first-by-arrival", "rework-first-keep-by-arrival", "returned-by-root-rank-by-arrival",
+	"priority-first", "p0-lane", "idle-return-1h", "priority-p0-idle"}
 
 // Every rule the repository keeps names the commit of cybermonklabs/legion its choices come from,
 // so a reader of a replay's result can read the code that made them (record.SlotRule.Commit): the

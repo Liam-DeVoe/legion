@@ -71,6 +71,18 @@ type SlotRule struct {
 	// (PhaseRow.HandoffCommit) while the issue waits in merging for the merge itself. It is read
 	// only under a rule that keeps a slot in merging (KeepsSlotIn).
 	ReleaseAtReady bool
+	// LaneSlots is how many of the cap's slots only a P0 issue whose tree's design gate is open may
+	// take (LineFacts.LaneEligible, admit's capLets): every other issue takes a slot only while the
+	// slots it and its like hold stand below the cap less the lane. Zero, the daemon's own, reserves
+	// nothing.
+	LaneSlots int
+	// IdleReturn is how long a slot holder that waits on a person — a root awaiting a person's
+	// answer, or at admitted with its design gate never opened — may go with no turn of any of its
+	// roles before it gives its slot back (LineFacts.Idle, admit's releaseSlotsForWaits), keeping
+	// its place: the mark of the release is the moment it took the slot, and an answered root is
+	// placed by that mark where it is earlier than the answer (Waiting). Zero, the daemon's own,
+	// gives nothing back for idleness.
+	IdleReturn time.Duration
 }
 
 // LineOrder is the order of the waiting line, a SlotRule's choice.
@@ -108,6 +120,11 @@ const (
 	// a phase past the review that keeps no slot keeps the moment it gave its slot up there
 	// (LineFacts.GaveUp) rather than the moment it was sent back.
 	LineReturnedByRootRank LineOrder = "returned_by_root_rank"
+	// LinePriorityFirst places every issue of the line by its Dispatch priority first, P0 first and
+	// an issue the facts hold no priority of last (LineFacts.Priorities), then the issues whose work
+	// came back before the issues that have not started within one priority, and then the daemon's
+	// own order within each part.
+	LinePriorityFirst LineOrder = "priority_first"
 )
 
 // RankSource is what the waiting line places issues by where it reads the board, a SlotRule's
@@ -311,7 +328,8 @@ func SlotRules() []SlotRule {
 		waitGraceRule("wait-grace", waitGrace), waitGraceRule("wait-grace-1h", longWaitGrace), returnedByFirstSlotRule(),
 		reworkFirstRule(), reworkFirstKeepRule(), arrivalOrderRule(), returnedByRootRankRule(),
 		byArrival(windowOneRule()), byArrival(mainRuleWith(MainRule.Name, func(*SlotRule) {})), byArrival(reworkFirstRule()),
-		byArrival(reworkFirstKeepRule()), byArrival(returnedByRootRankRule())}
+		byArrival(reworkFirstKeepRule()), byArrival(returnedByRootRankRule()),
+		priorityFirstRule(), p0LaneRule(), idleReturnRule(), priorityLaneIdleRule()}
 }
 
 // The commits the recorded rules come from: release 20.42.5, the last a deployment ran over its
@@ -519,6 +537,53 @@ func byArrival(rule SlotRule) SlotRule {
 	rule.KeepsSlotIn = slices.Clone(rule.KeepsSlotIn)
 	rule.RankBy = RankArrival
 	return rule
+}
+
+// laneSlots is the lane of the rule p0-lane: 10 of a cap of 157, so the other 147 run under the
+// daemon's own rule.
+const laneSlots = 10
+
+// idleReturn is the idleness after which the rule idle-return-1h gives a waiting holder's slot
+// back.
+const idleReturn = time.Hour
+
+// priorityFirstRule is the daemon's own rule with the line ordered by Dispatch priority first
+// (LinePriorityFirst). Its reason is a person's question of 2026-11-24 (how long a P0 waits for its
+// first slot) and a tree's controller's proposal to order by priority. The daemon stores no issue
+// priority; a replay reads it from the window's Dispatch events (LineFacts.Priorities), and a
+// deployment that adopts this rule needs the priority in the daemon's own record first.
+func priorityFirstRule() SlotRule {
+	return mainRuleWith("priority-first", func(rule *SlotRule) {
+		rule.Order = LinePriorityFirst
+	})
+}
+
+// p0LaneRule is the daemon's own rule with a lane of 10 slots only a P0 issue whose tree's design
+// gate is open may take (LaneSlots). Its reason is the same proposal: a P0 should not wait behind a
+// full cap of lower-priority work.
+func p0LaneRule() SlotRule {
+	return mainRuleWith("p0-lane", func(rule *SlotRule) {
+		rule.LaneSlots = laneSlots
+	})
+}
+
+// idleReturnRule is the daemon's own rule with a holder that waits on a person or on its open
+// children giving its slot back after an hour with no turn of any role, keeping its place
+// (IdleReturn). Its reason is the same proposal: a slot held with no worker for an hour by an issue
+// that waits on someone else serves nobody.
+func idleReturnRule() SlotRule {
+	return mainRuleWith("idle-return-1h", func(rule *SlotRule) {
+		rule.IdleReturn = idleReturn
+	})
+}
+
+// priorityLaneIdleRule is priority-first, p0-lane and idle-return-1h together.
+func priorityLaneIdleRule() SlotRule {
+	return mainRuleWith("priority-p0-idle", func(rule *SlotRule) {
+		rule.Order = LinePriorityFirst
+		rule.LaneSlots = laneSlots
+		rule.IdleReturn = idleReturn
+	})
 }
 
 // SlotRuleNamed is the rule SlotRules keeps under name, and whether it keeps one.

@@ -751,12 +751,16 @@ func (a *Admission) lineCanMove(issues []record.Issue, facts record.LineFacts, s
 	if len(working) > 0 {
 		return true
 	}
-	held := 0
+	var own []record.Slot
+	for _, slot := range ownSlots(issues, slots) {
+		if _, holdsSlot := holds.holders[slot.Issue]; holdsSlot {
+			own = append(own, slot)
+		}
+	}
 	for _, issue := range issues {
 		if _, holdsSlot := holds.holders[issue.Key]; !holdsSlot {
 			continue
 		}
-		held++
 		if holds.waitsByDesign(issue) {
 			continue
 		}
@@ -772,7 +776,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, facts record.LineFacts, s
 		lending = coversOf(issues, ownSlots(issues, slots), rows, facts)
 	}
 	for _, entry := range holds.line {
-		if len(blockers.LineWaitsOn(rows, entry)) == 0 && a.capLets(entry, held, facts, lending) {
+		if len(blockers.LineWaitsOn(rows, entry)) == 0 && a.capLets(entry, own, facts, lending) {
 			// An entry the promotion of this very pass starts: the line moves.
 			return true
 		}

@@ -649,6 +649,77 @@ func slotRuleReaders() []slotRuleReader {
 			why:     "the issues that have not started stand by the board's rank, or by the moment they arrived under a rule that places so",
 		},
 		slotRuleReader{
+			reader:  "record.Waiting's order of the line: Dispatch priority first",
+			changes: []string{"Order"},
+			rule:    ruleWith("main with priority first", func(rule *record.SlotRule) { rule.Order = record.LinePriorityFirst }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const ranked, urgent = "ACME-190", "ACME-191"
+				// Two trees never opened: the one ranked first on the board is a P2, the one
+				// ranked second a P0.
+				acmeQueuedRoot(t, pool, ranked, "a")
+				acmeQueuedRoot(t, pool, urgent, "b")
+				line, _, _ := lineUnderTables(t, pool, rule, orderTables{priorities: map[string]int{ranked: 2, urgent: 0}})
+				return lineWord(line)
+			},
+			main:    "the line is [ACME-190 ACME-191]",
+			changed: "the line is [ACME-191 ACME-190]",
+			why:     "the issues that have not started stand by the board's rank, or by their Dispatch priority first under a rule that places so",
+		},
+		slotRuleReader{
+			reader:  "admit's capLets in the promotion: a lane only eligible issues take",
+			changes: []string{"LaneSlots"},
+			rule:    ruleWith("main with a P0 lane of 10", func(rule *record.SlotRule) { rule.LaneSlots = 10 }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const holder, plain, eligible = "ACME-200", "ACME-201", "ACME-202"
+				// A cap of 11 with one slot held: under a lane of 10, the one slot outside the lane
+				// is that holder's, so an issue the lane does not name waits, and one it names
+				// takes a slot of the lane.
+				acmeRoot(t, pool, holder, phase.Implementing, "in_progress", "a", nil, nil)
+				takeSlot(t, pool, holder)
+				acmeQueuedRoot(t, pool, plain, "b")
+				acmeQueuedRoot(t, pool, eligible, "c")
+				admission := ruledAdmission(t, 11, rule, silent())
+				admission.UseRuleTables(orderTables{laneEligible: map[string]struct{}{eligible: {}}})
+				tickThrough(t, pool, admission, "the pass")
+				return treeWord(t, pool, plain) + "; " + treeWord(t, pool, eligible)
+			},
+			main:    "the tree of ACME-201 is open; the tree of ACME-202 is open",
+			changed: "the tree of ACME-201 is not open; the tree of ACME-202 is open",
+			why: "a free slot lets any start through, or, under a rule with a lane, a slot of the lane lets through only an issue " +
+				"the lane names",
+		},
+		slotRuleReader{
+			reader:  "admit's releaseSlotsForWaits: an idle holder that waits on a person",
+			changes: []string{"IdleReturn"},
+			rule:    ruleWith("main with an idle return after an hour", func(rule *record.SlotRule) { rule.IdleReturn = time.Hour }),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const awaiting = "ACME-210"
+				// A root waiting on a person, holding the slot it took at fixedNow, read idle at a
+				// pass two hours later.
+				acmeRoot(t, pool, awaiting, phase.AwaitingPerson, "in_progress", "a", nil, nil)
+				takeSlot(t, pool, awaiting)
+				admission := ruledAdmission(t, 2, rule, silent())
+				admission.UseRuleTables(orderTables{idle: map[string]time.Time{awaiting: fixedNow}})
+				admission.now = func() time.Time { return fixedNow.Add(2 * time.Hour) }
+				tickThrough(t, pool, admission, "the pass")
+				word := slotWord(t, pool, awaiting)
+				if mark := issue(t, pool, awaiting).ReleasedForWaitAt; mark != nil {
+					word += fmt.Sprintf("; ACME-210 is marked at %s", mark.Sub(fixedNow))
+				}
+				return word
+			},
+			main:    "ACME-210 holds a slot",
+			changed: "ACME-210 holds no slot; ACME-210 is marked at 0s",
+			why: "a root waiting on a person keeps its slot, or, under a rule that gives an idle holder's slot back, gives it back " +
+				"marked at the moment it took it, so it keeps its place",
+		},
+		slotRuleReader{
 			reader:  "admit's capLets in the promotion",
 			changes: []string{"Take"},
 			rule:    ruleWith("main with a cover", func(rule *record.SlotRule) { rule.Take = record.TakeCover }),
@@ -1012,18 +1083,24 @@ func lineUnderTables(t *testing.T, pool *pgxpool.Pool, rule record.SlotRule, tab
 	return line, held, facts
 }
 
-// orderTables is a replay's rule tables as far as the line's moments go (RuleTables): the moment
+// orderTables is a replay's rule tables as far as the line and the cap go (RuleTables): the moment
 // of each issue's first slot, of its arrival in the line and of the slot it gave up past the review,
-// by key, held as data and added to the facts of every pass whatever its rule, since a rule that
-// does not place by one of them never reads it (record.LineFacts.FirstSlots, Arrivals, GaveUp).
-// The daemon keeps none of them; a replay keeps them in tables of its own database (the replay's
-// ruleTables), whose keeping that package's tests read.
+// by key; each issue's Dispatch priority; the issues a lane lets take its slots; and the holders
+// that wait idle, with the moment each took its slot — held as data and added to the facts of
+// every pass whatever its rule, since a rule that does not read one of them never reads it
+// (record.LineFacts.FirstSlots, Arrivals, GaveUp, Priorities, LaneEligible, Idle). The daemon keeps
+// none of them; a replay keeps or reads them through its own ruleTables, whose reading that
+// package's tests check.
 type orderTables struct {
 	firstSlots, arrivals, gaveUp map[string]time.Time
+	priorities                   map[string]int
+	laneEligible                 map[string]struct{}
+	idle                         map[string]time.Time
 }
 
 func (tables orderTables) ReadRuleFacts(_ context.Context, _ pgx.Tx, _ []record.Issue, facts *record.LineFacts) error {
 	facts.FirstSlots, facts.Arrivals, facts.GaveUp = tables.firstSlots, tables.arrivals, tables.gaveUp
+	facts.Priorities, facts.LaneEligible, facts.Idle = tables.priorities, tables.laneEligible, tables.idle
 	return nil
 }
 

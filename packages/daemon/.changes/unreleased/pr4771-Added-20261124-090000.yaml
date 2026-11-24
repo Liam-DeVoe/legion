@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+    `legion replay` compares three priority rules and their sum. `priority-first` orders the waiting
+    line by Dispatch priority first, read from the window's Dispatch events; `p0-lane` keeps 10 slots
+    that only a P0 whose design gate is open may take; `idle-return-1h` has a root that waits on a
+    person give its slot back after an hour with no turn, keeping its place; `priority-p0-idle` is
+    all three. `legion replay rules` prints each rule's lane and idle return.

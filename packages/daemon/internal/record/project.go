@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"maps"
+	"math"
 	"slices"
 	"sort"
 	"time"
@@ -597,6 +598,20 @@ type LineFacts struct {
 	// daemon keeps no such moment and runs no such rule; a replay under one keeps them in a table of
 	// its own database (admit's RuleTables). Nil under every other rule.
 	GaveUp map[string]time.Time
+	// Priorities is, under a rule that reads an issue's Dispatch priority (SlotRule.Order
+	// LinePriorityFirst, SlotRule.LaneSlots), each issue's priority by key, 0 for P0. The daemon
+	// stores no priority; a replay reads it from the window's Dispatch events (admit's RuleTables).
+	// Nil under every other rule.
+	Priorities map[string]int
+	// LaneEligible is, under a rule with a lane (SlotRule.LaneSlots), the issues that may take a slot
+	// of the lane: P0 issues whose tree's design gate is open. Nil under every other rule.
+	LaneEligible map[string]struct{}
+	// Idle is, under a rule that gives an idle waiting holder's slot back (SlotRule.IdleReturn), the
+	// issues that wait on a person, hold a slot or carry the mark of one they gave back, and whose
+	// roles have had no turn for the rule's idleness, by key, each with the moment it took its slot
+	// (its mark, where it holds none), which its release marks so it keeps its place. Nil under
+	// every other rule.
+	Idle map[string]time.Time
 }
 
 // KeepsSlot is the phase half of the facts' rule (SlotRule.KeepsSlot), with the merger's ready
@@ -1418,8 +1433,14 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			// (KeepsSlot), and its place is the moment its work came back, which is its answer
 			// or, when a person's approval opened its gate later than that, the approval.
 			_, holds := slotted[issue.Key]
-			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holds},
-				at: later(*issue.Awaiting.AnsweredAt, facts.Gates[issue.Tree].OpenedAt())})
+			// Under a rule that gives an idle waiting holder's slot back (SlotRule.IdleReturn), a
+			// root that gave its slot back so keeps its place: its mark is the moment it took that
+			// slot, which places it where that is earlier than its answer.
+			at := later(*issue.Awaiting.AnsweredAt, facts.Gates[issue.Tree].OpenedAt())
+			if facts.Rule.OrMain().IdleReturn > 0 && issue.ReleasedForWaitAt != nil && issue.ReleasedForWaitAt.Before(at) {
+				at = *issue.ReleasedForWaitAt
+			}
+			returned = append(returned, timed{entry: LineEntry{Issue: issue, Kind: LineAnswered, Holds: holds}, at: at})
 			continue
 		}
 		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot {
@@ -1461,6 +1482,16 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// owes nothing — so none is a candidate here.
 		owed, owes := facts.Owed[issue.Key]
 		marked := issue.ReleasedForWaitAt != nil
+		// Under a rule that gives an idle waiting holder's slot back (SlotRule.IdleReturn), an issue
+		// that gave its slot back so and is still idle (LineFacts.Idle) waits on its person or its
+		// children and asks for no slot; once it may work again it stands at its mark, the moment it
+		// took the slot it gave back, so it keeps its place. The issue stays out of the line, and
+		// out of every set that would count it, until then.
+		if _, idle := facts.Idle[issue.Key]; idle && marked && facts.Rule.OrMain().IdleReturn > 0 {
+			releasedForWait[issue.Key] = struct{}{}
+			hold(issue)
+			continue
+		}
 		if _, waits := facts.Waits[issue.Key]; marked || (owes && waits) {
 			at, id := owed.CreatedAt, owed.ID
 			if marked {
@@ -1770,6 +1801,23 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 				return a.Before(b)
 			}
 			return line[i].Issue.Key < line[j].Issue.Key
+		})
+	}
+	// A rule that places by priority first (LinePriorityFirst) orders the whole line by each
+	// issue's Dispatch priority (LineFacts.Priorities), an issue with none last, and keeps within
+	// one priority the returned part before the starting part and the daemon's order inside each.
+	if order == LinePriorityFirst {
+		priorityOf := func(issue Issue) int {
+			if p, known := facts.Priorities[issue.Key]; known {
+				return p
+			}
+			return math.MaxInt
+		}
+		sort.SliceStable(line, func(i, j int) bool {
+			if a, b := priorityOf(line[i].Issue), priorityOf(line[j].Issue); a != b {
+				return a < b
+			}
+			return line[i].Part < line[j].Part
 		})
 	}
 	return line, heldRows

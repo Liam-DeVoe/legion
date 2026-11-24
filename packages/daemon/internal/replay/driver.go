@@ -236,6 +236,10 @@ type driver struct {
 	waiting     map[string]waitingConflict
 	heads       int
 	numbers     *pullRequestNumbers
+
+	// priorities is each issue's Dispatch priority over the window (priorityBookOf), which the rules
+	// that read a priority read through the rule tables.
+	priorities priorityBook
 }
 
 // Divergence is what a replay counts of where it left the record's course, which a replay under
@@ -343,7 +347,7 @@ func (d *driver) newChain(at time.Time) {
 		limit = d.cfg.Cap
 	}
 	d.admission = admit.New(d.records, d.engine, limit, w.Project, d.log)
-	d.admission.UseRuleTables(ruleTables{})
+	d.admission.UseRuleTables(ruleTables{priorities: d.priorities, now: d.clock.Now})
 	d.admission.UseClock(d.clock.Now)
 	d.admission.UseExperiments(w.Experiments)
 	d.admission.UseExperimentSource(draw)

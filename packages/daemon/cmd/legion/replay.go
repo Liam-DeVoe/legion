@@ -808,6 +808,8 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 			fmt.Fprintf(stdout, "  a start takes: %s\n", rule.Take)
 			fmt.Fprintf(stdout, "  a conflicting head: %s\n", rule.Conflict)
 			fmt.Fprintf(stdout, "  the slot goes back at the ready mark: %t\n", rule.ReleaseAtReady)
+			fmt.Fprintf(stdout, "  slots only an eligible P0 takes: %d\n", rule.LaneSlots)
+			fmt.Fprintf(stdout, "  an idle waiting holder gives its slot back after: %s\n", rule.IdleReturn)
 		}
 		return 0
 	})
@@ -830,13 +832,16 @@ type slotRuleView struct {
 	Take                  record.StartTake    `json:"take"`
 	Conflict              record.ConflictPath `json:"conflict"`
 	ReleaseAtReady        bool                `json:"releaseAtReady"`
+	LaneSlots             int                 `json:"laneSlots"`
+	IdleReturn            string              `json:"idleReturn"`
 }
 
 // slotRuleViewOf is rule as `legion replay rules --json` prints it (slotRuleView).
 func slotRuleViewOf(rule record.SlotRule) slotRuleView {
 	return slotRuleView{Name: rule.Name, Commit: rule.Commit, KeepsSlotIn: rule.KeepsSlotIn, LinkWaitGivesBack: rule.LinkWaitGivesBack,
 		ChildrenWaitGivesBack: rule.ChildrenWaitGivesBack, WaitGrace: rule.WaitGrace.String(), WaitStopsPhase: rule.WaitStopsPhase,
-		Order: rule.Order, RankBy: rule.RankBy, Take: rule.Take, Conflict: rule.Conflict, ReleaseAtReady: rule.ReleaseAtReady}
+		Order: rule.Order, RankBy: rule.RankBy, Take: rule.Take, Conflict: rule.Conflict, ReleaseAtReady: rule.ReleaseAtReady,
+		LaneSlots: rule.LaneSlots, IdleReturn: rule.IdleReturn.String()}
 }
 
 // missingFlag is the first of names cmd was not given, "" when each was.

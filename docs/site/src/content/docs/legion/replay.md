@@ -667,6 +667,10 @@ The daemon runs `main`, and a replay runs the rule that you name through the sam
 | `arrival-order` | `main` with the line one queue in arrival order, with no part ahead of another and no rank, which shows what the board's order changes. | `0d3786da` |
 | `returned-by-root-rank` | `main` with the returned part ordered by the tree root's place on the board and then by the time at which the work came back, where an issue sent back from accepting, retro or merging keeps the time at which it gave its slot up there. The reason: an issue sent back from accepting stood 126th of 128 in the returned part, and keeping the slot past the review would have held 34 of 157 slots with no worker. A replay keeps the time a slot was given up in a table of its own. | `0d3786da` |
 | `legion-v20.42.5-by-arrival`, `main-by-arrival`, `rework-first-by-arrival`, `rework-first-keep-by-arrival`, `returned-by-root-rank-by-arrival` | The named rule with each place it reads the board's rank read by arrival instead: the tree root's and then the issue's own arrival in the line in its current generation. They show how much a board that is not kept current moves each rule. | the named rule's |
+| `priority-first` | `main` with the whole line ordered by Dispatch priority first (P0 first, an issue with none last), then work that came back before new work inside one priority, then `main`'s order. The daemon stores no priority; a replay reads it from the window's Dispatch events at the moment of each pass. | `0d3786da` |
+| `p0-lane` | `main` with 10 of the cap's slots that only a P0 issue whose tree's design gate is open may take; every other issue takes a slot only while the slots held outside the lane stand below the cap less 10. | `0d3786da` |
+| `idle-return-1h` | `main` with a root that waits on a person (awaiting a person's answer, or at admitted with its design gate never opened) giving its slot back once none of its roles has had a turn for an hour, marked at the moment it took the slot, so it keeps its place when it may work again. A replay reads the turns from its claims. | `0d3786da` |
+| `priority-p0-idle` | `priority-first`, `p0-lane` and `idle-return-1h` together. | `0d3786da` |
 
 The commit of `main` is the commit at which the rule was first written as a value.
 A rule built on `main` that changes one choice carries the same commit, the code that its other choices come from.
@@ -684,6 +688,8 @@ main (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -696,6 +702,8 @@ legion-v20.42.5 (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   a start takes: own_slot
   a conflicting head: moves_back_conflict
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
@@ -708,6 +716,8 @@ legion-v19.57.3 (commit 9542c6fbbecd184ccee73523ab3defa39d6cf23a)
   a start takes: own_slot
   a conflicting head: moves_back_checks_red
   the slot goes back at the ready mark: true
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
@@ -720,6 +730,8 @@ keep-past-review (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -732,6 +744,8 @@ blockers-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -744,6 +758,8 @@ returned-by-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 cover (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
@@ -756,6 +772,8 @@ cover (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: cover
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -768,6 +786,8 @@ wait-grace (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -780,6 +800,8 @@ wait-grace-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -792,6 +814,8 @@ returned-by-first-slot (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -804,6 +828,8 @@ rework-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
@@ -816,6 +842,8 @@ rework-first-keep (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -828,6 +856,8 @@ arrival-order (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 returned-by-root-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -840,6 +870,8 @@ returned-by-root-rank (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 legion-v20.42.5-by-arrival (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -852,6 +884,8 @@ legion-v20.42.5-by-arrival (commit 958173da0ea4cd03290a1964edf9eb92e6685200)
   a start takes: own_slot
   a conflicting head: moves_back_conflict
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 main-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -864,6 +898,8 @@ main-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 rework-first-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -876,6 +912,8 @@ rework-first-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 rework-first-keep-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, accepting, retro, merging, held
@@ -888,6 +926,8 @@ rework-first-keep-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
 
 returned-by-root-rank-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
   keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
@@ -900,6 +940,64 @@ returned-by-root-rank-by-arrival (commit 0d3786da536722f2eb26a793ab1b9827b6e90f4
   a start takes: own_slot
   a conflicting head: merge_forward
   the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
+
+priority-first (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: priority_first
+  the line places by: board
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 0s
+
+p0-lane (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  the line places by: board
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 10
+  an idle waiting holder gives its slot back after: 0s
+
+idle-return-1h (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: returned_oldest_first
+  the line places by: board
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 0
+  an idle waiting holder gives its slot back after: 1h0m0s
+
+priority-p0-idle (commit 0d3786da536722f2eb26a793ab1b9827b6e90f47)
+  keeps a slot in: admitted, awaiting_person, planning, implementing, testing, reviewing, held
+  a link wait gives the slot back: true
+  a children wait gives the slot back: true
+  a wait gives the slot back after: 0s
+  a wait stops the phase under way: false
+  the line's order: priority_first
+  the line places by: board
+  a start takes: own_slot
+  a conflicting head: merge_forward
+  the slot goes back at the ready mark: false
+  slots only an eligible P0 takes: 10
+  an idle waiting holder gives its slot back after: 1h0m0s
 ```
 
 Each line of a rule gives one choice:

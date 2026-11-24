@@ -103,7 +103,9 @@ type builtIssue struct {
 	Rank      string
 	Labels    []string
 	BlockedBy []string
-	Created   time.Time
+	// Priority is the issue's Dispatch priority, 0 for P0; nil for none.
+	Priority *int
+	Created  time.Time
 	// Claim is who holds the issue's Dispatch claim, since when; nil for nobody.
 	Claim *builtClaim
 
@@ -131,6 +133,8 @@ type filing struct {
 	Rank      string
 	Labels    []string
 	BlockedBy []string
+	// Priority is the issue's Dispatch priority, 0 for P0; nil for none.
+	Priority *int
 }
 
 // eventActor is a Dispatch event's actor, and the origin Dispatch records a session with: nil for a
@@ -379,7 +383,7 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 		Number        int         `json:"number"`
 		Parent        *string     `json:"parent"`
 		Primary       string      `json:"primary_artifact_id"`
-		Priority      *string     `json:"priority"`
+		Priority      *int        `json:"priority"`
 		Project       string      `json:"project"`
 		Rank          string      `json:"rank"`
 		Repo          *string     `json:"repo"`
@@ -403,6 +407,7 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 		Number:        issue.Number,
 		Parent:        parent,
 		Primary:       b.artifact(key),
+		Priority:      issue.Priority,
 		Project:       builtProject,
 		Rank:          issue.Rank,
 		ResolvedRepo:  builtRepository,
@@ -449,7 +454,8 @@ func (b *windowBuilder) filedBy(at time.Time, key string, f filing, actor eventA
 		generation = root.generation
 	}
 	b.issues[key] = &builtIssue{Key: key, Number: number, Title: f.Title, Status: f.Status, Parent: f.Parent, Rank: f.Rank,
-		Labels: slices.Clone(f.Labels), BlockedBy: slices.Clone(f.BlockedBy), Created: at, tree: tree, generation: generation}
+		Labels: slices.Clone(f.Labels), BlockedBy: slices.Clone(f.BlockedBy), Priority: f.Priority, Created: at, tree: tree,
+		generation: generation}
 	b.issueEvent(at, key, "issue.created", actor)
 }
 

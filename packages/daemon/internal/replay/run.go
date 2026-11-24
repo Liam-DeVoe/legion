@@ -340,6 +340,9 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, in.merges, recordedLoops(script), map[string]time.Time{}
 	d.waiting = map[string]waitingConflict{}
 	d.draws, d.numbers = rand.New(rand.NewPCG(uint64(cfg.Seed), conflictStream)), newPullRequestNumbers(trace)
+	if d.priorities, err = priorityBookOf(w); err != nil {
+		return result, errors.Join(err, closeDB())
+	}
 	runErr := d.run()
 	flushErr := written.Flush()
 	if err := errors.Join(runErr, flushErr); err != nil {

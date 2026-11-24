@@ -1885,6 +1885,20 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 	for _, slot := range own {
 		waits, waiting := facts.Waits[slot.Issue]
 		if !waiting {
+			// Under a rule that gives an idle waiting holder's slot back (record.SlotRule.IdleReturn),
+			// a holder that waits on a person and whose roles have had no turn for the rule's
+			// idleness (record.LineFacts.Idle) gives its slot back too, marked at the moment it took
+			// the slot, so the line places it there once it may work again (record.Waiting). Under
+			// every other rule the set is not read.
+			if _, idle := facts.Idle[slot.Issue]; idle && facts.Rule.OrMain().IdleReturn > 0 {
+				if err := a.store.ReleaseSlotForWait(ctx, tx, slot.Issue, slot.AdmittedAt); err != nil {
+					return released, fmt.Errorf("release the slot of idle %s: %w", slot.Issue, err)
+				}
+				inUse--
+				released = append(released, slot.Issue)
+				a.logSlot(ctx, "released", slot.Issue, inUse)
+				moves.take(slot.Issue, record.TakenIdle, inUse)
+			}
 			continue
 		}
 		if err := a.store.ReleaseSlotForWait(ctx, tx, slot.Issue, a.now()); err != nil {
@@ -2172,7 +2186,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// the wait. The phases are the pass's rule's (slotFor, over its facts), and so is
 			// what the cap lets through (capLets, with the slots its holders lend).
 			takes := slotFor(candidate, facts)
-			if !a.capLets(candidate, len(own), facts, lending) {
+			if !a.capLets(candidate, own, facts, lending) {
 				// A full cap gives no further slot, and the scan goes on. This is not the hold
 				// above and must not be read as one: a hold is an answer for every candidate
 				// behind it, because it says the pass does not yet know what this candidate is;
@@ -2518,13 +2532,15 @@ func slotFor(entry record.LineEntry, facts record.LineFacts) bool {
 	return !entry.Holds && facts.KeepsSlot(entry.Issue)
 }
 
-// capLets says whether the cap lets the promotion start entry, given held, the rows of the cap
+// capLets says whether the cap lets the promotion start entry, given own, the rows of the cap
 // the project holds, facts, the pass's own, and lending, the covers of the pass (covers): an
 // entry that takes no slot (slotFor) starts whatever the cap says, and one that takes a slot
 // starts while a row stands free or, under a rule whose start may take a cover
 // (record.TakeCover), while a counted waiter that waits on it offers its own, which the waiter
 // gives up for it (covers.take), so the start leaves the count where it stood. A covered waiter
-// holds no row, so held is the count the cap bounds. A cap that admits nothing lets nothing
+// holds no row, so own's length is the count the cap bounds. Under a rule with a lane
+// (record.SlotRule.LaneSlots) the lane's slots are the eligible issues' alone. A cap that admits
+// nothing lets nothing
 // start, since the promotion does not run under it.
 // It answers the cap's half alone: what an entry waits on is the other half
 // (blockers.LineWaitsOn), which each reader asks beside this.
@@ -2533,11 +2549,32 @@ func slotFor(entry record.LineEntry, facts record.LineFacts) bool {
 // (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
 // said the cap held a queued root in accepting, retro or merging that the promotion of the same pass started,
 // and told the controller of a stall that was not one.
-func (a *Admission) capLets(entry record.LineEntry, held int, facts record.LineFacts, lending covers) bool {
+func (a *Admission) capLets(entry record.LineEntry, own []record.Slot, facts record.LineFacts, lending covers) bool {
 	if a.cap <= 0 {
 		return false
 	}
-	return !slotFor(entry, facts) || held < a.cap || lending.offers(entry.Issue.Key)
+	held := len(own)
+	if !slotFor(entry, facts) || lending.offers(entry.Issue.Key) {
+		return true
+	}
+	// Under a rule with a lane (record.SlotRule.LaneSlots), that many of the cap's slots only an
+	// issue the facts name eligible may take (record.LineFacts.LaneEligible): an eligible issue
+	// takes any free slot, and every other issue only while the slots held outside the lane — the
+	// holders less the eligible ones, up to the lane — stand below the cap less the lane.
+	lane := facts.Rule.OrMain().LaneSlots
+	if lane <= 0 {
+		return held < a.cap
+	}
+	if _, eligible := facts.LaneEligible[entry.Issue.Key]; eligible {
+		return held < a.cap
+	}
+	inLane := 0
+	for _, slot := range own {
+		if _, eligible := facts.LaneEligible[slot.Issue]; eligible {
+			inLane++
+		}
+	}
+	return held < a.cap && held-min(inLane, lane) < a.cap-lane
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream
