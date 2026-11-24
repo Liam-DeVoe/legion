@@ -1,5 +1,5 @@
 import type { ArtifactBlock, AskWithTrees, EditOp, TextAsk } from "@legion/contracts";
-import { askOpenerLines, typedBlockIdAttribute } from "@legion/contracts";
+import { askOpenerLines, askOpeners } from "@legion/contracts";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
 import {
@@ -9,7 +9,7 @@ import {
   parseDispatchRef,
 } from "../dispatch-owner";
 import type { ResolvedArtifact } from "./context";
-import { liveTextAsks } from "./text-asks";
+import { liveTextAsks, openerAsks } from "./text-asks";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
  * route refuses an issue document; an unlinked document lists its own. */
@@ -25,19 +25,6 @@ async function blockAsks(
     (ask): ask is AskWithTrees & { readonly block_id: string } =>
       typeof ask.block_id === "string" && ask.block_artifact?.id === resolved.artifact.id
   );
-}
-
-/** The lines of `openers`, a version's ask block openers past their containers' markers
- *  (`askOpenerLines`, which skips fenced code and front matter), that open the ask block
- *  `blockId`: `:::ask{<id> …}`, the id as the renderer writes it (`typedBlockIdAttribute`: `#<id>`,
- *  or `id="…"` for an id the shortcut cannot hold). */
-function askOpeners(openers: readonly string[], blockId: string): string[] {
-  const id = typedBlockIdAttribute(blockId);
-  return openers.filter((line) => {
-    // Each line opens the directive (`:::ask{`), so its first brace is the directive's.
-    const attributes = line.slice(line.indexOf("{") + 1);
-    return attributes.startsWith(`${id} `) || attributes.startsWith(`${id}}`);
-  });
 }
 
 /**
@@ -149,14 +136,15 @@ export async function refuseOpenDecisionBlocks(
       return recordsOpen ? stillOpen(named, ask.state) : undefined;
     }
     // A copy, judged by its source, which is read off the block's own opening line alone
-    // (liveTextAsks): a line that quotes it (in code, a fence opened on a footnote's label line
-    // included, or in front matter) names no ask Dispatch recorded.
+    // (openerAsks, over the version's real openers): a line that quotes it (in code, a fence
+    // opened on a footnote's label line included, or in front matter) names no ask Dispatch
+    // recorded.
     const text = await liveText();
     if (!text.served && recordsSettled) return undefined;
     if (!text.served && recordsOpen) {
       return openCopy(
         named,
-        liveTextAsks({ markdown: version.markdown }).filter((copy) => copy.block_id === block.id)
+        openerAsks(openerLines).filter((copy) => copy.block_id === block.id)
       );
     }
     const copies = text.asks.filter((copy) => copy.block_id === block.id);
@@ -189,11 +177,11 @@ export async function refuseOpenDecisionBlocks(
  * approval request made after it names a version with no open block for
  * `refuseOpenDecisionBlocks` to find. An `insert` in the same batch that carries the block's id
  * does not exempt it: telling a block written back from an opener quoted in code needs the
- * server's parser, so the executor fails closed, as `refuseOpenDecisionBlocks` does for a quoted
- * opener. An open block is reworded with `replace`, moved with `move`, or, when this session asked
- * it, has its question, options, urgency or multiple changed with `dispatch_edit_ask`; each keeps
- * it. Costs nothing for an edit with no such operation, then one
- * `GET /artifacts/{id}/blocks`, and the owner's asks only when an operation reaches an `ask` block.
+ * server's parser, so the executor fails closed. An open block is reworded with `replace`, moved
+ * with `move`, or, when this session asked it, has its question, options, urgency or multiple
+ * changed with `dispatch_edit_ask`; each keeps it. Costs nothing for an edit with no such
+ * operation, then one `GET /artifacts/{id}/blocks`, and the owner's asks only when an operation
+ * reaches an `ask` block.
  */
 export async function refuseRemovingOpenDecisionBlocks(
   client: DispatchClient,

@@ -35,9 +35,10 @@ const (
 // measured on 2026-11-22 with the test's two issues. The anti-join the read leaves the issue's own
 // targets out by (refs' oneRowPerNode) gave 2.87 and 3.46 in the implementer's pod (2 CPUs) and
 // 3.59, 2.86 and 3.37 on the build farm (a Job of 12 CPUs running PostgreSQL 18). The array
-// exclusion of the test's negative control gave ratios from 12.59 to 15.01 in the pod and on the
-// build farm (c-references-cost's runs). 6.5 is about the geometric middle of the anti-join's
-// highest ratio and the array's lowest: 1.81 times the one, and the other 1.94 times it.
+// exclusion of the test's negative control gave 11.52 and 12.36 in the pod and 14.84, 14.84 and
+// 14.23 on the build farm that day, and from 13.21 to 16.33 in its build-farm runs from
+// 2026-11-22 to 2026-11-24. 6.5 is about the geometric middle of the anti-join's highest ratio and
+// the array's lowest: 1.81 times the one, and the other 1.77 times it.
 const referencesGrowthBound = 6.5
 
 // The references read of an issue that 10,000 blocks of other documents link into answers 200
@@ -78,7 +79,8 @@ const referencesGrowthBound = 6.5
 // (row(f.node_kind, f.node_id) = any(array(select row(x.kind, x.id) from ` + own + ` x)))`, the
 // test fails at the ratio: 11.5 to 12.6 in the implementer's pod, where it also fails at the
 // budget, every route read answering 503 REFERENCES_TIMEOUT, and 14.2 to 15.0 on the build farm,
-// where every route read answers 200 inside the budget (2026-11-22).
+// where every route read answers 200 inside the budget (2026-11-22); 13.2 to 16.3 in its
+// build-farm runs from then to 2026-11-24 (referencesGrowthBound).
 func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing.T) {
 	// Not parallel: it holds the route's reads to their 2 s budget (referencesClosureBound) and
 	// refs.Closure's read times to a ratio (referencesGrowthBound), wall clock that the load of the
