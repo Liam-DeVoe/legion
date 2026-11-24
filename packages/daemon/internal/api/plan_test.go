@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/dispatch-version-blocks/* servedVersion reads each answer a real Dispatch served, for the route's tests
+
 import (
 	"context"
 	"encoding/json"

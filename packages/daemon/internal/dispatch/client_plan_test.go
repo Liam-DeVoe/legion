@@ -1,5 +1,7 @@
 package dispatch
 
+//ci:reads packages/contracts/fixtures/dispatch-version-blocks/* versionBlocksFixture reads each answer a real Dispatch served, for PlanDocument's tests
+
 import (
 	"context"
 	"encoding/json"
