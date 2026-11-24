@@ -1128,12 +1128,14 @@ const intakeGiveUpsContract = 228
 // one at 217 or 218 is served 217's, which are 213's under its own number, as version.go's 217
 // entry says, one at 219 is served OwnerPlanContract's, which are 217's with the owner's plan's
 // routes, fields and words, one at 220 to 227 is served assignmentPlanContract's, which are
-// OwnerPlanContract's with each assignment's `plan`, and one at 228 up to the number below this
-// contract is served intakeGiveUpsContract's, which are assignmentPlanContract's with
-// `intakeGiveUps` and the two give-up answers. So a caller below intakeGiveUpsContract is served
-// no `intakeGiveUps`, one below assignmentPlanContract no assignment's `plan` either, and one
-// below OwnerPlanContract neither the owner's plan's additions nor this contract's. A caller from
-// 193 to 201 is served the keys 193 added, the block in contract 152's shape and none of this
+// OwnerPlanContract's with each assignment's `plan`, one at 228 to 231 is served
+// intakeGiveUpsContract's, which are assignmentPlanContract's with `intakeGiveUps` and the two
+// give-up answers, and one at 232 up to the number below this contract is served 232's, which are
+// intakeGiveUpsContract's under its own number, since 232 moves no shape of an answer a plugin
+// parses. So a caller below intakeGiveUpsContract is served no `intakeGiveUps`, one below
+// assignmentPlanContract no assignment's `plan` either, and one below OwnerPlanContract neither
+// the owner's plan's additions nor this contract's. A caller from 193 to 201 is served the keys
+// 193 added, the block in contract 152's shape and none of this
 // contract's: one that states a number from 194 to 198 is served 193's shape, and one that states
 // 199, 200 or 201 is served 199's, which is 193's, since 199 moves no shape of an answer a plugin
 // parses.

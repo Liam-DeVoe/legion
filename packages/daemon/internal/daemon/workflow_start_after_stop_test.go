@@ -102,12 +102,19 @@ func startedAgainGitHub(t *testing.T) string {
 // (stoppedWorkerDaemon — its own database, a controller tick every stopTickInterval, and a
 // runtime that provisions each claim's workspace in the claim's own pod), with the board and the
 // GitHub above and the shipped production check bound.
+//
+// The board refuses the boot catch-up's read of each root it holds, and the catch-up reads a
+// refused root three times before it skips it; at the production two seconds between reads
+// (catchUpRetryDelay) that cost each boot with two roots to catch up 8 s, every run of the
+// promotion subtest. The reads are a millisecond apart here: no subtest is about the catch-up,
+// which skips each root as it did, and holds none.
 func startedAgainDaemon(t *testing.T) (*store.Pool, config.Config, overrides, *fake.Runtime) {
 	t.Helper()
 	pool, cfg, o, rt := stoppedWorkerDaemon(t)
 	cfg.DispatchURL = startedAgainDispatch(t, cfg.Project)
 	cfg.ProductionCheckBound = 336 * time.Hour
 	o.githubAPI = startedAgainGitHub(t)
+	o.catchUpRetry = time.Millisecond
 	return pool, cfg, o, rt
 }
 
