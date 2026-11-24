@@ -69,6 +69,7 @@ jobs:
           cache: false
       # go-envoy: its modules are the envoy module's, though this job builds the document
       # service's race test binary rather than the listener and natsd ci-caches.yaml builds.
+      # why: .github/ci-notes/ci.md#a-restore-of-the-go-module-cache-comes-before-every-step-that-can-run-go
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

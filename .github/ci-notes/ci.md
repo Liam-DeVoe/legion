@@ -2696,3 +2696,56 @@ nothing races. check-ci-filters.sh holds both jobs to their one `name:` (ci_filt
 DISPATCH_NAMES), the reconcile step to its one `if:` (RECONCILE_IF), the changes job to the
 output and the exact step (REF_OUTPUT, REF_STEP_RUN), and every other job to a name that can
 evaluate to neither check.
+
+## A restore of the Go module cache comes before every step that can run go
+
+In a job that restores a Go cache family into `~/go/pkg/mod`, the restore runs before every step
+that can run a go command: a `go` line of the step's own, a script that runs one, or a test that
+starts one. The step that broke this was a test: lint's "Check every NATS server a script starts
+or installs is one the floor takes" runs `bun test scripts/e2e/lib/nats-image.test.ts`, and that
+file runs `go build ./natsversion/cmd/natsfloor` when it loads. The 29 restores of the module
+cache in ci.yaml's job workflows, ci-caches.yaml, dispatch-browser.yaml, docs-site.yaml and
+dispatch-browser-nightly.yaml each carry a `# why:` line naming this section. The five of the
+release workflows (release.yaml, release-envoy-infra.yaml, and release-envoy-listener.yaml's three
+setup-go caches) follow it too, and carry no such line: an edit of a release workflow starts that
+workflow on main.
+
+Go leaves a module it extracts read-only: its files 0444, its directories 0555. The restore's tar
+(`/usr/bin/tar -xf <entry> -P -C $GITHUB_WORKSPACE --use-compress-program unzstd`, GNU tar 1.35)
+can neither replace nor add a file in such a directory. It logs `Cannot open: File exists` for each
+file the earlier step left, extracts every other file of the entry, and exits 2, and
+actions/cache/restore v6.1.0 then reports the whole restore as failed (`Failed to restore:
+"/usr/bin/tar" failed with error: The process '/usr/bin/tar' failed with exit code 2`) and as a miss
+(`Cache not found for input keys`). Lint's job 138186405808 (run 45317043698, a dispatch of
+72001eaa368, with the restore after that test) logged 1,139 such lines, each an error line of the
+log, over the five modules the test's build had extracted: golang.org/x/crypto@v0.58.0 388,
+github.com/klauspost/compress@v1.20.1 471, github.com/nats-io/nats.go@v1.55.0 241, nkeys@v0.4.16 30
+and nuid@v1.0.1 9. The rest of the entry did land, so the notices step after it was not cold: 92 s
+there, against 105 s for the same script on a clean restore in ci-caches.yaml's notices job (job
+138205905737). What the order cost was a restore that read as a miss, a log of errors that were no
+fault, and the earlier build, which compiled with no cache at all. `~/.cache/go-build` is writable,
+so tar replaces what an earlier step wrote there without a line in the log: that order is a cost to
+the earlier step only, and nothing shows it.
+
+So the instrument is the restore's own log: a `Cannot open: File exists` line in a job's restore
+means a step before it wrote the module cache. Read on 2026-11-24 over the 22 jobs with a restore of
+run 45317043698 (ci.yaml dispatched, every job selected) and the jobs of ci-caches.yaml run
+45323050174, lint's go-notices restore was the only one with such a line. A reading of every step
+before each of the 34 restores of the module cache in every workflow file, and of the scripts and
+actions those steps run, found no other go command, and no restore of a path an earlier step
+writes (no job restores `~/.bun/install/cache` or `node_modules`; the darwin vet's
+`$RUNNER_TEMP/go-build-darwin` and the two Dispatch builds' `$RUNNER_TEMP` directories are written
+by no step before their restores).
+
+No check of the workflow text holds this rule. The go command lint's restore met was inside a test
+file a `bun test` step loads, which no reading of the step's `run:` sees; and a rule that refuses
+every step that might run go would refuse steps that cannot write a Go path, such as
+`bun install --frozen-lockfile`, since no manifest of the workspace has an install script. A check
+at run time (the module cache is empty when the restore starts) would be exact, but it is a step
+before each of 34 restores for a fault one restore had.
+
+One job restores over a go command on purpose: ci-caches.yaml's envoy job restores go-envoy-test
+after it builds go-envoy's binaries into the same directories, since it fills both families in
+one job. Its step "Let the go-envoy-test restore replace the module files the go-envoy restore
+left" makes the module directories writable first (`chmod -R u+w ~/go/pkg/mod`), and that
+restore logs no such line (job 138205905583, run 45323050174).

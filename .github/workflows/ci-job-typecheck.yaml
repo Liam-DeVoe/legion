@@ -50,6 +50,7 @@ jobs:
           cache: false
 
       # go-daemon, shared with daemon-go and pi-legion.
+      # why: .github/ci-notes/ci.md#a-restore-of-the-go-module-cache-comes-before-every-step-that-can-run-go
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
