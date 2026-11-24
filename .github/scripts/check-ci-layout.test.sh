@@ -12,7 +12,7 @@
 # that name one twice, that name two counts or an index outside them, a step that hands a leg
 # another count than its name's as its `with: legs` (written out or read off the matrix), ci-ok's
 # reconcile step renamed and its hold step's if: drifted from the term the reconcile negates,
-# pr-title needing changes, a literal name
+# an AUDITED_SCRIPTS pin a script's text has moved past, pr-title needing changes, a literal name
 # on a job a run can skip (worker-image, an agent-harness part, dispatch-browser.yaml's visual),
 # a changes output reading another step, the airlock job on x64, the race step dropping a package
 # the fill names, a push-only if: in an action only ci.yaml runs, a cache key drifting inside an
@@ -294,6 +294,21 @@ check "names the reconcile step it no longer holds" \
   "$(has "$out" "job ci-ok holds 0 step(s) named \"Set every other ci-ok on this head to this job's conclusion\", where it holds one, with \`if: \${{ always() &&")"
 check "names the hold step and the if: it must carry" \
   "$(has "$out" "job ci-ok's step \"Hold a failing verdict until this group is the front of the queue\" must carry \`if: \${{ !cancelled() && steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1' }}\`")"
+
+echo "case: an AUDITED_SCRIPTS pin a script's text has moved past"
+# The case's go_test_steps.py is its own copy and the script is this checkout's, so the pin is
+# the one that moves: as stale as an edit of the script past an unchanged pin.
+root=$(fresh audited-pin)
+actual=$(sha256sum "$repo/packages/envoy/infra/scripts/race-unit.sh" | cut -d' ' -f1)
+stale=$(printf '0%.0s' {1..64})
+replace "$root/.github/scripts/go_test_steps.py" "sha256=\"$actual\"" "sha256=\"$stale\""
+run_check "$root"
+check "fails (rule 35)" "$(is "$status" 1)"
+check "names the script, its SHA-256 and the pin its entry was read from" \
+  "$(has "$out" "packages/envoy/infra/scripts/race-unit.sh has SHA-256 $actual, and its AUDITED_SCRIPTS entry in .github/scripts/go_test_steps.py was read from $stale")"
+check "names the steps the reader then refuses, rather than ending the check" \
+  "$(has "$out" "the step reader refuses the workflows: ")"
+check "and prints no traceback" "$(is "$(has "$out" "Traceback")" false)"
 
 echo "case: the actions' conditions, caches and timed steps, and the merge-group workflows"
 root=$(fresh actions)

@@ -80,6 +80,11 @@
 #       its `with: legs` (written out, or read off the leg's matrix). A leg reads its shard of a
 #       corpus by its index and count (CORPUS_SHARD=<i>/<n>), so the legs read each document once
 #       between them only when each index names one leg and every step divides by the same n.
+#   35. a script .github/scripts/go_test_steps.py's AUDITED_SCRIPTS reads whose SHA-256 is not its
+#       entry's: the entry is a person's reading of what the script runs, and a script edited past
+#       it is read wrong by every reader of the steps. Held here, in the lint job, so the pull
+#       request that edits the script fails, and a step the reader then cannot read is named
+#       rather than ending the check.
 #
 # Rule 20 runs go list over each vetted module with GOPROXY=off over an empty module cache and the
 # module's own toolchain, so nothing is fetched and a cold runner answers as a warm machine does.

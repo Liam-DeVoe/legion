@@ -407,13 +407,13 @@ check "an input the job that calls the workflow gives is read into the step" \
   "$(has "$read" "$job / The caller's input | packages/envoy | ./internal/input/ |")"
 
 # AUDITED_SCRIPTS holds a person's reading of each script, pinned by its SHA-256, and the script
-# refuses a step whose script's text has moved on. The script runs by hand, so nothing else tells
-# the pull request that edits an audited script: #2856 changed database-skips.sh's
-# EXPECTED_SKIPS, the pin went stale, and the next by-hand run ended at exit 2 with no verdict.
-# The scripts job runs this harness, and a file no area of .github/ci-areas.yaml names selects
-# every job, so this case runs on that pull request. The list is read into a variable first: a
-# failed read then stops the harness under `set -e`, where a process substitution's failure
-# would leave the loop with nothing to check.
+# refuses a step whose script's text has moved on. The script runs by hand: #2856 changed
+# database-skips.sh's EXPECTED_SKIPS, the pin went stale, and the next by-hand run ended at exit 2
+# with no verdict. This harness runs in ci.yaml's scripts-held job, which a pull request runs only
+# with full-ci or lane:test, so the pull request that edits an audited script is refused by
+# check-ci-layout.sh's rule 35 in the lint job; this case holds the same pins wherever the harness
+# runs. The list is read into a variable first: a failed read then stops the harness under
+# `set -e`, where a process substitution's failure would leave the loop with nothing to check.
 echo "case: each script AUDITED_SCRIPTS reads still has the text its entry was read from"
 pins=$(py 'for path, audited in steps.AUDITED_SCRIPTS.items(): print(path + "\t" + audited.sha256)')
 check "AUDITED_SCRIPTS names at least one script" "$(is "$([ -n "$pins" ] && echo yes || echo no)" yes)"

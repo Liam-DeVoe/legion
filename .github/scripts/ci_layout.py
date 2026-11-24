@@ -6,7 +6,8 @@ the jobs ci-ok judges and how it judges them (rule 7), what a job's `if:` may te
 23 and 28), the names a skipped job's record carries (rules 25 and 30), the carriers of a split
 job's old name (rule 32) and the indexes its legs name (rule 34), how a Go step runs its tests
 (rules 22, 24 and 27), the bounds a timed step keeps (rule 31), the matrices (rule 29), the runner
-a job proves (rule 26), the darwin vets (rule 20) and the notes a `why:` link names (rule 33).
+a job proves (rule 26), the darwin vets (rule 20), the notes a `why:` link names (rule 33) and the
+pins of the scripts go_test_steps.py's AUDITED_SCRIPTS reads (rule 35).
 ci_workflow_rules.py, beside it, holds rules 10, 11, 12, 14 and 16, which read the workflow
 directory; main() runs both. ci_pins.py holds the facts a person pins by reading the layout.
 go_test_steps.py reads the `go test` commands of the steps, as go-test-step-expansion.py and
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import atexit
 import functools
+import hashlib
 import itertools
 import json
 import os
@@ -919,10 +921,11 @@ def go_runs(problems: list) -> list:
     runs = []
     try:
         found = steps.documents()
+        read = steps.steps_of(found)
     except steps.Refused as refused:
         problems.append(error(WORKFLOW, f"the step reader refuses the workflows: {refused}"))
         return runs
-    for step in steps.steps_of(found):
+    for step in read:
         try:
             commands = steps.commands_of(step, static_answer)
         except steps.Refused as refused:
@@ -1410,6 +1413,29 @@ def check_shard_legs(document: dict, splits: dict, problems: list) -> None:
                                                     f"name counts {count}"))
 
 
+# ---------------------------------------------------------------- rule 35: the audited scripts' pins
+def check_audited_pins(problems: list) -> None:
+    """Rule 35: each script go_test_steps.AUDITED_SCRIPTS reads still has the SHA-256 its entry
+    was read from. The entry is a person's reading of what the script runs, so a script edited
+    past it is read wrong by every reader of the steps, and go-test-step-expansion.py, which a
+    person runs by hand, stops on it with no verdict (#2856). This check runs in the lint job on
+    every pull request, so the pull request that edits an audited script is the one it fails."""
+    import go_test_steps as steps
+
+    for path, entry in steps.AUDITED_SCRIPTS.items():
+        try:
+            digest = hashlib.sha256((REPO / path).read_bytes()).hexdigest()
+        except OSError as unread:
+            problems.append(error(path, f"{path}, which .github/scripts/go_test_steps.py's AUDITED_SCRIPTS reads, "
+                                        f"cannot be read: {unread}"))
+            continue
+        if digest != entry.sha256:
+            problems.append(error(path, f"{path} has SHA-256 {digest}, and its AUDITED_SCRIPTS entry in "
+                                        f".github/scripts/go_test_steps.py was read from {entry.sha256}: read the "
+                                        f"script again and update the entry's commands and digest"))
+
+
+
 # ---------------------------------------------------------------- rule 20: darwin vets
 @dataclass
 class Go:
@@ -1616,6 +1642,7 @@ def check() -> int:
         rules.check_race_fill_packages(packages, pins.DAEMON_RACE_STEP, pins.DAEMON_RACE_FILL_JOB, problems)
     rules.check_race_fill_scripts(pins.RACE_FILL_SCRIPTS, problems)
     rules.check_one_merge_group_workflow(problems)
+    check_audited_pins(problems)
     runs = go_runs(problems)
     check_split_lists(runs, problems)
     check_changes_tests(documents, problems)
