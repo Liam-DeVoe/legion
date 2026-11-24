@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // durableAlarms counts the ERROR records of the take-over alarm in a rig's log.
@@ -80,6 +82,94 @@ func TestAPreLeaseBindingIsWaitedOutAndAlarmedOn(t *testing.T) {
 	info, err = rig.client.JS().ConsumerInfo(bus.Stream, consumer)
 	if err != nil || !info.Created.Equal(before.Created) || info.Config.FilterSubject != consumerFilterAll || info.Config.AckWait != consumerAckWait {
 		t.Fatalf("the durable once the new pod receives: %+v %v, want the same durable under the consumer policy", info, err)
+	}
+}
+
+// durableReads counts the reads of consumer (its CONSUMER.INFO requests) that reach the NATS at
+// uri from here on, whoever sends them, as the server takes them.
+func durableReads(t *testing.T, uri, consumer string) *atomic.Int64 {
+	t.Helper()
+	var reads atomic.Int64
+	conn := testnats.Connect(t, uri)
+	t.Cleanup(conn.Close)
+	if _, err := conn.Subscribe("$JS.API.CONSUMER.INFO."+bus.Stream+"."+consumer, func(*natsgo.Msg) { reads.Add(1) }); err != nil {
+		t.Fatalf("subscribe to the reads of %s: %v", consumer, err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the subscription to the reads of %s: %v", consumer, err)
+	}
+	return &reads
+}
+
+// A pod waiting out a pre-lease build's binding reads the durable every bindPoll, so it receives
+// within one poll of that build's exit rather than at the end of a backoff that grows with each
+// read (TestBindListenerDurableBindsWithinOneIntervalOfRelease, before the lease). At a 50 ms poll
+// six of the pod's reads find the binding, counted as the server takes them (durableReads); then
+// the old build exits, and the pod receives within 500 ms of that. A receive.go whose wait between
+// reads doubles from bindPoll fails the row: its seventh read comes 3.2 s after its sixth.
+func TestAHeldDurableIsTakenWithinOnePollOfItsRelease(t *testing.T) {
+	uri := testnats.URL(t)
+	const machineID = "box-poll-release"
+	consumer := bus.ListenerDurable(machineID)
+	old, _ := durableHeldElsewhere(t, uri, consumer)
+	reads := durableReads(t, uri, consumer)
+
+	rig := startReceiverRig(t, uri, machineID, "pod-new", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
+	rig.awaitState(t, receiveAwaitingBinding, 10*time.Second)
+	waiting := reads.Load()
+	waitFor(t, 10*time.Second, "six reads of the held durable by the waiting pod", func() bool { return reads.Load() >= waiting+6 })
+	if state := rig.receiver.report().State; state != receiveAwaitingBinding {
+		t.Fatalf("the receive loop is %s after %d reads of the durable the old build holds, want it waiting", state, reads.Load()-waiting)
+	}
+	refused := reads.Load() - waiting
+
+	released := time.Now()
+	old.Close()
+	var after time.Duration
+	if !testwait.Holds(5*time.Second, time.Millisecond, func() bool {
+		if rig.receiver.report().State != receiveActive {
+			return false
+		}
+		after = time.Since(released)
+		return true
+	}) {
+		t.Fatalf("the pod never received the durable within 5s of the old build's exit, after %d of its reads found the binding", refused)
+	}
+	if after > 500*time.Millisecond {
+		t.Fatalf("the pod received %s after the old build's exit, after %d of its reads found the binding, want within 500ms at a 50ms poll",
+			after.Round(time.Millisecond), refused)
+	}
+}
+
+// A stop ends a pod's wait for a pre-lease build's binding at once, not at the wait's next read of
+// the durable, so the listener's ordered shutdown goes on inside its budget, and the old build
+// keeps its binding (TestBindListenerDurableStopsWhenTheContextEnds, before the lease). At a 2 s
+// poll Stop returns within 500 ms of its call. A receive.go whose wait between reads is a plain
+// time.Sleep(bindPoll), deaf to the stop, fails the row: Stop returns only once that wait is out.
+func TestAStopEndsTheWaitForAHeldDurableAtOnce(t *testing.T) {
+	uri := testnats.URL(t)
+	const machineID = "box-stop-waiting"
+	consumer := bus.ListenerDurable(machineID)
+	old, binding := durableHeldElsewhere(t, uri, consumer)
+
+	timing := testReceiveTiming()
+	timing.bindPoll = 2 * time.Second
+	rig := startReceiverRig(t, uri, machineID, "pod-new", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, timing, testLeaseTiming())
+	rig.awaitState(t, receiveAwaitingBinding, 10*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stopping := time.Now()
+	rig.receiver.Stop(ctx)
+	if took := time.Since(stopping); took > 500*time.Millisecond {
+		t.Fatalf("Stop returned %s after its call, want at once rather than at the wait's next read, 2s apart", took.Round(time.Millisecond))
+	}
+	if !binding.IsValid() {
+		t.Fatal("the old build's binding is gone after the waiting pod stopped")
+	}
+	info, err := old.JS().ConsumerInfo(bus.Stream, consumer)
+	if err != nil || !info.PushBound {
+		t.Fatalf("the durable after the waiting pod stopped: %+v %v, want the old build's binding still push-bound", info, err)
 	}
 }
 

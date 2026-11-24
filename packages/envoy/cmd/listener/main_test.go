@@ -2503,6 +2503,69 @@ func TestARefusedDurableStopsTheListenerAtOnce(t *testing.T) {
 	}
 }
 
+// A durable an operator replaces while the listener runs, with one the policy refuses (here one
+// with an idle heartbeat), is refused when the next term reads it (durableReceiver.serve, prepare),
+// and the listener stops by itself: it logs durableRefusedLine at ERROR naming the durable and the
+// setting, sends itself SIGTERM and shuts down in order, within 3 s of what began that term. The
+// term begins with the lease's loss: the operator also deletes the lease record, so the holder's
+// next renewal, at most a second away (leaseRenewEvery), finds it gone, and the pod steps down and
+// takes the absent record again at once; the refusal and the shutdown after it took 0.06 s
+// measured. A main.go whose refused callback sends no signal fails the row: the listener logs the
+// line and runs on, receiving nothing.
+func TestADurableRefusedInTheMiddleOfATermStopsTheListener(t *testing.T) {
+	const machineID = "refused-durable-mid-term"
+	uri := testnats.URL(t)
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, machineID)
+	listener.waitHealthy(t)
+
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the operator: %v", err)
+	}
+	t.Cleanup(client.Close)
+	consumer := bus.ListenerDurable(machineID)
+	if err := client.JS().DeleteConsumer(bus.Stream, consumer); err != nil {
+		t.Fatalf("delete the listener's durable: %v", err)
+	}
+	config := natsgo.ConsumerConfig{Durable: consumer, DeliverSubject: natsgo.NewInbox()}
+	applyListenerConsumerPolicy(&config)
+	config.Heartbeat = 5 * time.Second
+	if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {
+		t.Fatalf("recreate the durable with a heartbeat: %v", err)
+	}
+	state, err := client.JS().KeyValue(bus.ListenerStateBucket)
+	if err != nil {
+		t.Fatalf("open the listener state bucket: %v", err)
+	}
+	if err := state.Delete(bus.ListenerLeaseKey(machineID)); err != nil {
+		t.Fatalf("delete the lease record: %v", err)
+	}
+
+	const bound = 3 * time.Second
+	select {
+	case <-listener.Exited:
+	case <-time.After(bound):
+		t.Fatalf("the listener was still running %s after its lease record was deleted over a refused durable, want it stopped by itself:\n%s",
+			bound, listener.Output.String())
+	}
+	output := listener.Output.String()
+	if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
+		t.Fatalf("exit code = %d, want 1 (-1 is a death by the signal, with no ordered shutdown):\n%s", code, output)
+	}
+	refusals := linesIn(output, durableRefusedLine, map[string]any{"level": "ERROR"})
+	if len(refusals) != 1 {
+		t.Fatalf("the listener logged %d %q lines at ERROR, want one:\n%s", len(refusals), durableRefusedLine, output)
+	}
+	if text, _ := refusals[0]["error"].(string); !strings.Contains(text, "durable consumer "+consumer+" has an idle heartbeat of 5s") {
+		t.Fatalf("the refusal %v does not name the durable %s and its heartbeat", refusals[0], consumer)
+	}
+	for _, line := range []string{shutdownSignalLine, "envoy-listener shutdown complete"} {
+		if !strings.Contains(output, line) {
+			t.Fatalf("the listener's output has no %q:\n%s", line, output)
+		}
+	}
+}
+
 // A self-health rebuild that finds the holder's durable consumer lost recreates it and moves the
 // holder's subscription onto the new consumer's deliver inbox rather than adding one beside it.
 // The subscription on the lost consumer's inbox can never deliver again; left subscribed, each
