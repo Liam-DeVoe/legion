@@ -453,17 +453,19 @@ The clock of a unit test:
   computes the sweep, which took up to 255 s in an issue pod beside its other roles' work, and the
   rest read its result.
   The comment above `explorationTimeout` gives the readings and how 510 s was sized from them.
-  A row sets a shorter one only with a comment that says what it bounds.
-  The one shorter deadline left is `WHOLE_TABLE_TIMEOUT_MS` in
-  `web/src/features/refs/fixture-table-readings.test.ts`, which two of its rows set.
+  A command sets one guard, and a `web/src` row sets none of its own ("A Bun test waits for its
+  fact, and its command sets its one guard", below).
+  Two are left from before that rule: the 510 s above, and `WHOLE_TABLE_TIMEOUT_MS` in
+  `web/src/features/refs/fixture-table-readings.test.ts`, which two of its rows set, each with a
+  comment that says what it bounds.
   On Bun 1.4.4, the pin, that deadline fires under a held clock too: a row that held the clock and
   awaited a promise that nothing resolved ended at 3.04 s under `--timeout 3000`. A harness row in
   `e2e/__tests__` that waits for a bounded child or poll (`runBounded`, `eventually`) states its own
   limit with `rowLimit` from `e2e/__tests__/bounded-subprocess.ts`: the sum of the bounds of what it
   waits for, plus 30 s (`e2e/__tests__/row-limits.test.ts` holds it). A row that waits for nothing
-  bounded, such as one that runs a child with `Bun.spawnSync`, runs under `test:harness`'s 60 s, or
-  under a shorter limit it states with a reason on the line above, as three rows of
-  `outside-agent-acceptance.test.ts` do (`row-limits.test.ts` holds those reasons).
+  bounded, such as one that runs a child with `Bun.spawnSync`, runs under `test:harness`'s 60 s.
+  Three rows of `outside-agent-acceptance.test.ts`, from before that rule, state a shorter limit
+  with a reason on the line above (`row-limits.test.ts` holds those reasons).
 
 - A harness test in `e2e/__tests__` that waits on a real process or a real socket keeps a bounded
   real wait, because only real time moves that peer (`local-instance-support.test.ts`,
@@ -568,8 +570,9 @@ no role edits them:
   guards are written, gives that number with the readings and their runs. A file whose rows need a
   much larger guard than the rest runs in a second `bun test` command of the same script, with its
   own `--timeout` and the same preload. Tests written before this rule still set guards of their
-  own (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's
-  guard as it is carried to the shared wait.
+  own: `git grep -n setDefaultTimeout -- '*.ts'` lists the files that set one for all their rows,
+  and a row's own is a third argument to `test` ("Where a Dispatch test belongs" names Dispatch's).
+  Each moves to its command's guard as it is carried to the shared wait.
 
 ## A test that looks for a process it started
 
