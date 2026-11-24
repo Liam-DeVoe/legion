@@ -30,10 +30,13 @@ import (
 // it was (retry, whose failure record and budgets go there).
 //
 // The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
-// process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
-// request, which the pod's start gate puts first among the starts waiting in the claim's pod
-// (launchAfter's requested, podQueue.next).
-func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) error {
+// process, so its launch lets none go and records nothing of one (noEnd). requested is whether a
+// request raised the start, which the pod's start gate puts first among the starts waiting in the
+// claim's pod (launchAfter's requested, podQueue.next). Every caller passes true but the rule's
+// resume of a claim the project release stopped (resumeByRule): that is the daemon's next boot
+// starting every role of the pods the release deleted at once, which the gate orders as the
+// starts no request raised.
+func (m *Machine) revive(ctx context.Context, exempt, requested bool, admitted func()) error {
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err
@@ -42,7 +45,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 	if admitted != nil {
 		admitted()
 	}
-	return m.launchAfter(ctx, false, exempt, true, noEnd)
+	return m.launchAfter(ctx, false, exempt, requested, noEnd)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is

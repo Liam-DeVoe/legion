@@ -64,16 +64,17 @@ package supervise
 // The order among the starts waiting in one pod is the spec's (dispatch://INFRA-5297/spec R3,
 // podQueue.next): the role whose task or message caused the pod's start goes first, and the others
 // follow in the order their starts were asked. A start a request raised — a task, a message, an
-// operator's spawn, resume or retry, which is every launch revive makes — is such a cause, and
-// the earliest asked of those waiting goes first; one goes first, not every one, so a later
-// request's start waits behind a recovery asked before it. Where no single role caused the start
-// — deaths, a roles container's restart, a pod an update round replaced — the first start to reach
-// the gate of a pod that holds nothing goes first, whatever its role, since nothing is there for
-// it to wait behind (grant), and the starts that wait behind it go with the role working the
-// issue's current phase first (Deps.PhaseRole), then the others in the order of claim.Roles, each
-// in the order asked where the two say nothing. The order is read at each grant, over the starts
-// waiting then, and the pod remembers that a request has led its run of starts until it holds
-// nothing and nothing waits in it.
+// operator's spawn, resume or retry, which is every launch revive makes but the boot's start of a
+// claim the project release stopped (resumeByRule) — is such a cause, and the earliest asked of
+// those waiting goes first; one goes first, not every one, so a later request's start waits
+// behind a recovery asked before it. Where no single role caused the start — deaths, a roles
+// container's restart, a pod an update round replaced, the boot's start of the claims a project
+// release stopped — the first start to reach the gate of a pod that holds nothing goes first,
+// whatever its role, since nothing is there for it to wait behind (grant), and the starts that
+// wait behind it go with the role working the issue's current phase first (Deps.PhaseRole), then
+// the others in the order of claim.Roles, each in the order asked where the two say nothing. The
+// order is read at each grant, over the starts waiting then, and the pod remembers that a request
+// has led its run of starts until it holds nothing and nothing waits in it.
 //
 // It is one per daemon, shared by every machine and safe for concurrent use, as the refresh gate
 // is (RefreshGate): a machine asks it inside its decision, holding its own lock, and the gate never

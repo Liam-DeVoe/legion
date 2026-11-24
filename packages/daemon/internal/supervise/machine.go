@@ -2937,11 +2937,12 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // when a process the park left running is let go and what it ended is read (launchNow, letGo).
 //
 // requested is whether a request raised this launch — a task, a message, an operator's spawn,
-// resume or retry, every launch revive makes — which the pod's start gate puts first among the
-// starts waiting in the pod (podQueue.next). It travels with the launch as cause does, captured
-// in the work the wake gate may run at its turn, never on the machine, where another launch
-// could read it. A retry raised anew from the top — the lifecycle check's (again) and every one
-// relaunchLater arms — is a request's no longer, and passes false.
+// resume or retry, every launch revive makes but the boot's start of a claim the project release
+// stopped (resumeByRule) — which the pod's start gate puts first among the starts waiting in the
+// pod (podQueue.next). It travels with the launch as cause does, captured in the work the wake
+// gate may run at its turn, never on the machine, where another launch could read it. A retry
+// raised anew from the top — the lifecycle check's (again) and every one relaunchLater arms — is a
+// request's no longer, and passes false.
 func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, cause string) error {
 	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, cause) }
 	if err := m.checkLaunch(ctx); err != nil {

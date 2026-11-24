@@ -7373,7 +7373,7 @@ a role's process starts only when no other role of that pod is loading its sessi
 - **The order:**
   the first start to reach a pod that holds nothing starts at once, whatever its role and whatever raised it;
   the starts that wait behind a load go with the earliest whose start a request raised (a task, a message, an operator's start) first, then the others in the order their starts were asked for;
-  where no request raised any of them, as after a roles container restart or a pod an update round replaced, the role working the issue's current phase goes first (none does in the architect's own phases, admitted and accepting), then the others in the order architect, planner, implementer, tester, reviewer, merger.
+  where no request raised any of them, as after a roles container restart, a pod an update round replaced or the daemon's boot start of the claims a project release stopped, the role working the issue's current phase goes first (none does in the architect's own phases, admitted and accepting), then the others in the order architect, planner, implementer, tester, reviewer, merger.
 
 The rule holds under `runtime: kubernetes` for every role of an issue pod, whatever starts it: a fresh session, a resume, an operator's start, a start the wake pacing exempts, and with or without a wake pace.
 The controller's own pod is not an issue pod and never waits.
@@ -8255,6 +8255,7 @@ The boot then starts each claim the release stopped, once, at the daemon's wake 
 
 - the project's controller is resumed by the daemon's controller keeper.
 
+Those starts go through each new issue pod's start gate as starts no request raised ([One session load at a time in an issue pod](#one-session-load-at-a-time-in-an-issue-pod)), so the role working the issue's phase goes first.
 A claim that admission's pass or the cutover's repair starts at the same boot gets no second start.
 A claim of an issue that left the workflow, or of a tree that lingers or waits in the line, is left to the close, the re-admission or the promotion that starts it, as the boot's resume by rule leaves it.
 A claim whose current session records a name it does not hold, which only a daemon from before the session hold can leave, is suspended by the same boot with the operator's suspend before that start, which takes it over from the release, so the boot does not start it ([Operator configuration](#operator-configuration) says how to settle it); a name only its abandoned session records suspends nothing, and the boot starts it.

@@ -2555,7 +2555,7 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 }
 
 func spawn(m *Machine, ctx context.Context, ev Event) error {
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), true, nil)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -2686,7 +2686,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), true, nil)
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not
@@ -2729,6 +2729,12 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // any other, so a claim the rule resumes that keeps failing fails once the budget is spent, and a
 // failed claim is never resumed by rule. A claim recording a session it does not hold is not
 // resumed by rule either (resumeRefusal): it stays suspended, and the line says why.
+//
+// The rule resumes a claim the project release stopped at the daemon's next boot (workflow's
+// startReleaseStopped), which starts every role of the pods the release deleted at once, as a
+// roles container's restart does. So no request raised that start, and the pod's start gate puts
+// the role working the issue's phase first (revive's requested, podQueue.next). An operator's
+// resume of such a claim (resume) stays a request.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	rule := ev.(RequestRuleResume).Reason
 	if !m.claim.RuleMayResume() {
@@ -2740,7 +2746,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), !m.claim.ProjectReleased(), nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -2789,7 +2795,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// (resumeRefusal), before the budgets start over.
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), func() {
+	return m.revive(ctx, exemptWake(ev), true, func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		m.claim.LeakCheckCause = ""
@@ -3015,7 +3021,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "", nil)
+	return m.revive(ctx, d.ID == "", true, nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is
