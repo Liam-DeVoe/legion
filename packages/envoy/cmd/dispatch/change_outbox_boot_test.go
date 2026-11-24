@@ -8,21 +8,20 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestDispatchBootMovesTheChangesACrashLeftPendingBeforeItServes: two change rows an eval and a
-// Legion write recorded in the change log's outbox, their process killed between its commit and its
-// drain while no other process was alive, are moved into delivery_changes by the next server's boot
-// before it serves: the boot logs that it moved both before it logs that it listens, and the log
-// holds each at the moment it was recorded, nothing left pending. Its drain's notification wakes
-// every hub listening by then, and this process's refresher reads the moved rows on its first pass
-// (api's TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains holds a hub to the
-// wake).
+// TestDispatchBootMovesTheChangesACrashLeftPendingBeforeItServes: two change rows a Legion facts
+// write and a Legion filings write recorded in the change log's outbox, their process killed
+// between its commit and its drain while no other process was alive, are moved into
+// delivery_changes by the next server's boot before it serves: the boot logs that it moved both
+// before it logs that it listens, and the log holds each at the moment it was recorded, nothing
+// left pending. Its drain's notification wakes every hub listening by then (api's
+// TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains holds a hub to the wake).
 func TestDispatchBootMovesTheChangesACrashLeftPendingBeforeItServes(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
 	recorded := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
 	if _, err := database.Pool.Exec(ctx, `
 		insert into delivery_changes_pending (at, kind, repo, ref)
-		values ($1, 'eval_readings', 'CRASH', 'CRASH/left-pending'), ($1, 'issue_facts', 'CRASH', 'CRASH-1')
+		values ($1, 'issue_filings', 'CRASH', 'CRASH-2'), ($1, 'issue_facts', 'CRASH', 'CRASH-1')
 	`, recorded); err != nil {
 		t.Fatalf("leave two pending changes as a crash between commit and drain leaves them: %v", err)
 	}
@@ -39,7 +38,7 @@ func TestDispatchBootMovesTheChangesACrashLeftPendingBeforeItServes(t *testing.T
 	}
 	var moved int
 	if err := database.Pool.QueryRow(ctx, `
-		select count(*) from delivery_changes where repo = 'CRASH' and ref in ('CRASH/left-pending', 'CRASH-1') and at = $1
+		select count(*) from delivery_changes where repo = 'CRASH' and ref in ('CRASH-2', 'CRASH-1') and at = $1
 	`, recorded).Scan(&moved); err != nil {
 		t.Fatal(err)
 	}

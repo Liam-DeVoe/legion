@@ -68,15 +68,15 @@ func WithWake(ctx context.Context, wake <-chan struct{}) context.Context {
 // WakeOwed reports, without blocking and without taking it, whether a signal waits in the wake of
 // the loop whose pass runs under ctx: a change arrived that the loop runs another pass for as soon
 // as this one returns. A pass may stop work it can leave to a later pass, so that the owed pass,
-// and the change behind the wake, start sooner (evals.Store.RunRefresher's walks). It answers
-// false under a context no loop gave its wake, and for a loop with none.
+// and the change behind the wake, start sooner. It answers false under a context no loop gave its
+// wake, and for a loop with none.
 func WakeOwed(ctx context.Context) bool {
 	wake, _ := ctx.Value(wakeKey{}).(<-chan struct{})
 	return len(wake) > 0
 }
 
 // MergeWakes is the one wake a WokenLoop reads, signalled by any of wakes: a loop woken by more
-// than one channel (legionfacts.Run, evals.Store.RunRefresher). It keeps the shape a pglisten.Hub
+// than one channel (legionfacts.Run). It keeps the shape a pglisten.Hub
 // wake has: a buffer of one and a send that never blocks, so any number of changes collapse into
 // one signal and a change that arrives while a pass runs earns a pass after it. A nil wake is left out,
 // and only nil wakes answer nil, which is a loop that runs at start and at each due time alone.
@@ -212,7 +212,7 @@ func later(a, b time.Time) time.Time {
 
 // Backoff is a retry's wait that begins at First and doubles each time it is taken, up to Max,
 // until it is Reset: the retry of a pass that met something whose end no wake announces
-// (evals.Store.RunRefresher's and legionfacts.Run's pass whose safe horizon held an event back),
+// (legionfacts.Run's pass whose safe horizon held an event back),
 // so a brief one is retried soon after it ends and a long one costs one retry per Max once the
 // waits have grown to it. A new Backoff's first Next is First.
 type Backoff struct {

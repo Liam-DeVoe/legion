@@ -173,8 +173,8 @@ func (h *deliveryHub) catchUp(g *hubGeneration) {
 }
 
 // catchUpChanges reads every delivery change after the cursor, marking the views each can touch.
-// It first moves the change log's pending rows into the log (delivery.DrainPending): an eval or
-// Legion write's change rows wait there until a drain moves them, their notification wakes this
+// It first moves the change log's pending rows into the log (delivery.DrainPending): a Legion
+// facts or filings write's change rows wait there until a drain moves them, their notification wakes this
 // hub at the write's commit, and the write's own drain may not have run, its process killed
 // between the two. Before each read it checks for a lost cursor by the log's one rule
 // (delivery.CursorLost), on the hub's own clock; a lost cursor moves to the newest row and marks

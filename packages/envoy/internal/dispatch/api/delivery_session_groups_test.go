@@ -301,11 +301,15 @@ func TestPatchRenamesAddsRemoves(t *testing.T) {
 // TestAPatchThatChangesNothingKeepsTheLiveViewEqualToTheRead: a live Delivery view hears of a
 // session group's write only through its change row, so a PATCH that moves what the read answers
 // for the group writes one, and a PATCH that writes none leaves the group as the read answered it.
-// A PATCH naming the group's own name, by the actor who last wrote it, changes nothing: here it
-// moved updated_at, which the read answers, while the trigger, which skips an update that differs
-// only in updated_at, logged no change row, so the view kept the old updated_at until some later
-// write's delta (dispatch://INFRA-2916, the testing round of 2026-11-16 at db4f353b).
+// Three edits change nothing and each answers the group with the same updated_at and logs no
+// session_group change: the group's own name sent again, a session it holds sent for addition and
+// one it does not hold sent for removal. Before the fix the first of them moved updated_at, which
+// the read answers, while the trigger, which skips an update that differs only in updated_at,
+// logged no change row, so the view kept the old updated_at until some later write's delta
+// (dispatch://INFRA-2916, the testing round of 2026-11-16 at db4f353b). A rename moves updated_at
+// and logs exactly one change.
 func TestAPatchThatChangesNothingKeepsTheLiveViewEqualToTheRead(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	group := createSessionGroup(t, handler, "Crew", "s1", "s2")
 	path := "/api/v1/delivery/session-groups/" + group.ID
@@ -334,11 +338,26 @@ func TestAPatchThatChangesNothingKeepsTheLiveViewEqualToTheRead(t *testing.T) {
 	}
 
 	first := updatedAt("first rename", dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "Release crew"}, "alice"))
+	for _, nothing := range []struct {
+		label string
+		body  map[string]any
+	}{
+		{"the same name again", map[string]any{"name": "Release crew"}},
+		{"a held session added", map[string]any{"add": []string{"s1"}}},
+		{"an unheld session removed", map[string]any{"remove": []string{"s9"}}},
+	} {
+		before := changes()
+		again := updatedAt(nothing.label, dispatchRequest(t, handler, http.MethodPatch, path, nothing.body, "alice"))
+		if logged := changes() - before; !again.Equal(first) || logged != 0 {
+			t.Errorf("%s: a PATCH that changes nothing answered updated_at %s, was %s, and logged %d session_group change rows, want the same updated_at and none",
+				nothing.label, again.Format(time.RFC3339Nano), first.Format(time.RFC3339Nano), logged)
+		}
+	}
 	before := changes()
-	again := updatedAt("the same name again", dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "Release crew"}, "alice"))
-	logged := changes() - before
-	if !again.Equal(first) && logged != 1 {
-		t.Errorf("a PATCH that changes nothing moved updated_at from %s to %s and logged %d session_group change rows, want the group unchanged or one change row", first.Format(time.RFC3339Nano), again.Format(time.RFC3339Nano), logged)
+	renamed := updatedAt("a rename", dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"name": "Crew B"}, "alice"))
+	if logged := changes() - before; renamed.Equal(first) || logged != 1 {
+		t.Errorf("a rename answered updated_at %s, was %s, and logged %d session_group change rows, want a moved updated_at and one",
+			renamed.Format(time.RFC3339Nano), first.Format(time.RFC3339Nano), logged)
 	}
 }
 

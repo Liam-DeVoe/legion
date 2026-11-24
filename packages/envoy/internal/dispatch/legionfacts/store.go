@@ -470,19 +470,18 @@ func storedMap[V any](values map[string]V) map[string]V {
 }
 
 // Read answers the stored rows the Legion board serves, by issue key, each as of at (Row.At):
-// every open row of the project, which no other route serves, since the items route serves an
-// issue by its close day (dispatch://INFRA-2916, R22); of every issue whose tree root is one of
-// roots, the trees the cards stand in; and the rows of keys, the issue of each card. No other row
-// is read: a closed issue of no shown tree is the items route's (ReadClosedIn), so the read and the
-// board's body follow the open work and what the daemon runs, not every issue the project's Legion
-// work ever covered. The read is three index reads that share no row, keyed on closed_at: the open
-// rows, the closed rows of the trees by root, and the closed rows of the cards outside those trees
-// by key (shownWhere), never the project's rows filtered after they are read.
+// every open row of the project; of every issue whose tree root is one of roots, the trees the
+// cards stand in; and the rows of keys, the issue of each card. No other row is read: a closed
+// issue of no shown tree is in no board's answer, so the read and the board's body follow the open
+// work and what the daemon runs, not every issue the project's Legion work ever covered. The read
+// is three index reads that share no row, keyed on closed_at: the open rows, the closed rows of the
+// trees by root, and the closed rows of the cards outside those trees by key (shownWhere), never
+// the project's rows filtered after they are read.
 //
 // The statement runs in a read-only transaction of its own with sequential scans off
 // (readByIndex), because the planner left to itself reads the open rows by scanning the whole
 // table once they are a large share of it. At INFRA's size (13,105 rows, 2,621 of them open, on
-// 2,880 pages, as evalfixture loads it), the plan with the values of a board that names no card
+// 2,880 pages, as the measured fixture loaded it), the plan with the values of a board that names no card
 // was a Seq Scan of issue_facts that read all 2,880 pages and dropped the 10,484 closed rows by its
 // filter, priced at 3,043.81 against 3,043.72 for the open rows' index range, a tie the planner may
 // break either way. With 4,272 of 13,103 rows open, on the build farm, it was a Seq Scan too, and a
@@ -493,8 +492,8 @@ func storedMap[V any](values map[string]V) map[string]V {
 //
 // It is the board's read of the facts: rows, and no computation but the close of each open part
 // at the read's own clock, and of each row the columns the board shows (boardColumns), every other
-// field of the Row it answers left at its zero value (narrow). The evals read every column of the
-// rows of a window's closed issues instead (ReadClosedIn).
+// field of the Row it answers left at its zero value (narrow). A reader of a window's closed
+// issues reads every column of their rows instead (ReadClosedIn).
 func Read(ctx context.Context, pool *store.Pool, project string, keys, roots []string, at time.Time) (map[string]Row, error) {
 	// A nil list goes to Postgres as null, which `= any` answers null for, and `not (null)` would
 	// leave out every closed row of a card; an empty array answers false.
@@ -577,10 +576,9 @@ const shownWhere = `where project_key = $1 and closed_at is null
 
 // ReadClosedIn answers the stored rows of the project's issues that closed from from up to to,
 // newest close first, through issue_facts_closed (migration 20261117100000), each as of at
-// (Row.At): the issues an eval of the Legion measures counts in that window, every one with
-// Legion phase work since every stored row is one, each with every column. The Legion evals' day
-// rows are built from one day's, as of that day's end (evals.ReadLegionDay), and the eval items
-// route reads a range's as of the request.
+// (Row.At): the issues a Legion measure counts in that window, every one with Legion phase work
+// since every stored row is one, each with every column. Its plan test proves the index the
+// migration builds for it.
 func ReadClosedIn(ctx context.Context, q Querier, project string, from, to, at time.Time) ([]Row, error) {
 	rows, err := readRows(ctx, q, project, true, closedInWhere, project, from, to)
 	if err != nil {
@@ -602,7 +600,7 @@ const closedInWhere = `
 // are closed at and their growth, which every read of the rows reads first, in scanRow's order:
 // every reader closes a row at its own clock (Row.At). A row no build of this release wrote holds
 // no as_of, and is closed at the moment it was written. wideColumns is every other column scanRow
-// reads, which the evals read and the board shows none of: two of them are JSON (bars and
+// reads, which a reader of closed rows reads (ReadClosedIn) and the board shows none of: two of them are JSON (bars and
 // idle_by_role, beside hours_by_phase and growth) that a read decodes for every row. boardSelect
 // and wideSelect are the reads of the two, which a where clause completes.
 const (
@@ -818,8 +816,7 @@ func staleFilingsStatement(stated, yielded bool) string {
 
 // ReadFilingsIn answers the stored filings a Legion session of the project made from from up to
 // to, oldest first, through issue_filings_day (migration 20261117100007): the filings the
-// splitting eval counts in that window. The Legion evals' day rows are built from one day's
-// (evals.ReadLegionDay).
+// splitting measure counts in that window.
 func ReadFilingsIn(ctx context.Context, q Querier, project string, from, to time.Time) ([]Filing, error) {
 	return readFilings(ctx, q, project, `
 		where project_key = $1 and filed_at >= $2 and filed_at < $3

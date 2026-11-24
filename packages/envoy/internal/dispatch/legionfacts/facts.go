@@ -2,8 +2,8 @@
 // (dispatch://INFRA-2915), with the issues Legion sessions filed, which it writes to
 // issue_filings (dispatch://INFRA-2916). The facts are computed once and stored as rows, so a
 // reader of them reads rows and computes nothing but the close of each open part at its own
-// clock (Row.At): the board reads a project's (Read), and the evals' Legion day rows and items
-// read the issues closed in a window (ReadClosedIn) and the filings made in one (ReadFilingsIn).
+// clock (Row.At): the board reads a project's (Read), and a reader of the Legion measures reads
+// the issues closed in a window (ReadClosedIn) and the filings made in one (ReadFilingsIn).
 //
 // The computation holds no loop and no lease: facts.go answers the rows and the filings of a key
 // set (computeKeys) or of a whole project (ComputeProject), and store.go writes them (WriteProject,
@@ -177,11 +177,10 @@ func filingsOf(population *metrics.Population, project string) []Filing {
 }
 
 // DefaultRepo is the repository ReadRepos answers for an issue whose own chain names none: the
-// project's default repository, whichever it is. The evals' reads take it as the project's
-// published default (evals.DayWindowIn and the items route), so a write of a project's default
-// repository rewrites no stored row and no Legion day row: only the cut of the issues that reach a
-// repository through the default moves, at read time (dispatch://INFRA-2916, plan D1 (vi)). No
-// repository name starts with ':'.
+// project's default repository, whichever it is. A reader takes it as the project's default at
+// read time, so a write of a project's default repository rewrites no stored row: only the cut of
+// the issues that reach a repository through the default moves, at read time
+// (dispatch://INFRA-2916, plan D1 (vi)). No repository name starts with ':'.
 const DefaultRepo = ":default"
 
 // reposStatement resolves the repository of every issue its one argument names, by the server's
@@ -197,9 +196,8 @@ var reposStatement = `
 // ReadRepos is the repository each of the keys resolves to, by key: the nearest repository its
 // own chain names (the issue's, or an ancestor's), else DefaultRepo, which stands for its
 // project's default repository; no entry for a key that is no issue. It is the repository a pass
-// stores in a row of issue_facts, and the one the Legion evals' day rows cut an issue and a filing
-// by (evals.ReadLegionDay) and the eval items route filters an issue by, each resolved when it is
-// read. A parent chain the walk could not finish names no answer either: the issue page refuses
+// stores in a row of issue_facts, which a reader cuts an issue and a filing by. A parent chain the
+// walk could not finish names no answer either: the issue page refuses
 // such an issue rather than answer its project's default, which would be a wrong one, and a
 // refusal here would stop every pass of the project's facts for good. The row holds no repository
 // for it, which is the answer a chain that names none got before the default stood for it.
