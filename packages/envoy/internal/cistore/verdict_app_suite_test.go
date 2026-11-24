@@ -14,7 +14,6 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -64,9 +63,7 @@ func verdictBus(t *testing.T) *bus.Client {
 
 // verdictListenerOn is a listener on client whose ENVOY_VERDICT_APP_ID is verdictAppID, "" for
 // unset, as cmd/listener builds one: the setting goes to the webhook handler. Two of them on one
-// client are one deployment before and after the setting changed. The store opens on client's
-// connection marked as a fixture's (bustest.Fixture), so it creates the CI bucket it finds
-// missing on the test's own server, since no listener creates one.
+// client are one deployment before and after the setting changed.
 func verdictListenerOn(t *testing.T, client *bus.Client, verdictAppID string) *verdictListener {
 	t.Helper()
 	var logged bytes.Buffer
@@ -74,16 +71,7 @@ func verdictListenerOn(t *testing.T, client *bus.Client, verdictAppID string) *v
 	log.SetOutput(&logged)
 	log.SetFlags(0)
 	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
-	store, err := cistore.Open(t.Context(), bustest.Fixture(client.Conn), logging.New("test"),
-		cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
-	if err != nil {
-		t.Fatalf("open cistore: %v", err)
-	}
-	ready, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(ready); err != nil {
-		t.Fatalf("cache ready: %v", err)
-	}
+	store := openListener(t, client.Conn)
 	loop, endLoop := context.WithCancel(t.Context())
 	t.Cleanup(endLoop)
 	cistore.StartSummaryLoop(loop, store, client, 100*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("e2e"))
