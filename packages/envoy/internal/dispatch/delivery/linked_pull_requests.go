@@ -2,10 +2,7 @@ package delivery
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -138,21 +135,9 @@ func (a *Attributor) HeadAttributedTo(ctx context.Context, pool *store.Pool, iss
 	return found, nil
 }
 
-// baseBranchMergedInQuery is BaseBranchMergedIn's statement: the linked rows of
-// headsAttributedQuery's second arm, held to one repository and to the merged state, in
-// BaseBranchMergedFor's order, the newest merge first (newestMergeFirst).
-func baseBranchMergedInQuery(renames refs.Renames) string {
-	return `with recursive ` + linkedPullRequestTerms(renames) + `
-	select h.base_ref from linked_pulls l
-	` + linkedHeadJoin + `
-	where lower(l.repo) = lower($2) and h.state = 'merged'
-	order by h.merged_at desc nulls last, h.number desc
-	limit 1`
-}
-
-// mergeInQuery is MergeIn's statement: the rows baseBranchMergedInQuery reads, each pull request
-// once however many links name it, with every column of a merge (mergedColumns), in the same
-// order.
+// mergeInQuery is MergeIn's statement: the linked rows of headsAttributedQuery's second arm,
+// held to one repository and to the merged state, each pull request once however many links
+// name it, with every column of a merge (mergedColumns), newest merge first (newestMergeFirst).
 func mergeInQuery(renames refs.Renames) string {
 	return `with recursive ` + linkedPullRequestTerms(renames) + `
 	select ` + mergedColumns + ` from (
@@ -175,23 +160,19 @@ func mergeInQuery(renames refs.Renames) string {
 // `after_merge` result whose commit the second repository holds against the branch answered
 // here (api/results_comparison.go).
 //
-// The rows are ordered as BaseBranchMergedFor orders them, and the empty answer means what its
-// empty answer means: no branch to measure against. A link to a pull request of the
-// repository the issue resolves to names nothing here, as it names nothing in
-// HeadsAttributedTo, so a repoFull the issue resolves to answers "". repoFull is compared
-// without case with the canonical name each link is read under, as every other comparison of
-// a repository here is.
+// It is the base branch of MergeIn's first row, so it orders the rows as MergeIn and
+// BaseBranchMergedFor do, and the empty answer means what BaseBranchMergedFor's empty answer
+// means: no branch to measure against. A link to a pull request of the repository the issue
+// resolves to names nothing here, as it names nothing in HeadsAttributedTo, so a repoFull the
+// issue resolves to answers "". repoFull is compared without case with the canonical name each
+// link is read under, as every other comparison of a repository here is.
 //
 // The linked rows are read through pull_request_heads_repo_head's leading column, one
 // repository's rows for each linked pull request, as HeadsAttributedTo's are.
 func (a *Attributor) BaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
-	var branch string
-	err := pool.QueryRow(ctx, a.mergedInQuery, issueKey, repoFull).Scan(&branch)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+	merged, err := a.MergeIn(ctx, pool, issueKey, repoFull)
+	if err != nil || len(merged) == 0 {
+		return "", err
 	}
-	if err != nil {
-		return "", fmt.Errorf("read the merged linked pull request base branch of %s in %s: %w", issueKey, repoFull, err)
-	}
-	return branch, nil
+	return merged[0].BaseRef, nil
 }

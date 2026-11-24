@@ -651,13 +651,14 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // issue is measured against (api/results_comparison.go). An issue whose pull request merged
 // into an integration branch has reached that branch and no other, so a result of it at a
 // commit that branch's history carries stands at that branch. The repository's default branch
-// answers nothing about the work until the integration branch itself lands. The merged row that
-// merged last answers, by merged_at, the time GitHub merged it, and not by event_at, the pull
-// request's updated_at as its newest event carried it, which a later event of a pull request that
-// merged earlier (an edit, a label) moves past a later merge. The rows are ordered as MergeOfIssue
-// orders them (newestMergeFirst): a row whose merge time no write has carried yet comes after
-// every row whose time one has, and the pull request's own number descending breaks a tie, so the
-// answer does not turn on whichever row the planner returned first.
+// answers nothing about the work until the integration branch itself lands. It is the base
+// branch of the issue's newest merge, MergeOfIssue's first row, so the merged row that merged
+// last answers, by merged_at, the time GitHub merged it, and not by event_at, the pull request's
+// updated_at as its newest event carried it, which a later event of a pull request that merged
+// earlier (an edit, a label) moves past a later merge. A row whose merge time no write has
+// carried yet comes after every row whose time one has, and the pull request's own number
+// descending breaks a tie (newestMergeFirst), so the answer does not turn on whichever row the
+// planner returned first.
 //
 // The read is keyed by the issue and not by the result's commit because Legion merges with
 // squash: the commit that lands on the base branch is the one the squash makes, which is no
@@ -679,20 +680,11 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // its leading column, and the rows one issue's key holds are the handful of pull requests
 // attributed to that issue.
 func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string) (string, error) {
-	var branch string
-	err := pool.QueryRow(ctx, `
-		select base_ref from pull_request_heads
-		where issue_key = $1 and state = 'merged'
-		order by `+newestMergeFirst+`
-		limit 1
-	`, issueKey).Scan(&branch)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+	merged, err := mergeOfIssue(ctx, pool, issueKey)
+	if err != nil || len(merged) == 0 {
+		return "", err
 	}
-	if err != nil {
-		return "", fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
-	}
-	return branch, nil
+	return merged[0].BaseRef, nil
 }
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
