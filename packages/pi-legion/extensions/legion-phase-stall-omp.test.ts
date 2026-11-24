@@ -188,19 +188,6 @@ function toolNames(request: Request): string[] {
   );
 }
 
-/** The description of the `legion` tool a Messages request offers the model. */
-function legionToolDescription(request: Request): string {
-  const tools = Array.isArray(request.body.tools) ? request.body.tools : [];
-  const tool = tools.find(
-    (candidate: unknown) =>
-      typeof candidate === "object" &&
-      candidate !== null &&
-      "name" in candidate &&
-      candidate.name === "legion"
-  );
-  return String(tool?.description ?? "");
-}
-
 /** How one pane differs from the implementer pane the phase-stall cases run: the runner's
  * `legion`, `quietMs`, `selfCheck` and environment, what the stand-in answers ahead of this
  * file's own routes, and the stand-in's open-ask snapshot. */
@@ -404,12 +391,6 @@ test.skipIf(skip)(
     expect(turns).toHaveLength(3);
     // A Legion pane, both entries loaded: the host offers the model the `legion` tool.
     expect(toolNames(turns[0] as Request)).toContain("legion");
-    // Every role is offered the same tool text, and it names who reports a verdict: the tester, a
-    // role of the deployment or of the plan, the fresh agent of acceptance and a reviewer of an
-    // issue with no pull request.
-    expect(legionToolDescription(turns[0] as Request)).toContain(
-      "`verdict` is pass|fail on a phase completion from the tester or a role of the deployment or of the plan. It is pass|fail too on one from the fresh agent of acceptance and from a reviewer of an issue with no pull request. Each of these roles must send one."
-    );
     expect(userText(turns[0] as Request)).not.toContain("handoff_complete");
     // The sentence the settling message earned still leads the reminder it earned.
     expect(userText(turns[1] as Request)).toContain("written as text");

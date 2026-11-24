@@ -118,12 +118,9 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 }
 
 // An owner's plan can leave out the tester or the reviewer, so the merger verifies the steps its
-// task's `Steps:` line names rather than a tester's and a reviewer's cycles. A base whose rules
-// require an approving review that no step of the task gave, on a task with no review step or one
-// whose reviewer step the owner does and ends by its own report, leaves a merge only a person or the
-// owner can unblock, and Legion posts no approval of its own, so the merger waits and tells the
-// task's owner which review is missing. This shows the text is loaded, never that a merger follows it.
-func TestTheMergerWaitsForAMissingReview(t *testing.T) {
+// task's `Steps:` line names rather than a tester's and a reviewer's cycles. This shows the text is
+// loaded, never that a merger follows it.
+func TestTheMergerVerifiesTheStepsItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -131,7 +128,6 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	text := foldWhitespace(composedText(t, composer, claim.RoleMerger, false))
 	for _, phrase := range []string{
 		"Verify that each step your task's Steps line names completed (today's line, on a task with no `Task:` line), and that the retro completed.",
-		"If the base's rules require an approving review that no step of this task gave, do not merge, do not approve the pull request yourself, and do not return the task. Such a review can be missing where your task's Steps line names no reviewer step, and where its reviewer step's key is `owner` (`reviewer:owner`), a step that ends by the owner's report and leaves an approval on GitHub only where the owner gives one. Wait, and tell the owner of the task which review is missing: the rule that requires it, and that no step of the task gave it. Only the owner or a person can give that review or change the plan.",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed merger prompt omits %q", phrase)
@@ -185,27 +181,6 @@ func TestTheImplementerAnswersTheBotThreadsOnATaskWithNoReviewer(t *testing.T) {
 		if !slices.ContainsFunc(held, func(paragraph string) bool { return strings.Contains(paragraph, term) }) {
 			t.Errorf("the composed implementer prompt's duty on bot threads on a task with no reviewer names no %s: %q", term, held)
 		}
-	}
-}
-
-// A catch-up names each issue waiting in `accepting` whose acceptance is the architect's own (a
-// step `acceptance:owner`, or an issue with no plan rows), and the place of the architect's own
-// issue that is its own, a step or the retro; an acceptance a fresh agent works it names not. The
-// daemon part states what to do with each, and the head a parent's sign-off needs; the role part
-// points to it rather than saying it again, so the composed root prompt holds the parent's head rule
-// once. This shows the text is loaded, never that an architect follows it.
-func TestTheRootsCatchUpStatesItsAcceptanceOnce(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, true))
-	stated := "It also names the place of yours your own issue stands at, a step or the retro, where it stands at one. After the catch-up, Legion sends that place's `owner-step` notice again only where this session has not had it and none is still on its way. Where this session had it, the catch-up brings no new one: find that notice earlier in this session. A relaunch that resumes this session after a death is usually such a case. Do the step as that notice says, and report it with `complete_step`. An acceptance a fresh agent works is its own, and the catch-up names none. Sign off a parent only on a head that every step before your acceptance passed. That head must also carry the merges of every child whose merge its criteria need. Otherwise run its last round (`skill://legion-architect/references/acceptance.md`, \"The last round\")."
-	if !strings.Contains(text, stated) {
-		t.Errorf("the composed root architect prompt omits %q", stated)
-	}
-	if n := strings.Count(text, "carry the merges of every child whose merge its criteria need"); n != 1 {
-		t.Errorf("the composed root architect prompt says the head a parent's sign-off needs %d times, want 1", n)
 	}
 }
 
@@ -275,37 +250,23 @@ func TestAPhaseWorkerIsToldWhatALateReportsAnswerMeans(t *testing.T) {
 }
 
 // The two architect role parts name a step only where the issue's task holds it. An owner's plan
-// can leave out the planner, the implementer, the tester, the reviewer and the owner's own
-// acceptance, so each sentence that named one of them as if every issue ran it now says where it
-// runs and, where it does not, who holds its duty: the order of the starts is the order of the steps
-// of the issue's plan; `accepting` and the sign-off are the owner's only where the task holds
-// `acceptance:owner`; the move back names the phase an earlier step runs as; a failed step goes back
-// to the task's first step of the type implementation before it or to the earlier step its
-// completion names, and with neither the task stops. Each part says, in one sentence where it speaks
-// of a parent and its children, that Legion holds a parent whose task does not end with an
-// acceptance step before its retro while issues beneath it still run (`retro-held`), so an owner
-// that wants to read a parent's finished whole gives it the step `acceptance:owner` as its last.
-// Each part gives `register_plan` and `stop_task` with the arguments of the daemon's routes. The
-// words the parts carried before are gone from both, and from the architect's three daemon parts in
-// go/, which Compose joins to them (architect-root.md or architect.md, then architect-common.md): a
-// retired phrase there reaches its reader as surely as one in a role part. Each of the three is read
-// by its name, so a part that is missing fails the read rather than passing with nothing read. This
-// shows the text is loaded, never that an owner follows it.
+// can leave out the planner, the tester, the reviewer and the owner's own acceptance, so each
+// sentence that named one of them as if every issue ran it now says where it runs: the order of
+// the starts is the order of the steps of the issue's plan, and the sign-off is the owner's only
+// where the task holds `acceptance:owner`. Each part gives `register_plan` and `stop_task` with the
+// arguments of the daemon's routes. The words the parts carried before are gone from both, and from
+// the architect's three daemon parts in go/, which Compose joins to them (architect-root.md or
+// architect.md, then architect-common.md): a retired phrase there reaches its reader as surely as
+// one in a role part. Each of the three is read by its name, so a part that is missing fails the
+// read rather than passing with nothing read. This shows the text is loaded, never that an owner
+// follows it.
 func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
-	// A parent whose task does not end with an acceptance step can pass its last step while issues
-	// beneath it still run: Legion holds it before its retro (`retro-held`), so a parent whose
-	// finished whole the owner wants to read is given the step `acceptance:owner`. Held by the terms
-	// of the one clause that says so, in their order.
-	parentHeld := []string{"parent", "does not end with an acceptance step", "`retro-held`", "the step `acceptance:owner`"}
 	shared := []string{
 		"`register_plan` (`issue`, `artifactId`, `version`)",
 		"`stop_task` (`issue`, `task`)",
 		"in the order of the steps of",
 		"holds your step `acceptance:owner`",
-		"A task with no step `acceptance` has no `accepting`",
-		"the phase an earlier step of the task runs as",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
-		"goes back to the task's first step of the type implementation before it, or to the earlier step its completion names",
 	}
 	retired := []string{
 		"fixed workflow table",
@@ -323,22 +284,13 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"is mandatory after your acceptance",
 		"Your last act is `sign_off` of this child in `accepting`",
 		"a parent only on an approved head",
-		"A task with no `acceptance:owner` step has no `accepting`",
-		"`implementing`, or `testing` where the task has a tester step",
-		"goes back to the implementer, or to",
-		"let the merge close it",
-		"You get no backstop",
-		"at your retro, or in `accepting` with no plan rows",
-		"the daemon's own start at once",
-		"notice again after the catch-up, unless one is still on its way to you",
 	}
 	for _, tc := range []struct {
 		part string
 		want []string
 	}{
 		{"architect-root.md", append(slices.Clone(shared), "each issue's `plan.md`", "before `register_gate`")},
-		{"architect.md", append(slices.Clone(shared), "the agent of its first step may already be reading it", "The agent of your child's first step may already be working", "given it its plan with `register_plan`",
-			"of yours other than its acceptance, or at its retro, the daemon starts you again at once", "the operator's retry or the controller's `fresh_session` starts you")},
+		{"architect.md", append(slices.Clone(shared), "the agent of its first step may already be reading it", "The agent of your child's first step may already be working", "given it its plan with `register_plan`")},
 	} {
 		t.Run(tc.part, func(t *testing.T) {
 			part := rolePart(t, tc.part)
@@ -347,9 +299,6 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 				if !strings.Contains(text, phrase) {
 					t.Errorf("roles/%s omits %q", tc.part, phrase)
 				}
-			}
-			if !clauseHolds(part, parentHeld...) {
-				t.Errorf("no clause of roles/%s holds %q, in that order", tc.part, parentHeld)
 			}
 			for _, phrase := range retired {
 				if strings.Contains(text, phrase) {

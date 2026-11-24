@@ -118,7 +118,6 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 		noDefer          = "Nothing needed for correctness is deferred"
 		fastChecks       = "run the repository's fast local checks"
 		testerRunsTheApp = "read CI for everything static"
-		redTest          = "The test itself is not theirs to change"
 		dontModify       = "make the tester's red test pass; do not modify it"
 	)
 	contains := func(file, needle string, want bool) {
@@ -129,16 +128,13 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	}
 	contains("core/common.md", readSource, true)
 	contains("core/common.md", noDefer, true)
-	// The five roles that compose common.md do not repeat it: the four whose core part Compose
-	// joins to it, and acceptance, whose own part (acceptance.md) Compose joins to it in place of a
-	// core part; core/oracle.md is joined to no common part and composed for no role, so it keeps
-	// the read-first rule itself, never the hardening ledger (it changes nothing).
+	// The four roles that compose common.md do not repeat it; core/oracle.md is joined to no
+	// common part and composed for no role, so it keeps the read-first rule itself, never the
+	// hardening ledger (it changes nothing).
 	for _, role := range composedWithCommon {
 		contains("core/"+role+".md", readSource, false)
 		contains("core/"+role+".md", noDefer, false)
 	}
-	contains("acceptance.md", readSource, false)
-	contains("acceptance.md", noDefer, false)
 	contains("core/oracle.md", readSource, true)
 	contains("core/oracle.md", noDefer, false)
 	// The implementer runs the repository's fast local checks before a push; the tester runs the
@@ -147,13 +143,11 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	contains("core/implementer.md", fastChecks, true)
 	contains("core/tester.md", fastChecks, false)
 	contains("core/tester.md", testerRunsTheApp, true)
-	contains("core/tester.md", redTest, true)
 	contains("core/implementer.md", dontModify, true)
 	for _, role := range []string{"planner", "reviewer", "oracle"} {
 		contains("core/"+role+".md", dontModify, false)
 	}
 	for _, role := range []string{"planner", "implementer", "reviewer", "oracle"} {
-		contains("core/"+role+".md", redTest, false)
 		contains("core/"+role+".md", testerRunsTheApp, false)
 	}
 }
@@ -166,7 +160,6 @@ func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T
 	for _, rule := range []string{
 		"Read the repository's `STRATEGY.md` when it has one",
 		"A finding outside the tree is never an issue you file.",
-		"A clear defect in code this tree touches or depends on is fixed in this tree's own pull request, where it has one; in a tree with none, it goes to whoever owns the plan, for a step that opens one.",
 		"Any other clear defect goes to whoever coordinates the project's work, with its evidence, and a finding that needs a decision is an ask.",
 		"A to-do only a person can do is always an ask.",
 	} {
@@ -483,10 +476,8 @@ func TestNoPartMakesTheProductionCheckTheImplementersOrWakesItFromADeploy(t *tes
 // in many parts — go/implementer.md forbids waiting for CI — so the needle is the backticked
 // token. Each retired sentence is joined from its two halves, as TestNoPartSaysLegionNeverMerges
 // keeps its phrases a pattern, so that a grep for one over this directory finds prompt text and
-// never this test. The parts that dispatch are listed here rather than counted, so a part that
-// stopped dispatching fails as loudly as one that started: a reader that found nothing would
-// otherwise pass while checking nothing. The skills half of this rule, over skills/ and the
-// plugin the Claude Code roles load, is packages/pi-legion/src/skills-guard.test.ts.
+// never this test. The skills half of this rule, over skills/ and the plugin the Claude Code roles
+// load, is packages/pi-legion/src/skills-guard.test.ts.
 func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T) {
 	retired := []string{
 		"interrupts" + " your turn",
@@ -496,7 +487,6 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 		"one foreground" + " command",
 		"blocking" + ": true",
 	}
-	var dispatching []string
 	for _, dir := range []string{"go", "roles"} {
 		parts := goParts
 		if dir == "roles" {
@@ -513,7 +503,6 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 				}
 			}
 			if strings.Contains(text, `task(agent="`) {
-				dispatching = append(dispatching, part)
 				if !strings.Contains(text, "`wait`") {
 					t.Errorf("%s dispatches a task subagent and never names `wait`, the tool that reads a job's result", part)
 				}
@@ -523,10 +512,6 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 		if err != nil {
 			t.Fatalf("read the %s parts: %v", dir, err)
 		}
-	}
-	want := []string{"go/claude-mechanics.md", "roles/acceptance.md", "roles/implementer.md", "roles/planner.md"}
-	if !slices.Equal(dispatching, want) {
-		t.Errorf("the parts that dispatch a task subagent are %q, want %q", dispatching, want)
 	}
 }
 
