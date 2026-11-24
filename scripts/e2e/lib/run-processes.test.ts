@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { endianness } from "node:os";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
@@ -52,10 +52,10 @@ function rowWaitsEnd(): number {
 }
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
-const skip = skipWithout("perl");
+const host = hostGate({ programs: ["perl"] });
 // python3: the newline-name row renames its process through prctl (ctypes), and the not-dumpable
-// rows make processes not dumpable through it (unreadablePy).
-const withoutPython = skipWithout("python3");
+// rows make processes not dumpable through it (unreadablePy); each fails by name without it
+// rather than skipping (requireHostTools).
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
 beforeAll(() => {
@@ -231,7 +231,7 @@ function rowRoot(): string {
 }
 const pids = (out: string) => out.split("\n").filter(Boolean);
 
-test.skipIf(skip)(
+host.test(
   "names each process that carries the run's mark and none that only works under the run's directory or names it, running no command for each /proc entry",
   () => {
     const work = join(dir, "work");
@@ -282,7 +282,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "names a marked process of the run that left every tree the run started, double-forked to pid 1 or a subreaper",
   async () => {
     // run_processes is the run's search for its leftovers: a daemon that forked twice and whose
@@ -324,8 +324,15 @@ test.skipIf(skip)(
 );
 
 // The force cannot hold under gVisor (a Legion pod's kernel), which starts a program past ARG_MAX:
-// there these two rows are skipped, by this name (argMaxForceHolds), rather than failed or passed.
-test.skipIf(skip || !argMaxForceHolds())(
+// there these two rows are skipped outside CI, naming why, and failed by name under GITHUB_ACTIONS,
+// whose runner holds it (hostGate).
+const argMax = hostGate({
+  programs: ["perl"],
+  reason: argMaxForceHolds()
+    ? ""
+    : "This kernel starts a program past ARG_MAX under a 512 KiB stack (gVisor does), so the force lib/arg-max-force.sh puts these rows under cannot be put in force.",
+});
+argMax.test(
   "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
   () => {
     // The force (lib/arg-max-force.sh): an exec handed every <pid> entry of the row's proc root as an
@@ -347,7 +354,7 @@ run_processes`
   }
 );
 
-test.skipIf(skip || !argMaxForceHolds())(
+argMax.test(
   "listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start",
   () => {
     // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
@@ -374,7 +381,8 @@ listening_holders ${listener.port}`
 
 // otherLoopback says whether this host lets a socket listen on 127.0.0.2, an address of the
 // loopback network other than 127.0.0.1. Linux routes all of 127.0.0.0/8 to lo; a host that does
-// not skips the row that needs it, by this name.
+// not skips the row that needs it outside CI, naming why, and under GITHUB_ACTIONS fails it by its
+// own name (hostGate's reason).
 const otherLoopback = (() => {
   try {
     Bun.listen({ hostname: "127.0.0.2", port: 0, socket: { data() {} } }).stop(true);
@@ -383,11 +391,10 @@ const otherLoopback = (() => {
     return false;
   }
 })();
-if (!otherLoopback) {
-  console.warn(
-    `Skipped the same-port row of ${import.meta.path}: this host lets no socket listen on 127.0.0.2.`
-  );
-}
+const sameAddress = hostGate({
+  programs: ["perl"],
+  reason: otherLoopback ? "" : "This host lets no socket listen on 127.0.0.2.",
+});
 // A python3 that listens on 1.0.0.127 at a port the kernel chooses, prints the port, and stays: an
 // address no interface holds, which IP_FREEBIND (15 on Linux) lets a socket bind.
 const freeBound = `import socket, time
@@ -397,19 +404,20 @@ s.bind(("1.0.0.127", 0))
 s.listen()
 print(s.getsockname()[1], flush=True)
 time.sleep(60)`;
-// freeBind says whether this host lets that socket listen; a host that does not (no python3, or a
-// kernel that refuses IP_FREEBIND) skips the row that needs it, by this name.
+// freeBind says whether this host lets that socket listen; a kernel that refuses IP_FREEBIND skips
+// the row that needs it outside CI, naming why, and under GITHUB_ACTIONS fails it by its own name
+// (hostGate's reason). A host without python3 is not read as such a kernel: the row needs python3
+// and fails by name without it on any host (requireHostTools).
 const freeBind =
-  !withoutPython &&
+  hostTool("python3") === null ||
   Bun.spawnSync(["python3", "-c", freeBound.replace("time.sleep(60)", "")], {
     stdout: "ignore",
     stderr: "ignore",
   }).exitCode === 0;
-if (!freeBind) {
-  console.warn(
-    `Skipped the byte-order row of ${import.meta.path}: this host lets no python3 socket listen on 1.0.0.127 (IP_FREEBIND).`
-  );
-}
+const byteOrder = hostGate({
+  programs: ["perl"],
+  reason: freeBind ? "" : "This host lets no python3 socket listen on 1.0.0.127 (IP_FREEBIND).",
+});
 // spelled is how /proc/net/tcp writes the IPv4 address ADDRESS: the hexadecimal of its 32 bits in
 // this host's byte order, so 127.0.0.1 is 0100007F on a little-endian host.
 function spelled(address: string): string {
@@ -485,7 +493,7 @@ async function onlyTheLoopbackHolder(name: string, program: string[], other: str
   }
 }
 
-test.skipIf(skip || !otherLoopback)(
+sameAddress.test(
   "listening_holders counts only the socket on 127.0.0.1:PORT: one another process listens with on the same port of another loopback address is none of it",
   async () => {
     // The kernel's bind of port 0 on 127.0.0.1 can hand out a port another process already listens
@@ -505,9 +513,10 @@ test.skipIf(skip || !otherLoopback)(
   }
 );
 
-test.skipIf(skip || !freeBind)(
+byteOrder.test(
   "listening_holders reads 127.0.0.1 in this host's byte order: a socket on 1.0.0.127, the other order's spelling of it, is none of it",
   async () => {
+    requireHostTools("python3");
     // /proc/net/tcp writes 127.0.0.1 as 0100007F on a little-endian host, and 7F000001 there is
     // 1.0.0.127; a read that took both spellings counted a socket on 1.0.0.127:PORT beside the one
     // on 127.0.0.1:PORT and read "2 sockets listen".
@@ -515,7 +524,7 @@ test.skipIf(skip || !freeBind)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "a walk whose reader a signal ended after part of its output is no answer: listening_holders and run_processes exit 2",
   () => {
     // A find that writes 2000 bytes and is then SIGKILLed prints no complaint of its own; neither does
@@ -562,7 +571,7 @@ st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $s
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "a walk whose grep could not read an environment is no answer: run_processes and stop_marked_processes exit 2 and leave the marked process running, and a grep that met only unreadable or ended entries still answers",
   async () => {
     // xargs exits 123 when a batch's grep exits 1 (no match in it, as most batches of a busy machine
@@ -650,7 +659,7 @@ exit 2`
   60_000
 );
 
-test.skipIf(skip)(
+host.test(
   "a walk whose read of the environments' bounds failed is no answer: run_processes and stop_marked_processes exit 2, say which awk failed, and leave the marked process running",
   async () => {
     // Around grep each batch reads every entry's environment bound twice (NAMING_SNAP) and compares
@@ -704,7 +713,7 @@ st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_mark
   60_000
 );
 
-test.skipIf(skip)(
+host.test(
   "a walk inside a teardown's EXIT trap answers by its own xargs's status, after a run that passed and after one that failed: a grep that failed is no answer, and a grep that met only unreadable or ended entries still answers",
   async () => {
     // The walk passed xargs's status out of its substitution with a bare `exit`, and a bare `exit` in
@@ -878,9 +887,10 @@ async function pastStarts(pids: number[]): Promise<void> {
   throw new Error(`the boot clock did not pass tick ${latest} within 2 s`);
 }
 
-test.skipIf(skip || withoutPython)(
+host.test(
   "a walk that cannot read the environment of a process of this user started during the run is no answer: a child of the run that made itself not dumpable, one that did so once it had left for a reaper as ssh-agent does, and one grep could not read after the test passed it make run_processes and stop_marked_processes exit 2 naming it, and leave it running",
   async () => {
+    requireHostTools("python3");
     // The filter that keeps grep to the environments this user may read took a not-dumpable process
     // of this user for another user's, so the walk read clean and the sweep ended nothing while a
     // process the run started ran on, its mark unread: an ssh-agent the run started, or any process
@@ -963,9 +973,10 @@ ln -s "/proc/$pid" "$proc_root/$pid"`,
   60_000
 );
 
-test.skipIf(skip || withoutPython)(
+host.test(
   "a process of this user whose environment cannot be read and that cannot carry the run's mark does not fail the walk: one not dumpable from before the run, as a devbox's own ssh-agent is, one another session starts during the run below a process older than the run, and a zombie of the run's",
   async () => {
+    requireHostTools("python3");
     // A devbox runs its user's ssh-agent, gpg-agent and forward, none dumpable; other sessions of
     // the same user start more during a run (a tailscaled login session's process, another agent's
     // tool); and a zombie's environ is root's too. A walk that failed on each would fail every
@@ -1017,9 +1028,10 @@ echo "after: before $(state "$before"), session $(state "$session"), zombie $(st
   60_000
 );
 
-test.skipIf(skip || withoutPython)(
+host.test(
   "a walk from a shell that is a child subreaper judges an unreadable process by its line of parents: one another session leaves under pid 1 during the run does not fail it, and the run's own, which the shell adopted, still does",
   async () => {
+    requireHostTools("python3");
     // Another session's not-dumpable process that double-forks away during the run goes to pid 1,
     // or to a reaper above the walking shell, as the run's own does when the shell is no subreaper,
     // so unread_may_carry cannot tell the two apart and a devbox's long run failed its teardown on
@@ -1098,9 +1110,10 @@ echo "pids $foreign $own"`;
   60_000
 );
 
-test.skipIf(skip || withoutPython)(
+host.test(
   "a walk that could not read this shell's line of parents to its end is no answer: an unreadable orphan of the run, under a reaper above the cut, is not taken for another session's process",
   () => {
+    requireHostTools("python3");
     // unread_may_carry passes a process whose first parent older than the walking shell is none of
     // that shell's own parents, so it needs every one of them. The review forced it so: the shell's
     // parent ends and is reaped right after the walk reads its pid, before the read of that
@@ -1164,7 +1177,7 @@ cat "$WORK/h.err" >&2`;
   60_000
 );
 
-test.skipIf(skip)(
+host.test(
   "a marked process that re-execs itself is named by every walk: a read that falls inside its exec is read again, not taken for an answer",
   async () => {
     // A read of /proc/<pid>/environ reads the memory the process had when the file was opened, and
@@ -1215,7 +1228,7 @@ echo "named in $named of 30 walks, $failed failed"`
   120_000
 );
 
-test.skipIf(skip)(
+host.test(
   "a process that cannot carry the run's mark holds no walk while it re-execs: past the walk's bound, one whose read grep did not match is judged as an unreadable environment is, and passed, and the run's marked process is still named",
   async () => {
     // A process of this user whose read around grep may have fallen inside an exec is read again
@@ -1317,48 +1330,29 @@ names_dir() {
   return "$(names_answer "\${!#}" "$(count "nd.\${!#}")")"
 }`;
 
-// hostGate is a gate on what some rows need of this host: REFUSAL is why this host cannot run the
-// rows WHAT names, or "" where it can. Where it cannot, `skip` skips them, by that name, and a
-// warning says why; except on GitHub Actions (GITHUB_ACTIONS, as send-arguments.test.ts reads it),
-// whose runner can, so there `skip` is false and `need()`, each such row's first statement, fails
-// the row naming REFUSAL and RUNNER, what the runner has that this host lacks. Each gate's probe,
-// warning, skip and failure are this one function's, so they cannot drift apart.
-const onActions = process.env.GITHUB_ACTIONS === "true";
-function hostGate(what: string, refusal: string, runner: string): { skip: boolean; need(): void } {
-  if (refusal !== "" && !onActions) {
-    console.warn(`Skipped ${what} of ${import.meta.path}: ${refusal}.`);
-  }
-  return {
-    skip: refusal !== "" && !onActions,
-    need() {
-      if (refusal !== "") throw new Error(`${refusal}; ${runner}`);
-    },
-  };
-}
-
 // bounds is the gate on whether this kernel shows a process's memory bounds in /proc/<pid>/stat, as
 // the walk's exec_state reads them: this test process runs and is in no exec, so its start_code
 // (field 26) and env_start (field 50) read 0 only where the kernel shows them all as 0, as gVisor (a
 // Legion pod's kernel) does. There the walk takes each read as it comes (bounds_shown,
 // lib/process-tree.sh), and the scripted rows below, which answer for exec_state, prove nothing.
+// Outside CI such a kernel skips them, naming why; under GITHUB_ACTIONS, whose runner's kernel
+// shows the bounds, it fails them by name (hostGate).
 const bounds = (() => {
   const fields = readFileSync("/proc/self/stat", "utf8")
     .replace(/^[\s\S]*\) /, "")
     .split(" ");
   const shown = fields[23] !== "0" && fields[47] !== undefined && fields[47] !== "0";
-  return hostGate(
-    "the scripted exec rows",
-    shown
+  return hostGate({
+    programs: ["perl"],
+    reason: shown
       ? ""
-      : "this kernel shows no memory bounds in /proc/<pid>/stat (start_code, field 26, and env_start, field 50, read 0 for a running process), so the walk cannot tell a read inside an exec",
-    "the GitHub Actions runner must show them"
-  );
+      : "This kernel shows no memory bounds in /proc/<pid>/stat (start_code, field 26, and env_start, field 50, read 0 for a running process), so the walk cannot tell a read inside an exec.",
+  });
 })();
 
-test.skipIf(skip || bounds.skip)(
+bounds.test(
   "a read of an environment that an exec cut short is read again, never taken for an unmarked process: the bounds moved between the two reads around it",
   () => {
-    bounds.need();
     // A read of /proc/<pid>/environ across an exec comes back cut short at a page, and a mark past
     // it is lost: aec1fb77ff read again only an empty read, so it took a cut one for an environment
     // without the mark and named nothing of a marked process, exit 0. Here the process is a sleep
@@ -1402,10 +1396,9 @@ kill -KILL "$targets"`,
   60_000
 );
 
-test.skipIf(skip || bounds.skip)(
+bounds.test(
   "a process held inside one exec is waited for, whatever the walk's bound: one that started outside the run's shell is named once its exec ends, never passed, and so is the run's own",
   async () => {
-    bounds.need();
     // A process a loaded machine holds inside one exec (the exec-window forcing held one 10.8 s)
     // shows its bounds as 0 until the exec ends. A walk that counted those reads against its 10 s
     // bound judged it there by its line of parents and passed one that started outside the run's
@@ -1453,10 +1446,9 @@ kill -KILL "$own"`,
   60_000
 );
 
-test.skipIf(skip || bounds.skip)(
+bounds.test(
   "the sweep's check of a process it is about to stop reads within one exec: one an exec cut short is read again and the process ended, never left running as unmarked",
   () => {
-    bounds.need();
     // stop_marked_processes stops each process the walk named only while it still carries the
     // run's mark (freeze_if's check), and the check read the environment once: a read across an
     // exec, cut short before the mark, was taken for an unmarked process, which the sweep passed
@@ -1495,10 +1487,9 @@ echo "stop_marked_processes $st, the sleep $(state "$targets")"`
   60_000
 );
 
-test.skipIf(skip || bounds.skip)(
+bounds.test(
   "the sweep's check that cannot read a process within one exec fails the sweep with 2, names the process and leaves it running, with a grace and without",
   () => {
-    bounds.need();
     // A check that could not read the process was refused like a check that found no mark, and the
     // sweep passed over it with 0. Here exec_state answers for a sleep the harness starts as for a
     // process held inside one exec from the check's first read on, and the hold is 0 s
@@ -1556,76 +1547,67 @@ d=$(mktemp -d); { (ulimit -f 1; head -c 8192 /dev/zero >"$d/f") 2>/dev/null; } 2
 while read -r k v; do [ "$k" != SigIgn: ] || ign=$v; done </proc/$$/status
 echo "pipe $pipe, xfsz $xfsz, ignored $ign, subreaper [\${LEGION_E2E_SUBREAPER:-}] of $$ $(cut -d' ' -f22 </proc/$$/stat)"`;
 
-test.skipIf(withoutPython)(
-  "a proof under lib/subreaper.py has SIGPIPE and SIGXFSZ at their defaults, as a proof started without it has: a pipeline whose reader exits first ends 141, and the shell is named by its pid and its start",
-  () => {
-    // Python ignores SIGPIPE and SIGXFSZ at its start, and an exec keeps an ignored signal ignored,
-    // which the bash it runs cannot undo: under 14fc06e9e8's subreaper.py `seq | head -n 1` ended 1
-    // with "Broken pipe", and github-apps.sh:522's over-limit token command answered 1 instead of
-    // its documented 126. The same shell runs plain beside it as the control: the signals it
-    // ignores are the ones the test runner gave it (bun:test's children ignore SIGQUIT), and the
-    // shell under subreaper.py must ignore those and no more.
-    const plain = Bun.spawnSync(["bash", "-c", subreaperSignals], {
-      env: { PATH: process.env.PATH ?? "" },
-    });
-    const under = Bun.spawnSync(["python3", "-I", subreaperPy, "bash", "-c", subreaperSignals], {
-      env: { PATH: process.env.PATH ?? "" },
-    });
-    const plainSaid = plain.stdout.toString().replace(/, subreaper .*$/m, "");
-    expect(plainSaid).toMatch(/^pipe 141, xfsz 153, ignored ([0-9a-f]{16})?\n$/);
-    expect({
-      under: under.stdout.toString().replace(/, subreaper .*$/m, ""),
-      err: under.stderr.toString(),
-    }).toEqual({ under: plainSaid, err: "" });
-    const named = /\[(\d+) (\d+)\] of (\d+) (\d+)$/m.exec(under.stdout.toString());
-    expect(named?.slice(1, 3)).toEqual(named?.slice(3, 5));
-  },
-  // A guard on a hang only: two shells of a few commands each.
-  60_000
-);
+test("a proof under lib/subreaper.py has SIGPIPE and SIGXFSZ at their defaults, as a proof started without it has: a pipeline whose reader exits first ends 141, and the shell is named by its pid and its start", () => {
+  requireHostTools("python3");
+  // Python ignores SIGPIPE and SIGXFSZ at its start, and an exec keeps an ignored signal ignored,
+  // which the bash it runs cannot undo: under 14fc06e9e8's subreaper.py `seq | head -n 1` ended 1
+  // with "Broken pipe", and github-apps.sh:522's over-limit token command answered 1 instead of
+  // its documented 126. The same shell runs plain beside it as the control: the signals it
+  // ignores are the ones the test runner gave it (bun:test's children ignore SIGQUIT), and the
+  // shell under subreaper.py must ignore those and no more.
+  const plain = Bun.spawnSync(["bash", "-c", subreaperSignals], {
+    env: { PATH: process.env.PATH ?? "" },
+  });
+  const under = Bun.spawnSync(["python3", "-I", subreaperPy, "bash", "-c", subreaperSignals], {
+    env: { PATH: process.env.PATH ?? "" },
+  });
+  const plainSaid = plain.stdout.toString().replace(/, subreaper .*$/m, "");
+  expect(plainSaid).toMatch(/^pipe 141, xfsz 153, ignored ([0-9a-f]{16})?\n$/);
+  expect({
+    under: under.stdout.toString().replace(/, subreaper .*$/m, ""),
+    err: under.stderr.toString(),
+  }).toEqual({ under: plainSaid, err: "" });
+  const named = /\[(\d+) (\d+)\] of (\d+) (\d+)$/m.exec(under.stdout.toString());
+  expect(named?.slice(1, 3)).toEqual(named?.slice(3, 5));
+}, 60_000); // A guard on a hang only: two shells of a few commands each.
 
-test.skipIf(withoutPython)(
-  "lib/subreaper.py where the mark cannot be set, its Python without ctypes, says why by name, names the shell refused, and runs the proof all the same",
-  () => {
-    // A Python with no ctypes, or a libc with no prctl, raised before the fallback a kernel refusal
-    // took, so the proof exited 1 with a traceback before it started. Here a ctypes module that
-    // fails to import stands first on the path (python3 without -I reads PYTHONPATH).
-    const fake = join(dir, "no-ctypes");
-    mkdirSync(fake);
-    writeFileSync(join(fake, "ctypes.py"), 'raise ImportError("no ctypes on this box")\n');
-    const r = Bun.spawnSync(
-      ["python3", subreaperPy, "bash", "-c", `echo "ran, [\${LEGION_E2E_SUBREAPER:-}]"`],
-      { env: { PATH: process.env.PATH ?? "", PYTHONPATH: fake } }
-    );
-    expect({
-      code: r.exitCode,
-      out: r.stdout.toString().replace(/\[\d+ \d+ refused\]/, "[PID START refused]"),
-      err: r.stderr.toString(),
-    }).toEqual({
-      code: 0,
-      out: "ran, [PID START refused]\n",
-      err: "subreaper.py: no prctl to call (ImportError: no ctypes on this box); running bash without it\n",
-    });
-  },
-  // A guard on a hang only: one Python and one shell.
-  60_000
-);
+test("lib/subreaper.py where the mark cannot be set, its Python without ctypes, says why by name, names the shell refused, and runs the proof all the same", () => {
+  requireHostTools("python3");
+  // A Python with no ctypes, or a libc with no prctl, raised before the fallback a kernel refusal
+  // took, so the proof exited 1 with a traceback before it started. Here a ctypes module that
+  // fails to import stands first on the path (python3 without -I reads PYTHONPATH).
+  const fake = join(dir, "no-ctypes");
+  mkdirSync(fake);
+  writeFileSync(join(fake, "ctypes.py"), 'raise ImportError("no ctypes on this box")\n');
+  const r = Bun.spawnSync(
+    ["python3", subreaperPy, "bash", "-c", `echo "ran, [\${LEGION_E2E_SUBREAPER:-}]"`],
+    { env: { PATH: process.env.PATH ?? "", PYTHONPATH: fake } }
+  );
+  expect({
+    code: r.exitCode,
+    out: r.stdout.toString().replace(/\[\d+ \d+ refused\]/, "[PID START refused]"),
+    err: r.stderr.toString(),
+  }).toEqual({
+    code: 0,
+    out: "ran, [PID START refused]\n",
+    err: "subreaper.py: no prctl to call (ImportError: no ctypes on this box); running bash without it\n",
+  });
+}, 60_000); // A guard on a hang only: one Python and one shell.
 
-test.skipIf(withoutPython)(
-  "lib/subreaper.py with no /proc to read its own start from says why, names the shell refused with no start, and runs the proof all the same, and lib/subreaper.sh runs that proof once",
-  () => {
-    // start_of read /proc/<pid>/stat unguarded, so on a host with no /proc subreaper.py ended with a
-    // traceback before the proof started (a reviewer's reading at 49fafd2027). Here a sitecustomize
-    // that refuses every open under /proc/ stands first on the path (python3 without -I reads
-    // PYTHONPATH). Through lib/subreaper.sh, a python3 stand-in that drops -I, and so reads it,
-    // gives the shell a value of its own pid with no start, which the shell's own start does not
-    // match: a subreaper.sh that took only `PID START` for done ran the proof under subreaper.py
-    // again, without end. The stand-in counts its calls: the shell's check of python3, and the run.
-    const fake = join(dir, "no-proc");
-    mkdirSync(join(fake, "bin"), { recursive: true });
-    writeFileSync(
-      join(fake, "sitecustomize.py"),
-      `import builtins
+test("lib/subreaper.py with no /proc to read its own start from says why, names the shell refused with no start, and runs the proof all the same, and lib/subreaper.sh runs that proof once", () => {
+  requireHostTools("python3");
+  // start_of read /proc/<pid>/stat unguarded, so on a host with no /proc subreaper.py ended with a
+  // traceback before the proof started (a reviewer's reading at 49fafd2027). Here a sitecustomize
+  // that refuses every open under /proc/ stands first on the path (python3 without -I reads
+  // PYTHONPATH). Through lib/subreaper.sh, a python3 stand-in that drops -I, and so reads it,
+  // gives the shell a value of its own pid with no start, which the shell's own start does not
+  // match: a subreaper.sh that took only `PID START` for done ran the proof under subreaper.py
+  // again, without end. The stand-in counts its calls: the shell's check of python3, and the run.
+  const fake = join(dir, "no-proc");
+  mkdirSync(join(fake, "bin"), { recursive: true });
+  writeFileSync(
+    join(fake, "sitecustomize.py"),
+    `import builtins
 _open = builtins.open
 def _refused(path, *args, **kwargs):
     if str(path).startswith("/proc/"):
@@ -1633,62 +1615,59 @@ def _refused(path, *args, **kwargs):
     return _open(path, *args, **kwargs)
 builtins.open = _refused
 `
-    );
-    const said = (r: { exitCode: number | null; stdout: Buffer; stderr: Buffer }) => ({
-      code: r.exitCode,
-      out: r.stdout.toString().replace(/\[\d+ {2}refused\]/, "[PID  refused]"),
-      err: r.stderr.toString().replace(/\b\d+\b/g, "PID"),
-    });
-    const direct = Bun.spawnSync(
-      ["python3", subreaperPy, "bash", "-c", `echo "ran, [\${LEGION_E2E_SUBREAPER:-}]"`],
-      { env: { PATH: process.env.PATH ?? "", PYTHONPATH: fake } }
-    );
-    expect(said(direct)).toEqual({
-      code: 0,
-      out: "ran, [PID  refused]\n",
-      err: "subreaper.py: no start to read for process PID in /proc/PID/stat; running bash without it\n",
-    });
-    // The interpreter itself (sys.executable), not the first python3 on PATH: a shim there (mise's)
-    // finds python3 through PATH again, which would be this stand-in.
-    const python = Bun.spawnSync(["python3", "-c", "import sys; print(sys.executable)"], {
-      env: { PATH: process.env.PATH ?? "" },
-    })
-      .stdout.toString()
-      .trim();
-    const counted = join(fake, "calls");
-    writeFileSync(
-      join(fake, "bin", "python3"),
-      `#!/bin/bash
+  );
+  const said = (r: { exitCode: number | null; stdout: Buffer; stderr: Buffer }) => ({
+    code: r.exitCode,
+    out: r.stdout.toString().replace(/\[\d+ {2}refused\]/, "[PID  refused]"),
+    err: r.stderr.toString().replace(/\b\d+\b/g, "PID"),
+  });
+  const direct = Bun.spawnSync(
+    ["python3", subreaperPy, "bash", "-c", `echo "ran, [\${LEGION_E2E_SUBREAPER:-}]"`],
+    { env: { PATH: process.env.PATH ?? "", PYTHONPATH: fake } }
+  );
+  expect(said(direct)).toEqual({
+    code: 0,
+    out: "ran, [PID  refused]\n",
+    err: "subreaper.py: no start to read for process PID in /proc/PID/stat; running bash without it\n",
+  });
+  // The interpreter itself (sys.executable), not the first python3 on PATH: a shim there (mise's)
+  // finds python3 through PATH again, which would be this stand-in.
+  const python = Bun.spawnSync(["python3", "-c", "import sys; print(sys.executable)"], {
+    env: { PATH: process.env.PATH ?? "" },
+  })
+    .stdout.toString()
+    .trim();
+  const counted = join(fake, "calls");
+  writeFileSync(
+    join(fake, "bin", "python3"),
+    `#!/bin/bash
 echo call >>${JSON.stringify(counted)}
 args=()
 for a; do [ "$a" = -I ] || args+=("$a"); done
 PYTHONPATH=${JSON.stringify(fake)} exec ${JSON.stringify(python)} "\${args[@]}"
 `,
-      { mode: 0o755 }
-    );
-    const proof = join(fake, "proof.sh");
-    writeFileSync(
-      proof,
-      `set -eu\n. ${JSON.stringify(join(import.meta.dir, "subreaper.sh"))}\necho "proof ran, [\${LEGION_E2E_SUBREAPER:-}]"\n`
-    );
-    const viaSh = Bun.spawnSync(["bash", proof], {
-      env: { PATH: `${join(fake, "bin")}:${process.env.PATH ?? ""}` },
-      timeout: 20_000,
-    });
-    expect({
-      ...said(viaSh),
-      err: said(viaSh).err.replace(/running \S+ without/, "running BASH without"),
-      calls: readFileSync(counted, "utf8"),
-    }).toEqual({
-      code: 0,
-      out: "proof ran, [PID  refused]\n",
-      err: "subreaper.py: no start to read for process PID in /proc/PID/stat; running BASH without it\n",
-      calls: "call\ncall\n",
-    });
-  },
-  // A guard on a hang only: two Pythons and two shells, the second bounded at 20 s on its own.
-  60_000
-);
+    { mode: 0o755 }
+  );
+  const proof = join(fake, "proof.sh");
+  writeFileSync(
+    proof,
+    `set -eu\n. ${JSON.stringify(join(import.meta.dir, "subreaper.sh"))}\necho "proof ran, [\${LEGION_E2E_SUBREAPER:-}]"\n`
+  );
+  const viaSh = Bun.spawnSync(["bash", proof], {
+    env: { PATH: `${join(fake, "bin")}:${process.env.PATH ?? ""}` },
+    timeout: 20_000,
+  });
+  expect({
+    ...said(viaSh),
+    err: said(viaSh).err.replace(/running \S+ without/, "running BASH without"),
+    calls: readFileSync(counted, "utf8"),
+  }).toEqual({
+    code: 0,
+    out: "proof ran, [PID  refused]\n",
+    err: "subreaper.py: no start to read for process PID in /proc/PID/stat; running BASH without it\n",
+    calls: "call\ncall\n",
+  });
+}, 60_000); // A guard on a hang only: two Pythons and two shells, the second bounded at 20 s on its own.
 
 // namespaces is the gate on whether this user may make a private user and pid namespace
 // (util-linux unshare, a user namespace that maps this user to itself) and enter one (nsenter), as
@@ -1701,13 +1680,10 @@ const namespacesHold =
     ["unshare", "--user", "--map-current-user", "--pid", "--fork", "--mount-proc", "true"],
     { stdout: "ignore", stderr: "ignore" }
   ).exitCode === 0;
-const namespaces = hostGate(
-  "the pid-namespace rows",
-  namespacesHold
-    ? ""
-    : "this host refused an unprivileged user and pid namespace (unshare --user --map-current-user --pid --fork --mount-proc true), or has no unshare or nsenter",
-  'the GitHub Actions test job allows them in its step "Allow unprivileged user namespaces"'
-);
+const namespacesRefused = namespacesHold
+  ? ""
+  : "This host refused an unprivileged user and pid namespace (unshare --user --map-current-user --pid --fork --mount-proc true), or has no unshare or nsenter.";
+const namespaces = hostGate({ programs: ["perl"], reason: namespacesRefused });
 
 // adopted is the gate on whether this kernel gives the orphan that a child subreaper's shell leaves
 // in an older pid namespace to that namespace's init, as Linux does (a subreaper adopts within its
@@ -1715,7 +1691,9 @@ const namespaces = hostGate(
 // orphan to the subreaper shell itself (the reviewer's probe: orphan 23779, parent 23776, the
 // shell), where the walk judges it by its parent, the shell, and the row has no init to read. The
 // probe makes a namespace (unshare), then from a shell under lib/subreaper.py starts orphanPy there
-// (nsenter) under a sh that exits at once, and reads the python3's parent.
+// (nsenter) under a sh that exits at once, and reads the python3's parent. The GitHub Actions
+// runner's Linux kernel gives it to the init. The row needs the pid-namespace rows' namespace too,
+// so its gate carries their reason as well.
 const adopterProbe = `set -u
 unshare --user --map-current-user --pid --fork --kill-child --mount-proc sh -c 'exec sleep 30' </dev/null >/dev/null 2>&1 &
 u=$!
@@ -1732,7 +1710,7 @@ for _ in $(seq 1 100); do p=$(cut -d' ' -f4 <"/proc/$o/stat" 2>/dev/null); [ "$p
 if [ "$p" = "$INIT" ]; then echo init; elif [ "$p" = $$ ]; then echo "the subreaper shell"; else echo "process $p"; fi
 kill -KILL "$o" 2>/dev/null`;
 const adopter =
-  namespacesHold && !withoutPython
+  namespacesHold && hostTool("python3") !== null
     ? Bun.spawnSync(["bash", "-c", adopterProbe], {
         env: {
           PATH: process.env.PATH ?? "",
@@ -1747,18 +1725,22 @@ const adopter =
         .stdout.toString()
         .trim()
     : "";
-const adopted = hostGate(
-  "the older-namespace row",
-  !namespacesHold || withoutPython || adopter === "init"
-    ? ""
-    : `this kernel gave an orphan left in an older pid namespace to ${adopter || "no process the probe could read"}, not to that namespace's init`,
-  "the GitHub Actions runner's Linux kernel must give it to the init"
-);
+const adopted = hostGate({
+  programs: ["perl"],
+  reason: [
+    namespacesRefused,
+    !namespacesHold || hostTool("python3") === null || adopter === "init"
+      ? ""
+      : `This kernel gave an orphan left in an older pid namespace to ${adopter || "no process the probe could read"}, not to that namespace's init.`,
+  ]
+    .filter((said) => said !== "")
+    .join(" "),
+});
 
-test.skipIf(skip || withoutPython || namespaces.skip)(
+namespaces.test(
   "a walk from a shell that entered a pid namespace from outside is no answer for an unreadable orphan of the run that the namespace's init adopted",
   async () => {
-    namespaces.need();
+    requireHostTools("python3");
     // A shell that `docker exec` or `kubectl exec` starts, or a step of a GitHub Actions
     // `container:` job, sits in a pid namespace whose init is no parent of its own: its parent reads
     // 0 there, and the run's orphans go to that init, older than the shell and none of its parents.
@@ -1830,11 +1812,10 @@ echo "shell's parent $(proc_parent $$), orphan's parent $(proc_parent "$orphan")
   60_000
 );
 
-test.skipIf(skip || withoutPython || namespaces.skip || adopted.skip)(
+adopted.test(
   "a walk from a subreaper shell is no answer for an unreadable orphan of the run that the init of an older pid namespace adopted",
   async () => {
-    namespaces.need();
-    adopted.need();
+    requireHostTools("python3");
     // A child subreaper adopts the run's orphans in its own pid namespace only: a process the run
     // starts in another one goes to that namespace's init when its parent ends, however far above
     // the subreaper is. A namespace older than the walking shell has an init older than it, so the
@@ -1916,26 +1897,27 @@ echo "pid $orphan"`;
 // carries perl), a row of .github/ci-images.yaml.
 const dockerImage =
   "ghcr.io/cybermonklabs/legion/ci@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55";
-const docker = hostGate(
-  "the docker-init row",
-  (() => {
-    if (hostTool("docker") === null) return "this host has no docker CLI";
+const docker = hostGate({
+  programs: ["perl", "docker"],
+  reason: (() => {
+    if (hostTool("docker") === null) return "";
     const info = Bun.spawnSync(
       ["docker", "info", "--format", "{{json .SecurityOptions}}|{{.OperatingSystem}}"],
       { stdout: "pipe", stderr: "pipe", timeout: 30_000 }
     );
     const out = info.stdout.toString().trim();
     const err = info.stderr.toString().trim();
-    if (info.exitCode !== 0) return `docker info exited ${info.exitCode}: ${err.split("\n")[0]}`;
+    if (info.exitCode !== 0)
+      return `This host's docker info exited ${info.exitCode}: ${err.split("\n")[0]}.`;
     if (err !== "")
-      return `docker info wrote on stderr, as podman's docker shim does: ${err.split("\n")[0]}`;
+      return `This host's docker info wrote on stderr, as podman's docker shim does: ${err.split("\n")[0]}.`;
     if (out.includes("name=rootless"))
-      return "the Docker daemon is rootless (docker info: name=rootless)";
-    if (out.includes("Docker Desktop")) return "the Docker daemon is Docker Desktop's, in a VM";
+      return "This host's Docker daemon is rootless (docker info: name=rootless).";
+    if (out.includes("Docker Desktop"))
+      return "This host's Docker daemon is Docker Desktop's, in a VM.";
     return "";
   })(),
-  "the GitHub Actions runner has a rootful Docker"
-);
+});
 
 // pulledImage makes sure this host holds IMAGE as the skill-scenario rig's judge-omp does
 // (packages/pi-legion/scripts/skill-scenarios/rig.sh): only where `docker image inspect` does not
@@ -1963,10 +1945,10 @@ function pulledImage(image: string): string {
   return `docker could not pull ${image} in 3 attempts: ${said}`;
 }
 
-test.skipIf(skip || withoutPython || docker.skip)(
+docker.test(
   "a not-dumpable process that `docker exec` left to a rootful container's init, older than the walking shell, cannot carry the run's mark: the walk passes it from a subreaper shell and from a plain one",
   async () => {
-    docker.need();
+    requireHostTools("python3");
     // An init older than the walking shell that is the init of another pid namespace counted as an
     // adopter of the run's orphans, since the run's own orphan in a namespace it entered goes there.
     // A rootful container's docker-init is such an init, but the run cannot enter its namespace (it
@@ -2088,23 +2070,20 @@ echo "run_processes $st, named [$(tr '\\n' ' ' <"$work/rp.out")], said [$(tr '\\
 // rootAccess is the gate on whether this host gives this user root with no password (`sudo -n`) and
 // has unshare, nsenter and setpriv, as the root-namespace row below needs; the GitHub Actions runner
 // has them.
-const rootAccess = hostGate(
-  "the root-namespace row",
-  hostTool("sudo") !== null &&
-    hostTool("unshare") !== null &&
-    hostTool("nsenter") !== null &&
-    hostTool("setpriv") !== null &&
+const rootAccess = hostGate({
+  programs: ["perl", "sudo", "unshare", "nsenter", "setpriv"],
+  reason:
+    hostTool("sudo") === null ||
     Bun.spawnSync(["sudo", "-n", "true"], { stdout: "ignore", stderr: "ignore", timeout: 30_000 })
       .exitCode === 0
-    ? ""
-    : "this host gives this user no root without a password (sudo -n), or has no unshare, nsenter or setpriv",
-  "the GitHub Actions runner has them"
-);
+      ? ""
+      : "This host gives this user no root without a password (sudo -n true failed).",
+});
 
-test.skipIf(skip || withoutPython || rootAccess.skip)(
+rootAccess.test(
   "a walk from a shell in a pid namespace below the one its /proc shows is no answer: it says so and exits 2, never reading another process as itself, beside an unreadable orphan of the run that the namespace's root-owned init adopted",
   () => {
-    rootAccess.need();
+    requireHostTools("python3");
     // ns_init_adopts takes an init whose links this user cannot read for one whose namespace the run
     // could not enter, and the init of the walking shell's own namespace for pid 1. Both hold only
     // for a shell in the pid namespace /proc shows: a shell that entered a namespace without
@@ -2175,7 +2154,7 @@ nsenter --target "$init" --pid -- setpriv --reuid="$1" --regid="$2" --init-group
   60_000
 );
 
-test.skipIf(skip)(
+host.test(
   "a run that has not marked itself has no processes to read: run_processes and stop_marked_processes exit 2",
   () => {
     const work = join(dir, "unmarked");
@@ -2192,7 +2171,7 @@ st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_mark
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "an empty run directory names no process: marked_processes, procs_naming and names_dir refuse it with 2",
   () => {
     // With DIR empty and the mark unset, `LEGION_E2E_RUN=` and `XDG_CONFIG_HOME=` followed by any
@@ -2220,7 +2199,7 @@ st=0; names_dir "" XDG_CONFIG_HOME ${bystander} 2>"$work/nd.err" || st=$?; echo 
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends every marked process of the run, an escaped one too, and leaves a person's shell and tail -f under the run's directory running",
   async () => {
     const work = join(dir, "sweep");
@@ -2256,7 +2235,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace gives each marked process SIGTERM and the grace to exit, then SIGKILLs only the survivors",
   async () => {
     const work = join(dir, "grace");
@@ -2297,7 +2276,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes signals no pid whose start time is not the one its walk read, and leaves it running",
   async () => {
     // The walk's pairs stand in for a pid that ended and passed to another marked process between the
@@ -2318,7 +2297,7 @@ stop_marked_processes "$work"; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends a child that cleared its environment with the marked process that started it",
   async () => {
     // A marked bash starts a child under `env -i`, which carries no mark and no other variable of the
@@ -2352,7 +2331,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace ends a child that cleared its environment when the marked process that started it exits on its SIGTERM",
   async () => {
     // The marked process exits on the TERM and leaves its child behind; its children were read while
@@ -2382,7 +2361,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends a marked process it froze even where its parent reads otherwise the second time, as when the parent exits after the freeze",
   async () => {
     // proc_parent answers the real parent on its first read of the process and pid 1 on every read
@@ -2406,7 +2385,7 @@ stop_marked_processes "$work"; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace leaves running a pid below a marked process whose parent is not the process it was read under, as a pid a stranger took",
   async () => {
     // proc_children answers, for the marked bash's child, the pid of a stranger: an unmarked process
@@ -2438,7 +2417,7 @@ stop_marked_processes "$work" 1; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace leaves running the children of a stranger that took the pid of a process below a marked one",
   async () => {
     // The marked bash's child, which carries no mark, is read and printed; then its pid passes to
@@ -2479,9 +2458,10 @@ stop_marked_processes "$work" 1; echo "status $?"`
   }
 );
 
-test.skipIf(skip || withoutPython)(
+host.test(
   "names and ends a marked process whose name holds a newline and a `) `, which a read of the stat's first line took for another parent and no start",
   async () => {
+    requireHostTools("python3");
     // The process renames itself to `) S 1` and a newline (prctl PR_SET_NAME, through python3's
     // ctypes: perl's $0 would write over the environment the walk reads the mark from): the first
     // line of its /proc/<pid>/stat then reads as a process whose parent is pid 1, with nothing
