@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 )
 
 // While the project is paused the loop's tools run each read and refuse each write as the call's
@@ -43,7 +45,7 @@ func TestAPauseRefusesEachWriteOfTheToolsAndRunsEachRead(t *testing.T) {
 			}
 			var ran []string
 			for _, call := range gh.made() {
-				ran = append(ran, call.args)
+				ran = append(ran, call.Args)
 			}
 			if slices.Sort(ran); !slices.Equal(ran, ghRan) {
 				t.Errorf("the gh tool ran %q; want %q", ran, ghRan)
@@ -81,5 +83,21 @@ func TestAPauseRefusesEachWriteOfTheToolsAndRunsEachRead(t *testing.T) {
 				t.Errorf("the system prompt, the project paused %t:\n%s", paused, system)
 			}
 		})
+	}
+}
+
+// While the project is paused the system prompt names each write its tools refuse, each of the
+// dispatch tool's writes among them (dispatchtool.WriteCommands), which the pause refuses all.
+func TestThePausedPromptNamesEachDispatchWriteThePauseRefuses(t *testing.T) {
+	req := anthropicRequest(t, newStandIn(t), &stubGH{}, 3)
+	req.Dispatch = &stubDispatch{}
+	req.Paused = func() bool { return true }
+	prompt := systemPrompt(req)
+	_, refused, _ := strings.Cut(prompt, "refuse every write (")
+	refused, _, _ = strings.Cut(refused, ") as the call's result")
+	for _, write := range dispatchtool.WriteCommands {
+		if !strings.Contains(refused, write) {
+			t.Errorf("the paused prompt's refused writes (%s) leave out dispatch %s", refused, write)
+		}
 	}
 }

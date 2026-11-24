@@ -206,7 +206,7 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 			q.PassReason = string(ReasonNeedsWork)
 		}
 	}
-	if (q.PassReason != "" || q.ReplyKind == string(answer.None)) && l.wakes(q) {
+	if unposted(q) && l.wakes(q) {
 		q.Wake = true
 		if err := l.move(ctx, &q, store.QuestionAppended, store.QuestionGenerating); err != nil {
 			return err
@@ -347,6 +347,13 @@ func (l *Loop) wakes(q store.AnswerQuestion) bool {
 	return q.Wake || l.cfg.Gate.Released(q.Token, q.Session)
 }
 
+// unposted is whether q's reply is one the loop does not post as the agent's answer: one it
+// passes on (a pass reason, a fault's or a refused post's among them), or one that asks nothing
+// (answer.None).
+func unposted(q store.AnswerQuestion) bool {
+	return q.PassReason != "" || q.ReplyKind == string(answer.None)
+}
+
 // faultText is the daemon's reply for question, which got no answer for reason: faultReply over
 // the gh writes its recorded calls ran (ghtool.Writes) and the dispatch writes (dispatchtool.Writes),
 // this run's and an earlier one's.
@@ -406,14 +413,10 @@ func ranWrites(writes []record.AgentQuestionWrite) string {
 	}
 	named := make([]string, len(writes))
 	for i, w := range writes {
-		exit := "no exit status"
-		if w.Exit != nil {
-			exit = fmt.Sprintf("exit %d", *w.Exit)
-		}
 		if w.Repository == "" {
-			named[i] = fmt.Sprintf("`gh %s` (naming no repository, %s)", w.Command, exit)
+			named[i] = fmt.Sprintf("`gh %s` (naming no repository, %s)", w.Command, exitText(w.Exit))
 		} else {
-			named[i] = fmt.Sprintf("`gh %s` on %s (%s)", w.Command, w.Repository, exit)
+			named[i] = fmt.Sprintf("`gh %s` on %s (%s)", w.Command, w.Repository, exitText(w.Exit))
 		}
 	}
 	return " I had already run these gh writes: " + strings.Join(named, "; ") + "."
@@ -427,13 +430,18 @@ func ranDispatchWrites(writes []dispatchtool.Write) string {
 	}
 	named := make([]string, len(writes))
 	for i, w := range writes {
-		exit := "no exit status"
-		if w.Exit != nil {
-			exit = fmt.Sprintf("exit %d", *w.Exit)
-		}
-		named[i] = fmt.Sprintf("`dispatch %s` (%s)", w.Command, exit)
+		named[i] = fmt.Sprintf("`dispatch %s` (%s)", w.Command, exitText(w.Exit))
 	}
 	return " I had already run these Dispatch writes: " + strings.Join(named, "; ") + "."
+}
+
+// exitText is a write's exit as the daemon's reply names it: `exit <n>`, or `no exit status` where
+// its program answered none.
+func exitText(exit *int) string {
+	if exit == nil {
+		return "no exit status"
+	}
+	return fmt.Sprintf("exit %d", *exit)
 }
 
 // noAnswerNote is what the agent reads after the turns of its answer that got none for reason
@@ -463,7 +471,7 @@ func noAnswerNote(reason Reason, reply string) string {
 // reply's reason is written with the reply (generate, decideFault); a refused post writes its own
 // here first.
 func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
-	if q.Wake && (q.PassReason != "" || q.ReplyKind == string(answer.None)) {
+	if q.Wake && unposted(q) {
 		return l.woken(ctx, q, origin)
 	}
 	body := q.ReplyText + "\n\n" + AnswerMarker + q.ID + " -->"

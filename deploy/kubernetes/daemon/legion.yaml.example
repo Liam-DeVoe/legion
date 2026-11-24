@@ -609,8 +609,10 @@ runtime:
 #                                      # agent is refused and dropped as before
 #   bounds: { answer_seconds: 180, model_calls: 8, output_tokens: 4000, gh_seconds: 30, gh_output_chars: 60000, gh_calls: 20, concurrent: 4, daily_usd: 50 }
 #                                      # optional; these are the defaults: per answer, its time, model
-#                                      # calls and each call's output tokens; per gh call, its time and the
-#                                      # output the model reads; gh calls per answer; questions answered
+#                                      # calls and each call's output tokens; per gh or dispatch call, its
+#                                      # time; the characters of a gh or dispatch call's output, or of a
+#                                      # web_search call's result, the model reads; gh calls per answer,
+#                                      # and apart from them dispatch calls per answer; questions answered
 #                                      # at once; and USD the project spends a UTC day
 #   web_search:                        # optional: the loop's web_search tool, one Anthropic web search per
 #     model: anthropic/claude-opus-5-5 # call, at most 3 per answer, on the anthropic provider above; the

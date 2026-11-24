@@ -1588,7 +1588,7 @@ func TestLookupFindsTheCommentByItsAnswerKey(t *testing.T) {
 		"pr view feature-x -R acme/widgets --json number --jq .number": "5\n",
 	}})
 	start := func(seq int, argv ...string) {
-		if err := f.calls.StartAnswerToolCall(context.Background(), store.AnswerToolCall{Question: question, Seq: seq, Args: argv, App: "implement", Owner: "acme", StartedAt: time.Now()}); err != nil {
+		if err := f.calls.StartAnswerToolCall(context.Background(), store.AnswerToolCall{Question: question, Seq: seq, Tool: store.ToolGH, Args: argv, App: "implement", Owner: "acme", StartedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1647,7 +1647,7 @@ func TestLookupRefusesAnAnswerPastItsBound(t *testing.T) {
 	body := "Done — é.\n\n" + footer(implementer, question, 2, "")
 	comments := fmt.Sprintf(`[[{"id":12,"html_url":"https://github.com/acme/widgets/pull/5#issuecomment-12","body":%q}]]`, body)
 	setBehaviour(t, f.stand, behaviour{Responses: map[string]string{"api repos/acme/widgets/issues/5/comments --paginate --slurp": comments}})
-	if err := f.calls.StartAnswerToolCall(context.Background(), store.AnswerToolCall{Question: question, Seq: 2, Args: []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", body}, App: "implement", Owner: "acme", StartedAt: time.Now()}); err != nil {
+	if err := f.calls.StartAnswerToolCall(context.Background(), store.AnswerToolCall{Question: question, Seq: 2, Tool: store.ToolGH, Args: []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", body}, App: "implement", Owner: "acme", StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	chars := utf8.RuneCountInString(comments)
@@ -2037,7 +2037,7 @@ func TestTheGuardIsGivenOnlyTheAllowedNamesOfTheDaemonsEnvironment(t *testing.T)
 func TestWritesNamesEveryCallThatWritesAndNoRead(t *testing.T) {
 	exit := func(n int) *int { return &n }
 	ran := func(seq int, code *int, argv ...string) store.AnswerToolCall {
-		return store.AnswerToolCall{Question: "q-1", Seq: seq, Args: argv, App: "implement", Owner: "acme", Exit: code}
+		return store.AnswerToolCall{Question: "q-1", Seq: seq, Tool: store.ToolGH, Args: argv, App: "implement", Owner: "acme", Exit: code}
 	}
 	calls := []store.AnswerToolCall{
 		ran(1, exit(0), "pr", "view", "7", "-R", "acme/widgets", "--json", "title"),
@@ -2057,7 +2057,7 @@ func TestWritesNamesEveryCallThatWritesAndNoRead(t *testing.T) {
 		ran(15, exit(0), "issue", "list", "-R", "acme/widgets"),
 		ran(16, exit(0), "pr", "merge", "--help"),
 		ran(17, nil, "pr", "close", "7", "-R", "acme/widgets", "--comment", "Superseded."),
-		{Question: "q-1", Seq: 18, Args: []string{"pr", "merge", "8", "-R", "acme/widgets"}, App: "implement"},
+		{Question: "q-1", Seq: 18, Tool: store.ToolGH, Args: []string{"pr", "merge", "8", "-R", "acme/widgets"}, App: "implement"},
 		ran(19, exit(1), "pr", "edit", "7", "--add-label", "ready"),
 	}
 	want := []record.AgentQuestionWrite{

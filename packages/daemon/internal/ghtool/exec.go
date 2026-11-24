@@ -267,28 +267,36 @@ func (a *Answer) help(ctx context.Context, env []string) func(path []string) (st
 }
 
 // runGH runs gh with argv under the call's environment, configDir its GH_CONFIG_DIR, in the
-// answer's empty working directory with no stdin, its stdout and stderr interleaved and cut at
-// bounds.GHOutputChars, and stopped, its whole process group, at ctx's end (the gh_seconds bound).
-// A gh a signal ended ran and answered no status (procgroup.Ended): what it printed stands, with
-// the bound's note where ctx's end stopped it and the signal's words where something else did,
-// and its exit is -1.
+// answer's empty working directory with no stdin, bounded as every program of the loop's tools is
+// (RunCapped).
 func (a *Answer) runGH(ctx context.Context, argv []string, configDir string, bounds config.AnswerBounds) Result {
 	cmd := exec.CommandContext(ctx, a.host.GH, argv...)
 	cmd.Env, cmd.Dir = a.env(configDir), a.cwd
+	return RunCapped(ctx, cmd, "gh", bounds)
+}
+
+// RunCapped runs cmd, made with ctx and its environment, working directory and stdin already set,
+// as the loop's every tool that starts a program runs it: its stdout and stderr interleaved and cut
+// at bounds.GHOutputChars (CappedOutput), and stopped, its whole process group, at ctx's end (the
+// gh_seconds bound). name is the program as the result's notes name it. A program that could not
+// start did not run, and its exit is -1. A program a signal ended ran and answered no status
+// (procgroup.Ended): what it printed stands, with the bound's note where ctx's end stopped it and
+// the signal's words where something else did, and its exit is -1.
+func RunCapped(ctx context.Context, cmd *exec.Cmd, name string, bounds config.AnswerBounds) Result {
 	procgroup.Configure(cmd)
 	out := NewCappedOutput(bounds.GHOutputChars)
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
 	end := procgroup.Ended(err)
 	if err := procgroup.Err(err); err != nil && end.Signal == "" {
-		return Result{Output: fmt.Sprintf("gh could not run: %v", err), Exit: -1}
+		return Result{Output: fmt.Sprintf("%s could not run: %v", name, err), Exit: -1}
 	}
 	output := out.String()
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		output += fmt.Sprintf("\n[stopped: gh ran past its %s bound (answers.bounds.gh_seconds)]", bounds.GHCall)
+		output += fmt.Sprintf("\n[stopped: %s ran past its %s bound (answers.bounds.gh_seconds)]", name, bounds.GHCall)
 	case end.Signal != "":
-		output += fmt.Sprintf("\n[gh was ended by %s]", end.Signal)
+		output += fmt.Sprintf("\n[%s was ended by %s]", name, end.Signal)
 	}
 	return Result{Output: output, Exit: cmd.ProcessState.ExitCode(), Ran: true}
 }

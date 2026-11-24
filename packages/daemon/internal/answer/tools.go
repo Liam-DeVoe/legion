@@ -94,16 +94,20 @@ func ghSchema(req Request) json.RawMessage {
 type ghArgsSchema struct {
 	Type       string `json:"type"`
 	Properties struct {
-		Args struct {
-			Type  string `json:"type"`
-			Items struct {
-				Type string `json:"type"`
-			} `json:"items"`
-			Description string `json:"description"`
-		} `json:"args"`
+		Args argsProperty `json:"args"`
 	} `json:"properties"`
 	Required             []string `json:"required"`
 	AdditionalProperties bool     `json:"additionalProperties"`
+}
+
+// argsProperty is the args property of the gh and dispatch tools' input schemas: an array of
+// strings, the tool's arguments, with the description the model reads.
+type argsProperty struct {
+	Type  string `json:"type"`
+	Items struct {
+		Type string `json:"type"`
+	} `json:"items"`
+	Description string `json:"description"`
 }
 
 // dispatchDescription is what the model reads of the dispatch tool for req: Dispatch's own
@@ -156,13 +160,7 @@ func dispatchSchema(Request) json.RawMessage {
 type dispatchArgsSchema struct {
 	Type       string `json:"type"`
 	Properties struct {
-		Args struct {
-			Type  string `json:"type"`
-			Items struct {
-				Type string `json:"type"`
-			} `json:"items"`
-			Description string `json:"description"`
-		} `json:"args"`
+		Args  argsProperty `json:"args"`
 		Stdin struct {
 			Type        string `json:"type"`
 			Description string `json:"description"`
@@ -212,14 +210,15 @@ type webSearchArgsSchema struct {
 
 // pausedRefusal is what the model reads of a gh or dispatch call that writes while the project is
 // paused (toolSet): that it did not run, why, and what to tell the asker.
-const pausedRefusal = "refused: the Legion project is paused, and until it resumes the daemon makes no write in your name, so this call, which writes, did not run. " +
+const pausedRefusal = store.RefusedPrefix + "the Legion project is paused, and until it resumes the daemon makes no write in your name, so this call, which writes, did not run. " +
 	"Your reads still run: answer from what they show, and say in your reply that this write was not made because the project is paused."
 
 // toolSet is the loop's tools req offers as agentloop offers and runs them, each call's output
 // given to add as the model reads it (inFront.add). The project's pause is read before each call
-// that writes (tool.writes, the call's own tool's reading of it): one that finds the project
-// paused does not run, its tool is never handed it, and it answers pausedRefusal as an error
-// result. Every other call runs, a read and a web search while the project is paused among them.
+// of a tool whose calls may write, and only while it is paused is the call read for whether it
+// writes (tool.writes, the call's own tool's reading of it): one that writes does not run, its
+// tool is never handed it, and it answers pausedRefusal as an error result. Every other call
+// runs, a read and a web search while the project is paused among them.
 //
 // Each call is handed its number among the answer's calls of its own tool, from 1, counted on
 // from the calls of that tool an earlier run of the question made (Request.Earlier), which is what
@@ -232,7 +231,7 @@ func toolSet(req Request, add func(string)) []agentloop.Tool {
 	for i, t := range offered {
 		made := &atomic.Int64{}
 		for _, call := range req.Earlier {
-			if toolOf(call) == t.name {
+			if call.Tool == t.name {
 				made.Add(1)
 			}
 		}
@@ -241,7 +240,7 @@ func toolSet(req Request, add func(string)) []agentloop.Tool {
 			Description: t.description(req),
 			Schema:      t.schema(req),
 			Run: func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
-				if t.writes != nil && t.writes(call) && req.paused() {
+				if t.writes != nil && req.paused() && t.writes(call) {
 					return pausedRefusal, true
 				}
 				output, isError := t.run(ctx, req, call, int(made.Add(1)))
@@ -253,14 +252,6 @@ func toolSet(req Request, add func(string)) []agentloop.Tool {
 	return set
 }
 
-// toolOf is the tool a recorded call ran with, gh for a record that names none.
-func toolOf(call store.AnswerToolCall) string {
-	if call.Tool == "" {
-		return store.ToolGH
-	}
-	return call.Tool
-}
-
 // runGH runs one gh call through the request's GH, numbered as agentloop numbered the call: the
 // calls of the run counted on from the last one an earlier run of the question made
 // (Request.Earlier), which is the seq the call is recorded under, and n its number among the
@@ -268,7 +259,7 @@ func toolOf(call store.AnswerToolCall) string {
 // output, with its exit status when it failed; a call gh never ran, or one that failed, is an
 // error result.
 func runGH(ctx context.Context, req Request, call agentloop.ToolCall, n int) (string, bool) {
-	result := req.GH.Run(ctx, call.Index, n, argsOf(call))
+	result := req.GH.Run(ctx, GHCall{Seq: call.Index, N: n, Args: argsOf(call)})
 	switch {
 	case !result.Ran:
 		return result.Output, true

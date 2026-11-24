@@ -30,15 +30,12 @@ import (
 // its next holder, which is what these tests fail on with that code.
 
 // requireHandedToTheDaemon fails unless the stand-in listener handed each of its sends to
-// sessionID's daemon, count in all, and raised no wake and published nothing for them.
+// sessionID's daemon, count in all, and published nothing for them.
 func requireHandedToTheDaemon(t *testing.T, listener *stoppedAgentListener, sessionID string, count int) {
 	t.Helper()
 	subject := listenerwire.LegionHandoffSubject("test", sessionID)
 	if got := listener.handedOff(); len(got) != count || slices.ContainsFunc(got, func(handed string) bool { return handed != subject }) {
 		t.Fatalf("the listener handed off %v, want %d hand-offs on %s", got, count, subject)
-	}
-	if got := listener.woken(); len(got) != 0 {
-		t.Fatalf("the listener raised the wakes %v, want none: every message was handed to the agent's daemon", got)
 	}
 	if got := listener.published(); len(got) != 0 {
 		t.Fatalf("listener publishes = %#v, want none: a publish on the role's topic keeps the message and wakes the role", got)

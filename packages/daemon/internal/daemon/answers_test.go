@@ -43,7 +43,7 @@ import (
 
 type noTool struct{}
 
-func (noTool) Run(context.Context, int, int, string) ghtool.Result { return ghtool.Result{} }
+func (noTool) Run(context.Context, answer.GHCall) ghtool.Result { return ghtool.Result{} }
 func (noTool) Lookup(context.Context, int) (ghtool.Found, error) {
 	return ghtool.Found{}, ghtool.ErrNotAWrite
 }
@@ -665,12 +665,12 @@ type recordingTool struct {
 	now      time.Time
 }
 
-func (r recordingTool) Run(ctx context.Context, seq, _ int, args string) ghtool.Result {
+func (r recordingTool) Run(ctx context.Context, call answer.GHCall) ghtool.Result {
 	var argv []string
-	if err := json.Unmarshal([]byte(args), &argv); err != nil {
+	if err := json.Unmarshal([]byte(call.Args), &argv); err != nil {
 		return ghtool.Result{Output: err.Error(), Exit: -1}
 	}
-	if err := r.st.StartAnswerToolCall(ctx, store.AnswerToolCall{Question: r.question, Seq: seq, Args: argv, App: "implement", Owner: "acme", StartedAt: r.now}); err != nil {
+	if err := r.st.StartAnswerToolCall(ctx, store.AnswerToolCall{Question: r.question, Seq: call.Seq, Tool: store.ToolGH, Args: argv, App: "implement", Owner: "acme", StartedAt: r.now}); err != nil {
 		return ghtool.Result{Output: err.Error(), Exit: -1}
 	}
 	output := "title:\tFix the leak\nstate:\tMERGED"
@@ -678,7 +678,7 @@ func (r recordingTool) Run(ctx context.Context, seq, _ int, args string) ghtool.
 		output = "✓ Squashed and merged pull request acme/widgets#7 (Fix the leak)"
 	}
 	exit := 0
-	if err := r.st.FinishAnswerToolCall(ctx, r.question, seq, output, &exit, r.now); err != nil {
+	if err := r.st.FinishAnswerToolCall(ctx, r.question, call.Seq, output, &exit, r.now); err != nil {
 		return ghtool.Result{Output: err.Error(), Exit: -1}
 	}
 	return ghtool.Result{Output: output, Exit: exit, Ran: true}

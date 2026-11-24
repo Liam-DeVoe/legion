@@ -137,7 +137,7 @@ type fakeTool struct {
 	looked []int
 }
 
-func (f *fakeTool) Run(context.Context, int, int, string) ghtool.Result { return ghtool.Result{} }
+func (f *fakeTool) Run(context.Context, answer.GHCall) ghtool.Result { return ghtool.Result{} }
 func (f *fakeTool) Lookup(_ context.Context, seq int) (ghtool.Found, error) {
 	f.mu.Lock()
 	f.looked = append(f.looked, seq)
@@ -201,7 +201,6 @@ type recorder struct {
 	rowReasons []string
 	decisions  []Decision
 	wakes      []Wake
-	asked      int
 	atWake     []string
 	path       string
 }
@@ -228,7 +227,6 @@ func (r *recorder) Decide(_ context.Context, d Decision) error {
 func (r *recorder) Wake(_ context.Context, w Wake) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.asked++
 	for _, earlier := range r.wakes {
 		if earlier.Key == w.Key {
 			return nil

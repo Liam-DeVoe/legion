@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,16 @@ type AnswerToolCall struct {
 	FinishedAt *time.Time
 }
 
+// RefusedPrefix opens every refusal a tool of the loop answers and records as a call's result: a
+// call its tool refused before its program or request started.
+const RefusedPrefix = "refused: "
+
+// RefusedBeforeRun says whether c is a call its tool refused before its program or request
+// started: it finished with no exit and a result that is a refusal (RefusedPrefix).
+func (c AnswerToolCall) RefusedBeforeRun() bool {
+	return c.Exit == nil && c.Result != nil && strings.HasPrefix(*c.Result, RefusedPrefix)
+}
+
 // The loop's tools as answer_tool_calls names them (its tool column's check).
 const (
 	ToolGH        = "gh"
@@ -41,32 +52,26 @@ const (
 // already have a row: the call was made once, and is not made again under the same number.
 var ErrAnswerToolCallRecorded = errors.New("is already recorded")
 
-// StartAnswerToolCall records call before it runs, with no result. A call that names no tool is
-// recorded as gh's, the column's own default, which every row written before the column holds. A
-// call whose question and seq are recorded already is refused (ErrAnswerToolCallRecorded) and the
-// row is left as it is.
+// StartAnswerToolCall records call before it runs, with no result. A call whose question and seq
+// are recorded already is refused (ErrAnswerToolCallRecorded) and the row is left as it is.
 func (s *Store) StartAnswerToolCall(ctx context.Context, call AnswerToolCall) error {
-	tool := call.Tool
-	if tool == "" {
-		tool = ToolGH
-	}
 	args, err := json.Marshal(call.Args)
 	if err != nil {
-		return fmt.Errorf("record %s call %s.%d: encode its arguments: %w", tool, call.Question, call.Seq, err)
+		return fmt.Errorf("record %s call %s.%d: encode its arguments: %w", call.Tool, call.Question, call.Seq, err)
 	}
 	var recorded bool
 	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `insert into answer_tool_calls (question, seq, tool, args, app, owner, started_at)
 			values ($1, $2, $3, $4, $5, $6, $7) on conflict (question, seq) do nothing`,
-			call.Question, call.Seq, tool, args, call.App, call.Owner, call.StartedAt)
+			call.Question, call.Seq, call.Tool, args, call.App, call.Owner, call.StartedAt)
 		recorded = tag.RowsAffected() != 0
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("record %s call %s.%d: %w", tool, call.Question, call.Seq, err)
+		return fmt.Errorf("record %s call %s.%d: %w", call.Tool, call.Question, call.Seq, err)
 	}
 	if !recorded {
-		return fmt.Errorf("%s call %s.%d %w", tool, call.Question, call.Seq, ErrAnswerToolCallRecorded)
+		return fmt.Errorf("%s call %s.%d %w", call.Tool, call.Question, call.Seq, ErrAnswerToolCallRecorded)
 	}
 	return nil
 }

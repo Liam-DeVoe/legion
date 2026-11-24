@@ -63,7 +63,6 @@ type releasedRig struct {
 	ctx       context.Context
 	pool      *store.Pool
 	st        *store.Store
-	records   record.Store
 	rt        *fake.Runtime
 	runner    *outbox
 	publisher *holderPublisher
@@ -122,7 +121,7 @@ func newReleasedRig(t *testing.T, stop stopBy) *releasedRig {
 			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + releasedIssue}, nil
 		},
 	}
-	r := &releasedRig{t: t, ctx: ctx, pool: pool, st: st, records: records, rt: rt, runner: runner, publisher: publisher,
+	r := &releasedRig{t: t, ctx: ctx, pool: pool, st: st, rt: rt, runner: runner, publisher: publisher,
 		token: mustClaimToken(t, releasedIssue, claim.RoleImplementer), paused: paused}
 	r.answer = func(req answer.Request) answer.Reply {
 		return releasedReply(req, answer.Answered, "Answered: "+req.Question.Text)
@@ -344,7 +343,7 @@ func (r *releasedRig) conversation() string {
 // released still.
 func (r *releasedRig) assertStillReleased() {
 	r.t.Helper()
-	if launched := len(r.rt.CallsOf("Spawn")) + len(r.rt.CallsOf("Resume")) - r.launches; launched != 0 || !r.machine.Claim().Released() {
+	if launched := r.launched(); launched != 0 || !r.machine.Claim().Released() {
 		r.t.Fatalf("the machine launched %d times and the implementer is %s by %q; want nothing launched and the claim released",
 			launched, r.machine.Claim().State, r.machine.Claim().SuspendedBy)
 	}

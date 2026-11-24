@@ -32,25 +32,19 @@ import (
 // one in flight and posted nothing until the resume.
 
 // countingTool is the rig's gh tool, recording the arguments of each call an answer runs through
-// it, each answered with PR 7's state as a read gives it, and counting the loop's lookups of an
-// earlier call.
+// it, each answered with PR 7's state as a read gives it; its lookups of an earlier call are the
+// rig's fakeTool's (lookedUp).
 type countingTool struct {
 	*fakeTool
-	lookups atomic.Int64
-	mu      sync.Mutex
-	args    []string
+	mu   sync.Mutex
+	args []string
 }
 
-func (c *countingTool) Run(_ context.Context, _, _ int, args string) ghtool.Result {
+func (c *countingTool) Run(_ context.Context, call answer.GHCall) ghtool.Result {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.args = append(c.args, args)
+	c.args = append(c.args, call.Args)
 	return ghtool.Result{Output: "PR 7 is open.", Ran: true}
-}
-
-func (c *countingTool) Lookup(ctx context.Context, seq int) (ghtool.Found, error) {
-	c.lookups.Add(1)
-	return c.fakeTool.Lookup(ctx, seq)
 }
 
 // ran is the arguments of each call the tool ran, in order.
@@ -134,7 +128,7 @@ func TestDuringAPauseEachQuestionIsAnsweredPostedAndCounted(t *testing.T) {
 		{name: "the pause comes during the answer", pause: func(p *pauseRig) {
 			p.answer = func(req answer.Request) (answer.Reply, error) {
 				p.paused.Store(true)
-				req.GH.Run(context.Background(), 1, 1, `["pr","view","7"]`)
+				req.GH.Run(context.Background(), answer.GHCall{Seq: 1, N: 1, Args: `["pr","view","7"]`})
 				return answered(req, "Plum, from "+req.Question.Text), nil
 			}
 		}},
@@ -160,7 +154,7 @@ func TestDuringAPauseEachQuestionIsAnsweredPostedAndCounted(t *testing.T) {
 				p.receive(messageHandoff("ses_tester", "m-1", 1, "Why plum?"))
 			}
 			if c.earlier {
-				if err := p.st.StartAnswerToolCall(p.ctx, store.AnswerToolCall{Question: p.only().ID, Seq: 1, Args: []string{"pr", "comment", "7", "--body", "Done."},
+				if err := p.st.StartAnswerToolCall(p.ctx, store.AnswerToolCall{Question: p.only().ID, Seq: 1, Tool: store.ToolGH, Args: []string{"pr", "comment", "7", "--body", "Done."},
 					App: "review", Owner: "o", StartedAt: testNow}); err != nil {
 					t.Fatal(err)
 				}
@@ -182,8 +176,8 @@ func TestDuringAPauseEachQuestionIsAnsweredPostedAndCounted(t *testing.T) {
 				t.Fatalf("spend = %v; want each answer's 0.25 counted", p.spent())
 			case len(p.rec.passed) != 0:
 				t.Fatalf("passed on %+v; want nothing", p.rec.passed)
-			case c.earlier && p.gh.lookups.Load() != 1:
-				t.Fatalf("%d lookups of the earlier comment; want it looked up once", p.gh.lookups.Load())
+			case c.earlier && len(p.gh.lookedUp()) != 1:
+				t.Fatalf("%d lookups of the earlier comment; want it looked up once", len(p.gh.lookedUp()))
 			}
 		})
 	}

@@ -19,6 +19,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/sjawhar/legion/daemon/internal/answer"
 	"github.com/sjawhar/legion/daemon/internal/answerloop"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -366,7 +367,7 @@ func TestATransientFailureOfTheChecksReadBootsTheDaemonAndInstallsTheCheckInTheB
 			t.Cleanup(stop)
 
 			tool := openAnswerTool(t, stateDir, check, log)
-			refused := tool.Run(ctx, 1, 1, answerCall)
+			refused := tool.Run(ctx, answer.GHCall{Seq: 1, N: 1, Args: answerCall})
 			if want := pendingRefusal + leakguard.RefusalPrefix + tc.says; refused.Ran || refused.Exit != -1 || !strings.HasPrefix(refused.Output, want) ||
 				!strings.Contains(refused.Output, tc.logged) {
 				t.Fatalf("the loop's gh call before the install = %+v; want the refusal %q…, gh never run", refused, want)
@@ -396,7 +397,7 @@ func TestATransientFailureOfTheChecksReadBootsTheDaemonAndInstallsTheCheckInTheB
 			if strings.Contains(logs.String(), "level=ERROR") {
 				t.Errorf("GitHub's trouble stopped the install: %s", logs.String())
 			}
-			if after := tool.Run(ctx, 2, 2, answerCall); strings.Contains(after.Output, "is not installed yet") {
+			if after := tool.Run(ctx, answer.GHCall{Seq: 2, N: 2, Args: answerCall}); strings.Contains(after.Output, "is not installed yet") {
 				t.Fatalf("the call after the install = %+v; want it past the check's install", after)
 			}
 		})
@@ -478,7 +479,7 @@ func TestAPermanentCauseMetInTheBackgroundEndsTheInstall(t *testing.T) {
 
 			want := "refused: LEAK CHECK SETUP ERROR: the gh call: the shared public leak check at " + leakCheckTag + ", the pin " + leakguard.TagVariable +
 				" names, could not be installed, and the daemon tries the install again only at its next boot: " + tc.cause(reader)
-			if refused := openAnswerTool(t, stateDir, check, log).Run(ctx, 1, 1, answerCall); refused.Ran || refused.Exit != -1 || refused.Output != want {
+			if refused := openAnswerTool(t, stateDir, check, log).Run(ctx, answer.GHCall{Seq: 1, N: 1, Args: answerCall}); refused.Ran || refused.Exit != -1 || refused.Output != want {
 				t.Fatalf("the loop's gh call after the install ended = %+v; want the refusal %q, gh never run", refused, want)
 			}
 		})

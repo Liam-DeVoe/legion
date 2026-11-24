@@ -129,13 +129,20 @@ func faultOf(fault agentloop.Fault) Fault {
 	}
 }
 
-// GH runs one gh call the model makes: its seq among the answer's calls of every tool, from 1,
-// which its record is kept under; its number among the answer's gh calls alone, from 1, an earlier
-// run's counted; and its arguments, a JSON array of strings, gh's arguments without `gh`. The
-// daemon's runs ghtool.Run with the answer's ghtool.Answer and bounds, which refuses a gh call
-// past the gh_calls bound.
+// GH runs one gh call the model makes (GHCall). The daemon's runs ghtool.Run with the answer's
+// ghtool.Answer and bounds, which refuses a gh call past the gh_calls bound.
 type GH interface {
-	Run(ctx context.Context, seq, n int, args string) ghtool.Result
+	Run(ctx context.Context, call GHCall) ghtool.Result
+}
+
+// GHCall is one gh call the model makes in an answer: its seq among the answer's calls of every
+// tool, from 1, which its record is kept under; its number among the answer's gh calls alone, from
+// 1, an earlier run's counted; and its arguments, a JSON array of strings, gh's arguments without
+// `gh`.
+type GHCall struct {
+	Seq  int
+	N    int
+	Args string
 }
 
 // Dispatch runs one dispatch call the model makes (dispatchtool.Call): its seq among the answer's

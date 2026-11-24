@@ -40,27 +40,20 @@ const MaxSearches = 3
 // is neither made again nor looked up anywhere, and the model is told its result is unknown.
 const UnknownOutcome = "The daemon stopped while this search ran; its result is unknown."
 
-// Recorder is where every call is recorded (answer_tool_calls): started before its request is
-// made and finished after. *store.Store is the daemon's.
-type Recorder interface {
-	StartAnswerToolCall(ctx context.Context, call store.AnswerToolCall) error
-	FinishAnswerToolCall(ctx context.Context, question string, seq int, result string, exit *int, at time.Time) error
-}
-
 // Host is what every answer's searches run with. Endpoint is answers.providers.anthropic: the base
 // URL every search is posted to and the key it carries, read again for each call
 // (config.AnswerCredential.Read). Model is the model's id at Anthropic, answers.web_search.model
 // without its `anthropic/`; Price is its answers.prices entry and PricePerSearch
 // answers.web_search.price_per_search. Bounds are answers.bounds, whose output_tokens is each
 // search call's max_tokens and gh_output_chars the most of its result the model reads. Calls
-// records each call, Log takes its line, Now is the clock.
+// records each call (ghtool.CallRecorder), Log takes its line, Now is the clock.
 type Host struct {
 	Endpoint       config.AnswerEndpoint
 	Model          string
 	Price          config.AnswerPrice
 	PricePerSearch float64
 	Bounds         config.AnswerBounds
-	Calls          Recorder
+	Calls          ghtool.CallRecorder
 	Log            *slog.Logger
 	Now            func() time.Time
 }
@@ -134,7 +127,7 @@ func (a *Answer) Run(ctx context.Context, call Call) Result {
 		return a.refuse(ctx, call.Seq, query, started, fmt.Sprintf("this answer has made its %d web searches, the most one answer makes; answer with what they found", MaxSearches))
 	}
 	if err := a.host.Calls.StartAnswerToolCall(ctx, a.record(call.Seq, query, started)); err != nil {
-		result := Result{Output: fmt.Sprintf("refused: the search could not be recorded, so it did not run: %v", err), IsError: true}
+		result := Result{Output: fmt.Sprintf("%sthe search could not be recorded, so it did not run: %v", store.RefusedPrefix, err), IsError: true}
 		a.log(call.Seq, query, result)
 		return result
 	}
@@ -242,7 +235,8 @@ func (a *Answer) search(ctx context.Context, query string) Result {
 	return a.read(reply)
 }
 
-// failed is the error result of a search that failed for cause, which costs nothing.
+// failed is the error result of a search that failed for cause, with no cost: one before the
+// provider answered costs nothing, and read gives one the provider answered its reply's cost.
 func failed(cause string) Result {
 	return Result{Output: "the web search failed: " + cause, IsError: true}
 }
@@ -350,13 +344,13 @@ func (a *Answer) read(reply messageReply) Result {
 	cost := (float64(u.InputTokens)*a.host.Price.Input + float64(u.OutputTokens)*a.host.Price.Output +
 		float64(u.CacheCreationInputTokens)*a.host.Price.CacheWrite + float64(u.CacheReadInputTokens)*a.host.Price.CacheRead) * perToken
 	cost += float64(searches) * a.host.PricePerSearch
-	result := Result{Searches: searches, CostUSD: cost}
+	var result Result
 	answer := strings.TrimSpace(text.String())
 	switch {
 	case len(errorCodes) > 0:
-		result.Output, result.IsError = "the web search failed: the search answered the error "+strings.Join(errorCodes, ", "), true
+		result = failed("the search answered the error " + strings.Join(errorCodes, ", "))
 	case answer == "" && len(sources) == 0:
-		result.Output, result.IsError = "the web search failed: its reply holds no text and no source", true
+		result = failed("its reply holds no text and no source")
 	default:
 		if len(sources) > 0 {
 			answer += "\n\nSources:\n" + strings.Join(sources, "\n")
@@ -365,22 +359,14 @@ func (a *Answer) read(reply messageReply) Result {
 		_, _ = io.WriteString(out, strings.TrimSpace(answer))
 		result.Output = out.String()
 	}
+	result.Searches, result.CostUSD = searches, cost
 	return result
 }
 
 // refuse records and logs a call refused before any request was made, its argument arg, and
-// answers its refusal.
+// answers its refusal (ghtool.RecordRefusal).
 func (a *Answer) refuse(ctx context.Context, seq int, arg string, started time.Time, why string) Result {
-	result := Result{Output: "refused: " + why, IsError: true}
-	ctx = context.WithoutCancel(ctx)
-	switch err := a.host.Calls.StartAnswerToolCall(ctx, a.record(seq, arg, started)); {
-	case err != nil:
-		a.host.Log.Error("answers: refused web_search call not recorded", "question", a.question, "seq", seq, "error", err)
-	default:
-		if err := a.host.Calls.FinishAnswerToolCall(ctx, a.question, seq, result.Output, nil, a.host.Now()); err != nil {
-			a.host.Log.Error("answers: refused web_search call not finished in its record", "question", a.question, "seq", seq, "error", err)
-		}
-	}
+	result := Result{Output: ghtool.RecordRefusal(ctx, a.host.Calls, a.host.Log, a.host.Now, a.record(seq, arg, started), why), IsError: true}
 	a.log(seq, arg, result)
 	return result
 }

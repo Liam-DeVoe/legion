@@ -49,11 +49,9 @@ const (
 // state stopped. Its role lookup names roleHolder as the role's live holder while that is set, and
 // does not answer while rolesDown is set.
 //
-// It records what the listener's own routes make of each request it took (handedOff, woken): a
-// send it takes as handed off is published on the hand-off subject of its session under the
-// project test (listenerwire.LegionHandoffSubject) and raises no wake, and every other answer -
-// a send refused or only stored, a role publish kept or refused - raises the target's wake
-// report, as the listener raises it only for a message it handed to no daemon.
+// It records what the listener's own routes make of each send it took as handed off (handedOff):
+// the send is published on the hand-off subject of its session under the project test
+// (listenerwire.LegionHandoffSubject).
 type stoppedAgentListener struct {
 	*httptest.Server
 	registryDown  atomic.Bool
@@ -69,7 +67,6 @@ type stoppedAgentListener struct {
 	sends     []string
 	publishes []map[string]any
 	handoffs  []string
-	wakes     []string
 }
 
 func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
@@ -145,13 +142,11 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 			listener.sends = append(listener.sends, input.TargetSession)
 			count := len(listener.sends)
 			if listener.refuseSends.Load() {
-				listener.wakes = append(listener.wakes, "agent_message "+input.TargetSession)
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"error":"no live session ` + input.TargetSession + `"}`))
 				return
 			}
 			if listener.storeSends.Load() {
-				listener.wakes = append(listener.wakes, "agent_message "+input.TargetSession)
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"event_id": "stored-" + strconv.Itoa(count), "recipient": input.TargetSession,
 					"recipient_state": "gone", "state": "stopped",
@@ -180,12 +175,10 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 					"event_id": "delivered-" + strconv.Itoa(count), "topic": topic, "holder": "woken", "holder_state": "live",
 				})
 			case http.StatusNotFound:
-				listener.wakes = append(listener.wakes, "role_message "+strings.TrimPrefix(topic, "notifications.role."))
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"error":"no holder for role ` + strings.TrimPrefix(topic, "notifications.role.") +
 					`","reason":"unclaimed","claim_revision":0}`))
 			default:
-				listener.wakes = append(listener.wakes, "role_message "+strings.TrimPrefix(topic, "notifications.role."))
 				w.WriteHeader(http.StatusAccepted)
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"event_id": "kept-" + strconv.Itoa(count), "topic": topic, "kept": true,
@@ -219,14 +212,6 @@ func (l *stoppedAgentListener) handedOff() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]string{}, l.handoffs...)
-}
-
-// woken is every wake report the listener raised for the requests it took, in order, each as its
-// kind and the session or the role it names.
-func (l *stoppedAgentListener) woken() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return append([]string{}, l.wakes...)
 }
 
 // assertHandedOff checks a message's one attempt was recorded for sessionID and sent.

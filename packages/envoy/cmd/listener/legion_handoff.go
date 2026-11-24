@@ -68,19 +68,13 @@ type legionHandoff struct {
 // that verdict answers a resend, which may name this very hand-off's own copy
 // (bus.StoredAck.Resent). A send repeated under one idempotency key, a role publish repeated under
 // one key, and every listener's copy of one bus message after the first all find one. A request
-// a hand-off answers is answered the copy the stream holds (answerHandedOff).
+// a hand-off answers is answered the copy the stream holds (answerHandedOff), and the route that
+// made it marks its sender's charge by the verdict, as a publish's own verdict marks it
+// (senderCharge.published).
 type legionHandedOff struct {
 	listenerwire.LegionHandoff
-	subject   string
-	duplicate bool
-	sequence  uint64
-	resent    bool
-}
-
-// ack is the stream's verdict on the hand-off's publish, which the route that made it marks its
-// sender's charge by, as a publish's own verdict marks it (senderCharge.published).
-func (h *legionHandedOff) ack() bus.StoredAck {
-	return bus.StoredAck{Duplicate: h.duplicate, Sequence: h.sequence, Resent: h.resent}
+	subject string
+	ack     bus.StoredAck
 }
 
 // handOffToLegion publishes target to its agent's daemon in place of the answer a message no
@@ -107,8 +101,8 @@ func (h *legionHandedOff) ack() bus.StoredAck {
 // stopped agent is: its daemon decides what its message does, and whether it wakes the agent. So
 // every route raises its wake report only when nothing was handed off (sendHandler,
 // roleSend.noHolder, handOffOrKeepRoleSend, unplaceableAgentDelivery): a wake raised beside a
-// hand-off would resume a released agent before its daemon decided. For an agent
-// that is not released this changes nothing, since the daemon acts on a wake report only for a
+// hand-off would resume a released agent before its daemon decided. An agent that is not released
+// needs no wake report for a handed-off message either, since the daemon acts on one only for a
 // claim of its own that is released (listenerWake in packages/daemon/internal/workflow).
 //
 // It answers the hand-off it published (listenerwire.LegionHandoff, the body the daemon's hand-off
@@ -169,10 +163,10 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 	if err != nil {
 		return nil, fmt.Errorf("publish legion hand-off to %s: %w", subject, err)
 	}
-	handoff.subject, handoff.duplicate, handoff.sequence, handoff.resent = subject, ack.Duplicate, ack.Sequence, ack.Resent
+	handoff.subject, handoff.ack = subject, ack
 	h.logger.Info("listener handed a message to its legion daemon",
 		slog.String("session_id", agent.SessionID), slog.String("topic", handoff.OriginalTopic), slog.String("event_id", handoff.Envelope.EventID), slog.String("subject", subject),
-		slog.Bool("duplicate", handoff.duplicate))
+		slog.Bool("duplicate", handoff.ack.Duplicate))
 	return &handoff, nil
 }
 
@@ -197,13 +191,13 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 // maybe_stored. Each route marks the sender's charge for the hand-off by the stream's verdict on
 // its publish, as publishHeld marks a send's own (senderCharge.published).
 func answerHandedOff(ctx context.Context, reader storedReader, record *requestRecord, sender requestSender, handed *legionHandedOff, item *contracts.Envelope) (duplicate bool, err error) {
-	if !handed.duplicate {
+	if !handed.ack.Duplicate {
 		*item = handed.Envelope
 		return false, nil
 	}
-	held, err := storedCopy(ctx, handoffCopies{reader}, handed.subject, handed.Envelope, handed.sequence)
+	held, err := storedCopy(ctx, handoffCopies{reader}, handed.subject, handed.Envelope, handed.ack.Sequence)
 	if err != nil {
-		if handed.resent {
+		if handed.ack.Resent {
 			return false, mayBeOwnUnread{err}
 		}
 		return false, err
@@ -350,7 +344,7 @@ func offerAgentDeliveryToLegion(cfg listenerDeliveryHandlerConfig, message deliv
 			metricStatus: "handed_off",
 			log: func(logger *logging.Logger) {
 				logger.DeliveryLog(slog.LevelInfo, "listener agent handed off to its legion daemon", sessionID, item.Topic, item.EventID, "handed_off",
-					slog.String("project", handed.Project), slog.Bool("duplicate", handed.duplicate))
+					slog.String("project", handed.Project), slog.Bool("duplicate", handed.ack.Duplicate))
 			},
 			recordDedupe: true,
 		})

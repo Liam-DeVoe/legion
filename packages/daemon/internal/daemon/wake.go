@@ -362,20 +362,29 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	return true, time.Time{}, nil
 }
 
-// wakeableIssue is the record of issue key, and whether a released claim of it can be woken: the
-// issue is in the workflow and its tree does not linger (pods.InWorkflowNotLingering). A claim of
-// an issue that has left the workflow, or whose tree lingers, is a close's to stop, not a wake's
-// to bring back. An issue the daemon keeps no record of is an error, as outbox.issue says.
+// wakeableIssue is the record of issue key, and whether a released claim of it can be woken
+// (wakeable). An issue the daemon keeps no record of is an error, as outbox.issue says.
 func (r *outbox) wakeableIssue(ctx context.Context, key string) (record.Issue, bool, error) {
 	issue, err := r.issue(ctx, key)
 	if err != nil {
 		return record.Issue{}, false, err
 	}
-	root, err := r.root(ctx, issue)
+	wakeable, err := r.wakeable(ctx, issue)
 	if err != nil {
 		return record.Issue{}, false, err
 	}
-	return issue, root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow), nil
+	return issue, wakeable, nil
+}
+
+// wakeable is whether a released claim of issue can be woken: the issue is in the workflow and its
+// tree does not linger (pods.InWorkflowNotLingering). A claim of an issue that has left the
+// workflow, or whose tree lingers, is a close's to stop, not a wake's to bring back.
+func (r *outbox) wakeable(ctx context.Context, issue record.Issue) (bool, error) {
+	root, err := r.root(ctx, issue)
+	if err != nil {
+		return false, err
+	}
+	return root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow), nil
 }
 
 // parkedLaunch is whether view's launch is parked by the wake pacing over no process, and that

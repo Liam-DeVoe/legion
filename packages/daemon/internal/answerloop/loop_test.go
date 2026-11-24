@@ -367,7 +367,7 @@ func TestAStartDuringTheAnswerForwardsTheQuestionAndAppendsNothing(t *testing.T)
 	before := fileContent(t, path)
 	r.answer = func(req answer.Request) (answer.Reply, error) {
 		exit := 0
-		if err := r.st.StartAnswerToolCall(r.ctx, store.AnswerToolCall{Question: req.Question.ID, Seq: 1, Args: []string{"pr", "comment", "7", "--body", "Done."},
+		if err := r.st.StartAnswerToolCall(r.ctx, store.AnswerToolCall{Question: req.Question.ID, Seq: 1, Tool: store.ToolGH, Args: []string{"pr", "comment", "7", "--body", "Done."},
 			App: "review", Owner: "o", StartedAt: testNow}); err != nil {
 			t.Error(err)
 		}
@@ -446,7 +446,7 @@ func TestARestartAnswersAGeneratingQuestionAgainWithItsRecordedCalls(t *testing.
 	}
 	exit := 0
 	for seq, args := range map[int][]string{1: {"pr", "view", "7"}, 2: {"pr", "comment", "7", "--body", "Done."}, 3: {"api", "repos/o/r"}} {
-		if err := r.st.StartAnswerToolCall(r.ctx, store.AnswerToolCall{Question: q.ID, Seq: seq, Args: args, App: "review", Owner: "o", StartedAt: testNow}); err != nil {
+		if err := r.st.StartAnswerToolCall(r.ctx, store.AnswerToolCall{Question: q.ID, Seq: seq, Tool: store.ToolGH, Args: args, App: "review", Owner: "o", StartedAt: testNow}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -726,7 +726,7 @@ func TestAFaultedAnswerNamesItsWritesAndAppendsItsTurnsOnce(t *testing.T) {
 			{Seq: 2, Args: []string{"pr", "view", "7", "-R", "acme/widgets"}, Owner: "acme", Exit: &zero},
 			{Seq: 3, Args: []string{"pr", "review", "7", "-R", "acme/widgets", "--approve"}},
 		} {
-			call.Question, call.App, call.StartedAt = req.Question.ID, "implement", testNow
+			call.Question, call.Tool, call.App, call.StartedAt = req.Question.ID, store.ToolGH, "implement", testNow
 			if err := r.st.StartAnswerToolCall(r.ctx, call); err != nil {
 				return answer.Reply{}, err
 			}

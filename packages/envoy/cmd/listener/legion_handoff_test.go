@@ -208,7 +208,7 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 	if wire.OriginalTopic != item.Topic || wire.TargetSession != handoffAgent || wire.Project != "infra" {
 		t.Fatalf("the stored hand-off is %#v, want the message's topic and the agent's session", wire)
 	}
-	if handed.duplicate {
+	if handed.ack.Duplicate {
 		t.Fatal("the first hand-off of an envelope answered duplicate; the stream held nothing")
 	}
 	// The same envelope handed off again - another listener's durable, a repeated send - is one
@@ -218,7 +218,7 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 	if err != nil || again == nil {
 		t.Fatalf("the second hand-off of one envelope = %v, %v; want it handed off", again, err)
 	}
-	if !again.duplicate {
+	if !again.ack.Duplicate {
 		t.Fatalf("the second hand-off of one envelope answered %+v, want duplicate: the stream already held it", *again)
 	}
 	if count, _ := handoffs(t, rig.client, handoffAgent); count != 1 {
@@ -228,7 +228,7 @@ func TestHandOffToLegionHandsAStoppedAgentToItsDaemon(t *testing.T) {
 	// A role publish with no live holder resolves to the role token's newest session.
 	role := envelopeFor(contracts.RoleTopicPrefix+handoffRoleToken, "publish.k2", "agent")
 	handedRole, err := rig.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: role, roleToken: handoffRoleToken})
-	if err != nil || handedRole == nil || handedRole.TargetSession != handoffArchitect || handedRole.duplicate {
+	if err != nil || handedRole == nil || handedRole.TargetSession != handoffArchitect || handedRole.ack.Duplicate {
 		t.Fatalf("a role publish with no live holder = %v, %v; want it handed to %s, not a duplicate", handedRole, err, handoffArchitect)
 	}
 	if count, _ := handoffs(t, rig.client, handoffArchitect); count != 1 {

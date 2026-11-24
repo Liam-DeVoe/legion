@@ -1836,12 +1836,12 @@ The listener refuses every registry write that presents a secrets-broker access 
 That refusal closes the broker token's way in and no other: every launch also carries the daemon's Envoy bearer (`ENVOY_TOKEN_FILE`), which names no session, so a session that presents it writes these routes as the daemon does.
 
 The role's newest entry decides what a message to a role **nobody holds** gets, whether its issue has left the workflow or not:
-the entry is a stopped agent its daemon answers for, a worker that failed or that the workflow, an operator or an idle release suspended as much as a finished role's last worker, so the message is handed to that daemon and its sender answered `200` with the stopped agent as `recipient`;
+the entry is a stopped agent its daemon answers for, a worker that failed or that the workflow, an operator, an idle release or a project's pause suspended as much as a finished role's last worker, so the message is handed to that daemon and its sender answered `200` with the stopped agent as `recipient`;
 the message of a role the registry holds no entry for is kept on that role's kept lane for its first worker for one hour and answered `202` with `kept: true`.
 A message addressed to a session id is handed off whether its issue is finished or not, ahead of the copy the listener would store for a session it still knows:
 that session has stopped, and the message is for it rather than for a role another session will take.
 A message the listener hands off raises no wake report, an agent whose idle issue pod the daemon released among them: the daemon decides what wakes the agent.
-The listener raises the wake only for a message it handed to no daemon, as it did before the hand-off existed.
+The listener raises the wake only for a message it handed to no daemon.
 A hand-off costs its sender what its publish stored under the listener's sender limit, as a send's own publish does: one for a new copy, nothing for a repeat the stream already held.
 An edge listener hands nothing off: its grant (`natsgrant.Edge`) publishes the agent topics and its own projects' role topics (`notifications.agent.>`, `notifications.role.<project>.>`) but neither the hand-off subject `notifications.legion.<project>.agents.<session>` nor the kept lane `notifications.envoy.kept.>`, so a role publish through an edge listener to a role nobody holds is answered as it was before the hand-off: `404`, with nothing kept.
 
@@ -1977,7 +1977,7 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   The question goes back to received: nothing is appended to the conversation, nothing is posted, and nothing is passed to the controller.
   The loop makes no model call for it, or for a later question to the same agent, until the resume, which wakes the loop; the question is then answered again as one after a restart is, given the tool calls the failed run made.
   The loop holds a kept question in its memory alone, so a daemon restarted during the pause tries each such question once more.
-  The pause still starts no role: the wake row the loop writes for an agent the pause stopped waits in the outbox until the resume, as every row of the project does, and the launch of every role but the controller's waits too.
+  The pause still starts no role: the wake row the loop writes for an agent the pause stopped waits in the outbox until the resume, as every row that wakes or messages a role does, and the launch of every role but the controller's waits too.
   A daemon that cannot hold a pause, a tmux daemon among them, never reads its loop paused.
 
 ### Cost and logs

@@ -85,7 +85,7 @@ func TestADispatchCallsResultReachesTheModelAndEachToolCountsItsOwnCalls(t *test
 	if err != nil || reply.Kind != Answered {
 		t.Fatalf("reply %+v, %v; want answered", reply, err)
 	}
-	if calls := gh.made(); !reflect.DeepEqual(calls, []ghCall{{4, 2, `["pr","view","7"]`}}) {
+	if calls := gh.made(); !reflect.DeepEqual(calls, []GHCall{{4, 2, `["pr","view","7"]`}}) {
 		t.Errorf("gh calls %+v; want seq 4, the second gh call", calls)
 	}
 	// agentloop runs a step's calls one at a time, in whichever order they take its lock, so each

@@ -62,11 +62,17 @@ func (a Agent) App() appauth.AppRole { return appauth.AppRoleFor(a.Role) }
 // Usage is how the agent calls the tool: on its issue's repository and pull request.
 func (a Agent) Usage() Usage { return Usage{Repository: a.Repository, PullRequest: a.PullRequest} }
 
-// Recorder is where every call is recorded (answer_tool_calls): started before it runs, finished
-// after, and read back for a restart's Lookup. *store.Store is the daemon's.
-type Recorder interface {
+// CallRecorder is where every call of the loop's tools is recorded (answer_tool_calls): started
+// before it runs and finished after. *store.Store is the daemon's.
+type CallRecorder interface {
 	StartAnswerToolCall(ctx context.Context, call store.AnswerToolCall) error
 	FinishAnswerToolCall(ctx context.Context, question string, seq int, result string, exit *int, at time.Time) error
+}
+
+// Recorder is where every gh call is recorded (CallRecorder), and read back for a restart's
+// Lookup. *store.Store is the daemon's.
+type Recorder interface {
+	CallRecorder
 	AnswerToolCall(ctx context.Context, question string, seq int) (store.AnswerToolCall, bool, error)
 }
 
@@ -244,18 +250,17 @@ const noRepository = "not a git repository"
 // Run runs call. It is refused, with gh never started, when its arguments are no JSON array of
 // strings, its number among the answer's gh calls is past the answer's gh_calls bound, its command
 // is none of the tool's (the allow list, whose refusal says how the tool is called: Usage), it
-// submits a review the agent's
-// recorded round cannot decide (reviewOf: the record names no head, the review names no pull
-// request by repository and number, or names another commit_id), or it posts a comment or review
-// in a form the agent's footer cannot be added to; it is refused with gh never started too when
-// the host's check answers none (Host.LeakCheck: a Kubernetes daemon's not installed yet, a
-// machine that carries none), with that setup failure, logged and recorded as the guard's own
-// refusals are; a review is refused after reading its pull
-// request's head, with the review itself never run, when that head is not the one the agent's
-// recorded round read (Answer.headRefusal); a call is refused after reading gh's help, with the
-// command itself never run, when the gh directory it needs cannot be read for certain, or the
-// bundle holds none for it and the call writes (a read naming only such owners runs with the
-// bundle's default directory, as ghroute.TargetOf routes it), or gh's help names its command otherwise than its words do, and when
+// submits a review the agent's recorded round cannot decide (reviewOf: the record names no head,
+// the review names no pull request by repository and number, or names another commit_id), or it
+// posts a comment or review in a form the agent's footer cannot be added to; it is refused with gh
+// never started too when the host's check answers none (Host.LeakCheck: a Kubernetes daemon's not
+// installed yet, a machine that carries none), with that setup failure, logged and recorded as the
+// guard's own refusals are; a review is refused after reading its pull request's head, with the
+// review itself never run, when that head is not the one the agent's recorded round read
+// (Answer.headRefusal); a call is refused after reading gh's help, with the command itself never
+// run, when the gh directory it needs cannot be read for certain, or the bundle holds none for it
+// and the call writes (a read naming only such owners runs with the bundle's default directory, as
+// ghroute.TargetOf routes it), or gh's help names its command otherwise than its words do, and when
 // the leak guard refuses it or could not be made to run (Answer.leakGuard), which is checked last
 // of all, once the call's repository and the files it would send are known and before anything
 // is recorded or started. Every other call runs with the footer added to what it posts (a
@@ -271,7 +276,7 @@ const noRepository = "not a git repository"
 func Run(ctx context.Context, call Call) Result {
 	a := call.Answer
 	started := a.host.Now()
-	argv, err := decodeArgs(call.Args)
+	argv, err := DecodeArgs(call.Args, "gh")
 	if err != nil {
 		return a.refuse(ctx, call.Seq, []string{call.Args}, started, err.Error())
 	}
@@ -321,7 +326,7 @@ func Run(ctx context.Context, call Call) Result {
 		return a.guardRefusal(ctx, call.Seq, run, started, targetRepo(target), err)
 	}
 	if err := a.host.Calls.StartAnswerToolCall(ctx, a.record(call.Seq, run, owner, started)); err != nil {
-		result := Result{Output: fmt.Sprintf("refused: the call could not be recorded, so it did not run: %v", err), Exit: -1}
+		result := Result{Output: fmt.Sprintf("%sthe call could not be recorded, so it did not run: %v", store.RefusedPrefix, err), Exit: -1}
 		a.log(call.Seq, run, owner, result)
 		return result
 	}
@@ -366,32 +371,42 @@ func (a *Answer) headRefusal(ctx context.Context, pr pullRequest, limit int) str
 	return ""
 }
 
-// decodeArgs reads the model's arguments, a JSON array of strings.
-func decodeArgs(raw string) ([]string, error) {
+// DecodeArgs reads the arguments the model gives the tool name, a JSON array of strings, name's
+// arguments without name; anything else is refused.
+func DecodeArgs(raw, name string) ([]string, error) {
 	var argv []string
 	if err := json.Unmarshal([]byte(raw), &argv); err != nil || argv == nil {
-		return nil, fmt.Errorf("refused: the gh tool takes gh's arguments as a JSON array of strings, without `gh` (%q is none)", raw)
+		return nil, fmt.Errorf("%sthe %s tool takes %s's arguments as a JSON array of strings, without `%s` (%q is none)", store.RefusedPrefix, name, name, name, raw)
 	}
 	return argv, nil
 }
 
 // refuse records and logs a call refused before gh ran it, and answers its refusal.
 func (a *Answer) refuse(ctx context.Context, seq int, argv []string, started time.Time, why string) Result {
-	if !strings.HasPrefix(why, "refused: ") {
-		why = "refused: " + why
-	}
-	result := Result{Output: why, Exit: -1}
-	ctx = context.WithoutCancel(ctx)
-	switch err := a.host.Calls.StartAnswerToolCall(ctx, a.record(seq, argv, "", started)); {
-	case err != nil:
-		a.host.Log.Error("answers: refused gh call not recorded", "question", a.question, "seq", seq, "error", err)
-	default:
-		if err := a.host.Calls.FinishAnswerToolCall(ctx, a.question, seq, result.Output, nil, a.host.Now()); err != nil {
-			a.host.Log.Error("answers: refused gh call not finished in its record", "question", a.question, "seq", seq, "error", err)
-		}
-	}
+	result := Result{Output: RecordRefusal(ctx, a.host.Calls, a.host.Log, a.host.Now, a.record(seq, argv, "", started), why), Exit: -1}
 	a.log(seq, argv, "", result)
 	return result
+}
+
+// RecordRefusal records call, which its tool refused before its program started or its request
+// was made, as the loop's every tool records a refusal: started, then finished at now with no exit
+// and why, store.RefusedPrefix put before it where it lacks it, whatever ctx's end did meanwhile.
+// A record that fails is logged on log, naming the call's tool, and the refusal stands. It answers
+// the refusal as recorded.
+func RecordRefusal(ctx context.Context, calls CallRecorder, log *slog.Logger, now func() time.Time, call store.AnswerToolCall, why string) string {
+	if !strings.HasPrefix(why, store.RefusedPrefix) {
+		why = store.RefusedPrefix + why
+	}
+	ctx = context.WithoutCancel(ctx)
+	switch err := calls.StartAnswerToolCall(ctx, call); {
+	case err != nil:
+		log.Error("answers: refused "+call.Tool+" call not recorded", "question", call.Question, "seq", call.Seq, "error", err)
+	default:
+		if err := calls.FinishAnswerToolCall(ctx, call.Question, call.Seq, why, nil, now()); err != nil {
+			log.Error("answers: refused "+call.Tool+" call not finished in its record", "question", call.Question, "seq", call.Seq, "error", err)
+		}
+	}
+	return why
 }
 
 // guardRefusal refuses a call over err, the leak guard's refusal, setup failure or not-found

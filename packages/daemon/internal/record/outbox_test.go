@@ -560,7 +560,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
 		{name: "a message for a released agent of no role", payload: AgentMessage{Role: "pilot", Session: "ses_implementer", Text: "Thanks."}, reason: "names the agent's role on the issue"},
 		{name: "a message for a released agent of no session", payload: AgentMessage{Role: claim.RoleImplementer, Text: "Thanks."}, reason: "names the session it was handed off for"},
-		{name: "a message for a released agent with no text", payload: AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer"}, reason: "names the session it was handed off for"},
+		{name: "a message for a released agent with no text", payload: AgentMessage{Role: claim.RoleImplementer, Session: "ses_implementer"}, reason: "carries the text the agent is told"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

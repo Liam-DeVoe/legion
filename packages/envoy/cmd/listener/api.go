@@ -912,7 +912,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 				return
 			}
 			if handed != nil {
-				charge.published(handed.ack(), nil)
+				charge.published(handed.ack, nil)
 				// A repeat whose first send was handed off is answered the hand-off the stream
 				// holds, as a repeat this route publishes is answered its stored copy
 				// (answerHandedOff, publishHeld).

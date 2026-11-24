@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -56,7 +57,7 @@ func refusal(argv []string) string {
 			fmt.Sprintf(commandRefusal, strings.Join(ReadCommands, ", "), strings.Join(WriteCommands, ", "))
 	}
 	for i := 1; i < len(argv); i++ {
-		name, value, ok := option(argv, i)
+		name, value, ok, inline := option(argv, i)
 		if name == "" {
 			continue
 		}
@@ -65,7 +66,7 @@ func refusal(argv []string) string {
 			return fmt.Sprintf(fileRefusal, argv[i])
 		case strings.HasSuffix(name, "-file") && (!ok || value != "-"):
 			given := argv[i]
-			if ok && !strings.Contains(argv[i], "=") {
+			if ok && !inline {
 				given += " " + value
 			}
 			return fmt.Sprintf(fileRefusal, given)
@@ -76,18 +77,18 @@ func refusal(argv []string) string {
 
 // option reads argv[i] as the CLI reads an option: its name, "" for an argument that is none, and
 // its value, the rest of its word after `=`, else the next argument unless that one is an option
-// too, with whether it has one.
-func option(argv []string, i int) (name, value string, ok bool) {
+// too, with whether it has one and whether that value is the rest of its word (inline).
+func option(argv []string, i int) (name, value string, ok, inline bool) {
 	if !strings.HasPrefix(argv[i], "--") {
-		return "", "", false
+		return "", "", false, false
 	}
 	if name, value, ok := strings.Cut(argv[i], "="); ok {
-		return name, value, true
+		return name, value, true, true
 	}
 	if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "--") {
-		return argv[i], argv[i+1], true
+		return argv[i], argv[i+1], true, false
 	}
-	return argv[i], "", false
+	return argv[i], "", false, false
 }
 
 // Mark is what the tool adds to the body of each comment, message and agent's message a call
@@ -108,10 +109,10 @@ func withMark(argv []string, stdin, mark string) ([]string, string) {
 	}
 	run := slices.Clone(argv)
 	for i := 1; i < len(run); i++ {
-		name, value, ok := option(run, i)
+		name, value, ok, inline := option(run, i)
 		switch {
 		case !ok:
-		case name == "--body" && strings.Contains(run[i], "="):
+		case name == "--body" && inline:
 			run[i] += mark
 		case name == "--body":
 			run[i+1] += mark
@@ -145,7 +146,7 @@ type Write struct {
 func Writes(calls []store.AnswerToolCall) []Write {
 	var written []Write
 	for _, call := range calls {
-		if call.Tool != store.ToolDispatch || call.Exit == nil && call.Result != nil && strings.HasPrefix(*call.Result, refusedPrefix) {
+		if call.Tool != store.ToolDispatch || call.RefusedBeforeRun() {
 			continue
 		}
 		command := ""
@@ -166,6 +167,6 @@ func Writes(calls []store.AnswerToolCall) []Write {
 // array, which Run refuses before dispatch starts. The answer refuses each call that writes while
 // the project is paused (internal/answer's toolSet).
 func CallWrites(args string) bool {
-	argv, err := decodeArgs(args)
+	argv, err := ghtool.DecodeArgs(args, "dispatch")
 	return err == nil && len(argv) > 0 && slices.Contains(WriteCommands, argv[0])
 }

@@ -214,3 +214,21 @@ func TestAReleasedAgentIsGivenWhatAsksItNothingAndNothingThatIsNotItsOwn(t *test
 			notReleased.rec.wakes, notReleased.rec.decisions)
 	}
 }
+
+// A message of a source no agent answers, a GitHub notification here, is given to a released
+// agent by its own source and topic: the wake does not tell it as an Envoy session's message.
+func TestAReleasedAgentIsToldAMessageOfAnotherSourceByItsSourceAndTopic(t *testing.T) {
+	const topic = "notifications.github.acme.widgets.pull_request_review.submitted"
+	github := envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-github", "github.k1", "acme/widgets#7 got a review")
+	github.Envelope.Source, github.Envelope.SourceSession, github.Envelope.Topic = "github", "", topic
+
+	r, _ := releasedRig(t)
+	r.receive(github)
+	if len(r.rec.wakes) != 1 {
+		t.Fatalf("wakes = %+v; want one for the GitHub notification", r.rec.wakes)
+	}
+	want := "github sent you, in a message on " + topic + ", while you were stopped:\nacme/widgets#7 got a review"
+	if got := r.rec.wakes[0].Text; got != want {
+		t.Errorf("the wake tells the agent %q; want %q", got, want)
+	}
+}

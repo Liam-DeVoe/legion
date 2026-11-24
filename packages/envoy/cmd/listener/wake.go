@@ -249,9 +249,9 @@ func newWakeReporter(lifetime context.Context, client *bus.Client) *wakeReporter
 }
 
 // report publishes one report off the caller's path. The caller is writing a 404 the report
-// owes nothing, and every role send with no holder raises one — including the common case where
-// no daemon holds a released claim of that role at all — so publishing it inline would put the
-// report's retries in front of each of those 404s.
+// owes nothing, and every role send that no holder and no daemon took raises one — including
+// the common case where no daemon holds a released claim of that role at all — so publishing it
+// inline would put the report's retries in front of each of those 404s.
 func (r *wakeReporter) report(logger *logging.Logger, report wakeReport) {
 	if r == nil || r.client == nil {
 		return
@@ -270,9 +270,9 @@ func (r *wakeReporter) report(logger *logging.Logger, report wakeReport) {
 	}()
 }
 
-// reportRoleWake reports that a message was published to role and no live session held it. The
-// role is the claim token a Legion role topic is named by, which is what the daemon matches its
-// own released claims on.
+// reportRoleWake reports that a message was published to role, no live session held it, and no
+// daemon took it. The role is the claim token a Legion role topic is named by, which is what the
+// daemon matches its own released claims on.
 func reportRoleWake(d *listenerDeps, logger *logging.Logger, role string) {
 	if d == nil || role == "" {
 		return

@@ -15,7 +15,6 @@ package dispatchtool
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,16 +27,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
-	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
-
-// Recorder is where every call is recorded (answer_tool_calls): started before it runs and
-// finished after. *store.Store is the daemon's.
-type Recorder interface {
-	StartAnswerToolCall(ctx context.Context, call store.AnswerToolCall) error
-	FinishAnswerToolCall(ctx context.Context, question string, seq int, result string, exit *int, at time.Time) error
-}
 
 // Host is what every answer's calls run with. Dispatch is the dispatch command the daemon found at
 // boot, absolute, which may be a script: the worker image's is a /bin/sh shim that execs bun on
@@ -46,7 +37,7 @@ type Recorder interface {
 // daemon gives the agent's pane or pod, read by the CLI and never by this package. StateDir is
 // the daemon's state directory, under whose answers/ each answer's directory lives. Bounds are
 // answers.bounds, whose gh_seconds, gh_output_chars and gh_calls bound each call as they bound a
-// gh call. Calls records each call, Log takes its line, Now is the clock.
+// gh call. Calls records each call (ghtool.CallRecorder), Log takes its line, Now is the clock.
 type Host struct {
 	Dispatch  string
 	BunDir    string
@@ -54,7 +45,7 @@ type Host struct {
 	TokenFile string
 	StateDir  string
 	Bounds    config.AnswerBounds
-	Calls     Recorder
+	Calls     ghtool.CallRecorder
 	Log       *slog.Logger
 	Now       func() time.Time
 }
@@ -129,14 +120,11 @@ type Call struct {
 	Stdin string
 }
 
-// Result is what the model reads of a call: dispatch's output, stdout and stderr interleaved and
-// cut to the bound with a note saying how much was cut, or the refusal; dispatch's exit status, -1
-// when it never ran or was stopped by a signal; and whether it ran.
-type Result struct {
-	Output string
-	Exit   int
-	Ran    bool
-}
+// Result is what the model reads of a call, as a gh call's (ghtool.Result): dispatch's output,
+// stdout and stderr interleaved and cut to the bound with a note saying how much was cut, or the
+// refusal; dispatch's exit status, -1 when it never ran or was stopped by a signal; and whether it
+// ran.
+type Result = ghtool.Result
 
 // Run runs call. It is refused, with dispatch never started, when its arguments are no JSON array
 // of strings, its number among the answer's dispatch calls is past the gh_calls bound, its command
@@ -148,7 +136,7 @@ type Result struct {
 // recorded does not run. Each logs one `answers: dispatch` line.
 func (a *Answer) Run(ctx context.Context, call Call) Result {
 	started := a.host.Now()
-	argv, err := decodeArgs(call.Args)
+	argv, err := ghtool.DecodeArgs(call.Args, "dispatch")
 	if err != nil {
 		return a.refuse(ctx, call.Seq, []string{call.Args}, started, err.Error())
 	}
@@ -166,7 +154,7 @@ func (a *Answer) Run(ctx context.Context, call Call) Result {
 	}
 	run, stdin := withMark(argv, call.Stdin, Mark(a.question, call.Seq))
 	if err := a.host.Calls.StartAnswerToolCall(ctx, a.record(call.Seq, run, started)); err != nil {
-		result := Result{Output: fmt.Sprintf("refused: the call could not be recorded, so it did not run: %v", err), Exit: -1}
+		result := Result{Output: fmt.Sprintf("%sthe call could not be recorded, so it did not run: %v", store.RefusedPrefix, err), Exit: -1}
 		a.log(call.Seq, run, result)
 		return result
 	}
@@ -190,10 +178,9 @@ func (a *Answer) Run(ctx context.Context, call Call) Result {
 // DISPATCH_SESSION_ID) on the daemon's Dispatch with the token the daemon gives the agent's pane
 // or pod (DISPATCH_URL and DISPATCH_TOKEN_FILE) and keep its session state in the answer's own
 // directory (DISPATCH_STATE_DIR); HOME, the answer's empty directory, so no personal Dispatch
-// token or configuration of the daemon's host takes part; and PATH. The architect's list names the
-// five DISPATCH variables and HOME. PATH is the shim's need and no access: the worker image's
-// dispatch is a /bin/sh script that runs dirname and starts bun by name, so it holds bun's
-// directory and /bin and nothing else.
+// token or configuration of the daemon's host takes part; and PATH. PATH is the shim's need and no
+// access: the worker image's dispatch is a /bin/sh script that runs dirname and starts bun by
+// name, so it holds bun's directory and /bin and nothing else.
 func (a *Answer) env() []string {
 	path := a.host.BunDir
 	if path != "/bin" {
@@ -211,64 +198,21 @@ func (a *Answer) env() []string {
 }
 
 // runDispatch runs dispatch with argv under the call's environment, in the answer's empty HOME,
-// stdin its standard input, its stdout and stderr interleaved and cut at gh_output_chars as a gh
-// call's are (ghtool.CappedOutput), and stopped, its whole process group, at ctx's end (the
-// gh_seconds bound). A dispatch a signal ended ran and answered no status (procgroup.Ended): what
-// it printed stands, with the bound's note where ctx's end stopped it and the signal's words where
-// something else did, and its exit is -1.
+// stdin its standard input, bounded as a gh call is (ghtool.RunCapped).
 func (a *Answer) runDispatch(ctx context.Context, argv []string, stdin string) Result {
 	cmd := exec.CommandContext(ctx, a.host.Dispatch, argv...)
 	cmd.Env, cmd.Dir = a.env(), a.home
 	cmd.Stdin = strings.NewReader(stdin)
-	procgroup.Configure(cmd)
-	out := ghtool.NewCappedOutput(a.host.Bounds.GHOutputChars)
-	cmd.Stdout, cmd.Stderr = out, out
-	err := cmd.Run()
-	end := procgroup.Ended(err)
-	if err := procgroup.Err(err); err != nil && end.Signal == "" {
-		return Result{Output: fmt.Sprintf("dispatch could not run: %v", err), Exit: -1}
-	}
-	output := out.String()
-	switch {
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		output += fmt.Sprintf("\n[stopped: dispatch ran past its %s bound (answers.bounds.gh_seconds)]", a.host.Bounds.GHCall)
-	case end.Signal != "":
-		output += fmt.Sprintf("\n[dispatch was ended by %s]", end.Signal)
-	}
-	return Result{Output: output, Exit: cmd.ProcessState.ExitCode(), Ran: true}
+	return ghtool.RunCapped(ctx, cmd, "dispatch", a.host.Bounds)
 }
 
-// decodeArgs reads the model's arguments, a JSON array of strings.
-func decodeArgs(raw string) ([]string, error) {
-	var argv []string
-	if err := json.Unmarshal([]byte(raw), &argv); err != nil || argv == nil {
-		return nil, fmt.Errorf("refused: the dispatch tool takes dispatch's arguments as a JSON array of strings, without `dispatch` (%q is none)", raw)
-	}
-	return argv, nil
-}
-
-// refuse records and logs a call refused before dispatch ran it, and answers its refusal.
+// refuse records and logs a call refused before dispatch ran it, and answers its refusal
+// (ghtool.RecordRefusal).
 func (a *Answer) refuse(ctx context.Context, seq int, argv []string, started time.Time, why string) Result {
-	if !strings.HasPrefix(why, refusedPrefix) {
-		why = refusedPrefix + why
-	}
-	result := Result{Output: why, Exit: -1}
-	ctx = context.WithoutCancel(ctx)
-	switch err := a.host.Calls.StartAnswerToolCall(ctx, a.record(seq, argv, started)); {
-	case err != nil:
-		a.host.Log.Error("answers: refused dispatch call not recorded", "question", a.question, "seq", seq, "error", err)
-	default:
-		if err := a.host.Calls.FinishAnswerToolCall(ctx, a.question, seq, result.Output, nil, a.host.Now()); err != nil {
-			a.host.Log.Error("answers: refused dispatch call not finished in its record", "question", a.question, "seq", seq, "error", err)
-		}
-	}
+	result := Result{Output: ghtool.RecordRefusal(ctx, a.host.Calls, a.host.Log, a.host.Now, a.record(seq, argv, started), why), Exit: -1}
 	a.log(seq, argv, result)
 	return result
 }
-
-// refusedPrefix opens every refusal the tool answers and records, which Writes tells a call the
-// tool refused before dispatch started by.
-const refusedPrefix = "refused: "
 
 // record is the row a call starts with: the dispatch tool's, run as no GitHub App and with no
 // owner's gh directory.

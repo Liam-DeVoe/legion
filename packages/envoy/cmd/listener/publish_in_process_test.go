@@ -614,10 +614,10 @@ func TestAHandoffResendWhoseEarlierAttemptIsStillInProcessIsAnsweredDuplicate(t 
 	resend := attempt()
 	awaitHanded(t, heard, 1)
 	thaw()
-	if got := <-earlier; got.err != nil || got.handed == nil || got.handed.duplicate {
+	if got := <-earlier; got.err != nil || got.handed == nil || got.handed.ack.Duplicate {
 		t.Errorf("the earlier hand-off = %+v, %v; want it handed off, no duplicate", got.handed, got.err)
 	}
-	if got := <-resend; got.err != nil || got.handed == nil || !got.handed.duplicate {
+	if got := <-resend; got.err != nil || got.handed == nil || !got.handed.ack.Duplicate {
 		t.Errorf("the resend's hand-off = %+v, %v; want the earlier attempt's copy, answered duplicate: its first publish was refused as in process, and that attempt is stored",
 			got.handed, got.err)
 	}

@@ -321,8 +321,8 @@ type ghTool struct {
 	bounds config.AnswerBounds
 }
 
-func (t ghTool) Run(ctx context.Context, seq, n int, args string) ghtool.Result {
-	return ghtool.Run(ctx, ghtool.Call{Answer: t.answer, Seq: seq, N: n, Args: args, Bounds: t.bounds})
+func (t ghTool) Run(ctx context.Context, call answer.GHCall) ghtool.Result {
+	return ghtool.Run(ctx, ghtool.Call{Answer: t.answer, Seq: call.Seq, N: call.N, Args: call.Args, Bounds: t.bounds})
 }
 
 func (t ghTool) Lookup(ctx context.Context, seq int) (ghtool.Found, error) {

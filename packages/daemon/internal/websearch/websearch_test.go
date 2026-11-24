@@ -36,7 +36,7 @@ var (
 	fee   = 0.01
 )
 
-// fakeRecorder is answer_tool_calls as the tool writes it, with a hook that sees each start.
+// fakeRecorder is answer_tool_calls as the tool writes it.
 type fakeRecorder struct {
 	mu   sync.Mutex
 	rows map[int]store.AnswerToolCall
@@ -295,32 +295,39 @@ func TestAReplyYieldsItsTextAndEachSourceOnce(t *testing.T) {
 	}
 }
 
-// A search the provider answered with an error block, an error status (529, overloaded), or a body
-// that is no Messages response is an error result naming the cause, and never the key.
+// A search the provider answered with an error block, an error status (529, overloaded, and 401,
+// whose message echoes the key), or a body that is no Messages response is an error result naming
+// the cause, and never the key: a key the reply echoes is put out of the result and the log.
 func TestEachFailedSearchIsAnErrorResultNamingItsCause(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		reply reply
-		cause string
+		name     string
+		reply    reply
+		cause    string
+		redacted bool
 	}{
 		{"an error block", reply{body: message(usage{Input: 10, Output: 5}, serverToolUse("srvtoolu_1", "plum"), searchError("srvtoolu_1", "too_many_requests"), text("I could not search."))},
-			"the search answered the error too_many_requests"},
+			"the search answered the error too_many_requests", false},
 		{"a 529", reply{status: 529, body: `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`},
-			"Anthropic answered HTTP 529: overloaded_error: Overloaded"},
+			"Anthropic answered HTTP 529: overloaded_error: Overloaded", false},
+		{"a 401 echoing the key", reply{status: 401, body: `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key ` + key + `"}}`},
+			"Anthropic answered HTTP 401: authentication_error: invalid x-api-key [the provider's key]", true},
 		{"a body that does not decode", reply{body: "<html>the gateway</html>"},
-			"Anthropic's reply is no Messages response"},
+			"Anthropic's reply is no Messages response", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t, bounds, tc.reply)
 			result := f.answer.Run(context.Background(), call(1, 1, "plum"))
+			if strings.Contains(result.Output, key) || strings.Contains(f.logs.String(), key) {
+				t.Errorf("the result %q or the log carries the key", result.Output)
+			}
+			if tc.redacted && !strings.Contains(f.logs.String(), "[the provider's key]") {
+				t.Errorf("the log %s does not put the key the reply echoes out of it", f.logs)
+			}
 			if !result.IsError || !strings.HasPrefix(result.Output, "the web search failed: ") || !strings.Contains(result.Output, tc.cause) {
 				t.Fatalf("the search answered %+v, want an error result naming %q", result, tc.cause)
 			}
 			if result.Searches != 0 {
 				t.Errorf("the failed search counts %d searches, want none", result.Searches)
-			}
-			if strings.Contains(result.Output, key) || strings.Contains(f.logs.String(), key) {
-				t.Errorf("the result %q or the log carries the key", result.Output)
 			}
 			if row, _ := f.calls.row(1); row.Result == nil || *row.Result != result.Output || row.Exit == nil || *row.Exit != 1 {
 				t.Errorf("the record %+v, want the error result with exit 1", row)

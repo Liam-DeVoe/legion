@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // daemonTools are the binaries Legion itself runs on the host, or hands a pane: the git and jj of
@@ -167,16 +168,16 @@ type loopTools struct {
 // configures it: gh, which boot refuses to start without; dispatch where boot found its command;
 // and web_search where answers offers it (config.Answers.WebSearchOff).
 func loopToolsOf(dispatch dispatchFound, answers config.Answers) loopTools {
-	tools := loopTools{offered: []string{"gh"}}
+	tools := loopTools{offered: []string{store.ToolGH}}
 	if dispatch.dispatch != "" {
-		tools.offered = append(tools.offered, "dispatch")
+		tools.offered = append(tools.offered, store.ToolDispatch)
 	} else {
-		tools.absent = append(tools.absent, [2]string{"dispatch", dispatch.absent})
+		tools.absent = append(tools.absent, [2]string{store.ToolDispatch, dispatch.absent})
 	}
 	if off := answers.WebSearchOff(); off == "" {
-		tools.offered = append(tools.offered, "web_search")
+		tools.offered = append(tools.offered, store.ToolWebSearch)
 	} else {
-		tools.absent = append(tools.absent, [2]string{"web_search", off})
+		tools.absent = append(tools.absent, [2]string{store.ToolWebSearch, off})
 	}
 	return tools
 }

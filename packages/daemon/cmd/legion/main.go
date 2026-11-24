@@ -299,8 +299,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	if line, derived := daemon.IntakeHandlerLimitLine(cfg); derived {
 		fmt.Fprintln(stdout, line)
 	}
-	// With answers, the loop's tools in the words of the boot's `answers: tools` line: gh, and
-	// dispatch where the daemon's environment holds its command and bun, or why not.
+	// With answers, the loop's tools in the words of the boot's `answers: tools` line: gh, dispatch
+	// where the daemon's environment holds its command and bun, and web_search where answers
+	// offers it, or why not.
 	if line, ok := daemon.AnswersToolsLine(cfg, os.LookupEnv); ok {
 		fmt.Fprintln(stdout, line)
 	}

@@ -73,7 +73,7 @@ func (w releasedWakes) Wake(ctx context.Context, wake answerloop.Wake) error {
 //
 // Each attempt first finishes the row undelivered, with one log line naming why, once no wake can
 // bring the claim back: the issue is not recorded, or it has left the workflow or its tree
-// lingers (wakeableIssue), where a close stops the claim rather than a wake resuming it. What
+// lingers (wakeable), where a close stops the claim rather than a wake resuming it. What
 // follows — a claim that failed or retired, the design gate, the wake and the publish — is
 // deliverHeld's.
 func (r *outbox) agentMessage(ctx context.Context, row record.OutboxRow, payload record.AgentMessage) error {
@@ -96,7 +96,8 @@ func (r *outbox) agentMessage(ctx context.Context, row record.OutboxRow, payload
 		r.log.Info("outbox message for a released agent finished undelivered: the issue is not recorded", attributes...)
 		return nil
 	}
-	issue, wakeable, err := r.wakeableIssue(ctx, row.Issue)
+	issue := *recorded
+	wakeable, err := r.wakeable(ctx, issue)
 	if err != nil {
 		return err
 	}

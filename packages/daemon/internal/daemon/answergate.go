@@ -109,15 +109,26 @@ func (g *answerGate) Running(token claim.Token, session string) bool {
 func (g *answerGate) Released(token claim.Token, session string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.runningLocked(token, session) {
+	view, ok := g.view(token)
+	if !ok || view.Session == "" || view.Session != session {
 		return false
 	}
-	view, ok := g.view(token)
-	return ok && view.Session != "" && view.Session == session && view.Released()
+	return !g.runsLocked(token, view) && view.Released()
 }
 
-// runningLocked is Running under g.mu. A start's mark lasts until the machine shows a launch after
-// it (a later generation) that runs nothing any more: the process the start began has ended.
+// runningLocked is Running under g.mu, of the claim's view read once (runsLocked).
+func (g *answerGate) runningLocked(token claim.Token, session string) bool {
+	view, ok := g.view(token)
+	if !ok || view.Session == "" || view.Session != session {
+		return false
+	}
+	return g.runsLocked(token, view)
+}
+
+// runsLocked is whether token's claim, view its view, whose session is the one asked of, runs the
+// conversation, is starting, or was started, under g.mu. A start's mark lasts until the machine
+// shows a launch after it (a later generation) that runs nothing any more: the process the start
+// began has ended, and the mark is cleared.
 //
 // The loop answers for every claim that runs nothing: one that failed, one the workflow or an
 // operator suspended (a parked child, or a tree whose root left the workflow during its linger),
@@ -129,11 +140,7 @@ func (g *answerGate) Released(token claim.Token, session string) bool {
 // else through one outbox row that wakes it (answerloop.Wakes, the daemon's releasedWakes). The
 // gate still never lets an append write while the claim runs or is starting: a start's mark and a
 // launch that runs the conversation each answer true, and a start waits for an append to end.
-func (g *answerGate) runningLocked(token claim.Token, session string) bool {
-	view, ok := g.view(token)
-	if !ok || view.Session == "" || view.Session != session {
-		return false
-	}
+func (g *answerGate) runsLocked(token claim.Token, view supervise.ClaimView) bool {
 	if st := g.tokens[token]; st != nil && st.started {
 		if view.Generation <= st.gen || !view.RunsNothing() {
 			return true

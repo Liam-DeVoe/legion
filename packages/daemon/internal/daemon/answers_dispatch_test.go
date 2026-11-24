@@ -27,6 +27,10 @@ func dispatchTokenFileOf(t *testing.T) string {
 	return path
 }
 
+// noSearch is the end of the `answers: tools` line of answers that configure no web_search tool,
+// which names it with why.
+const noSearch = "; web_search: no answers.web_search block (set its model and price_per_search)"
+
 // The answer loop's dispatch tool runs the dispatch command a pane runs, which boot finds as it
 // finds the loop's gh (beside TestResolveToolsPrefersTheOverrideAndNamesEveryMissingTool):
 // LEGION_DISPATCH_PATH first, which must be an absolute executable, else the first dispatch on
@@ -78,8 +82,12 @@ func TestTheDispatchToolsCommandIsFoundAsTheLoopsGhIs(t *testing.T) {
 // /opt/legion/pi-envoy/bin/dispatch (the image build's last step runs its --help); and boot reads
 // it beside the loop's gh, so the daemon the boot starts carries it.
 func TestAKubernetesDaemonFindsDispatchWhereTheWorkerImageKeepsIt(t *testing.T) {
-	if dispatchInstall != "/opt/legion/pi-envoy/bin/dispatch" {
-		t.Fatalf("the daemon looks for the worker image's dispatch at %s; the image keeps it at /opt/legion/pi-envoy/bin/dispatch", dispatchInstall)
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(dockerfile, []byte(dispatchInstall+" --help")) {
+		t.Fatalf("the daemon looks for the worker image's dispatch at %s, and worker.Dockerfile runs no %s --help", dispatchInstall, dispatchInstall)
 	}
 	image, bunDir := t.TempDir(), t.TempDir()
 	installed := executable(t, image, "dispatch")
@@ -119,7 +127,6 @@ func TestTheBootLineNamesTheLoopsToolsAndADaemonWithNoDispatchOffersNone(t *test
 	cfg := config.Config{StateDir: stateDir, Answers: &config.Answers{Bounds: config.AnswerBounds{GHCall: 30 * time.Second, GHOutputChars: 60000, GHCalls: 20}},
 		DispatchURL: "https://dispatch.internal.example", DispatchTokenFile: token}
 	const why = "no dispatch command on PATH or at /opt/legion/pi-envoy/bin/dispatch (set LEGION_DISPATCH_PATH)"
-	const noSearch = "; web_search: no answers.web_search block (set its model and price_per_search)"
 	for _, c := range []struct {
 		name  string
 		found dispatchFound
@@ -194,7 +201,6 @@ func TestConfigCheckNamesTheLoopsToolsAsBootDoes(t *testing.T) {
 	shim := executable(t, dir, "dispatch")
 	binary(t, dir, "bun")
 	cfg := config.Config{Answers: &config.Answers{}, DispatchURL: "https://dispatch.internal.example", DispatchTokenFile: dispatchTokenFileOf(t)}
-	const noSearch = "; web_search: no answers.web_search block (set its model and price_per_search)"
 	if line, ok := AnswersToolsLine(cfg, environLookup([]string{"PATH=" + dir, "LEGION_DISPATCH_PATH=" + shim})); !ok || line != "answers: tools [gh dispatch]"+noSearch {
 		t.Errorf("AnswersToolsLine = %q, %t; want the line naming gh and dispatch", line, ok)
 	}

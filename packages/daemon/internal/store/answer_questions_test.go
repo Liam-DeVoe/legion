@@ -123,7 +123,7 @@ func TestAQuestionsGHCallsReadBackInOrder(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
 	for _, seq := range []int{2, 1} {
-		if err := s.StartAnswerToolCall(ctx, AnswerToolCall{Question: "q1", Seq: seq, Args: []string{"pr", "view"}, App: "review", Owner: "o", StartedAt: at(seq)}); err != nil {
+		if err := s.StartAnswerToolCall(ctx, AnswerToolCall{Question: "q1", Seq: seq, Tool: ToolGH, Args: []string{"pr", "view"}, App: "review", Owner: "o", StartedAt: at(seq)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -148,9 +148,9 @@ func TestTheWritesReadOfTheGHCallsHoldsNoResult(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
 	for _, call := range []AnswerToolCall{
-		{Question: "q1", Seq: 2, Args: []string{"pr", "view", "7"}, App: "review", Owner: "acme", StartedAt: at(2)},
-		{Question: "q1", Seq: 1, Args: []string{"pr", "merge", "7"}, App: "review", Owner: "acme", StartedAt: at(1)},
-		{Question: "q2", Seq: 1, Args: []string{"pr", "comment", "7"}, App: "implement", StartedAt: at(3)},
+		{Question: "q1", Seq: 2, Tool: ToolGH, Args: []string{"pr", "view", "7"}, App: "review", Owner: "acme", StartedAt: at(2)},
+		{Question: "q1", Seq: 1, Tool: ToolGH, Args: []string{"pr", "merge", "7"}, App: "review", Owner: "acme", StartedAt: at(1)},
+		{Question: "q2", Seq: 1, Tool: ToolGH, Args: []string{"pr", "comment", "7"}, App: "implement", StartedAt: at(3)},
 	} {
 		if err := s.StartAnswerToolCall(ctx, call); err != nil {
 			t.Fatal(err)

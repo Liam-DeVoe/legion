@@ -36,33 +36,25 @@ import (
 // stubGH is the gh tool's stand-in: it records each call and answers each with output naming it.
 type stubGH struct {
 	mu     sync.Mutex
-	calls  []ghCall
+	calls  []GHCall
 	onCall func(seq int)
 }
 
-// ghCall is one call the stand-in took: its seq among the answer's calls, its number among the
-// answer's gh calls, and its arguments.
-type ghCall struct {
-	seq  int
-	n    int
-	args string
-}
-
-func (g *stubGH) Run(_ context.Context, seq, n int, args string) ghtool.Result {
+func (g *stubGH) Run(_ context.Context, call GHCall) ghtool.Result {
 	g.mu.Lock()
-	g.calls = append(g.calls, ghCall{seq: seq, n: n, args: args})
+	g.calls = append(g.calls, call)
 	onCall := g.onCall
 	g.mu.Unlock()
 	if onCall != nil {
-		onCall(seq)
+		onCall(call.Seq)
 	}
-	return ghtool.Result{Output: "output of " + args, Exit: 0, Ran: true}
+	return ghtool.Result{Output: "output of " + call.Args, Exit: 0, Ran: true}
 }
 
-func (g *stubGH) made() []ghCall {
+func (g *stubGH) made() []GHCall {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return append([]ghCall(nil), g.calls...)
+	return append([]GHCall(nil), g.calls...)
 }
 
 func testBounds(modelCalls int) config.AnswerBounds {
@@ -190,7 +182,7 @@ func TestAnAnthropicAnswerReplaysItsSignaturesAndAppendsEveryTurn(t *testing.T) 
 	if stepOne[0]["type"] != "thinking" || stepOne[0]["signature"] != "sig-step-1+/==" || stepOne[0]["thinking"] != "Check the PR." {
 		t.Errorf("the second call carries the first call's turn as %v, want its thinking with its signature", stepOne)
 	}
-	if calls := gh.made(); !reflect.DeepEqual(calls, []ghCall{{1, 1, `["pr","view","7"]`}, {2, 2, `["pr","checks","7"]`}}) {
+	if calls := gh.made(); !reflect.DeepEqual(calls, []GHCall{{1, 1, `["pr","view","7"]`}, {2, 2, `["pr","checks","7"]`}}) {
 		t.Errorf("gh calls %+v", calls)
 	}
 
@@ -1395,8 +1387,8 @@ func TestARerunCarriesTheEarlierCallsAndNumbersNewCallsAfterThem(t *testing.T) {
 	req := anthropicRequest(t, s, gh, 2)
 	output, exit := "comment posted", 0
 	req.Earlier = []store.AnswerToolCall{
-		{Seq: 1, Args: []string{"pr", "comment", "7", "--body", "on it"}, Result: &output, Exit: &exit},
-		{Seq: 2, Args: []string{"pr", "review", "7", "--approve"}},
+		{Seq: 1, Tool: store.ToolGH, Args: []string{"pr", "comment", "7", "--body", "on it"}, Result: &output, Exit: &exit},
+		{Seq: 2, Tool: store.ToolGH, Args: []string{"pr", "review", "7", "--approve"}},
 	}
 	if got, err := Answer(context.Background(), req); err != nil || got.Kind != Answered {
 		t.Fatalf("reply %+v, %v", got, err)
@@ -1408,7 +1400,7 @@ func TestARerunCarriesTheEarlierCallsAndNumbersNewCallsAfterThem(t *testing.T) {
 			t.Errorf("the question does not hold %q:\n%s", want, text)
 		}
 	}
-	if calls := gh.made(); len(calls) != 1 || calls[0].seq != 3 {
+	if calls := gh.made(); len(calls) != 1 || calls[0].Seq != 3 {
 		t.Errorf("the new calls %+v, want one numbered 3", calls)
 	}
 }
@@ -1443,6 +1435,6 @@ func TestAFailedGhCallGoesBackAsAnErrorResult(t *testing.T) {
 // failingGH is a gh tool whose call runs and fails.
 type failingGH struct{}
 
-func (failingGH) Run(context.Context, int, int, string) ghtool.Result {
+func (failingGH) Run(context.Context, GHCall) ghtool.Result {
 	return ghtool.Result{Output: "could not resolve to a PullRequest", Exit: 1, Ran: true}
 }

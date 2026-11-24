@@ -10,13 +10,12 @@ import (
 
 // A gh call is recorded before it runs, with no result, and finished after with what the model
 // read and gh's exit; a call number recorded once is refused a second time, a finished call is not
-// finished again, and a refused call that never ran is finished with no exit. A call that names no
-// tool is gh's, the column's own default.
+// finished again, and a refused call that never ran is finished with no exit.
 func TestAnswerToolCallsAreRecordedBeforeAndFinishedAfter(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
 	started := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
-	call := AnswerToolCall{Question: "dispatch:m-1", Seq: 1, Args: []string{"pr", "view", "5", "-R", "acme/widgets"}, App: "implement", Owner: "acme", StartedAt: started}
+	call := AnswerToolCall{Question: "dispatch:m-1", Seq: 1, Tool: ToolGH, Args: []string{"pr", "view", "5", "-R", "acme/widgets"}, App: "implement", Owner: "acme", StartedAt: started}
 	if err := s.StartAnswerToolCall(ctx, call); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +46,7 @@ func TestAnswerToolCallsAreRecordedBeforeAndFinishedAfter(t *testing.T) {
 		t.Errorf("finishing a call never started succeeded, want a refusal")
 	}
 
-	refused := AnswerToolCall{Question: "dispatch:m-1", Seq: 2, Args: []string{"auth", "token"}, App: "implement", StartedAt: finished}
+	refused := AnswerToolCall{Question: "dispatch:m-1", Seq: 2, Tool: ToolGH, Args: []string{"auth", "token"}, App: "implement", StartedAt: finished}
 	if err := s.StartAnswerToolCall(ctx, refused); err != nil {
 		t.Fatal(err)
 	}

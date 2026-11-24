@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/websearch"
 )
 
@@ -53,7 +54,7 @@ func systemPrompt(req Request) string {
 	if req.paused() {
 		writes := "a gh comment, review, merge or other write"
 		if req.Dispatch != nil {
-			writes += ", and a dispatch comment, message or thread resolution"
+			writes += ", and the dispatch writes " + strings.Join(dispatchtool.WriteCommands, ", ")
 		}
 		fmt.Fprintf(&b, "Legion has paused your project, and until it resumes the daemon makes no write in your name: your tools run their reads, and refuse every write (%s) as the call's result. When the message asks for a write, say in your reply that the project is paused and the write was not made.\n\n", writes)
 	}
@@ -91,11 +92,11 @@ func userMessage(req Request) string {
 		b.WriteString("\n\nAn earlier attempt at this answer already made these tool calls; do not repeat a write among them:\n")
 		for _, call := range req.Earlier {
 			args, _ := json.Marshal(call.Args)
-			fmt.Fprintf(&b, "\n%d. %s %s\n", call.Seq, toolOf(call), args)
+			fmt.Fprintf(&b, "\n%d. %s %s\n", call.Seq, call.Tool, args)
 			switch {
 			case call.Result == nil:
 				b.WriteString("Outcome unknown: it may or may not have run.\n")
-			case call.Exit == nil && strings.HasPrefix(*call.Result, "refused: "):
+			case call.RefusedBeforeRun():
 				fmt.Fprintf(&b, "Did not run:\n%s\n", *call.Result)
 			case call.Exit == nil:
 				// It started and answered no exit: it could not start, or the daemon stopped while it

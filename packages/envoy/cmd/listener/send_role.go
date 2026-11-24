@@ -159,7 +159,7 @@ func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listen
 			return
 		}
 		if handed != nil {
-			charge.published(handed.ack(), nil)
+			charge.published(handed.ack, nil)
 			duplicate, err := answerHandedOff(ctx, d.client, record, sender, handed, item)
 			if err != nil {
 				record.refuseBusUnavailable(w, err)

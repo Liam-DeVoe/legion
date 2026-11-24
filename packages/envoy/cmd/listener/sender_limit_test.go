@@ -346,12 +346,6 @@ func (rig *senderLimitRig) requireCount(t *testing.T, sender string, has bool) {
 	next.requireNamed(t, sender+"'s next message", sender)
 }
 
-// requireNoWake reads the rig's wake reports as requireNoWake does.
-func (rig *senderLimitRig) requireNoWake(t *testing.T, kind, name string) {
-	t.Helper()
-	requireNoWake(t, rig.wakes, kind, name)
-}
-
 // interceptForwards has every role forward the rig's routes make go through intercept, handed the
 // forward's number among them, from 1, and the forward itself, which intercept makes or does not,
 // and answers in its place. It answers the count of the forwards the routes made so far.
@@ -578,7 +572,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 		unkept := rig.publishFrom(t, other, contracts.RoleTopicPrefix+role, map[string]any{"keep": false})
 		unkept.requireStatus(t, "another sender's message with keep false", http.StatusNotFound)
 		awaitWake(t, rig.wakes, wakeKindRole, role)
-		rig.requireNoWake(t, wakeKindRole, role)
+		requireNoWake(t, rig.wakes, wakeKindRole, role)
 		assertNothingKept(t, rig.harness.client, role)
 
 		rig.register(t, claimant, nil)
@@ -618,7 +612,7 @@ func TestSenderLimitRoutes(t *testing.T) {
 		// rig is shown to read the session's wake reports, and that one is the only one.
 		rig.sendFrom(t, other, gone, nil).requireStatus(t, "another sender's send", http.StatusNotFound)
 		awaitWake(t, rig.wakes, wakeKindAgent, gone)
-		rig.requireNoWake(t, wakeKindAgent, gone)
+		requireNoWake(t, rig.wakes, wakeKindAgent, gone)
 		rig.requireCount(t, sender, false)
 	})
 
@@ -706,7 +700,7 @@ func TestSenderLimitCost(t *testing.T) {
 		down.requireStatus(t, "the send while the bus is down", http.StatusServiceUnavailable)
 		down.requireOutcome(t, "the send while the bus is down", outcomeBusUnavailable)
 		down.requireUnnamed(t, "the send while the bus is down")
-		frozen.requireNoWake(t, wakeKindAgent, target)
+		requireNoWake(t, frozen.wakes, wakeKindAgent, target)
 		frozen.requireCount(t, sender, true)
 	})
 
@@ -846,7 +840,7 @@ func TestSenderLimitCost(t *testing.T) {
 		stopped.requireStatus(t, "the connected_only send to a stopped entry", http.StatusConflict)
 		stopped.requireOutcome(t, "the connected_only send to a stopped entry", outcomeSessionStopped)
 		stopped.requireUnnamed(t, "the connected_only send to a stopped entry")
-		rig.requireNoWake(t, wakeKindAgent, target)
+		requireNoWake(t, rig.wakes, wakeKindAgent, target)
 		rig.requireCount(t, sender, true)
 	})
 

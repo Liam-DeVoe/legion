@@ -352,7 +352,7 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 		s.refused(err)
 		return
 	case handed != nil:
-		s.record.charge.published(handed.ack(), nil)
+		s.record.charge.published(handed.ack, nil)
 		s.handedOff(handed)
 		return
 	}

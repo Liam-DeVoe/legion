@@ -531,15 +531,18 @@ func wakeMessage(o Origin) string {
 
 // handoffMessage is a hand-off that asks nothing as its released agent is told it (wakeMessage),
 // and the message's identity, the one a question of it would have (Origin.Identity), which the
-// same message carries at every delivery attempt. A hand-off ReadOrigin reads nothing of is told
-// as its sender and where it was sent, then its words: a Dispatch event's actor, type and issue,
-// then the item's body, else the envelope's source and topic, then its payload; its identity is
-// the envelope's dedupe key.
+// same message carries at every delivery attempt. Only a Dispatch event and an agent session's
+// message are read by ReadOrigin, as Classify reads them. A hand-off of any other source, and one
+// ReadOrigin reads nothing of, is told as its sender and where it was sent, then its words: a
+// Dispatch event's actor, type and issue, then the item's body, else the envelope's source and
+// topic, then its payload; its identity is the envelope's dedupe key.
 func handoffMessage(h intake.Handoff) (identity, text string) {
-	if origin, err := ReadOrigin(h); err == nil {
-		return origin.Identity, wakeMessage(origin)
-	}
 	env := h.Envelope
+	if env.Source == "dispatch" || env.Source == "agent" && env.SourceSession != "" {
+		if origin, err := ReadOrigin(h); err == nil {
+			return origin.Identity, wakeMessage(origin)
+		}
+	}
 	words := env.Payload
 	if words == "" {
 		words = env.PayloadSummary
