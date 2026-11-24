@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
-import { delimiter, dirname, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_STREAM_WATCH_INTERVAL_MS,
@@ -77,7 +77,7 @@ import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
 } from "@legion/envoy-client/dispatch-first";
-import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
+import { DispatchServiceError, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http";
 import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures";
 import {
@@ -102,6 +102,8 @@ import type { InboundSubscription } from "@legion/envoy-client/inbound-connectio
 import { connectListenerRelay } from "@legion/envoy-client/listener-relay";
 import { machineID } from "@legion/envoy-client/machine";
 import {
+  clientBuild,
+  clientConnectionName,
   connectNats,
   NATS_DIAL_PLAN,
   NATS_DIAL_TOKEN_DROPPED,
@@ -137,6 +139,8 @@ import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
+  keyTakenDetails,
+  keyTakenText,
   type MessageMetadataArguments,
   parseEnvoyToolArguments,
   publishConfirmationText,
@@ -371,6 +375,36 @@ export function setNatsConnectForTests(
 // file's stand-in, with that file's state. Production callers never call this.
 export function resetNatsConnectForTests(): void {
   delete natsConnectStore[NATS_CONNECT];
+}
+
+/** The directory of this module: `dist/` in a packed build (`dist/envoy.js`), `extensions/` when
+ *  it runs from source. */
+const MODULE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * What this plugin's NATS connection names as its build after its name (`clientConnectionName`),
+ * which legacy-subjects-gate.sh reads from the hub's census of connections: the build-commit stamp
+ * the worker image writes beside the packed bundle, else, for a packed build, the release version
+ * its manifest carries, else none (a plugin run from its source). A test replaces it.
+ */
+let buildSource: { readonly stamp: string; readonly packed: boolean } = {
+  stamp: join(MODULE_DIRECTORY, "build-commit"),
+  packed: basename(MODULE_DIRECTORY) === "dist",
+};
+
+export function setBuildSourceForTests(source: {
+  readonly stamp: string;
+  readonly packed: boolean;
+}): void {
+  buildSource = source;
+}
+
+/** This plugin's build as its NATS connection names it, read at each dial. */
+function connectionBuild(): string | undefined {
+  return clientBuild(
+    buildSource.stamp,
+    buildSource.packed ? { name: packageName, version: packageVersion } : undefined
+  );
 }
 
 /**
@@ -1293,7 +1327,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       standIn?.connect ?? connect,
       natsConnectionOptions({
         servers: natsUrls,
-        name: `omp-${sessionID || "unknown"}`,
+        name: clientConnectionName(`omp-${sessionID || "unknown"}`, connectionBuild()),
         credential: natsCredential,
       }),
       { ...plan, budgetMs: natsDialBudget(left, PASS_AFTER_DIAL_MS, plan) },
@@ -1400,6 +1434,12 @@ export default function envoyExtension(hostApi: PiApi): void {
   // first text Dispatch refuses (`postTypedInputReply`) - since the broker may refuse a token
   // for a session this machine no longer runs and the refusal would otherwise read as a plain
   // reply failure.
+  //
+  // A reply Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`: `409
+  // KEY_COMMITTED`, or a replay of an answer it kept none of) is posted: the attempt is answered
+  // with it, so it resolves as any posted reply does, and its line says it landed. Every caller
+  // then goes on as after a post - a BTW's side turn is taken, a person's turn is settled - and
+  // none answers the same attempt again with an error, or says the delivery failed.
   const postDispatchReply = async (
     delivery: DispatchDelivery,
     result: { readonly body?: string; readonly error?: string },
@@ -1411,7 +1451,17 @@ export default function envoyExtension(hostApi: PiApi): void {
         open: sessionID,
       });
     }
-    await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
+    try {
+      await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
+    } catch (error) {
+      if (!(error instanceof DispatchWriteLandedError)) throw error;
+      logger.warn("envoy: a reply landed on Dispatch, which gave no copy of its answer", {
+        resource: delivery.resource,
+        id: delivery.id,
+        attempt: delivery.attempt,
+        error: error.message,
+      });
+    }
   };
 
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
@@ -1988,6 +2038,13 @@ export default function envoyExtension(hostApi: PiApi): void {
           );
           return;
         }
+        if (refusal.reason === "landed") {
+          logger.warn(
+            "envoy: Dispatch recorded this session's accept of a direct message and gave no copy of its answer, so no turn follows; it arrives as a card",
+            { ...fields, error: refusal.error.message }
+          );
+          return;
+        }
         logger.warn(
           "envoy: Dispatch did not accept a direct message as this session's turn; it arrives as a card",
           { ...fields, error: messageFor(refusal.error) }
@@ -2069,6 +2126,17 @@ export default function envoyExtension(hostApi: PiApi): void {
     if (identity !== undefined && ledger?.delivered(identity) === true) {
       claim.settle();
       return;
+    }
+    // A payload the card could not lay out is shown as the text its sender sent: said once, for
+    // the frame this session is shown, and never for a repeat the checks above answered.
+    if (rendered.payloadShownAsText !== undefined) {
+      logger.warn(
+        "envoy: a message's payload is shown as its text; the card could not lay it out",
+        {
+          event_id: rendered.envelope?.event_id ?? "unknown",
+          error: rendered.payloadShownAsText,
+        }
+      );
     }
     // A body is bounded block by block, so one event can carry its first part alone, and an
     // event the bus refused carries none of it (`cutItem`). The agent is prompted with the
@@ -5438,6 +5506,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             ...(typeof idempotencyKey === "string" ? { idempotencyKey } : {}),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
+          if (result.keyTaken !== undefined) {
+            return toolSuccess(keyTakenText(result, "envoy_send"), keyTakenDetails(result));
+          }
           return toolSuccess(sendConfirmationText(result), {
             event_id: result.envelope.event_id,
             recipient: result.recipient,
@@ -5457,6 +5528,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             message: stringFor(parameters, "message"),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
+          if (result.keyTaken !== undefined) {
+            return toolSuccess(keyTakenText(result, "envoy_publish"), keyTakenDetails(result));
+          }
           // The skip is the listener's own delivery: the role lane skips the holder it resolved
           // when that holder is the message's source, and the fanout skips every interest whose
           // session is that source. The session still gets its own publish from its own

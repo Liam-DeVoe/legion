@@ -83,7 +83,8 @@ function put(file: string, text: string, mode = 0o644) {
   });
 }
 
-// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins, and
+// The checkout: this rig.sh, the e2e helpers it sources and packages/envoy's pg-url.sh, which it
+// sources too, with the two Dispatch stand-ins, and
 // every program of the rig's directory, with the root's node_modules for zod. The programs are
 // read off the directory itself (RIG_PROGRAMS), never named here: a run runs what rig.sh finds
 // beside itself ($here) — run-names.ts's guard, the gh stand-in and the modules its bundle takes
@@ -117,6 +118,9 @@ stagings.push(() => {
   for (const entry of readdirSync(libs, { withFileTypes: true }))
     if (entry.isFile())
       copyFileSync(path.join(libs, entry.name), path.join(co, "scripts/e2e/lib", entry.name));
+  const pgUrl = "packages/envoy/scripts/lib/pg-url.sh";
+  mkdirSync(path.dirname(path.join(co, pgUrl)), { recursive: true });
+  copyFileSync(path.join(root, pgUrl), path.join(co, pgUrl));
   mkdirSync(stub);
 });
 put(

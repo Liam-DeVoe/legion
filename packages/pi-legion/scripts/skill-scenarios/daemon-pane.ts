@@ -5,10 +5,12 @@
  * `daemon-completion.go` and `gh-selectors.go`, run with `go run` outside every module, since
  * reading the routes, how the daemon takes a completion and the selector table of its gh wrapper
  * needs only the daemon's files. The rig asks them rather than restating the daemon: a change to
- * the daemon reaches the rig by construction. The one exception is `daemon-pane.go`'s own table
- * of the handoff words, which the program carries because one program runs against both checkouts
- * of a comparison and the daemon's table has not always had the same name; its comment says so.
- * `workerPane` builds a phase worker's whole pane environment over it, `standinFacts` reads every
+ * the daemon reaches the rig by construction. The exceptions are `daemon-pane.go`'s own copies of
+ * the daemon's table of the handoff words, its resolution of the real gh, and its join and write
+ * of a system prompt, which the program carries because one program runs against each label's
+ * checkout of the daemon module, and an older one names them otherwise or lacks them; each one's
+ * comment says so. `workerPane` builds a phase worker's whole pane environment over it,
+ * `composeRolePrompt` the prompt a launch of any role starts with, `standinFacts` reads every
  * fact the daemon stand-in answers by, and `labelGhSelectors` what the gh stand-in refuses an
  * owner by.
  *
@@ -1860,6 +1862,14 @@ export function standinFacts(checkout: string, role: string, phase: string): Sta
     notCurrentPhase: lateRefusal,
     shapes,
   };
+}
+
+/** The prompt a launch of `role` starts with, as the daemon in `module` composes it (daemon-pane.go
+ * `prompt`): the role's parts, a blank line, then its addressing, and for the architect of a tree's
+ * root (`root`) the design gate steps after that, byte for byte as the daemon writes the prompt
+ * file. The claim is the rig's: its issue is the root of its tree, or a child under that root. */
+export function composeRolePrompt(module: string, role: LegionRole, root: boolean): string {
+  return runDaemonPane(module, ["prompt", role, root ? "root" : "child"]);
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot

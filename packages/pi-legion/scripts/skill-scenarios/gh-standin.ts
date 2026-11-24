@@ -44,8 +44,9 @@
 // nothing. A route that refuses a `gh api` call — the 403 of a role App's read of a branch's
 // protection — prints GitHub's error body and gh's line for it, as gh prints an HTTP error, with
 // no `--jq` run over the body (`refuseWith`). Nothing is sent anywhere.
-// `--json a,b` picks fields and `--jq`/`-q` runs jq over each page, as gh does; `--slurp` prints
-// the pages as one list. A pull request body edit (`gh pr edit --body`, `--body-file`, or a PATCH
+// `--json a,b` picks those fields of the answer, or of each object of a list answer (`gh pr
+// list`), and `--jq`/`-q` runs jq over each page, as gh does; `--slurp` prints the pages as one
+// list. A pull request body edit (`gh pr edit --body`, `--body-file`, or a PATCH
 // through `gh api`) is kept: every answer of the pull request then carries the new one, the
 // edit's own answer among them, as GitHub's would, and the call's record carries it as `body`.
 //

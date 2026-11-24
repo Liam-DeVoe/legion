@@ -13,8 +13,10 @@ import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { scriptAssignments } from "../../../../scripts/e2e/lib/script-functions";
 import {
   claimRefusal,
+  composeRolePrompt,
   countDefault,
   DAEMON_MODULE,
   labelDaemon,
@@ -35,8 +37,8 @@ import { bundled, spawnChecked } from "./test-programs";
 // default, so each gets a minute, as rig.test.ts's do.
 setDefaultTimeout(60_000);
 
-// Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
-// and runs, so a host with no go runs none of them.
+// Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
+// `go run` compiles and runs, so a host with no go runs none of them.
 const skip = skipWithout("go");
 
 // The run directory: the daemon's pane environment makes the pane's home and the claim's gh
@@ -115,6 +117,8 @@ test.skipIf(skip)(
     expect(workerEnv).not.toHaveProperty("LEGION_JJ_PATH");
     expect(workerEnv).not.toHaveProperty("OMP_SESSION_EXCLUSIVE");
     const ghRoot = `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh`;
+    // The bundle's one directory is that of the owner of the claim's repository, which the pane's
+    // addressing names.
     const ghConfigDir = `${ghRoot}/example`;
     expect(workerEnv).toMatchObject({
       GEMINI_API_KEY: GEMINI_KEY,
@@ -2400,3 +2404,66 @@ describe("the shapes of a label's daemon source", () => {
     );
   });
 });
+
+// The rig's stand-in daemon serves a phase worker's routes alone, none of a tree architect's (its
+// design gate's among them), so the rig builds no pane prompt for one; `composeRolePrompt` below
+// composes that architect's prompt for a reader of it.
+test.skipIf(skip)(
+  "refuses the pane prompt of a tree architect",
+  () => {
+    expect(() =>
+      workerPane(
+        { rig, port: 13399, profile: "rig-profile" },
+        inherited,
+        { ...claim, role: "architect" },
+        { daemonModule: DAEMON_MODULE, systemPrompt: true }
+      )
+    ).toThrow(
+      "a tree architect is also told its design gate policy, which the rig does not stand in for"
+    );
+  },
+  600_000
+);
+
+// A part of the daemon module's own role prompts, as the composition holds it: each part's text in
+// order, so every part but the last ends with its own newline, which this drops.
+const promptPart = (name: string) =>
+  readFileSync(path.join(DAEMON_MODULE, "internal", "prompts", name), "utf8").trimEnd();
+
+// rig.sh's assignments, read once. rigWorld gives the value rig.sh sets for the worker world:
+// `worker_repo`, the repository its fixture's pull request is on, or `worker_base`, the default
+// branch of its fixture's remote.
+const rigAssignment = scriptAssignments(path.join(import.meta.dir, "rig.sh"));
+const rigWorld = (name: string) => rigAssignment(name).slice(name.length + 1);
+
+// The prompt a launch of a role starts with is the daemon's composition of that role's parts and
+// its addressing, and a tree's root architect is told the design gate steps after its addressing;
+// the text starts with the role's first part and ends with the addressing's last sentence. The
+// addressing names the repository and default branch of rig.sh's worker world, so a tester
+// that reads its repository there reads the one the gh stand-in serves the pull request of.
+test.skipIf(skip)(
+  "composes the prompt a launch of a role starts with: its parts, its addressing, and a root architect's design gate",
+  () => {
+    const root = composeRolePrompt(DAEMON_MODULE, "architect", true);
+    expect(root.startsWith(promptPart("roles/architect-root.md"))).toBe(true);
+    expect(root).toContain(promptPart("go/architect-root.md"));
+    expect(root).toMatch(
+      /\n\nLegion addressing: your role topic is [^\n]* Design gate steps: [^\n]+\.$/
+    );
+
+    const child = composeRolePrompt(DAEMON_MODULE, "architect", false);
+    expect(child.startsWith(promptPart("roles/architect.md"))).toBe(true);
+    expect(child).toContain(promptPart("go/architect.md"));
+    expect(child).not.toContain(promptPart("roles/architect-root.md"));
+    expect(child).not.toContain("Design gate steps: ");
+
+    const reviewer = composeRolePrompt(DAEMON_MODULE, "reviewer", false);
+    expect(reviewer).toContain(promptPart("go/reviewer.md"));
+    for (const prompt of [child, reviewer]) {
+      expect(prompt).toMatch(/\n\nLegion addressing: your role topic is [^\n]*\.$/);
+    }
+    const repository = `Your issue's repository is ${rigWorld("worker_repo")} (default branch ${rigWorld("worker_base")}); `;
+    for (const prompt of [root, child, reviewer]) expect(prompt).toContain(repository);
+  },
+  600_000
+);
