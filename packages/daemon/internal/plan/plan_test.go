@@ -90,18 +90,18 @@ func TestStepsOfOneKeyHaveOneAgent(t *testing.T) {
 // it holds: its agent is the tree's architect, whose token names the tree, not the issue.
 func TestAStoredStepNamesItsAgent(t *testing.T) {
 	for _, tc := range []struct {
-		step   Step
+		key    string
 		stored string
 		want   string
 	}{
-		{Step{Role: "reviewer"}, "", ""},
-		{Step{Role: "acceptance", Key: "owner"}, "", ""},
-		{Step{Role: "acceptance", Key: "owner"}, "acceptance", ""},
-		{Step{Role: "tester", Key: "a"}, "implementer", "implementer"},
-		{Step{Role: "implementer"}, "implementer-2", "implementer-2"},
+		{"", "", ""},
+		{"owner", "", ""},
+		{"owner", "acceptance", ""},
+		{"a", "implementer", "implementer"},
+		{"", "implementer-2", "implementer-2"},
 	} {
-		if got := StoredAgentName(tc.step.Key, tc.stored); got != tc.want {
-			t.Errorf("StoredAgentName(%s, %q) = %q, want %q", tc.step, tc.stored, got, tc.want)
+		if got := StoredAgentName(tc.key, tc.stored); got != tc.want {
+			t.Errorf("StoredAgentName(%q, %q) = %q, want %q", tc.key, tc.stored, got, tc.want)
 		}
 	}
 }
