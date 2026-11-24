@@ -1789,10 +1789,10 @@ decision routes refuse it `403 JUDGE_DECIDES`; and a person's Approve or Deny of
 
 The broker that wrote a request pending runs the judge in the background, for a request it wrote
 and never for one it joined to a request already pending, so one record is judged once. A run has
-35 seconds, and the model call inside it 20. The run makes six checks first, in order, and stops
+35 seconds, and each model call inside it 20. The run makes six checks first, in order, and stops
 at the first that fails, asking the model nothing:
 
-1. each key the judge decides has a `judge` value in its profile's `proxy` block;
+1. each key the judge decides carries a `judge` tag (a profile, its source's);
 2. the grant's lifetime — the `--ttl` its session signed, else the broker's default — is at most
    15 minutes and at most each of those keys' seconds;
 3. the tag policy, read again now, still answers approval for each key the judge decides, and
@@ -1951,8 +1951,11 @@ revoke of a grant already revoked, naming under `withheld` the secrets it withhe
 session, and under `withheld_on` the other enrollments it wrote them on),
 `request.judged` (one row for every judge run that reached a verdict, its hand-overs to a person
 and the runs a check stopped included: each check and its result, the model, whether the model was
-asked, the verdict, the reason, the token counts, that it priced nothing, and the raw answer where
-it did not parse) and
+asked, the `verdict` — what became of the request: `granted`, `refused`, `handed to the person`,
+`not pending` for one already decided, cancelled or expired, or `unknown` where an approval's
+answer was lost — the reason, the `calls` (one for each judge key the model was asked about, with
+the key and what its call did: `granted`, `denied`, or `failed` with its error, a failure being no
+deny), the token counts, that it priced nothing, and the raw answer where it did not parse) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the

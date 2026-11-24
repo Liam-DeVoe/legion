@@ -221,7 +221,8 @@ func TestTheChecksBeforeTheModel(t *testing.T) {
 
 // TestTheModelsTwoVerdicts: grant is written with the approval, in the one transaction
 // ApplyJudgeDecision makes, and deny is the request's final refusal, carrying the model's own
-// reason in the sentence its agent reads, which tells it nothing to try again.
+// reason in the sentence its agent reads, which tells it nothing to try again. The row's verdict
+// is the outcome, granted or refused, and its one call says what the model answered.
 func TestTheModelsTwoVerdicts(t *testing.T) {
 	t.Run(Grant, func(t *testing.T) {
 		machine := runAgainstTheModel(t, verdictReply(Grant, "The reason meets the guidance."))
@@ -229,8 +230,8 @@ func TestTheModelsTwoVerdicts(t *testing.T) {
 		if denied, _ := machine.refused(); len(applied) != 1 || len(logged) != 0 || len(denied) != 0 {
 			t.Fatalf("the run applied %d, logged %d and refused %d; want the one grant", len(applied), len(logged), len(denied))
 		}
-		if applied[0]["verdict"] != Grant || applied[0]["reason"] != "The reason meets the guidance." || applied[0]["asked"] != true {
-			t.Errorf("the row reads %v; want the grant, its reason, and the model asked", applied[0])
+		if applied[0]["verdict"] != requests.JudgedGranted || applied[0]["reason"] != "The reason meets the guidance." || applied[0]["asked"] != true || onlyCall(t, applied[0])["verdict"] != callGranted {
+			t.Errorf("the row reads %v; want verdict granted, the reason, the model asked, and its one call granted", applied[0])
 		}
 	})
 	t.Run(Deny, func(t *testing.T) {
@@ -240,15 +241,27 @@ func TestTheModelsTwoVerdicts(t *testing.T) {
 			t.Errorf("the refusal reads %q; want %q", why, want)
 		}
 		noRetry(t, why)
-		if row["verdict"] != Deny || row["asked"] != true {
-			t.Errorf("the row reads verdict %v, asked %v; want the model's deny", row["verdict"], row["asked"])
+		if row["verdict"] != requests.JudgedRefused || row["asked"] != true || onlyCall(t, row)["verdict"] != callDenied {
+			t.Errorf("the row reads verdict %v, asked %v, calls %v; want refused, the model asked, and its one call denied", row["verdict"], row["asked"], row["calls"])
 		}
 	})
+}
+
+// onlyCall is the one entry of a row's calls, for a request with one judge key.
+func onlyCall(t *testing.T, row map[string]any) map[string]any {
+	t.Helper()
+	calls, _ := row["calls"].([]map[string]any)
+	if len(calls) != 1 {
+		t.Fatalf("the row lists calls %v; want the one call of a one-key request", row["calls"])
+	}
+	return calls[0]
 }
 
 // TestAModelThatGivesNoVerdictHandsTheRequestOver: a model endpoint that fails, an answer that is
 // no JSON object, and an answer outside the two words are no verdict at all. Each hands the
 // request to its person, once — one row carrying the error, and no refusal — and never grants.
+// The row says so: its verdict is handed to the person, and its one call failed, with the error;
+// nothing in it reads deny, since nobody refused the request.
 func TestAModelThatGivesNoVerdictHandsTheRequestOver(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -269,8 +282,9 @@ func TestAModelThatGivesNoVerdictHandsTheRequestOver(t *testing.T) {
 			if _, carries := row["error"].(string); !carries {
 				t.Errorf("the row carries error %v; want what the model call failed with", row["error"])
 			}
-			if row["verdict"] != Deny {
-				t.Errorf("the row reads verdict %v; want the no-verdict default, deny, beside its error", row["verdict"])
+			call := onlyCall(t, row)
+			if errText, _ := call["error"].(string); row["verdict"] != requests.JudgedHandedOver || call["verdict"] != callFailed || errText == "" {
+				t.Errorf("the row reads verdict %v with call %v; want handed to the person, and the call failed with its error", row["verdict"], call)
 			}
 		})
 	}
@@ -426,9 +440,15 @@ func TestTheModelsWordsAreClampedAndFiltered(t *testing.T) {
 // handed over while the judge was reading, or the policy moved under it, so ApplyJudgeDecision
 // answers a refusal and writes nothing. The verdict is still worth keeping, so it is written on its
 // own, saying the grant did not land (D10, D11), and that row hands a request still pending to its
-// person.
+// person. The model's grant stays in the row's one call; the row's verdict says what became of the
+// request: not pending where it was decided or expired first, handed to the person where only the
+// judge's hold had ended.
 func TestAGrantTheRequestMachineRefusedStillRecordsItsVerdict(t *testing.T) {
-	for _, refusal := range []error{requests.ErrTerminal, requests.ErrExpired, requests.ErrJudgeHoldEnded} {
+	for refusal, outcome := range map[error]string{
+		requests.ErrTerminal:       requests.JudgedNotPending,
+		requests.ErrExpired:        requests.JudgedNotPending,
+		requests.ErrJudgeHoldEnded: requests.JudgedHandedOver,
+	} {
 		t.Run(refusal.Error(), func(t *testing.T) {
 			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 			machine.applyErr = refusal
@@ -442,8 +462,8 @@ func TestAGrantTheRequestMachineRefusedStillRecordsItsVerdict(t *testing.T) {
 				t.Errorf("the attempt's row reads applied %v; want the key left to the transaction, which is the only thing that knows what it did", applied[0]["applied"])
 			}
 			row := logged[0]
-			if row["verdict"] != Grant || row["applied"] != false {
-				t.Errorf("the row reads verdict %v, applied %v; want the grant recorded as one that did not land", row["verdict"], row["applied"])
+			if row["verdict"] != outcome || row["applied"] != false || onlyCall(t, row)["verdict"] != callGranted {
+				t.Errorf("the row reads verdict %v, applied %v, calls %v; want %q, the grant recorded as one that did not land, and the model's grant in its call", row["verdict"], row["applied"], row["calls"], outcome)
 			}
 			if notApplied, _ := row["not_applied"].(string); !strings.Contains(notApplied, refusal.Error()) {
 				t.Errorf("the row reads not_applied %q; want the machine's own refusal", row["not_applied"])

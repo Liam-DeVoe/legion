@@ -2079,13 +2079,24 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 	// every other read of this package is (the package comment's moved session). No lock and no
 	// liveness test: the row is written for the trail, and a verdict on a request whose box has
 	// gone is as worth keeping as one on a live request.
-	var requestID string
+	var requestID, state string
 	var enr enrollmentRow
-	if err := tx.QueryRow(ctx, `select req.id, e.id, e.kind, e.operator, c.service, e.runtime_id, coalesce(e.session_id,'')
+	if err := tx.QueryRow(ctx, `select req.id, req.state, e.id, e.kind, e.operator, c.service, e.runtime_id, coalesce(e.session_id,'')
 		from requests req join enrollments e on e.id = req.enrollment_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where req.record_id=$1`, recordID).
-		Scan(&requestID, &enr.ID, &enr.Kind, &enr.Operator, &enr.Service, &enr.RuntimeID, &enr.SessionID); err != nil {
+		Scan(&requestID, &state, &enr.ID, &enr.Kind, &enr.Operator, &enr.Service, &enr.RuntimeID, &enr.SessionID); err != nil {
 		return "", err
+	}
+	// The row's verdict is what became of the request, read here and never taken from the
+	// caller: a pending request is its person's from this row on, one already decided, cancelled
+	// or expired is not pending, and a row whose approval could not be read may yet be granted.
+	switch {
+	case wrote == JudgedAppliedUnknown:
+		detail["verdict"] = AppliedUnknown
+	case state == "pending":
+		detail["verdict"] = JudgedHandedOver
+	default:
+		detail["verdict"] = JudgedNotPending
 	}
 	actor := record.JudgeActor(modelID)
 	if err := audit(ctx, tx, judgedKind, enr.ID, requestID, nil, actor, detail); err != nil {
@@ -2176,6 +2187,19 @@ const (
 // applied: the approval's answer was lost, and so was the read of whether its own row is there.
 const AppliedUnknown = "unknown"
 
+// The verdict of a request.judged row: what became of the request, never what a model answered.
+// The model's answer for each key is the row's calls (judge.keyCall); this word is the outcome.
+// JudgedGranted and JudgedRefused are written by the decision's own transaction (decider.judgedRow),
+// which alone knows what it did; the judge writes JudgedHandedOver for a row that leaves the
+// request to its person (LogJudged), and JudgedNotPending for one written once the request was
+// already decided, cancelled or expired.
+const (
+	JudgedGranted    = "granted"
+	JudgedRefused    = "refused"
+	JudgedHandedOver = "handed to the person"
+	JudgedNotPending = "not pending"
+)
+
 // judgedDetail is a caller's verdict as the audit row holds it: a copy of what the caller gave,
 // and never nil. Never nil because audit.detail is NOT NULL and a nil map is a null parameter,
 // so a judge that recorded no reasoning records the empty object the column defaults to and
@@ -2232,6 +2256,12 @@ func byJudge(modelID string, judged auditDetail) decider {
 func (d decider) judgedRow(next string) auditDetail {
 	row := judgedDetail(d.judged)
 	row["applied"] = next == "granted"
+	// The verdict is what the request became, never what the judge asked for: an approval that
+	// granted nothing is the request's refusal, and the row says refused.
+	row["verdict"] = JudgedRefused
+	if next == "granted" {
+		row["verdict"] = JudgedGranted
+	}
 	return row
 }
 

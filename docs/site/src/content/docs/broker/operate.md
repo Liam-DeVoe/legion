@@ -2647,7 +2647,10 @@ A decision the model judge made names `judge:<model id>` in the event's `actor` 
 request's `decided_by`, with no login beside it, and writes one `request.judged` row of its own.
 That row is there for every judge run that reached a verdict, the hand-overs to a person and the
 failed checks included, so it is where a request the judge did not take says why
-([Concepts](/legion/broker/concepts/#the-model-judge)):
+([Concepts](/legion/broker/concepts/#the-model-judge)). Its `verdict` is what became of the
+request (`granted`, `refused`, `handed to the person`, `not pending` or `unknown`), and its `calls`
+say what each judge key's model call did (`granted`, `denied`, or `failed` with its error), so a
+model that timed out reads `failed` beside a request handed to its person, never a deny:
 
 ```sql
 select at, actor, request_id, detail

@@ -752,8 +752,10 @@ agent-secrets request "$AIRLOCK_JUDGED_SECRET" --ttl 10m \
 While the judge decides, the request carries `judge_deciding` and no page, and it is on nobody's
 list. `agent-secrets status <request id>` then names the judge as the decider,
 `decided_by: judge:$AIRLOCK_JUDGE_MODEL`, and the broker that decided it logs one line,
-`broker judge: wrote a verdict`, with the verdict, the model's reason and, where a check stopped
-the run, the check that failed. The same verdict is one `request.judged` row in the `audit` table
+`broker judge: wrote a verdict`, with the verdict — what became of the request: `granted`,
+`refused` or `handed to the person` — each key's call (`calls=<key>:granted|denied|failed`), the
+model's reason and, where a check stopped the run, the check that failed. The same verdict is one
+`request.judged` row in the `audit` table
 ([Concepts](/legion/broker/concepts/#the-model-judge)). What the model was sent is at its
 recording route, `$AIRLOCK_MODEL_RECORDS`, and what Dispatch was asked at
 `$AIRLOCK_DISPATCH_RECORDS`: the issue the reason names and the ask it cites, read and never

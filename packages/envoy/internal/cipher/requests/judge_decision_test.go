@@ -208,8 +208,8 @@ func TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover(t *testing.T) {
 			}
 
 			judged := readJudged(t, m, *req.RecordID)
-			if len(judged) != 1 || judged[0].actor != judge || judged[0].grantID != dec.GrantID || judged[0].verdict != "grant" {
-				t.Errorf("request.judged rows = %+v; want one by %q naming grant %s and the verdict", judged, judge, dec.GrantID)
+			if len(judged) != 1 || judged[0].actor != judge || judged[0].grantID != dec.GrantID || judged[0].verdict != JudgedGranted {
+				t.Errorf("request.judged rows = %+v; want one by %q naming grant %s, verdict %q", judged, judge, dec.GrantID, JudgedGranted)
 			}
 			if kinds := auditKinds(t, m, *req.RecordID); len(kinds) != 3 || kinds[1] != "request.granted" || kinds[2] != judgedKind {
 				t.Errorf("audit kinds = %q; want the creation, then request.granted and request.judged of the one approval", kinds)
@@ -224,18 +224,20 @@ func TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover(t *testing.T) {
 // TestAVerdictThatDecidesNothingWritesOnlyItself is the refer verdict and every approval the
 // state machine refused: LogJudged keeps what the judge answered and changes nothing else — no
 // decision event, no grant, and the request still waiting for the person who decides it today.
+// The row's verdict is what became of the request, whatever word the caller wrote: handed to the
+// person for a pending request, and not pending for one decided before the row.
 func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
 
-	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "refer", "why": "an answer outside grant and deny, which hands the request over"}); err != nil {
+	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "why": "an answer outside grant and deny, which hands the request over"}); err != nil {
 		t.Fatalf("LogJudged: %v", err)
 	}
 
 	judged := readJudged(t, m, *req.RecordID)
 	judge := record.JudgeActor(judgeModel)
-	if len(judged) != 1 || judged[0].actor != judge || judged[0].grantID != "" || judged[0].verdict != "refer" {
-		t.Fatalf("request.judged rows = %+v; want one by %q naming no grant and carrying the verdict", judged, judge)
+	if len(judged) != 1 || judged[0].actor != judge || judged[0].grantID != "" || judged[0].verdict != JudgedHandedOver {
+		t.Fatalf("request.judged rows = %+v; want one by %q naming no grant, verdict %q and never the deny the caller wrote", judged, judge, JudgedHandedOver)
 	}
 	got := readDecided(t, m, *req.RecordID)
 	if got.events != 0 || got.state != "pending" || got.decidedBy != "" || len(got.approvers) != 0 {
@@ -243,13 +245,35 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	}
 
 	// A verdict a caller left nil is a row all the same: audit.detail is NOT NULL, so it is
-	// written as the empty object rather than refused.
+	// written with the outcome alone rather than refused.
 	bare := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key too", 600, "SHARED_KEY")
 	if _, err := m.LogJudged(t.Context(), *bare.RecordID, judgeModel, nil); err != nil {
 		t.Fatalf("LogJudged(no detail): %v", err)
 	}
-	if judged := readJudged(t, m, *bare.RecordID); len(judged) != 1 || judged[0].actor != judge || judged[0].verdict != "" {
-		t.Fatalf("request.judged rows of a verdict with no detail = %+v; want one by %q", judged, judge)
+	if judged := readJudged(t, m, *bare.RecordID); len(judged) != 1 || judged[0].actor != judge || judged[0].verdict != JudgedHandedOver {
+		t.Fatalf("request.judged rows of a verdict with no detail = %+v; want one by %q, verdict %q", judged, judge, JudgedHandedOver)
+	}
+
+	// A request its person decided before the judge's row says not pending. handOver writes the
+	// hand-over's own row while the request is still pending, which says handed to the person; the
+	// row written after the person's decision is the last.
+	decided := pendingJudgeable(t, m, enr, key, "ACME-1353 wants it decided", 600, "DEEL_API_KEY")
+	handOver(t, m, *decided.RecordID)
+	if _, err := m.ApplyDecision(t.Context(), *decided.RecordID, false, fixtureOperator); err != nil {
+		t.Fatalf("the person's denial: %v", err)
+	}
+	before := len(readJudged(t, m, *decided.RecordID))
+	if _, err := m.LogJudged(t.Context(), *decided.RecordID, judgeModel, map[string]any{"verdict": "grant", "not_applied": "already decided"}); err != nil {
+		t.Fatalf("LogJudged(decided): %v", err)
+	}
+	judged = readJudged(t, m, *decided.RecordID)
+	if len(judged) != before+1 || judged[len(judged)-1].verdict != JudgedNotPending {
+		t.Fatalf("request.judged rows of a request decided first = %+v; want one more, verdict %q", judged, JudgedNotPending)
+	}
+	for _, row := range judged[:before] {
+		if row.verdict != JudgedHandedOver {
+			t.Errorf("the hand-over's row reads verdict %q; want %q, written while the request was pending", row.verdict, JudgedHandedOver)
+		}
 	}
 }
 
@@ -366,9 +390,10 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 		before      func(t *testing.T, m *Machine, enrollmentID string)
 		wantState   string
 		wantApplied string
+		wantVerdict string
 		wantDetail  string
 	}{
-		"an approval that grants": {wantState: "granted", wantApplied: "true"},
+		"an approval that grants": {wantState: "granted", wantApplied: "true", wantVerdict: JudgedGranted},
 		"an enrollment that has gone": {
 			before: func(t *testing.T, m *Machine, enrollmentID string) {
 				t.Helper()
@@ -377,7 +402,7 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 					t.Fatalf("lapse the enrollment's lease: %v", err)
 				}
 			},
-			wantState: "denied", wantApplied: "false",
+			wantState: "denied", wantApplied: "false", wantVerdict: JudgedRefused,
 			wantDetail: "the requesting enrollment is no longer live",
 		},
 		"a requesters list that dropped the session": {
@@ -385,7 +410,7 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 				t.Helper()
 				retag(t, m, policytest.Judged(listedSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, otherPerson), 900, ""))
 			},
-			wantState: "denied", wantApplied: "false",
+			wantState: "denied", wantApplied: "false", wantVerdict: JudgedRefused,
 			wantDetail: "DEEL_API_KEY: " + policy.ReasonRequesterNotListed,
 		},
 	} {
@@ -408,9 +433,9 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 			if len(judged) != 1 {
 				t.Fatalf("request.judged rows = %+v; want the one the decision wrote beside itself", judged)
 			}
-			if judged[0].applied != c.wantApplied {
-				t.Errorf("the row reads applied %q; want %q, which is what the transaction did (%s, grant %q)",
-					judged[0].applied, c.wantApplied, dec.State, dec.GrantID)
+			if judged[0].applied != c.wantApplied || judged[0].verdict != c.wantVerdict {
+				t.Errorf("the row reads applied %q, verdict %q; want %q and %q, which is what the transaction did (%s, grant %q)",
+					judged[0].applied, judged[0].verdict, c.wantApplied, c.wantVerdict, dec.State, dec.GrantID)
 			}
 			if (judged[0].grantID != "") != (c.wantState == "granted") {
 				t.Errorf("the row names grant %q for a %s request; want it to name one only where the approval granted", judged[0].grantID, dec.State)

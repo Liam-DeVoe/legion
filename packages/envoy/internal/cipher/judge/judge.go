@@ -256,6 +256,14 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 	r.write(ctx, p, row)
 }
 
+// What one key's call did, as the row's calls name it: the model granted the key, denied it, or
+// gave no verdict (a fault, a time-out, an answer outside the two words), which is no deny.
+const (
+	callGranted = "granted"
+	callDenied  = "denied"
+	callFailed  = "failed"
+)
+
 // keyCall is one model call of a run: the one key it decided, and what the model answered for it.
 type keyCall struct {
 	key     string
@@ -263,6 +271,19 @@ type keyCall struct {
 	usage   agentloop.Usage
 	raw     string
 	err     error
+}
+
+// did is what the call did, as the row's calls name it: callFailed where the model gave no verdict
+// (a fault, a time-out, an answer outside the two words), else callGranted or callDenied.
+func (c keyCall) did() string {
+	switch {
+	case c.err != nil:
+		return callFailed
+	case c.verdict.Word == Grant:
+		return callGranted
+	default:
+		return callDenied
+	}
 }
 
 // askEachKey decides each key of data in a model call of its own, all at once, each shown that
@@ -651,15 +672,18 @@ type verdictRow struct {
 	refusal string
 }
 
-// detail is the row's detail object, the one place this package spells its keys. The row an
-// approval's own transaction writes gains one more, applied, which requests' decider.judgedRow
-// sets from what that transaction did.
-func (v verdictRow) detail(modelID string) map[string]any {
+// detail is the row's detail object, the one place this package spells its keys. outcome is the
+// row's verdict: what became of the request (requests.JudgedGranted, JudgedRefused,
+// JudgedHandedOver or JudgedNotPending), never the model's answer, which is each call's. A row the
+// decision's own transaction writes has its verdict and applied set again from what that
+// transaction did (requests' decider.judgedRow), and a row LogJudged writes has its verdict set
+// from the request's state, so the row says what happened even where the run guessed wrong.
+func (v verdictRow) detail(modelID, outcome string) map[string]any {
 	detail := map[string]any{
 		"checks":  v.checks,
 		"model":   modelID,
 		"asked":   v.asked,
-		"verdict": v.verdict.Word,
+		"verdict": outcome,
 		"reason":  v.verdict.Reason,
 		// The judge sets no agentloop.Price, which is where every Usage.CostUSD comes
 		// from, so each of them is zero. A zero cost in the row would read as a call
@@ -672,11 +696,12 @@ func (v verdictRow) detail(modelID string) map[string]any {
 			"cache_write": v.usage.CacheWrite, "cache_read": v.usage.CacheRead,
 			"reasoning": v.usage.Reasoning, "metered": v.usage.Metered,
 		}
-		// Each key's own call: the key, the word its call answered with and its reason, or the
-		// error where it gave none, so the row says which key's owner's guidance decided.
+		// Each key's own call: the key, what the call did (callGranted, callDenied, or
+		// callFailed with its error where the model gave no verdict, which is no deny), and its
+		// reason, so the row says which key's owner's guidance decided.
 		calls := make([]map[string]any, 0, len(v.calls))
 		for _, c := range v.calls {
-			call := map[string]any{"key": c.key, "verdict": c.verdict.Word, "reason": c.verdict.Reason}
+			call := map[string]any{"key": c.key, "verdict": c.did(), "reason": c.verdict.Reason}
 			if c.err != nil {
 				call["error"] = record.Sanitize(c.err.Error(), maxRawAnswer)
 			}
@@ -704,6 +729,19 @@ func (v verdictRow) detail(modelID string) map[string]any {
 		detail["not_applied"] = record.Sanitize(v.notApplied.Error(), maxRawAnswer)
 	}
 	return detail
+}
+
+// loggedOutcome is the verdict of a row this package writes through LogJudged, which decides
+// nothing: requests.JudgedNotPending where the request was already decided, cancelled or expired
+// (stillPending's answer, or an approval the machine refused as terminal or expired), else
+// requests.JudgedHandedOver, since LogJudged ends the judge's hold and the request is its person's.
+// LogJudged sets it again from the request's state as it writes, so this is the run's best word
+// and the row's is the machine's.
+func (v verdictRow) loggedOutcome() string {
+	if v.notPending != "" || errors.Is(v.notApplied, requests.ErrTerminal) || errors.Is(v.notApplied, requests.ErrExpired) {
+		return requests.JudgedNotPending
+	}
+	return requests.JudgedHandedOver
 }
 
 // write is the one place a run writes anything, and it chooses between the three ends a request
@@ -740,7 +778,7 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 	case row.asked && row.err != nil:
 		// The model gave no verdict: handed over.
 	case row.asked && row.verdict.Word == Grant:
-		dec, err := r.opts.Requests.ApplyJudgeDecision(ctx, p.RecordID, modelID, row.detail(modelID))
+		dec, err := r.opts.Requests.ApplyJudgeDecision(ctx, p.RecordID, modelID, row.detail(modelID, requests.JudgedGranted))
 		if err == nil {
 			// The transaction wrote its own request.judged row and set that row's
 			// applied from what it did, so what is left for this line is the state
@@ -764,7 +802,7 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 	}
 	rowCtx, cancel := rowContext(ctx)
 	defer cancel()
-	wrote, err := r.opts.Requests.LogJudged(rowCtx, p.RecordID, modelID, row.detail(modelID))
+	wrote, err := r.opts.Requests.LogJudged(rowCtx, p.RecordID, modelID, row.detail(modelID, row.loggedOutcome()))
 	if err != nil {
 		attrs := []any{"record", p.RecordID, "request", p.RequestID, "model", modelID, "err", err}
 		if row.notApplied != nil {
@@ -851,7 +889,7 @@ func rowContext(ctx context.Context) (context.Context, context.CancelFunc) {
 func (r *Runner) refuse(ctx context.Context, p requests.PendingRequest, row verdictRow) bool {
 	modelID := r.opts.Model.ID
 	why := refusalOf(row)
-	if _, err := r.opts.Requests.DenyJudged(ctx, p.RecordID, modelID, row.detail(modelID), why); err != nil {
+	if _, err := r.opts.Requests.DenyJudged(ctx, p.RecordID, modelID, row.detail(modelID, requests.JudgedRefused), why); err != nil {
 		if errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) || errors.Is(err, requests.ErrJudgeHoldEnded) {
 			slog.Info("broker judge: the request was decided, expired or handed over before the judge's refusal landed",
 				"record", p.RecordID, "request", p.RequestID, "model", modelID, "reason", err)
@@ -883,12 +921,21 @@ func refusalOf(row verdictRow) string {
 
 // logged is the one line a run that wrote a row leaves behind. It carries the model's own words
 // — the reason, and the raw answer where there was one — already clamped and filtered (D12), the
-// same strings the row holds and GET /v1/grant-log then serves.
+// same strings the row holds and GET /v1/grant-log then serves. Its verdict is the row's: what
+// became of the request (outcome), never a deny the judge did not make; calls is each key's call
+// as key:what-it-did.
 func (r *Runner) logged(p requests.PendingRequest, row verdictRow) {
 	attrs := []any{
 		"record", p.RecordID, "request", p.RequestID, "session", p.SessionID,
 		"approver", p.Approver, "secrets", p.Secrets, "model", r.opts.Model.ID,
-		"asked", row.asked, "verdict", row.verdict.Word, "reason", row.verdict.Reason,
+		"asked", row.asked, "verdict", row.outcome(), "reason", row.verdict.Reason,
+	}
+	if len(row.calls) > 0 {
+		calls := make([]string, 0, len(row.calls))
+		for _, c := range row.calls {
+			calls = append(calls, c.key+":"+c.did())
+		}
+		attrs = append(attrs, "calls", strings.Join(calls, ","))
 	}
 	if failed := decidingFailure(row.checks); failed != nil {
 		attrs = append(attrs, "failed_check", failed.Check, "failed_detail", failed.Detail)
@@ -919,6 +966,23 @@ func (r *Runner) logged(p requests.PendingRequest, row verdictRow) {
 		attrs = append(attrs, "handed_over", true)
 	}
 	slog.Info("broker judge: wrote a verdict", attrs...)
+}
+
+// outcome is what became of the request, as the row this run wrote says it (requests.JudgedGranted,
+// JudgedRefused, AppliedUnknown, or loggedOutcome's word), read off what the run did.
+func (v verdictRow) outcome() string {
+	switch {
+	case v.refusal != "":
+		return requests.JudgedRefused
+	case v.decided == "granted":
+		return requests.JudgedGranted
+	case v.decided != "":
+		return requests.JudgedRefused
+	case v.appliedUnknown:
+		return requests.AppliedUnknown
+	default:
+		return v.loggedOutcome()
+	}
 }
 
 // firstFailure is the first check that failed, and nil for a run every check passed.

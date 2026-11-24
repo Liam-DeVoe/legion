@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -56,9 +57,16 @@ func testPolicy(t *testing.T) *policy.Current {
 // judgedPolicy is testPolicy with guidance as testSecret's guidance tag.
 func judgedPolicy(t *testing.T, guidance string) *policy.Current {
 	t.Helper()
+	return guidedPolicy(t, guidance, shortGuidance)
+}
+
+// guidedPolicy is testPolicy with first as testSecret's guidance tag and second as
+// shortJudgeSecret's. Both keys are testApprover's own.
+func guidedPolicy(t *testing.T, first, second string) *policy.Current {
+	t.Helper()
 	return policytest.Current(t, secrets.NewLocal(
-		policytest.Judged(policytest.Secret(testSecret, testApprover, policy.TierHuman, "v"), 900, guidance),
-		policytest.Judged(policytest.Secret(shortJudgeSecret, testApprover, policy.TierHuman, "v"), shortJudgeSeconds, shortGuidance),
+		policytest.Judged(policytest.Secret(testSecret, testApprover, policy.TierHuman, "v"), 900, first),
+		policytest.Judged(policytest.Secret(shortJudgeSecret, testApprover, policy.TierHuman, "v"), shortJudgeSeconds, second),
 		policytest.Secret("NO_JUDGE_KEY", testApprover, policy.TierHuman, "v"),
 	))
 }
@@ -227,8 +235,13 @@ type modelStandIn struct {
 	delay  time.Duration
 	tokens chatTokens
 	// replies, when it names the one key a call decides, is that call's reply in place of reply,
-	// so a test can have one key's call grant and another's deny.
+	// so a test can have one key's call grant and another's deny; delays, the same for delay, so
+	// one key's call can run past the model's bound while another's answers.
 	replies map[string]string
+	delays  map[string]time.Duration
+	// obey, when set, answers each call as a model that obeys every guidance in its prompt
+	// would (proxyrulestest.ObeyedVerdict), in place of reply.
+	obey bool
 }
 
 // chatTokens are the counts the stand-in's usage chunk reports.
@@ -257,9 +270,21 @@ func (m *modelStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	m.bodies = append(m.bodies, body)
 	m.authorizations = append(m.authorizations, r.Header.Get("Authorization"))
 	status, reply, delay, tokens := m.status, m.reply, m.delay, m.tokens
-	if data, err := callData(body); err == nil && len(data.Keys) == 1 {
-		if own, ok := m.replies[data.Keys[0].Name]; ok {
-			reply = own
+	if data, err := callData(body); err == nil {
+		if len(data.Keys) == 1 {
+			if own, ok := m.replies[data.Keys[0].Name]; ok {
+				reply = own
+			}
+			if own, ok := m.delays[data.Keys[0].Name]; ok {
+				delay = own
+			}
+		}
+		if m.obey {
+			keys := make([]proxyrulestest.GuidedKey, 0, len(data.Keys))
+			for _, k := range data.Keys {
+				keys = append(keys, proxyrulestest.GuidedKey{Name: k.Name, Guidance: k.Guidance})
+			}
+			reply = verdictReply(proxyrulestest.ObeyedVerdict(keys, data.Reason))
 		}
 	}
 	m.mu.Unlock()
