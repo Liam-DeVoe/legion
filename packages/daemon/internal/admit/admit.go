@@ -2663,8 +2663,9 @@ func (a *Admission) tellChildrenFirst(ctx context.Context, tx pgx.Tx, issues []r
 // its own is still open — the children-first rule of dispatch://INFRA-980. It is the named seam
 // the safety net below asks, so that the rule arrives in one place rather than as a condition
 // spread through this file, and waits is the pass's own judgement of it
-// (record.LineFacts.ChildWaits, filled by blockers.JudgeLine from record.ChildWaits): never a stored
-// flag, so a parent whose last open child has gone waits no longer than the pass that reads it.
+// (record.LineFacts.ChildWaits, filled by blockers.JudgeLine from record.ChildWaitsOf): never a
+// stored flag, so a parent whose last open child has gone waits no longer than the pass that
+// reads it.
 func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue record.Issue) bool {
 	_, waiting := waits[issue.Key]
 	return waiting

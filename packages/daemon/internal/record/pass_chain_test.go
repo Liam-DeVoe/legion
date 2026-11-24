@@ -15,7 +15,7 @@ import (
 )
 
 // One pass walks one chain (chainOf): the hold under an accepted ancestor (Waiting) and the
-// children-first cycle (ChildWaits) are two walks of the same records, so the map they walk is
+// children-first cycle (childWaits) are two walks of the same records, so the map they walk is
 // built in one place. It holds the pass's own records and the records above them that its read
 // leaves out (LineFacts.Parents), which is what lets either walk cross an ancestor already done;
 // the pass's own records stay a map of their own, since what runs and what an issue ranks against
@@ -64,20 +64,24 @@ func allocated(do func()) uint64 {
 	return after.TotalAlloc - before.TotalAlloc
 }
 
-// One pass builds its parent chain once (passChain), and every walk of it ReadLineFacts makes
-// reads that one map: the cycle of each Dispatch child (ChildWaits), the child left out of the
+// One pass builds its parent chain once (passChain), and every walk of the pass reads that one
+// map: in ReadLineFacts the cycle of each Dispatch child (childWaits), the child left out of the
 // started parents' waits and of the retro-held parents' (withoutHeldUnderAccepted) and the issues
-// beneath a parent held before its retro (retroHoldsOf). The pass here makes all four: a started
-// root and a root held before its retro, each with a child filed under it that no tree records.
+// beneath a parent held before its retro (retroHoldsOf), and after it the line (Waiting) and the
+// held list (HeldList), judged from its facts over the records it read, as the admission pass,
+// the state and the controller's tick judge them (blockers.JudgeLine, admit's tickRows,
+// projection's HeldList). The pass here makes all six walks: a started root and a root held
+// before its retro, each with a child filed under it that no tree records.
 //
 // Nothing of a build shows outside the pass but its cost, so the builds are counted by their bytes.
 // The records above the pass are many (aboveRecords, which the read of them answers), each a done
-// tree of its own that no walk climbs, so one copy of them outweighs everything else the pass
-// allocates. The pass's bytes, less those of the read of those records (ReadParents, which
-// ReadLineFacts makes as it is) and of the one walk that lists every record of the chain
-// (openBeneathIn, for the held root), are a whole number of chains, each the bytes of one build
-// (chainOf). The band around one catches a walk that builds a copy of its own, which adds one
-// chain: a pass whose four walks each build one comes to four.
+// tree of its own that no walk climbs, so one copy of them outweighs everything else the pass,
+// its line and its held list allocate. Their bytes, less those of the read of those records
+// (ReadParents, which ReadLineFacts makes as it is) and of the one walk that lists every record of
+// the chain (openBeneathIn, for the held root), are a whole number of chains, each the bytes of
+// one build (chainOf). The band around one catches a walk that builds a copy of its own, which
+// adds one chain: a line and a held list that each build their own bring the pass to three, and
+// six walks that each build one bring it to six.
 func TestAPassBuildsItsParentChainOnce(t *testing.T) {
 	const (
 		started      = "LEGION-960" // a root in implementing, filed under a done issue
@@ -106,12 +110,24 @@ func TestAPassBuildsItsParentChainOnce(t *testing.T) {
 			must(t, records.PutDispatchIssue(ctx, tx, reading))
 		}
 		var facts LineFacts
+		var line []LineEntry
+		var dropped, heldRows []HeldIssue
 		var err error
-		pass := allocated(func() { facts, err = ReadLineFacts(ctx, tx, records, "LEGION", issues, nil) })
+		pass := allocated(func() {
+			if facts, err = ReadLineFacts(ctx, tx, records, "LEGION", issues, nil); err != nil {
+				return
+			}
+			// The line is handed the children-first waits as blockers.JudgeLine hands them on.
+			facts.ChildWaits = ChildWaitsOf(facts)
+			line, dropped = Waiting(issues, nil, facts)
+			heldRows = HeldList(issues, nil, line, dropped, facts)
+		})
 		must(t, err)
-		if len(facts.Parents) != aboveRecords || len(facts.StartedParentWaits[started].Open) != 1 || len(facts.RetroHolds[held].Open) != 1 {
-			t.Fatalf("the pass holds %d records above it, the open children %+v of %s and the holds %+v of %s; want %d, and %s and %s open: without all four walks this test proves nothing",
-				len(facts.Parents), facts.StartedParentWaits[started].Open, started, facts.RetroHolds[held], held, aboveRecords, startedChild, heldChild)
+		if len(facts.Parents) != aboveRecords || len(facts.StartedParentWaits[started].Open) != 1 || len(facts.RetroHolds[held].Open) != 1 ||
+			len(line)+len(heldRows) != len(issues) {
+			t.Fatalf("the pass holds %d records above it, the open children %+v of %s and the holds %+v of %s, and its line and held list place %d of its %d issues; want %d, %s and %s open, and every issue placed: without all six walks this test proves nothing",
+				len(facts.Parents), facts.StartedParentWaits[started].Open, started, facts.RetroHolds[held], held, len(line)+len(heldRows), len(issues),
+				aboveRecords, startedChild, heldChild)
 		}
 		read := allocated(func() { _, err = ReadParents(ctx, tx, records, "LEGION", issues) })
 		must(t, err)
@@ -120,10 +136,10 @@ func TestAPassBuildsItsParentChainOnce(t *testing.T) {
 		listed := allocated(func() { openBeneathIn(heldRoot, chain) })
 		beyond := int64(pass) - int64(read) - int64(listed)
 		builds := float64(beyond) / float64(one)
-		t.Logf("the pass allocated %d bytes: %d for the read of the records above it, %d for the list of the held root's tree, and %.2f chains of %d bytes",
+		t.Logf("the pass, its line and its held list allocated %d bytes: %d for the read of the records above it, %d for the list of the held root's tree, and %.2f chains of %d bytes",
 			pass, read, listed, builds, one)
 		if builds < 0.5 || builds > 1.5 {
-			t.Fatalf("the pass built its parent chain %.2f times over (%d bytes beyond its read and its list, %d bytes a chain), want once: every walk reads the one chain of the pass (passChain)",
+			t.Fatalf("the pass, its line and its held list built the parent chain %.2f times over (%d bytes beyond the read and the list, %d bytes a chain), want once: every walk reads the one chain of the pass (passChain, passOver)",
 				builds, beyond, one)
 		}
 	})

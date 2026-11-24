@@ -534,7 +534,7 @@ func silences(word record.HeldReason) bool { return silencedTree[word] }
 // rows the walk read name, the word of every issue the walk left behind, the children-first
 // waits and the started parents' waits. None of it is judged here: the line and the words are
 // record.Waiting's two answers through blockers.JudgeLine, the child waits are
-// record.ChildWaits' through the same judgement and the started parents' are the pass's
+// record.ChildWaitsOf's through the same judgement and the started parents' are the pass's
 // (record.LineFacts.StartedParentWaits), and the slots are the pass's own rows.
 type lineHolds struct {
 	// line is the waiting line's entries, by issue key. An entry says whether its issue already

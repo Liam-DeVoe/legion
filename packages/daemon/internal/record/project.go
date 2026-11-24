@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"time"
@@ -340,10 +341,12 @@ func OwnsUnder(members []Issue, tree, architectIssue string, target Issue) bool 
 // chainOf is the records one admission pass walks its parent chains over (Ancestors): the pass's
 // own records, by key, and the records above them that its read leaves out (LineFacts.Parents),
 // which is how a walk crosses an ancestor already done rather than stopping at it. It is one
-// statement of the one map, because the two walks of a pass must answer alike about one chain —
-// the line's hold under an accepted ancestor (Waiting) and the children-first cycle
-// (ChildWaits) — and because a reader of either must not mistake it for the pass's own records,
-// which say what runs and what each issue ranks against: a done ancestor says neither.
+// statement of the one map, because every walk of a pass must answer alike about one chain — the
+// children-first cycle (childWaits), the child left out of a parent's open children
+// (withoutHeldUnderAccepted), the issues beneath a parent held before its retro (retroHoldsOf),
+// the line's hold under an accepted ancestor (Waiting) and the held list's word for it
+// (HeldList) — and because a reader of any of them must not mistake it for the pass's own
+// records, which say what runs and what each issue ranks against: a done ancestor says neither.
 func chainOf(byKey, above map[string]Issue) map[string]Issue {
 	chain := make(map[string]Issue, len(byKey)+len(above))
 	maps.Copy(chain, byKey)
@@ -351,15 +354,18 @@ func chainOf(byKey, above map[string]Issue) map[string]Issue {
 	return chain
 }
 
-// passChain is the one chain of an admission pass's reading of its parents' children
-// (ReadLineFacts, and the engine's judgement of one parent's, OpenChildWaits): the pass's own
-// records, issues, by key (own) and the records it walks its parent chains over (chain, chainOf
-// with above, LineFacts.Parents). Each is built the first time a walk reads it and kept for every
-// walk after: the pass walks the chain for the cycle of each child (ChildWaits), for the child left
-// out of the started parents' waits and of the retro-held parents' (withoutHeldUnderAccepted) and
-// for the issues beneath each parent held before its retro (retroHoldsOf), so it builds it once,
-// and not at all where it reads no Dispatch child and holds no parent before its retro. Every walk
-// only reads the two maps, which every walk after the first shares, so none may write them.
+// passChain is the one chain of an admission pass (ReadLineFacts, and the engine's judgement of
+// one parent's children, OpenChildWaits): the pass's own records, issues, by key (own) and the
+// records it walks its parent chains over (chain, chainOf with above, LineFacts.Parents). Each is
+// built the first time a walk reads it and kept for every walk after. ReadLineFacts walks the
+// chain for the cycle of each child (childWaits), for the child left out of the started parents'
+// waits and of the retro-held parents' (withoutHeldUnderAccepted) and for the issues beneath each
+// parent held before its retro (retroHoldsOf), and hands it on in its facts (LineFacts.pass), so
+// the line (Waiting) and the held list (HeldList) judged from those facts walk it too wherever
+// they are handed the very records it was built over (passOver). One pass so builds it once, and
+// builds it not at all before the line where it reads no Dispatch child and holds no parent before
+// its retro. Every walk only reads the two maps, which every walk after the first shares, so none
+// may write them.
 type passChain struct {
 	issues         []Issue
 	above          map[string]Issue
@@ -380,6 +386,32 @@ func (p *passChain) chain() map[string]Issue {
 		p.chained = chainOf(p.own(), p.above)
 	}
 	return p.chained
+}
+
+// over says whether p was built over issues and above: the very slice of records it holds, at the
+// same length, and the same map of the records above them, or no record above either. It compares
+// identity and not content, which answers for the records only while no caller writes one of them
+// in place between the build and the read, and none does: a pass that changes a record reads the
+// records and their facts again together (admit's reread).
+func (p *passChain) over(issues []Issue, above map[string]Issue) bool {
+	switch {
+	case p == nil || len(issues) != len(p.issues) || len(above) != len(p.above):
+		return false
+	case len(issues) > 0 && &issues[0] != &p.issues[0]:
+		return false
+	}
+	return len(above) == 0 || reflect.ValueOf(above).UnsafePointer() == reflect.ValueOf(p.above).UnsafePointer()
+}
+
+// passOver is the chain the line (Waiting) and the held list (HeldList) walk for issues under
+// facts: the pass's own (LineFacts.pass) where it was built over these very records and the same
+// records above them (passChain.over), and otherwise one of their own over issues and
+// facts.Parents, built as the pass builds its own. A chain built over other records is never read.
+func passOver(issues []Issue, facts LineFacts) *passChain {
+	if facts.pass.over(issues, facts.Parents) {
+		return facts.pass
+	}
+	return &passChain{issues: issues, above: facts.Parents}
 }
 
 // AcceptedAncestor is the nearest issue above issue (Ancestors) that the daemon has already
@@ -665,10 +697,14 @@ type LineFacts struct {
 	// children it judged StartedParentWaits from (readChildWaits), which ChildWaitsOf hands the
 	// caller to fill ChildWaits with; nil in facts ReadLineFacts did not read.
 	childrenFirst map[string]ChildWait
+	// pass is the one chain of the pass ReadLineFacts read these facts in (passChain), which the
+	// line (Waiting) and the held list (HeldList) walk where they are handed the very records it
+	// was built over (passOver); nil in facts ReadLineFacts did not read.
+	pass *passChain
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in
-// Dispatch key order. It is data alone — the rule that fills it is ChildWaits — so that the
+// Dispatch key order. It is data alone — the rule that fills it is childWaits — so that the
 // waiting line, the state's `blocked` and the architect's notice all read one judgement.
 type ChildWait struct {
 	Parent string
@@ -684,7 +720,7 @@ type OpenChild struct {
 	Status string
 	// Released says the daemon records the child and that record is in the workflow
 	// (InWorkflow): the child was released and the daemon runs it. An open child with no record
-	// of its own is work its architect filed and has not released. It is set by ChildWaits, from
+	// of its own is work its architect filed and has not released. It is set by childWaits, from
 	// the same record ChildOpen reads, so that one judgement of the child answers both.
 	Released bool
 	Cycle    string
@@ -876,9 +912,11 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	// (RetroHeldParents) are found once, for that read and for the read of the roots that rest on
 	// them (RestingRootsOn) after it, which reads nothing where no parent is held so, and the three
 	// holds of each are put together from the two reads once (retroHoldsOf). Every walk of the
-	// parent chain those judgements make reads the one chain of the pass (passChain).
+	// parent chain those judgements make reads the one chain of the pass (passChain), which the
+	// facts carry on to the line and the held list judged from them (LineFacts.pass, passOver).
 	held := RetroHeldParents(issues)
 	pass := &passChain{issues: issues, above: facts.Parents}
+	facts.pass = pass
 	var children map[string]ChildWait
 	if facts.childrenFirst, facts.StartedParentWaits, children, err = readChildWaits(ctx, tx, store, project, held, facts, pass); err != nil {
 		return LineFacts{}, err
@@ -1330,15 +1368,13 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	for _, slot := range slots {
 		slotted[slot.Issue] = struct{}{}
 	}
-	byKey := make(map[string]Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
 	// The parent chain is walked over the records above these as well (chainOf): a parent
 	// already done is no part of the live read, and a walk that stopped at it would hide every
 	// issue above it, so the line would offer a slot to a child the acceptance rules hold
-	// (AcceptedAncestor).
-	chain := chainOf(byKey, facts.Parents)
+	// (AcceptedAncestor). It is the chain of the pass the facts were read in where these are the
+	// records that pass read, which its own walks built already (passOver).
+	pass := passOver(issues, facts)
+	byKey, chain := pass.own(), pass.chain()
 	queued := queuedRoots(issues, facts)
 	live := liveRoots(issues, facts, queued)
 	queuedKeys := make(map[string]struct{}, len(queued))
