@@ -1023,11 +1023,13 @@ func TestFetchLeavesHeadUntilAFetchBringsGitHubsDefaultBranch(t *testing.T) {
 	}
 }
 
-// A feed repository Fetch did not write is not taken as its own. Before this release an issue's
-// agents could write the issue volume's feed directory, so an upgraded volume may hold a repository
-// there carrying a hook, configuration or link that the token-holding fetch would run or follow.
-// Fetch takes an existing feed only in the shape it writes, and otherwise removes it, says so, and
-// fills the feed afresh: no planted hook runs, and nothing planted survives.
+// A feed repository Fetch did not write is not taken as its own, and it is not replaced either.
+// Before this release an issue's agents could write the issue volume's feed directory, so a volume
+// may hold a repository there carrying a hook, configuration or link that the token-holding fetch
+// would run or follow; and a pod's clone reads the feed's objects through its alternates, so a feed
+// replaced under it would take the clone's history with it. Fetch takes an existing feed only in
+// the shape it writes, and otherwise fails, naming why, runs no git, and leaves the feed where it
+// stands: no planted hook runs, and nothing is removed or cloned in its place.
 func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 	for name, plant := range map[string]func(t *testing.T, feed, marker string){
 		"a hook": func(t *testing.T, feed, marker string) {
@@ -1111,26 +1113,33 @@ func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 			plant(t, first.Feed, marker)
 			advanceRemote(t, run.remote)
 			before := len(run.Calls())
-
-			again, err := Fetch(context.Background(), run, req)
+			owner, err := os.Lstat(filepath.Dir(first.Feed))
 			if err != nil {
-				t.Fatalf("the Fetch after the plant: %v", err)
+				t.Fatal(err)
+			}
+			planted, err := os.Lstat(first.Feed)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = Fetch(context.Background(), run, req)
+			if err == nil || !strings.Contains(err.Error(), "is not one this fetch wrote") {
+				t.Fatalf("the Fetch after the plant = %v, want it to fail saying the feed is not one it wrote", err)
 			}
 			if _, err := os.Stat(marker); err == nil {
 				t.Fatal("a planted hook ran in the fetch")
 			}
-			if !slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, "is not one this fetch wrote") }) {
-				t.Errorf("Fetch did not say it refused the feed: %q", logged)
+			if calls := run.Calls()[before:]; len(calls) != 0 {
+				t.Errorf("the Fetch after the plant ran %v, want no git at all", calls)
 			}
-			findCall(t, run.Calls()[before:], "git", "clone", "--bare")
-			if info, err := os.Lstat(filepath.Dir(again.Feed)); err != nil || !info.IsDir() {
-				t.Errorf("the feed's owner directory is %v (%v), want a directory", info, err)
+			if slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, "removed") }) {
+				t.Errorf("Fetch logged %q, want nothing removed", logged)
 			}
-			if why, err := foreignFeed(again.Feed); err != nil || why != "" {
-				t.Errorf("the refilled feed reads as foreign: %q (%v)", why, err)
+			if info, err := os.Lstat(filepath.Dir(first.Feed)); err != nil || info.Mode().Type() != owner.Mode().Type() {
+				t.Errorf("the feed's owner directory is %v (%v) after the fetch, want it as it stood, %v", info, err, owner.Mode().Type())
 			}
-			if got, want := strings.TrimSpace(runSetup(t, again.Feed, "git", "--git-dir="+again.Feed, "rev-parse", "refs/heads/main")), strings.TrimSpace(runSetup(t, again.Feed, "git", "--git-dir="+run.remote, "rev-parse", "main")); got != want {
-				t.Errorf("the refilled feed's main is %s, want the remote's %s", got, want)
+			if info, err := os.Lstat(first.Feed); err != nil || info.Mode().Type() != planted.Mode().Type() {
+				t.Errorf("the feed is %v (%v) after the fetch, want it as it stood, %v", info, err, planted.Mode().Type())
 			}
 		})
 	}
