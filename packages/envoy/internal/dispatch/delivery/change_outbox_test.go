@@ -545,7 +545,7 @@ func TestARunsJobsWriteTakesTheChangeLogLockLast(t *testing.T) {
 	if err != nil || len(stored) != len(jobs) {
 		t.Fatalf("jobs after the write = %d, %v; want %d", len(stored), err, len(jobs))
 	}
-	t.Logf("the jobs write of %d jobs waited for the change log's lock holding its run's row and every job row, and held the lock at most %s", len(jobs), held.Round(time.Microsecond))
+	t.Logf("the jobs write of %d jobs answered at most %s after the change log's lock was let go", len(jobs), held.Round(time.Microsecond))
 }
 
 // jobRowsFreeToAnother is how many of the run's job rows another transaction can lock: it takes
