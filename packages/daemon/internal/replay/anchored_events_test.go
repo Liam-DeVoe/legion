@@ -215,6 +215,14 @@ func TestAnEventOfALoopADrawnLoopReplacesGoesWithIt(t *testing.T) {
 // the gate and starts ACME-2's planning, and closes ACME-2 at 11:05.
 func cancelledQuestionWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	recordCancelledQuestion(b, nil)
+	return b.build()
+}
+
+// recordCancelledQuestion writes cancelledQuestionWindow's record into b, and runs before, where a
+// window built on it adds acts, just before the person's close of ACME-2 at 11:05.
+func recordCancelledQuestion(b *windowBuilder, before func()) {
+	b.t.Helper()
 	b.capped(1)
 	b.gated(record.DesignStepSpec)
 	b.boot(clock(9, 0))
@@ -240,9 +248,11 @@ func cancelledQuestionWindow(t *testing.T) Window {
 	b.approves(clock(10, 55), "ACME-2", "")
 	b.gateOpened(clock(10, 55), "ACME-2", intake.DispatchArtifactApproved, 1)
 	b.rootFirstPhase(clock(10, 55), "ACME-2")
+	if before != nil {
+		before()
+	}
 	b.edit(clock(11, 5), "ACME-2", setStatus(record.DoneStatus))
 	b.leaves(clock(11, 5), "ACME-2", record.DoneStatus)
-	return b.build()
 }
 
 // Under answer offset a person's answer to a worker's question comes at its recorded offset from
