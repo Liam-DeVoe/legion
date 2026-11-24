@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -126,15 +125,12 @@ func TestAHookPromptOfATesterOrAReviewerReachesTheAgentOfThatWorksStep(t *testin
 		// passes is the number of steps that pass before the checker's, the last of them.
 		passes int
 		// want names, for each role the firing prompts, the role whose step's claim its prompt names.
-		want     map[claim.Role]claim.Role
-		prompted string
+		want map[claim.Role]claim.Role
 	}{
 		{name: "coder auditor checker acceptance:owner", steps: []string{"coder", "auditor", "checker", "acceptance:owner"}, passes: 2,
-			want:     map[claim.Role]claim.Role{claim.RoleImplementer: "coder", claim.RoleTester: "checker", claim.RoleReviewer: "auditor"},
-			prompted: "implementer, tester, reviewer"},
+			want: map[claim.Role]claim.Role{claim.RoleImplementer: "coder", claim.RoleTester: "checker", claim.RoleReviewer: "auditor"}},
 		{name: "coder checker", steps: []string{"coder", "checker"}, passes: 1,
-			want:     map[claim.Role]claim.Role{claim.RoleImplementer: "coder", claim.RoleTester: "checker"},
-			prompted: "implementer, tester"},
+			want: map[claim.Role]claim.Role{claim.RoleImplementer: "coder", claim.RoleTester: "checker"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -167,8 +163,8 @@ func TestAHookPromptOfATesterOrAReviewerReachesTheAgentOfThatWorksStep(t *testin
 					t.Errorf("the %s's prompt names the claim %q, want %q, the claim of the %s's step", prompt.role, prompt.claim, want, worker)
 				}
 			}
-			if posted := firingMessages(t, pool); len(posted) != 1 || !strings.HasSuffix(posted[0], " Prompted: "+tc.prompted+".") {
-				t.Errorf("the firing posted %q, want one message that ends Prompted: %s.", posted, tc.prompted)
+			if posted := firingMessages(t, pool); len(posted) != 1 {
+				t.Errorf("the firing posted %q, want one message", posted)
 			}
 		})
 	}

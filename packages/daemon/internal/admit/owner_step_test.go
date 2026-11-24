@@ -2,7 +2,6 @@ package admit
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -55,10 +54,8 @@ func TestATreeAdmittedAgainTellsTheOwnerItsStep(t *testing.T) {
 	if len(told) != 1 || told[0].Role != claim.RoleImplementer || told[0].Phase != phase.Implementing {
 		t.Fatalf("the promotion told %+v, want one owner-step of the implementer's step in implementing", told)
 	}
-	for _, says := range []string{" Task: a.", " Step 1 of 2: implementer:owner.", " Resume the existing phase work."} {
-		if !strings.Contains(told[0].Reason, says) {
-			t.Fatalf("the owner-step's task = %q, want it to say %q", told[0].Reason, says)
-		}
+	if step := told[0].OwnerStep; step == nil || step.Task != "a" || step.Kind != "step" || step.Place != 1 {
+		t.Fatalf("the owner-step names the run %+v, want task a's step 1", told[0].OwnerStep)
 	}
 	if starts := roleStarts(t, pool, atStep, claim.RoleImplementer); len(starts) != 0 {
 		t.Fatalf("the promotion wrote the implementer's starts %+v, want none: the owner does the step", starts)

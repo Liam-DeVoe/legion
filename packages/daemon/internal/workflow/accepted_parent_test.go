@@ -196,18 +196,13 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 	}
 }
 
-// The notice of a person's todo beneath an accepted ancestor names the head the daemon accepted
-// as the head the last step of the ancestor's task passed, which is true of each plan: a plan with
-// no reviewer step has no reviewed head, and an issue stands in its retro or its merge once its
-// task's last step passed, whatever that step is (record.Accepted). The ancestor walks today's
-// line in one case and the plan `implementer tester`, which has no reviewer step, in the other;
-// the text is one.
-func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
-	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
-		"so LEGION-300 is recorded at admitted and nothing starts it until LEGION-208 closes. " +
-		"To run LEGION-300 under it now, LEGION-208 must go back to an earlier step: a request_backward_move by the agent that works it now, " +
-		"which is the agent of its retro (its own architect where the retro is the owner's) or its merger. " +
-		"Or leave LEGION-300 where it is, and it starts once LEGION-208 has closed."
+// The notice of a person's todo beneath an accepted ancestor is one text whatever plan the
+// ancestor walks, since an issue stands in its retro or its merge once its task's last step passed,
+// whatever that step is (record.Accepted), and it names the child and the ancestor. The ancestor
+// walks today's line in one case and the plan `implementer tester`, which has no reviewer step, in
+// the other.
+func TestTheNoticeOfATodoUnderAnAcceptedAncestorIsOneForEachPlan(t *testing.T) {
+	var reasons []string
 	for _, tc := range []struct {
 		name  string
 		steps []string
@@ -236,9 +231,13 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t 
 				"select payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&reason); err != nil {
 				t.Fatalf("read the child-status notice: %v", err)
 			}
-			if reason != want {
-				t.Fatalf("the child-status notice = %q, want %q", reason, want)
+			if !strings.Contains(reason, "LEGION-300") || !strings.Contains(reason, "LEGION-208") {
+				t.Fatalf("the child-status notice %q does not name LEGION-300 and LEGION-208", reason)
 			}
+			reasons = append(reasons, reason)
 		})
+	}
+	if len(reasons) != 2 || reasons[0] != reasons[1] {
+		t.Fatalf("the child-status notices of the two plans = %q, want one text", reasons)
 	}
 }

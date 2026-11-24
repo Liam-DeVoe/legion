@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -10,7 +9,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // ownerStepAgain moves key's work, back at step 1 after the owner's step returned it, on to the
@@ -21,6 +19,13 @@ func ownerStepAgain(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, newHe
 	assertWalksAt(t, pool, engine, key, phase.Implementing, stepPlace(1))
 	applyFacts(t, pool, engine)("push-"+newHead, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/" + key, HeadSHA: newHead})
 	move(t, pool, engine, key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+}
+
+// reviewedHead is the commit role's row of key holds as the one its step's run before read
+// (record.PhaseRow.ReviewedHead), which the owner-step of that step's next run names.
+func reviewedHead(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role) string {
+	t.Helper()
+	return roleRowOf(t, pool, engine, key, role).ReviewedHead
 }
 
 // A review step the owner does is told, at its next run, the commit its run before read, as a
@@ -39,19 +44,18 @@ func TestAReviewStepOfTheOwnerGetsTheCommitItsRunBeforeRead(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := ownerAtReviewStep(t, pool, engine)
+		if got := reviewedHead(t, pool, engine, root.Key, claim.RoleReviewer); got != "" {
+			t.Fatalf("the reviewer's row before the owner's first run ended holds %q, want no commit read", got)
+		}
 		if result := applyFacts(t, pool, engine)("fail", ownersReview(t, pool, engine, root.Key, "fail", 1)); result.Refusal != nil {
 			t.Fatalf("the owner's fail was refused: %+v", result.Refusal)
 		}
 		ownerStepAgain(t, pool, engine, root.Key, "head-2")
-		told := ownerSteps(t, pool, root.Key)
-		if len(told) != 2 {
+		if told := ownerSteps(t, pool, root.Key); len(told) != 2 {
 			t.Fatalf("the owner was told %+v, want two owner-steps of step 2", told)
 		}
-		if !strings.Contains(told[0].Reason, reviewedPartOf("none")) {
-			t.Fatalf("the first owner-step = %q, want it to name no commit read (%q)", told[0].Reason, reviewedPartOf("none"))
-		}
-		if !strings.Contains(told[1].Reason, reviewedPartOf("head")) {
-			t.Fatalf("the second owner-step = %q, want it to say %q", told[1].Reason, reviewedPartOf("head"))
+		if got := reviewedHead(t, pool, engine, root.Key, claim.RoleReviewer); got != "head" {
+			t.Fatalf("the reviewer's row at the second run holds %q, want %q, the commit the owner's fail named", got, "head")
 		}
 	})
 
@@ -62,6 +66,9 @@ func TestAReviewStepOfTheOwnerGetsTheCommitItsRunBeforeRead(t *testing.T) {
 		seedStepsAt(t, pool, root.Key, root.Generation, 1, nil, "implementer", "acceptance:owner")
 		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Accepting, stepPlace(2))
+		if got := reviewedHead(t, pool, engine, root.Key, claim.RoleAcceptance); got != "" {
+			t.Fatalf("the acceptance's row at its first run holds %q, want no commit read", got)
+		}
 		if result := applyFacts(t, pool, engine)("move-back", rootsMoveBack(t, pool, engine, root.Key, phase.Implementing, "the migration is not tested")); result.Refusal != nil {
 			t.Fatalf("the owner's move back was refused: %+v", result.Refusal)
 		}
@@ -70,11 +77,8 @@ func TestAReviewStepOfTheOwnerGetsTheCommitItsRunBeforeRead(t *testing.T) {
 		if len(told) != 2 || told[1].Role != claim.RoleAcceptance {
 			t.Fatalf("the owner was told %+v, want two owner-steps of the acceptance", told)
 		}
-		if strings.Contains(told[0].Reason, reviewround.CommitLabel) {
-			t.Fatalf("the first owner-step = %q, want no commit read named", told[0].Reason)
-		}
-		if !strings.Contains(told[1].Reason, reviewedPartOf("head")) {
-			t.Fatalf("the second owner-step = %q, want it to say %q", told[1].Reason, reviewedPartOf("head"))
+		if got := reviewedHead(t, pool, engine, root.Key, claim.RoleAcceptance); got != "head" {
+			t.Fatalf("the acceptance's row at the second run holds %q, want %q, the head the move back acted on", got, "head")
 		}
 	})
 
@@ -92,14 +96,11 @@ func TestAReviewStepOfTheOwnerGetsTheCommitItsRunBeforeRead(t *testing.T) {
 			t.Fatalf("the owner's test fail was refused: %+v", result.Refusal)
 		}
 		ownerStepAgain(t, pool, engine, root.Key, "head-2")
-		told := ownerSteps(t, pool, root.Key)
-		if len(told) != 2 {
+		if told := ownerSteps(t, pool, root.Key); len(told) != 2 {
 			t.Fatalf("the owner was told %+v, want two owner-steps of the tester's step", told)
 		}
-		for _, notice := range told {
-			if strings.Contains(notice.Reason, reviewround.CommitLabel) {
-				t.Fatalf("an owner-step of the tester's step = %q, want no commit read named: the step reviews nothing", notice.Reason)
-			}
+		if got := reviewedHead(t, pool, engine, root.Key, claim.RoleTester); got != "" {
+			t.Fatalf("the tester's row at the second run holds %q, want no commit read: the step reviews nothing", got)
 		}
 	})
 }

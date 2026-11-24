@@ -62,7 +62,8 @@ func TestTheOwnersLaunchLogsTheRoleItsPaneActsAs(t *testing.T) {
 	if _, err := f.Spawn(context.Background(), spec); err != nil {
 		t.Fatalf("Spawn of the architect: %v", err)
 	}
-	written := logLines(logs.String(), "github credential written")
+	// The launch's line is the one that names the claim's role beside the role its pane acts as.
+	written := logLines(logs.String(), "claimRole=")
 	if len(written) != 1 {
 		t.Fatalf("the launch logged %d written credentials %q, want one", len(written), written)
 	}

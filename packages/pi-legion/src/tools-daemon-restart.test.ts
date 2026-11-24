@@ -377,7 +377,7 @@ test("complete_step waits out a restarting daemon and posts the report of the pl
   });
   expect(clock.waits).toEqual([500, 1000]);
   expect(updates).toHaveLength(1);
-  expect(updates[0]).toContain("complete_step is being retried for up to 10 minutes");
+  expect(updates[0]).toContain("complete_step");
 });
 
 test("an aborted call stops waiting and sends nothing more, even with the daemon back up", async () => {

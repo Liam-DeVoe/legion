@@ -66,14 +66,13 @@ func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
 		// One row in the whole outbox: the worker-died, and no controller copy beside it.
 		assertOutboxKinds(t, pool, []string{string(record.OutboxKindNotice)})
 		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Testing,
-			Reason: childArchitectFailed,
 			Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: sentence,
 				LaunchFailures: record.FailureBudget{Count: 1, Limit: 3},
 				Deaths:         record.FailureBudget{Count: 3, Limit: 3},
 				PromptFailures: record.FailureBudget{Count: 2, Limit: 5},
 				PromptRetires:  record.FailureBudget{Count: 1, Limit: 2},
 				Death:          "the pod was evicted"}}
-		if got, want := noticeRows(t, pool), []record.OutboxPayload{died}; !sameNotices(got, want) {
+		if got, want := unreadReasons(noticeRows(t, pool), true), []record.OutboxPayload{died}; !sameNotices(got, want) {
 			t.Fatalf("notice rows = %+v, want %+v: one worker-died naming the failure", got, want)
 		}
 		var on string
