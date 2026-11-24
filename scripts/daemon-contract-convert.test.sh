@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# A branch made before dispatch://INFRA-1569 that adds a numbered entry converts to an entry
+# file with one script, and then merges that change with no conflict (R8, check c-convert).
+#
+# The test makes a scratch branch, in a worktree of this checkout, from the commit this change
+# branched from: the commit given as its one argument, else the merge base of HEAD with
+# refs/remotes/origin/main. That commit declares `const DaemonAPIVersion = N`. The branch adds
+# numbered entry N+1 as an author did before the cutover:
+#
+#   - its text, a `// N+1: ` paragraph above the const line of version.go, and the const line
+#     raised to N+1;
+#   - its constant, `const convertProbeContract = N+1` beside the other contracts of shaping.go,
+#     appended to SupportedContracts;
+#   - its band, a row of stateNarrowings naming the constant, whose strip function is in a new
+#     file of its own;
+#   - a new answer, a row of Answers that arrives at the constant, with its AnswerID and its
+#     place in shapeAnswer's identity case, and its fixture in contract_shapes_test.go;
+#   - one row the script does not move: a value of the waiting line's `kind`, an existing
+#     enumerated field, arriving at the constant in answers.go's lineKinds, which
+#     TestNoFrozenRowNamesAnEntry reads (enumeratedFields() values' Since);
+#   - its edits of the manifests and fixtures: `legion.daemonApiVersion` of both manifests by
+#     hand, and every golden by `go test ./internal/api -update` as the bump rule said, among them
+#     version.json, the state marks, the records of N+1 in contract-shapes.json and
+#     request-shapes.json, the `since: N+1` row of answers.json and the `since: N+1` value of
+#     enumerated-fields.json.
+#
+# Then it runs scripts/daemon-contract-convert.sh on the branch, with this change (HEAD) as the
+# main it merges, and requires:
+#
+#   - the merge of this change into the branch exits 0 with no conflict;
+#   - the branch holds one entry file, with the entry's text and its band;
+#   - no edit of a derived copy remains: version.go, shaping.go, the manifests, the state goldens
+#     and the four record files are this change's, and answers.go differs from it by the one
+#     row left behind;
+#   - the script names the file and line of that row;
+#   - TestNoFrozenRowNamesAnEntry fails until the test moves that row into the entry file;
+#   - after the move and the `-update` that then writes the entry's fixture, the fixture holds
+#     the two `since: N+1` rows (the answer's and the value's), and the contract check and the
+#     shape gate pass.
+#
+# Without the conversion the merge conflicts in version.go and answers.go, and the test fails
+# there (the control: this file with the line that runs the script taken out).
+#
+# Run from the repository root: bash scripts/daemon-contract-convert.test.sh [<base>]
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+this=$(git rev-parse HEAD)
+base=${1:-$(git merge-base HEAD refs/remotes/origin/main)}
+base=$(git rev-parse --verify "$base^{commit}")
+scratch=$(mktemp -d)
+branch=convert-test-$$
+repo=$scratch/repo
+cleanup() {
+  git -C "$root" worktree remove --force "$repo" >/dev/null 2>&1 || true
+  git -C "$root" branch -D -q "$branch" >/dev/null 2>&1 || true
+  rm -rf "$scratch"
+}
+trap cleanup EXIT
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+step() {
+  echo "== $*"
+}
+
+# excerpt FILE [N] prints the result lines of a go test log, at most N (40).
+excerpt() {
+  grep -E '^(---|FAIL|ok|panic)|_test.go:[0-9]+:' "$1" | head -"${2:-40}" || true
+}
+
+# git's identity is the test's own, so the test needs no configuration of the machine it runs on.
+export GIT_AUTHOR_NAME=convert-test GIT_AUTHOR_EMAIL=convert-test@localhost
+export GIT_COMMITTER_NAME=convert-test GIT_COMMITTER_EMAIL=convert-test@localhost
+
+api=packages/daemon/internal/api
+fixtures=packages/contracts/fixtures/daemon-api
+n=$(git show "$base:$api/version.go" | sed -n 's/^const DaemonAPIVersion = \([0-9][0-9]*\)$/\1/p')
+[ -n "$n" ] || fail "the base ${base:0:10} declares no const DaemonAPIVersion: give the test a commit from before the cutover"
+k=$((n + 1))
+echo "this change ${this:0:10}, branched from ${base:0:10}, which declares contract $n"
+
+step "the branch: numbered entry $k by the rule before the cutover"
+git worktree add -q -b "$branch" "$repo" "$base"
+cd "$repo"
+python3 - "$k" <<'PY'
+import re, sys
+
+k = sys.argv[1]
+api = "packages/daemon/internal/api"
+
+
+def edit(path, change):
+    with open(path) as f:
+        text = f.read()
+    new = change(text)
+    if new == text:
+        sys.exit(f"{path}: the edit found nothing to change")
+    with open(path, "w") as f:
+        f.write(new)
+
+
+def before_close(text, opener, line):
+    """text with line added as the last row of the literal that opens on the line opener starts."""
+    start = text.index(opener)
+    close = text.index("\n}\n", start)
+    return text[:close + 1] + line + "\n" + text[close + 1:]
+
+
+def once(pattern, replacement, text, flags=0):
+    new, count = re.subn(pattern, replacement, text, count=1, flags=flags)
+    if count != 1:
+        sys.exit(f"no match of {pattern!r}")
+    return new
+
+
+# The entry's text, and the const line raised to it.
+edit(f"{api}/version.go", lambda t: once(
+    r"\nconst DaemonAPIVersion = \d+\n",
+    f"\n//\n// {k}: dispatch://INFRA-1569 conversion test -- the probe entry the conversion test adds:\n"
+    "// a band that takes nothing off the state, an answer no route writes, and the word\n"
+    "// `convert_probe` of the waiting line's `kind`.\n"
+    f"const DaemonAPIVersion = {k}\n", t))
+
+# The constant, after the last contract of shaping.go, and the band.
+def shaping(text):
+    last = list(re.finditer(r"^const \w+Contract = \d+\n", text, re.M))[-1]
+    text = (text[:last.end()] + "\n// convertProbeContract is the daemon contract of version.go's "
+            f"{k}, which the conversion test adds.\nconst convertProbeContract = {k}\n" + text[last.end():])
+    text = before_close(text, "var stateNarrowings = []stateNarrowing{",
+                        '\t{contract: convertProbeContract, state: withoutConvertProbe, dropped: "nothing"},')
+    # The new answer is the identity, as each answer that arrived whole is: one more id of the
+    # case that lists them.
+    return once(r"(\n\tcase AnswerHealth,[^:]*?)(:\n)", r"\1, AnswerConvertProbe\2", text, re.S)
+edit(f"{api}/shaping.go", shaping)
+
+with open(f"{api}/convert_probe_band.go", "w") as f:
+    f.write("package api\n\n"
+            "// withoutConvertProbe is the state as the conversion test's band serves it below its entry: the\n"
+            "// entry adds no key, so the band takes nothing and reports no move.\n"
+            "func withoutConvertProbe(state State) (State, bool) { return state, false }\n")
+
+def answers(text):
+    # The AnswerID, the last of the block that declares every answer's.
+    block = text.index("\n\tAnswerState ")
+    close = text.index("\n)\n", block)
+    text = text[:close + 1] + '\tAnswerConvertProbe AnswerID = "convert-probe"' + text[close:]
+    text = before_close(text, "var Answers = []Answer{",
+                        f"\t// version.go's {k}: the conversion test's answer, which no route writes and which carries no body.\n"
+                        "\t{ID: AnswerConvertProbe, Routes: []string{}, Since: convertProbeContract, NoBody: true},")
+    text = once(r"(\nvar SupportedContracts = \[\]int\{[^}]*)\}", r"\1, convertProbeContract}", text)
+    # The value, in its sorted place among the waiting line's kinds.
+    start = text.index("var lineKinds = []EnumeratedValue{\n")
+    close = text.index("\n}\n", start)
+    rows = text[start:close].split("\n")[1:]
+    row = '\t{Value: "convert_probe", Since: convertProbeContract},'
+    at = next(i for i, r in enumerate(rows) if re.search(r'Value: "([^"]*)"', r).group(1) > "convert_probe")
+    rows.insert(at, row)
+    return text[:start] + "var lineKinds = []EnumeratedValue{\n" + "\n".join(rows) + text[close:]
+edit(f"{api}/answers.go", answers)
+
+# The answer's fixture, in the middle of the map: a row of the entry's own, which the conversion
+# leaves where the branch wrote it.
+edit(f"{api}/contract_shapes_test.go", lambda t: once(
+    r"\n(\t\t// The register golden's own value \(TestRegisterResponseGolden\)\.\n)",
+    "\n\t\t// The conversion test's answer, which carries no body.\n\t\tAnswerConvertProbe: {},\n\\1", t))
+
+for manifest in ("packages/pi-legion/package.json", "packages/claude-envoy/package.json"):
+    edit(manifest, lambda t: once(r'("daemonApiVersion": )\d+', r"\g<1>" + k, t))
+PY
+gofmt -w "$api/version.go" "$api/shaping.go" "$api/answers.go" "$api/convert_probe_band.go" "$api/contract_shapes_test.go"
+(cd packages/daemon && go test -count=1 ./internal/api/ -update -run \
+  '^(TestDaemonAPIVersionGolden|TestStateGolden|TestStateNarrowedRepositoriesGolden|TestAnswersGolden|TestEnumeratedFieldsGolden|TestContractShapesFixture|TestRequestShapesFixture)$' \
+  >"$scratch/goldens.txt" 2>&1) || { cat "$scratch/goldens.txt"; fail "the branch: the goldens of entry $k were not written"; }
+# The branch holds every copy the rule before the cutover asked of an entry.
+[ "$(jq '.daemonApiVersion' "$fixtures/version.json")" = "$k" ] || fail "the branch: version.json holds no $k"
+[ "$(jq -c '.contract' "$fixtures/state.json")" = "{\"daemon\":$k,\"caller\":$k}" ] || fail "the branch: state.json's marks are not $k"
+jq -e --argjson k "$k" 'any(.[]; .since == $k)' "$fixtures/answers.json" >/dev/null || fail "the branch: answers.json has no row since $k"
+jq -e --argjson k "$k" 'any(.[].values[]; .since == $k)' "$fixtures/enumerated-fields.json" >/dev/null ||
+  fail "the branch: enumerated-fields.json has no value since $k"
+jq -e --argjson k "$k" 'any(.[]; .contract == $k)' "$fixtures/contract-shapes.json" >/dev/null || fail "the branch: contract-shapes.json has no record of $k"
+jq -e --argjson k "$k" 'any(.[]; .contract == $k)' "$fixtures/request-shapes.json" >/dev/null || fail "the branch: request-shapes.json has no record of $k"
+git add -A
+git commit -q -m "feat(daemon): the conversion test's entry $k"
+echo "branch: $(git diff --name-only "$base" HEAD | tr '\n' ' ')"
+
+step "the conversion"
+# The control takes out the one line that runs the script, and leaves the branch as it was.
+: >"$scratch/convert.txt"
+bash "$root/scripts/daemon-contract-convert.sh" --main "$this" >"$scratch/convert.txt" 2>&1 || { cat "$scratch/convert.txt"; fail "scripts/daemon-contract-convert.sh failed"; }
+cat "$scratch/convert.txt"
+
+step "the merge of this change"
+if ! git merge --no-edit "$this" >"$scratch/merge.txt" 2>&1; then
+  cat "$scratch/merge.txt"
+  fail "the merge of this change conflicts in: $(git diff --name-only --diff-filter=U | tr '\n' ' ')"
+fi
+! grep -q CONFLICT "$scratch/merge.txt" || { cat "$scratch/merge.txt"; fail "the merge of this change reports a conflict"; }
+git merge-base --is-ancestor "$this" HEAD || fail "the branch does not hold this change after the merge"
+echo "merged with no conflict"
+
+step "one entry file, with the entry's text and its band"
+mapfile -t entries < <(git diff --name-only --diff-filter=A "$this" HEAD -- "$api" | grep -E '/contract_[0-9]{14}_[a-z0-9-]+\.go$' || true)
+[ "${#entries[@]}" -eq 1 ] || fail "the branch adds ${#entries[@]} entry files, want 1: ${entries[*]}"
+entry=${entries[0]}
+id=$(sed -E 's|.*/contract_([0-9]{14})_.*|\1|' <<<"$entry")
+slug=$(sed -E 's|.*/contract_[0-9]{14}_(.*)\.go$|\1|' <<<"$entry")
+echo "entry $entry"
+grep -qF "// $id $slug: dispatch://INFRA-1569 conversion test -- the probe entry the conversion test adds" "$entry" ||
+  fail "$entry does not hold the entry's text"
+grep -qE "^const convertProbeContract = $id\$" "$entry" || fail "$entry does not declare convertProbeContract = $id"
+grep -qF '{contract: convertProbeContract, state: withoutConvertProbe, dropped: "nothing"},' "$entry" ||
+  fail "$entry does not hold the band"
+grep -qF '{ID: AnswerConvertProbe, Routes: []string{}, Since: convertProbeContract, NoBody: true},' "$entry" ||
+  fail "$entry does not hold the answer"
+# The row left in lineKinds is the entry's, and its fixture records it, so TestEntryFixtures
+# writes no fixture of the entry while that row is left: the test writes it after the move.
+fixture=$fixtures/contracts/${id}_${slug}.json
+
+step "no edit of a derived copy remains"
+for path in "$api/version.go" "$api/shaping.go" packages/pi-legion/package.json packages/claude-envoy/package.json \
+  "$fixtures/version.json" "$fixtures/state.json" "$fixtures/state-narrowed-repositories.json" \
+  "$fixtures/contract-shapes.json" "$fixtures/request-shapes.json" "$fixtures/answers.json" "$fixtures/enumerated-fields.json"; do
+  git diff --quiet "$this" HEAD -- "$path" || { git diff --stat "$this" HEAD -- "$path"; fail "$path differs from this change's"; }
+done
+left_row='{Value: "convert_probe", Since: convertProbeContract},'
+answers_diff=$(git diff -U0 "$this" HEAD -- "$api/answers.go" | grep -E '^[-+][^-+]' || true)
+[ "$answers_diff" = "+	$left_row" ] || { echo "$answers_diff"; fail "answers.go differs from this change's by more than the row left behind"; }
+echo "each derived copy is this change's"
+
+step "the script names the row it could not move"
+named=$(grep -E "^$api/answers\.go:[0-9]+: " "$scratch/convert.txt" | grep -F "$left_row" || true)
+[ -n "$named" ] || fail "the script names no file and line of the row it left: $left_row"
+line=$(cut -d: -f2 <<<"$named")
+[ "$(sed -n "${line}p" "$api/answers.go" | sed 's/^[[:space:]]*//')" = "$left_row" ] ||
+  fail "the script names $api/answers.go:$line, which does not hold the row"
+echo "$named"
+
+step "TestNoFrozenRowNamesAnEntry fails until the row is in the entry file"
+if (cd packages/daemon && go test -count=1 ./internal/api/ -run '^TestNoFrozenRowNamesAnEntry$' >"$scratch/frozen.txt" 2>&1); then
+  fail "TestNoFrozenRowNamesAnEntry passes with the row left in answers.go's lineKinds"
+fi
+excerpt "$scratch/frozen.txt" 5
+python3 - "$api/answers.go" "$entry" "$left_row" <<'PY'
+import sys
+
+answers, entry, row = sys.argv[1:4]
+with open(answers) as f:
+    lines = f.read().split("\n")
+kept = [line for line in lines if line.strip() != row]
+if len(kept) != len(lines) - 1:
+    sys.exit(f"{answers}: the row is not there once")
+with open(answers, "w") as f:
+    f.write("\n".join(kept))
+with open(entry) as f:
+    text = f.read()
+close = text.rindex("\n\t})\n")
+moved = ('\t\tenumeratedValues: []enumeratedValues{{answer: AnswerState, keyPath: "issues.*.waitingLine.kind",\n'
+         '\t\t\tvalues: []EnumeratedValue{{Value: "convert_probe", Since: convertProbeContract}}}},')
+with open(entry, "w") as f:
+    f.write(text[:close + 1] + moved + text[close:])
+PY
+gofmt -w "$api/answers.go" "$entry"
+# The fixture: written now, where the conversion wrote none while the row was left, else again.
+if [ -f "$fixture" ]; then update=-update-entry=$id; else update=-update; fi
+(cd packages/daemon && go test -count=1 ./internal/api/ -run '^TestEntryFixtures$' "$update" \
+  >"$scratch/update-entry.txt" 2>&1) || { cat "$scratch/update-entry.txt"; fail "$update failed after the move"; }
+echo "go test ./internal/api -run '^TestEntryFixtures\$' $update"
+git add -A
+git commit -q -m "chore(daemon): move the waiting line's convert_probe into entry $id"
+(cd packages/daemon && go test -count=1 ./internal/api/ -run '^TestNoFrozenRowNamesAnEntry$' >"$scratch/frozen.txt" 2>&1) ||
+  { excerpt "$scratch/frozen.txt" 20; fail "TestNoFrozenRowNamesAnEntry fails after the move"; }
+echo "TestNoFrozenRowNamesAnEntry passes after the move"
+
+step "the entry's fixture holds the two since rows"
+[ -f "$fixture" ] || fail "no entry fixture $fixture after the move"
+jq -e '.answerRows | any(.id == "convert-probe")' "$fixture" >/dev/null ||
+  { cat "$fixture"; fail "$fixture holds no row of answers.json for the answer convert-probe"; }
+jq -e '.enumeratedRows | any(.answer == "state" and .keyPath == "issues.*.waitingLine.kind" and (.values | index("convert_probe")))' "$fixture" >/dev/null ||
+  { cat "$fixture"; fail "$fixture holds no row of enumerated-fields.json for the value convert_probe"; }
+echo "$fixture holds the answer's row of answers.json and the value's row of enumerated-fields.json"
+
+step "the contract check and the shape gate pass"
+DAEMON_API_CONTRACT_BASE=$this bash .github/scripts/check-daemon-api-contract.sh >"$scratch/check.txt" 2>&1 ||
+  { cat "$scratch/check.txt"; fail "the contract check refuses the converted branch"; }
+(cd packages/daemon && go test -count=1 ./internal/api/ \
+  -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract|TestEntryFixtures)$' \
+  >"$scratch/gate.txt" 2>&1) || { excerpt "$scratch/gate.txt"; fail "the shape gate fails on the converted branch"; }
+echo "PASS: entry $k converts to entry $id, merges this change with no conflict, and passes the contract check and the shape gate"
