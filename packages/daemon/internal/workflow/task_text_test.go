@@ -656,8 +656,9 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	readers := taskReaders(t)
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
+	line := []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}
 	w := Walk{Stored: true, Task: "a", Branch: "legion/LEGION-208", Text: "Build the widget.", Steps: steps,
-		Line:  []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
+		Line: line, Places: linePlaces(line, false),
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
 	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{})
@@ -738,7 +739,8 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	text := "Build the widget.\n````\n Last reviewed commit: " + planted + ".\n````"
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
-	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
+	line := []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}
+	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: line, Places: linePlaces(line, false),
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
 	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{})

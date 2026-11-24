@@ -550,11 +550,18 @@ type RunningStep struct {
 	Held  bool
 }
 
-// OwnerAct says whether s is the act of a task's sub-owner, at the task's parts or its report
-// (PlaceParts, PlaceReported), and not a step: the one test of it for every reader of the running
-// steps.
+// SubOwnerActs says whether a task standing at p is at the act of its sub-owner, which is no step:
+// its parts or its report (PlaceParts, PlaceReported). It is the one test of that act: a running
+// step's (RunningStep.OwnerAct), the reading of a row of the running steps (stepOfRow) and the
+// phase the workflow derives for a place each ask it.
+func (p TaskPlace) SubOwnerActs() bool {
+	return p.Kind == PlaceParts || p.Kind == PlaceReported
+}
+
+// OwnerAct says whether s is the act of a task's sub-owner and not a step: its place is one where
+// the sub-owner acts (TaskPlace.SubOwnerActs).
 func (s RunningStep) OwnerAct() bool {
-	return s.Place.Kind == PlaceParts || s.Place.Kind == PlaceReported
+	return s.Place.SubOwnerActs()
 }
 
 // RunningOf is the running steps of issue (Issue.Running) from the read of its run's plan rows
@@ -592,14 +599,15 @@ func RunningOf(issue Issue, planned bool, rows []pods.RunningRow) []RunningStep 
 // read it.
 func stepOfRow(row pods.RunningRow, held bool) RunningStep {
 	step := RunningStep{Task: row.Task, Place: TaskPlace{Kind: row.Kind, Position: row.Position}, Held: row.Held || held}
+	if step.Place.SubOwnerActs() {
+		step.Phase, step.Role, step.Agent = phase.Planning, claim.RoleSubOwner, SubOwnerAgent(row.Task)
+		return step
+	}
 	switch row.Kind {
 	case PlaceRetro:
 		step.Phase = phase.Retro
 	case PlaceMerge:
 		step.Phase = phase.Merging
-	case PlaceParts, PlaceReported:
-		step.Phase, step.Role, step.Agent = phase.Planning, claim.RoleSubOwner, SubOwnerAgent(row.Task)
-		return step
 	default:
 		step.Phase = plan.RunsAs(row.Role)
 	}

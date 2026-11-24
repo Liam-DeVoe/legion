@@ -75,10 +75,10 @@ func allow(Snapshot) bool { return true }
 // a pull request that is open or merged (Snapshot).
 func hasOpenOrMergedPR(s Snapshot) bool { return s.HasOpenOrMergedPR }
 
-// Table is the table of today's line, phase.Order: every row an issue with no plan rows walks
-// (Walk), built once. TableOf(phase.Order) is the table the workflow had before a plan picked an
-// issue's line, row for row (TestAWalkWithNoPlanRowsMovesByTodaysTable).
-var Table = TableOf(phase.Order)
+// Table is the table of today's line, phase.Order, at today's places (todaysPlaces): every row an
+// issue with no plan rows walks (Walk), built once. It is the table the workflow had before a plan
+// picked an issue's line, row for row (TestAWalkWithNoPlanRowsMovesByTodaysTable).
+var Table = TableOf(phase.Order, todaysPlaces)
 
 // stepRows are the rows each phase of a line carries on its own role's trigger, in the table's
 // order: the step's move on to the next phase of the line (to ""), whichever phase the line puts
@@ -104,24 +104,25 @@ var stepRows = []struct {
 	{phase.Retro, TriggerRetroCompleted, allow, ""},
 }
 
-// TableOf is the complete transition table of an issue whose task walks line: the phases of its
-// steps in the task's order, which holds implementing, then retro and merging where the task
-// merges (plan.Line of a plan plan.Validate took). Rows, not switch-case scheduling, define every
-// phase change. Its rows, in this order: the gate's opening, out of admitted into the first phase
-// of the line; each phase's rows on its role's trigger (stepRows), at each position of the line
-// that phase stands at, the last step of a line with no retro moving to done at its own place,
-// since its task is done there; the merge, out of merging into done, where the line holds it; and
-// a backward row from each position of the line to each position before it (backwardRows). A head
-// that conflicts with its base moves no phase (merge_forward.go). A return goes back to
-// implementing where implementing stands before the step that fails, and a step with no
-// implementing before it has none. Each row carries the places of its two positions (placeAt), so
-// a line that holds a phase at two places, two steps of roles the deployment defines, has a row for
-// each. A row into accepting starts nobody, because accepting's role is the tree's architect; every
-// other row into a phase of the line starts its role, and a row into done starts nobody. No row
-// carries a status of its own: every status a row writes is its target phase's, which PhaseStatus
-// holds.
-func TableOf(line []phase.Phase) []Row {
-	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], ToPlace: placeAt(line, 0),
+// TableOf is the complete transition table of an issue whose task walks line at places, the place
+// of each of its phases (linePlaces): the phases of its steps in the task's order, which holds
+// implementing, then retro and merging where the task merges (plan.Line of a plan plan.Validate
+// took). Rows, not switch-case scheduling, define every phase change. Its rows, in this order: the
+// gate's opening, out of admitted into the first phase of the line; each phase's rows on its role's
+// trigger (stepRows), at each position of the line that phase stands at, the last step of a line
+// with no retro moving to done at its own place, since its task is done there; the merge, out of
+// merging into done, where the line holds it; and a backward row from each position of the line to
+// each position before it (backwardRows). A head that conflicts with its base moves no phase
+// (merge_forward.go). A return goes back to implementing where implementing stands before the step
+// that fails, and a step with no implementing before it has none. Each row carries the places of
+// its two positions, read from places, so a line that holds a phase at two places, two steps of
+// roles the deployment defines, has a row for each, and the planning of a task with a sub-owner is
+// its parts. A row into accepting starts nobody, because accepting's role is the tree's architect;
+// every other row into a phase of the line starts its role, and a row into done starts nobody. No
+// row carries a status of its own: every status a row writes is its target phase's, which
+// PhaseStatus holds.
+func TableOf(line []phase.Phase, places []record.TaskPlace) []Row {
+	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], ToPlace: places[0],
 		Effects: effectsInto(line[0])}}
 	for _, step := range stepRows {
 		for at, from := range line {
@@ -137,34 +138,34 @@ func TableOf(line []phase.Phase) []Row {
 			if next == len(line) {
 				// The last step of a task that does not merge (plan.Line): its pass leaves the
 				// task done at that step's place.
-				rows = append(rows, Row{From: from, Trigger: step.trigger, Guard: step.guard, To: phase.Done, FromPlace: placeAt(line, at),
-					ToPlace: placeAt(line, at), Effects: []EffectKind{EffectNotice}})
+				rows = append(rows, Row{From: from, Trigger: step.trigger, Guard: step.guard, To: phase.Done, FromPlace: places[at],
+					ToPlace: places[at], Effects: []EffectKind{EffectNotice}})
 				continue
 			}
 			to := line[next]
-			rows = append(rows, Row{From: from, Trigger: step.trigger, Guard: step.guard, To: to, FromPlace: placeAt(line, at),
-				ToPlace: placeAt(line, next), Effects: effectsInto(to)})
+			rows = append(rows, Row{From: from, Trigger: step.trigger, Guard: step.guard, To: to, FromPlace: places[at],
+				ToPlace: places[next], Effects: effectsInto(to)})
 		}
 	}
 	// The merger merges, and the merge is what ends merging: the daemon submits none and reads
 	// GitHub's merge of the pull request as the phase's own terminating fact. The task stays at its
 	// merge, done.
-	if slices.Contains(line, phase.Merging) {
-		merge := record.TaskPlace{Kind: record.PlaceMerge}
+	if at := slices.Index(line, phase.Merging); at >= 0 {
+		merge := places[at]
 		rows = append(rows, Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done,
 			FromPlace: merge, ToPlace: merge, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}})
 	}
-	return append(rows, backwardRows(line)...)
+	return append(rows, backwardRows(line, places)...)
 }
 
-// StoredTableOf is the table of a stored walk's line (Walk.table): TableOf(line), every row with
-// its places, then, for each step of the line whose phase has a return (stepRows: the tester's
-// fail, a review's request for changes, the fail of a step that runs as step), one row of that
-// return to each step before it that TableOf's return to implementing does not reach, in the
-// order of the line. So the work of a failed step goes back to whichever earlier step its report
-// or its plan names (returnTarget, returnStep), the step before an implementer included.
-func StoredTableOf(line []phase.Phase) []Row {
-	table := TableOf(line)
+// StoredTableOf is the table of a stored walk's line at its places (Walk.table): TableOf(line,
+// places), then, for each step of the line whose phase has a return (stepRows: the tester's fail, a
+// review's request for changes, the fail of a step that runs as step), one row of that return to
+// each step before it that TableOf's return to implementing does not reach, in the order of the
+// line. So the work of a failed step goes back to whichever earlier step its report or its plan
+// names (returnTarget, returnStep), the step before an implementer included.
+func StoredTableOf(line []phase.Phase, places []record.TaskPlace) []Row {
+	table := TableOf(line, places)
 	type move struct {
 		from, to record.TaskPlace
 		trigger  TriggerKind
@@ -175,7 +176,7 @@ func StoredTableOf(line []phase.Phase) []Row {
 	}
 	rows := table
 	for at, from := range line {
-		fromPlace := placeAt(line, at)
+		fromPlace := places[at]
 		if fromPlace.Kind != record.PlaceStep {
 			continue
 		}
@@ -184,7 +185,7 @@ func StoredTableOf(line []phase.Phase) []Row {
 				continue
 			}
 			for back := range at {
-				to := placeAt(line, back)
+				to := places[back]
 				if held[move{fromPlace, to, step.trigger}] {
 					continue
 				}
@@ -196,16 +197,29 @@ func StoredTableOf(line []phase.Phase) []Row {
 	return rows
 }
 
-// placeAt is where a task stands at position at of line: the retro or the merge at place 0, and
-// any other phase at the step of place at+1.
-func placeAt(line []phase.Phase, at int) record.TaskPlace {
-	switch line[at] {
-	case phase.Retro:
-		return record.TaskPlace{Kind: record.PlaceRetro}
-	case phase.Merging:
-		return record.TaskPlace{Kind: record.PlaceMerge}
+// linePlaces is the place of each phase of line, the line of a task (lineOf), in its order: the one
+// map of a position of a line to a place, which a walk reads once (Walk.Places) and each table is
+// built on. The planning a task with a sub-owner's line starts with (subOwned) is its parts, at
+// place 0, which is no step; the retro and the merge are at place 0; and each other phase is a step,
+// at its place from 1 among the task's steps alone. A run with no plan rows walks phase.Order with
+// no sub-owner, so its places are today's (todaysPlaces).
+func linePlaces(line []phase.Phase, subOwned bool) []record.TaskPlace {
+	places := make([]record.TaskPlace, len(line))
+	step := 0
+	for at, p := range line {
+		switch {
+		case at == 0 && subOwned:
+			places[at] = record.TaskPlace{Kind: record.PlaceParts}
+		case p == phase.Retro:
+			places[at] = record.TaskPlace{Kind: record.PlaceRetro}
+		case p == phase.Merging:
+			places[at] = record.TaskPlace{Kind: record.PlaceMerge}
+		default:
+			step++
+			places[at] = record.TaskPlace{Kind: record.PlaceStep, Position: step}
+		}
 	}
-	return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}
+	return places
 }
 
 // placeRank orders the places of one line: no place first, then each step by its place, then the
@@ -233,23 +247,23 @@ func effectsInto(to phase.Phase) []EffectKind {
 
 // backwardRows is the edge from every position of line back to each position of line before it,
 // by the line's own order: each phase of the line paired with every phase before it in the line,
-// in that order, each row with the places of its two positions (placeAt). A line in today's order
+// in that order, each row with the places of its two positions (places). A line in today's order
 // (a subsequence of phase.Order) so gets the pairs of phase.BackwardPairs whose two phases it
-// holds, in that list's order, and TableOf(phase.Order) stays Table row for row; a line in another
-// order goes back by its own order, so the line `implementing reviewing testing` moves back from
-// testing to reviewing, and not from reviewing to testing, which is its move on
+// holds, in that list's order, and the table of phase.Order stays Table row for row; a line in
+// another order goes back by its own order, so the line `implementing reviewing testing` moves back
+// from testing to reviewing, and not from reviewing to testing, which is its move on
 // (TestBackwardRowsOfEachLineAreItsOwnPairs), and the line of two steps that run as step moves
 // back from the second to the first, step-step. Like every other row, each writes the status of
 // the phase it enters, so a move back into planning writes in_progress, the status an issue shows
 // while Legion works it, rather than leaving Dispatch showing the phase the issue left. No phase
 // of a line waits for a merge somebody else makes, so no pair is carried by a row above instead
 // (dispatch://INFRA-714).
-func backwardRows(line []phase.Phase) []Row {
+func backwardRows(line []phase.Phase, places []record.TaskPlace) []Row {
 	rows := make([]Row, 0, len(line)*(len(line)-1)/2)
 	for at, from := range line {
 		for back, to := range line[:at] {
-			rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to, FromPlace: placeAt(line, at),
-				ToPlace: placeAt(line, back), Effects: []EffectKind{EffectStart, EffectNotice}})
+			rows = append(rows, Row{From: from, Trigger: TriggerBackward, Guard: allow, To: to, FromPlace: places[at],
+				ToPlace: places[back], Effects: []EffectKind{EffectStart, EffectNotice}})
 		}
 	}
 	return rows
