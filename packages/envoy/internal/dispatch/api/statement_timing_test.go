@@ -299,10 +299,12 @@ const (
 // that no test yet holds to a plan. The walk steps from each member to its children through
 // issues_parent_key, and each member's own issues row is read through issues_pkey, each written
 // as a lateral probe that `offset 0` keeps the planner from flattening into a join it may hash;
-// the event of last_seq is read by the same probe as in priorityNewestEventQuery
-// (last_seq_event). It is written out whole, with the depth cap (parentDepthCapSQL) and the
-// project filter (priorityProjectFilter) as they stand at this commit, because a run on
-// production takes the text from the measurement's log and checks it by its sha256.
+// the event of last_seq is read by a probe like that of priorityNewestEventQuery
+// (last_seq_event). That probe names i alone, but i is itself a lateral on the member row m, so
+// the probe too runs only after the walk, once for each member row. It is written out whole, with
+// the depth cap (parentDepthCapSQL) and the project filter (priorityProjectFilter) as they stand
+// at this commit, because a run on production takes the text from the measurement's log and
+// checks it by its sha256.
 const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 		select ($1::text[])[i] as key, ($2::text[])[i] as priority
 		from generate_subscripts($1::text[], 1) as seed(i)

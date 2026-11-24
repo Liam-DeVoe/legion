@@ -153,19 +153,27 @@ var priorityCountsQuery = `with recursive ` + priorityMemberTerms + `
 	where ` + priorityProjectFilter + `
 	group by m.priority, i.status`
 
-// priorityNewestEventQuery reads the newest event under each priority. For each issue that
-// advances it, it reads the issue's event of issues.last_seq through the unique (issue_key, seq)
-// of events (events_issue_key_seq_key), and it answers the newest created_at of those events.
-// Each append sets last_seq to the seq it took, in the statement that inserts the event
-// (events/broker.go, QueueAppendWithLogins), so that event is the issue's newest by seq. The
-// statement reads that one event of each member and no other. An issue with no event has
-// last_seq 0, which no event of it carries, so it matches no row; a priority none of whose issues
-// has an event answers no row and keeps its null (scanPriorityNewestEvents).
+// priorityNewestEventQuery reads the newest event under each priority. For each member row, an
+// issue that advances the priority, it reads the issue's event of issues.last_seq through the
+// unique (issue_key, seq) of events (events_issue_key_seq_key), and it answers the newest
+// created_at of those events. Each append sets last_seq to the seq it took, in the statement that
+// inserts the event (events/broker.go, QueueAppendWithLogins), so that event is the issue's newest
+// by seq. The statement reads that one event of each member and no other, and it reads no event
+// of an issue that advances no priority. An issue with no event has last_seq 0, which no event of
+// it carries, so it matches no row; a priority none of whose issues has an event answers no row
+// and keeps its null (scanPriorityNewestEvents).
 //
 // The read of the event is a lateral probe with `limit 1`. The key is unique, so the limit
 // changes no answer. It keeps the planner from flattening the subquery into a join, which the
 // planner may hash: for a plain join on (issue_key, seq) over a table of a million events, it
 // hashed all of them under both plans.
+//
+// The probe runs once for each member row, after the walk and the join to issues, because it
+// names the member row (m.key) as well as the issue (i.last_seq); m.key is i.key by the join. A
+// lateral that names i alone lets the planner probe every issue of the table before it joins the
+// members, and the planner does that where it plans more member rows than issues: over a corpus of
+// 1,029 issues and 30 member rows, such a probe ran 1,029 times under each plan that
+// TestPriorityNewestEventReadsOneEventOfEachMember reads (PostgreSQL 18.7, 2026-11-24).
 //
 // The time can be earlier than the newest created_at over all the events of the members, but only
 // inside a bound. An event that Dispatch appends takes the start of its transaction as its
@@ -189,7 +197,7 @@ var priorityNewestEventQuery = `with recursive ` + priorityMemberTerms + `
 	cross join lateral (
 		select last_seq_event.created_at
 		from events last_seq_event
-		where last_seq_event.issue_key = i.key and last_seq_event.seq = i.last_seq
+		where last_seq_event.issue_key = m.key and last_seq_event.seq = i.last_seq
 		limit 1
 	) last_seq_event
 	where ` + priorityProjectFilter + `

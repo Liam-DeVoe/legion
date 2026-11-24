@@ -70,6 +70,21 @@ const (
 	newestEventUnstatedPriority = "nothing-stated"
 )
 
+// The issues of the corpus that advance no priority: newestEventBystanderRoots roots, each with
+// newestEventBystanderChildren children, 1,000 issues in all. Each has events, and they are many
+// times the member rows the read joins, so a plan that probes the events of every issue before it
+// joins the members runs its probe many more times than a plan that probes once for each member
+// row (requireOneEventOfEachMember). Most of them have a parent. The planner sizes the walk over
+// the members from the 1,000 rows it plans for every seed (priorityMemberTerms) and from how many
+// issues have a parent, so it plans many more member rows than there are issues: 16,498 against
+// 1,029 (PostgreSQL 18.7, 2026-11-24). A plan that probes every issue first is then the cheaper
+// one by its costs. When none of these issues had a parent, the planner probed once for each
+// member row even where the probe named the issue alone, so the check passed such a probe.
+const (
+	newestEventBystanderRoots    = 40
+	newestEventBystanderChildren = 24
+)
+
 // newestEventCorpus is what seedNewestEventCorpus wrote: the server that reads it, its store, the
 // priorities it holds in rank order, and of those the four stated on the trees.
 type newestEventCorpus struct {
@@ -92,7 +107,10 @@ type newestEventCorpus struct {
 //   - one more child of the depth-2 tree's root also states the depth-4 priority, so one issue
 //     advances two priorities;
 //   - newestEventSilentPriority is stated on one issue of its own, which has no event;
-//   - newestEventUnstatedPriority is stated on no issue.
+//   - newestEventUnstatedPriority is stated on no issue;
+//   - the issues of newestEventBystanderRoots trees advance no priority. Each holds 1 to 5
+//     events, which begin a day after the start of the members' events and so are later than all
+//     of them.
 //
 // The random source has a fixed seed, so every run writes the same rows.
 func seedNewestEventCorpus(t *testing.T) newestEventCorpus {
@@ -104,6 +122,8 @@ func seedNewestEventCorpus(t *testing.T) newestEventCorpus {
 
 	numbers := map[string]int{}
 	var issues, eventRows, nodes, tuples [][]any
+	// eventsFrom is the earliest start of the events of the next issue that addIssue writes.
+	eventsFrom := base
 	addIssue := func(parent *string, count int) string {
 		project := newestEventProject
 		if len(issues)%2 == 1 {
@@ -115,7 +135,7 @@ func seedNewestEventCorpus(t *testing.T) newestEventCorpus {
 			key: key, project: project, number: numbers[project], title: "Newest event work " + key,
 			status: "todo", parent: parent, rank: seededRank(len(issues)), at: base, lastSeq: count,
 		}.values())
-		start := base.Add(time.Duration(random.IntN(600)) * time.Minute)
+		start := eventsFrom.Add(time.Duration(random.IntN(600)) * time.Minute)
 		for seq := 1; seq <= count; seq++ {
 			eventRows = append(eventRows, seededEvent(key, seq, "comment.created", `{}`, start.Add(time.Duration(seq)*time.Minute)))
 		}
@@ -145,6 +165,13 @@ func seedNewestEventCorpus(t *testing.T) newestEventCorpus {
 	shared := addIssue(new(roots[2]), eventsOf())
 	tuples = append(tuples, seededAdvancesTuple(shared, corpus.trees[3], base))
 	tuples = append(tuples, seededAdvancesTuple(addIssue(nil, 0), newestEventSilentPriority, base))
+	eventsFrom = base.Add(24 * time.Hour)
+	for range newestEventBystanderRoots {
+		root := addIssue(nil, 1+random.IntN(5))
+		for range newestEventBystanderChildren {
+			addIssue(&root, 1+random.IntN(5))
+		}
+	}
 
 	corpus.priorities = append(slices.Clone(corpus.trees), newestEventSilentPriority, newestEventUnstatedPriority)
 	for index, id := range corpus.priorities {
@@ -271,11 +298,14 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 }
 
 // TestPriorityNewestEventReadsOneEventOfEachMember holds the newest event under each priority to
-// one read of events for each member issue (requireOneEventOfEachMember). The plans are the
-// generic plan that a prepared statement settles on (explaintest.AnalyzedGenericPlan) and a plan
-// made for the values of the read, both run and measured, with sequential scans off and no other
-// setting, as the package's plan tests read them (explaintest.GenericPlan). Each is read with no
-// project named and with one.
+// one read of events for each member row it joins (requireOneEventOfEachMember). The plans are
+// three, each run and measured: the generic plan that a prepared statement settles on
+// (explaintest.AnalyzedGenericPlan) and a plan made for the values of the read, both with
+// sequential scans off and no other setting, as the package's plan tests read them
+// (explaintest.GenericPlan), and a plan made for the values with the planner's default settings.
+// Each is read with no project named and with one. The corpus holds many more issues with events
+// than member rows (seedNewestEventCorpus), so a plan that probes the events of every issue
+// before it joins the members reads events more times than the check permits.
 //
 // The control is main's text, which joins every event of every member issue: the same check run
 // on it must fail under each plan, and the test fails when it passes, since the check would then
@@ -301,6 +331,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 		{"main's newest event", mainPriorityNewestEventQuery, true},
 	}
 	for scopeNumber, scope := range newestEventScopes {
+		members := newestEventMemberRows(t, corpus.database, seedKeys, seedIDs, scope.projects, scope.name)
 		literals := []string{textArrayLiteral(seedKeys), textArrayLiteral(seedIDs), textArrayLiteral(scope.projects)}
 		for textNumber, text := range texts {
 			plans := []struct {
@@ -311,16 +342,18 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 					fmt.Sprintf("newest_event_%d_%d", scopeNumber, textNumber), text.statement,
 					[]string{"text[]", "text[]", "text[]"}, literals, "set local enable_seqscan = off")},
 				{"the plan for its values", analyzedNewestEventPlan(t, corpus.database, text.statement,
-					seedKeys, seedIDs, scope.projects)},
+					[]string{"set local enable_seqscan = off"}, seedKeys, seedIDs, scope.projects)},
+				{"the plan for its values with the default settings", analyzedNewestEventPlan(t, corpus.database,
+					text.statement, nil, seedKeys, seedIDs, scope.projects)},
 			}
 			for _, plan := range plans {
 				subject := fmt.Sprintf("%s under %s over %s", text.name, plan.name, scope.name)
 				if !text.control {
-					requireOneEventOfEachMember(t, keys, plan.plan, subject)
+					requireOneEventOfEachMember(t, keys, plan.plan, subject, members)
 					continue
 				}
 				control := &newestEventCheckFailures{TB: t}
-				requireOneEventOfEachMember(control, keys, plan.plan, subject)
+				requireOneEventOfEachMember(control, keys, plan.plan, subject, members)
 				if len(control.failures) == 0 {
 					t.Errorf("%s, the control, passes the check, so the check cannot tell a read of every event from one read of a member:\n%s",
 						subject, plan.plan)
@@ -332,6 +365,30 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 	}
 }
 
+// newestEventMemberRowsQuery counts, over the seed and projects of a read, the member rows that
+// the newest event under each priority joins: the distinct (issue, priority) rows of the walk
+// (priorityMemberTerms) whose issue the project filter keeps (priorityProjectFilter). Beside them
+// it counts the issues with an event that the project filter keeps, which are what a read that
+// probes the events of every issue probes.
+var newestEventMemberRowsQuery = `with recursive ` + priorityMemberTerms + `
+	select
+		(select count(*) from members m join issues i on i.key = m.key where ` + priorityProjectFilter + `),
+		(select count(*) from issues i where i.last_seq > 0 and ` + priorityProjectFilter + `)`
+
+// newestEventMemberRows is how many member rows the newest event under each priority joins over
+// the seed and projects of a read, scope (newestEventMemberRowsQuery). It logs them beside the
+// issues with an event in the same projects.
+func newestEventMemberRows(t *testing.T, database *store.Store, seedKeys, seedIDs, projects []string, scope string) int {
+	t.Helper()
+	var members, issues int
+	if err := database.Pool.QueryRow(context.Background(), newestEventMemberRowsQuery, seedKeys, seedIDs, projects).
+		Scan(&members, &issues); err != nil {
+		t.Fatalf("count the member rows over %s: %v", scope, err)
+	}
+	t.Logf("over %s the read joins %d member rows, and %d issues with an event stand in its projects", scope, members, issues)
+	return members
+}
+
 // newestEventCondWord matches one lower-case identifier of a plan's Index Cond. A word of a
 // longer identifier is not one of these: `seq` does not match inside `last_seq`.
 var newestEventCondWord = regexp.MustCompile(`[a-z_][a-z0-9_]*`)
@@ -341,16 +398,20 @@ var newestEventCondWord = regexp.MustCompile(`[a-z_][a-z0-9_]*`)
 // both columns of the index: issue_key, its first (IndexKeys.RequireIndexKeyed), and seq. Each
 // such scan answers at most one row each time it runs, and at least one of them ran, so a plan
 // that read no event shows nothing. A scan of events of any other kind is a read beyond the one
-// event of a member. Each failure names subject and prints the plan through t.Errorf, which is
-// what a control reads (newestEventCheckFailures).
-func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string) {
+// event of a member. The scans of events run at most members times in all, the member rows the
+// read joins (newestEventMemberRows): a plan that probes the events of an issue before it joins
+// the issue to the members probes every issue the project filter keeps. Each failure names
+// subject and prints the plan through t.Errorf, which is what a control reads
+// (newestEventCheckFailures).
+func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string, members int) {
 	t.Helper()
 	keys.RequireIndexKeyed(t, plan, newestEventIndex, subject, explaintest.CondRequired)
-	ran := false
+	var loops float64
 	for _, node := range explaintest.Nodes(t, plan) {
 		if node.Relation != "events" {
 			continue
 		}
+		loops += node.Loops
 		if node.Type != "Index Scan" || node.Index != newestEventIndex {
 			t.Errorf("%s reads events by %s, want only Index Scans of %s:\n%s", subject, node, newestEventIndex, plan)
 			continue
@@ -363,10 +424,14 @@ func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan
 			t.Errorf("%s reads %v rows of events through %s each of the %v times it runs, want at most one:\n%s",
 				subject, node.Rows, node, node.Loops, plan)
 		}
-		ran = ran || node.Loops > 0
 	}
-	if !ran {
+	if loops == 0 {
 		t.Errorf("%s ran no read of events, so its plan shows nothing of how it reads them:\n%s", subject, plan)
+	}
+	t.Logf("%s reads events %v times in all, for the %d member rows it joins", subject, loops, members)
+	if loops > float64(members) {
+		t.Errorf("%s reads events %v times in all, more than the %d member rows it joins, want at most one read for each member row:\n%s",
+			subject, loops, members, plan)
 	}
 }
 
@@ -404,9 +469,10 @@ func textArrayLiteral(values []string) string {
 }
 
 // analyzedNewestEventPlan is the plan Postgres makes for statement with the values arguments, run
-// and measured (EXPLAIN (ANALYZE, BUFFERS)) with sequential scans off, in a transaction it rolls
-// back. An EXPLAIN that binds its own parameters is planned for their values, a custom plan.
-func analyzedNewestEventPlan(t *testing.T, database *store.Store, statement string, arguments ...any) json.RawMessage {
+// and measured (EXPLAIN (ANALYZE, BUFFERS)) under settings, the `set local` statements the caller
+// names (none: the planner's default settings), in a transaction it rolls back. An EXPLAIN that
+// binds its own parameters is planned for their values, a custom plan.
+func analyzedNewestEventPlan(t *testing.T, database *store.Store, statement string, settings []string, arguments ...any) json.RawMessage {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -414,8 +480,10 @@ func analyzedNewestEventPlan(t *testing.T, database *store.Store, statement stri
 		t.Fatalf("begin the plan's transaction: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
-		t.Fatalf("disable sequential scans: %v", err)
+	for _, setting := range settings {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s: %v", setting, err)
+		}
 	}
 	var raw []byte
 	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
