@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -167,9 +169,39 @@ func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	}
 }
 
+// servedVersion is version 1 of the document artifactID as the real client
+// (dispatch.HTTPClient.PlanDocument) reads it from a Dispatch that answers with status and the
+// fixture name, an answer under packages/contracts/fixtures/dispatch-version-blocks that a real
+// Dispatch served for ACME-1's plan.md: the version, or that Dispatch's refusal of it.
+func servedVersion(t *testing.T, name string, status int, artifactID string) (dispatch.DocumentVersion, error) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "dispatch-version-blocks", name))
+	if err != nil {
+		t.Fatalf("read the fixture %s: %v", name, err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/artifacts/" + artifactID + "/versions/1":
+			w.WriteHeader(status)
+			_, _ = w.Write(body)
+		case "/api/v1/artifacts/" + artifactID:
+			_, _ = w.Write([]byte(`{"id":"` + artifactID + `","issue_key":"ACME-1","slug":"plan-md"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	return dispatch.New(server.URL, "dispatch-test-token").PlanDocument(t.Context(), artifactID, 1)
+}
+
 // What register_plan answers for a document it cannot read a plan from, each before anything is
-// recorded: Dispatch's version without blocks, a document of another issue, a failed read, a
-// block outside the plan's grammar and a document with no task block.
+// recorded: Dispatch's version without blocks, a document of another issue, a failed read, an
+// older build's refusal of a version that holds `parent` (409 DOC_NEWER_CONTENT, read by the real
+// client from the body that build served), a block outside the plan's grammar and a document with
+// no task block. The refusal is a failed read the owner retries, never a refusal of the plan. Its
+// control is a planAt that reads a 409 as a version with no blocks: the answer is then 409
+// PLAN_REFUSED, the plan refused for having no task.
 func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -187,6 +219,11 @@ func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 		"Dispatch gave version 1 of "+planDoc+" without its blocks, so Legion cannot read a plan from it: that Dispatch predates the plan's blocks. "+
 			"Nothing was recorded; give the plan again once Dispatch is upgraded")
 	statuses.planErr = errors.New("connection reset")
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), http.StatusBadGateway, "DISPATCH_FAILED",
+		"Dispatch read of "+planDoc+" at version 1 failed; retry register_plan")
+	if _, statuses.planErr = servedVersion(t, "older-build-newer-content.json", http.StatusConflict, planDoc); statuses.planErr == nil {
+		t.Fatal("the real client read the older build's refusal as a version")
+	}
 	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), http.StatusBadGateway, "DISPATCH_FAILED",
 		"Dispatch read of "+planDoc+" at version 1 failed; retry register_plan")
 	if got := facts.recorded(); len(got) != 0 {
@@ -250,6 +287,39 @@ func TestRegisterPlanReadsEachParentInTheRegisteredDocument(t *testing.T) {
 	given, ok := got[0].(intake.PlanGiven)
 	if want := []plan.Element{{ID: "e1", Of: "a", Under: "a"}}; !ok || len(given.Plan.Tasks) != 1 || given.Plan.Tasks[0].ID != "a" || !reflect.DeepEqual(given.Plan.Elements, want) {
 		t.Fatalf("the fact of version 1 = %#v, want the one task a and the element %+v", got[0], want)
+	}
+}
+
+// A real Dispatch's version of a plan whose t1, t2 and t3 stand under the owner's task default,
+// read through the real client (servedVersion), is a plan of one task: register_plan answers 200
+// with the task default alone, and records it with the three blocks as its elements. The fault is
+// an element read as a task, which Legion would carry out. The control is a FromBlocks with Places
+// taken out: the version is then refused as a plan of four tasks.
+func TestAVersionWithElementsAnswersItsOneTask(t *testing.T) {
+	const acmeDoc = "8c3f2e5a-4d9f-4a7c-9ea3-5f6a7b8c9d02"
+	document, err := servedVersion(t, "plan-with-parent.json", http.StatusOK, acmeDoc)
+	if err != nil {
+		t.Fatalf("read the fixture's version through the client: %v", err)
+	}
+	h, facts, statuses := planHarness(t)
+	seedIssueAt(t, h, "ACME-1", phase.Admitted)
+	architect := newLiveClaim(t, h, "ACME-1", claim.RoleArchitect)
+	statuses.documents[acmeDoc] = "ACME-1"
+	statuses.approvals[acmeDoc] = dispatch.Approval{State: "none", LatestVersion: 1, Slug: "plan-md"}
+	statuses.plans[planVersion(acmeDoc, 1)] = document
+
+	taken := registerPlan(h, architect.grant(t), "ACME-1", acmeDoc, 1)
+	if want := `{"plan":{"version":1,"tasks":[{"id":"default","steps":[]}]}}`; taken.Code != http.StatusOK || strings.TrimSpace(taken.Body.String()) != want {
+		t.Fatalf("register version 1 = %d %s, want 200 %s: t1, t2 and t3 are elements of default", taken.Code, taken.Body, want)
+	}
+	got := facts.recorded()
+	if len(got) != 1 {
+		t.Fatalf("facts = %#v, want the one fact of version 1", got)
+	}
+	given, ok := got[0].(intake.PlanGiven)
+	want := []plan.Element{{ID: "t1", Of: "default", Under: "default"}, {ID: "t2", Of: "default", Under: "default"}, {ID: "t3", Of: "default", Under: "default"}}
+	if !ok || len(given.Plan.Tasks) != 1 || given.Plan.Tasks[0].ID != plan.DefaultTask || given.Plan.Tasks[0].Text != "Ship the parser." || !reflect.DeepEqual(given.Plan.Elements, want) {
+		t.Fatalf("the fact of version 1 = %#v, want the one task default, its own text alone, and the elements %+v", got[0], want)
 	}
 }
 
