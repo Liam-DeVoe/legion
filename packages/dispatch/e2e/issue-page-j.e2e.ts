@@ -1482,3 +1482,81 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     await expectOnScreen(heading, "a gone comment under Spec");
   });
 });
+
+// The tester's finding at 1f2cdd53: a key that only scrolls the page keeps the reader's place. A
+// key the Spec view's tree does not bind - Page Down, Space, Page Up - scrolls the page and leaves
+// the focus on the statement it was pressed on, so it takes the reader nowhere, and nothing may
+// move the page back to that statement after it. At 1f2cdd53 the view holds the focused item on
+// screen after every key (`holdFocusedItem`), and the hold's first look brings the statement back
+// as soon as the key has scrolled it away: at 1440 x 900 on a large issue's copy, Page Down moved
+// the page 290 px where the outline moves it 732 px, Space moved it up 485 px, and Page Up moved
+// it down 497 px. At b3934ff2, which holds nothing after a key, each key moved the page a screen
+// its own way.
+// SLOW(>=2s): a seeded issue of sixty statements and a long one, a load of the Spec view, and
+// three keys, each read once the page has stopped moving.
+test("a key that only scrolls the page keeps the reader's place in the Spec view: Page Down and Space scroll down, Page Up up", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = async () => {
+    const seeded = await seedTallSpec();
+    await editArtifact(seeded.specArtifactId, {
+      ops: [
+        {
+          after: `block:${requirementBlockId(3)}`,
+          markdown: statementBlock(LONG_BLOCK_ID, longWords("long", 200)),
+          op: "insert",
+        },
+      ],
+    });
+    return seeded;
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const body = issuePage(page).locator("[data-spec-body]");
+    const statements = body.locator("[data-spec-statement]");
+    const traffic = watchApiRequests(page);
+    await openPreset(page, seeded.key, "spec");
+    await expectLoadSettled(traffic);
+    await expect(
+      statements,
+      "the Spec view does not draw every statement of the spec and the long one"
+    ).toHaveCount(seeded.requirements.length + 1);
+    const long = body.locator(
+      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
+    );
+    // A script's focus, which starts no hold of the reader's: the keys below are the reader's.
+    await long.focus();
+    await expect(long, "the long statement does not take the focus").toBeFocused();
+    /** The page's scroll once it has stopped moving: two frames apart, two reads that agree. */
+    const restingScroll = (): Promise<number> =>
+      page.evaluate(async () => {
+        let last = window.scrollY;
+        for (;;) {
+          const frames = Promise.withResolvers<void>();
+          requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+          await frames.promise;
+          if (window.scrollY === last) return Math.round(last);
+          last = window.scrollY;
+        }
+      });
+    const screen = DESKTOP.height;
+    for (const [key, down] of [
+      ["PageDown", true],
+      ["Space", true],
+      ["PageUp", false],
+    ] as const) {
+      const before = await restingScroll();
+      await page.keyboard.press(key);
+      const moved = (await restingScroll()) - before;
+      expect(
+        down ? moved : -moved,
+        `${key} on the focused statement moves the page ${moved} px, not half a screen (${screen / 2} px) or more ${down ? "down" : "up"}`
+      ).toBeGreaterThanOrEqual(screen / 2);
+      await expect(
+        long,
+        `${key} moves the focus off the statement it was pressed on`
+      ).toBeFocused();
+    }
+  });
+});
