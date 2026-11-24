@@ -371,9 +371,10 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 			}
 			want := []record.MergeForwardMessage{inImplementing,
 				{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42,
-					Why: record.ConflictMergeNext}}
+					Why: record.ConflictMergeNext},
+				{Role: claim.RoleImplementer, Step: record.MergeForwardWithdrawn, Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42}}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
-				t.Fatalf("after the move into merging the merge-forward messages are %+v, want %+v: the merger is asked, the implementer is not asked again and no merger is held",
+				t.Fatalf("after the move into merging the merge-forward messages are %+v, want %+v: the merger is asked, the implementer told once that the merge is no longer its work, and no merger is held",
 					got, want)
 			}
 			if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Role != claim.RoleMerger || mf.Phase != phase.Merging ||
@@ -524,9 +525,11 @@ func TestAnAskOfImplementingIsAskedAgainOnlyWhereAStepStillRuns(t *testing.T) {
 			if got := issuePhase(t, pool); got != phase.Merging {
 				t.Fatalf("after retro's completion the issue is in %s, want merging", got)
 			}
-			want = append(want, ask(claim.RoleMerger, record.MergeForwardAsk, phase.Merging, record.ConflictMergeNext))
+			want = append(want, ask(claim.RoleMerger, record.MergeForwardAsk, phase.Merging, record.ConflictMergeNext),
+				record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardWithdrawn, Head: conflictHead, Base: "main",
+					Phase: phase.Merging, PullRequest: 42})
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
-				t.Fatalf("after the move into merging the merge-forward messages are %+v, want %+v: the merger is asked", got, want)
+				t.Fatalf("after the move into merging the merge-forward messages are %+v, want %+v: the merger is asked, and the implementer's ask of implementing is withdrawn", got, want)
 			}
 		})
 	}

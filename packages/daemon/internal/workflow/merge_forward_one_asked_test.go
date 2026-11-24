@@ -52,7 +52,7 @@ func TestTheMergersAskEndsTheImplementersAskOfTheSameHead(t *testing.T) {
 		}
 		retroCompletes(t, pool)
 
-		withdrawn := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardStep("withdrawn"), Head: conflictHead, Base: "main",
+		withdrawn := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardWithdrawn, Head: conflictHead, Base: "main",
 			Phase: phase.Merging, PullRequest: 42}
 		want := []record.MergeForwardMessage{implementerAsked(phase.Implementing, record.ConflictCheckNotGreen),
 			{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42,

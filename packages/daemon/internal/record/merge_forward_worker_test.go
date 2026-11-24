@@ -53,7 +53,7 @@ func TestAHoldOrALandedGoesToTheWorkerOfThePhaseItNames(t *testing.T) {
 // request, and names no head that landed.
 func TestAWithdrawalGoesToTheImplementerAlone(t *testing.T) {
 	now := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
-	withdrawn := MergeForwardStep("withdrawn")
+	withdrawn := MergeForwardWithdrawn
 	for _, tc := range []struct {
 		name    string
 		payload MergeForwardMessage
