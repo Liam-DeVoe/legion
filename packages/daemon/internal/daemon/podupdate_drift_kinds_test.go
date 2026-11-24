@@ -481,3 +481,80 @@ func TestARoundThisDaemonOpenedIsNeverABootRound(t *testing.T) {
 		t.Errorf("the architect records round %q after the sweeps, want the round this daemon opened kept open: it is no boot round", c.UpdateRound)
 	}
 }
+
+// A sweep can end a round found open at the boot, over drift its pod's roles keep working under,
+// while a member's launch into that pod is held inside its decision: the member's machine takes the
+// end only once that launch is over. The launch then still finds the round on its own claim, and
+// keeps the pod, since the sweep has ended the round with no replacement (R4).
+func TestALaunchHeldWhileTheSweepEndsTheBootRoundKeepsThePod(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, answeredThenSuspended(claim.RoleImplementer))
+	image := driftOf(runtime.DriftImage)
+	rig.driftsBy(image)
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+	rig.rt.ScriptIssuePodDrift(podUpdateIssue, image)
+
+	token := rig.tokens[claim.RoleImplementer]
+	holding, let := rig.holdNextResume(claim.RoleImplementer, podUpdatePod)
+	rig.sup.post(token, supervise.RequestResume{Claim: token})
+	select {
+	case <-holding:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the implementer's launch did not reach Resume")
+	}
+	rig.tick()
+	if ended := loggedMessages(t, rig.logs.String(), roundEndsOverDrainingDriftLine); len(ended) != 1 {
+		t.Fatalf("the sweep wrote %d lines that end the boot round, want one while the launch is held", len(ended))
+	}
+
+	let()
+	c := rig.awaitClaim(claim.RoleImplementer, "its launch to record its process", func(c supervise.Claim) bool { return c.Locator != nil })
+	if pod := podOf(c.Locator); pod != podUpdatePod {
+		t.Fatalf("the implementer was launched into pod %s, want the round's pod %s kept: the sweep ended its round with no replacement", pod, podUpdatePod)
+	}
+	if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
+		t.Fatalf("the launch replaced the round's pod %+v after the sweep ended the round", replaced)
+	}
+	rig.awaitClaim(claim.RoleImplementer, "its machine to take the end", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+}
+
+// A round found open at the boot whose claims record no pod, and whose read by the issue keeps
+// failing, decides nothing; past its bound the operator's side is told of it once, as a round whose
+// pod a sweep cannot read is told.
+func TestAPodlessBootRoundWhoseReadKeepsFailingIsToldPastItsBound(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, answeredThenSuspended(claim.RoleTester),
+		podlessMember(claim.RoleReviewer, supervise.StateSuspended, supervise.SuspendedByReleased, false))
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+	rig.rt.FailPodDrift(errors.New("the api server did not answer"))
+	rig.clockAt(podUpdateBound.Add(time.Minute))
+	for range 3 {
+		rig.tick()
+	}
+	rig.settleAll()
+	if asked := rig.byIssueAsks(); len(asked) != 0 {
+		t.Fatalf("the runtime was asked to replace the pod by issue %+v while nobody could read its drift, want nothing", asked)
+	}
+	notices := rig.notices()
+	if len(notices) != 1 || notices[0].Update == nil || notices[0].Update.Round != podUpdateRound {
+		t.Fatalf("past the bound the controller was told %+v, want one update-stalled notice of round %s", notices, podUpdateRound)
+	}
+}
+
+// A launch before the boot's first sweep into the pod of a round found open at the boot, over drift
+// that breaks the pod, writes the round's reasons again with the marker before it goes on to the
+// rule of a launch into a round's pod: a member of the round that is not launching records the
+// marked reasons, so the round's end names them.
+func TestALaunchBeforeTheFirstSweepWritesABreakingRoundsReasonsAgain(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, answeredThenSuspended(claim.RoleImplementer), answeredThenSuspended(claim.RoleTester))
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+	token := rig.tokens[claim.RoleImplementer]
+	rig.intoPod(claim.RoleImplementer, podUpdatePod)
+	rig.sup.post(token, supervise.RequestResume{Claim: token})
+	rig.awaitClaim(claim.RoleImplementer, "its launch to record its process", func(c supervise.Claim) bool { return c.Locator != nil })
+	want := recorded(podUpdateDrift)
+	rig.awaitClaim(claim.RoleTester, "the round's reasons written again with the marker", func(c supervise.Claim) bool {
+		return c.UpdateRound == podUpdateRound && c.UpdateReasons == want
+	})
+}
