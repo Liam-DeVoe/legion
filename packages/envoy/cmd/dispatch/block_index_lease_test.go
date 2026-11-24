@@ -1,10 +1,11 @@
-//go:build basebuild || memory
-
 // The block-index pass's lease, which a test takes to hold the pass off: the memory harness
 // (memory_harness_test.go, under the `memory` tag) for each window it measures, and the cost
 // measurements and the stale-lens roll (graph_cost_test.go and stale_lens_test.go, under the
 // `basebuild` tag) for theirs. A tag adds its own files to the package, so the one helper both
-// take is in this file, which either tag builds.
+// take is in this file, which carries no tag: every build of the package's tests compiles it, the
+// untagged one with no caller. A constraint naming both tags would keep it out of that build, but
+// .github/scripts/go-tagged-tests.sh, which lists the tests each tag adds, takes a tag only in its
+// bare form and refuses a file whose constraint names it any other way.
 
 package main
 
