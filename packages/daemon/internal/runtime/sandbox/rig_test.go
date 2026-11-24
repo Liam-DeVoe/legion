@@ -1131,18 +1131,54 @@ func (g *rig) spawn(spec runtime.SpawnSpec) runtime.Locator {
 // unless the launch runs in a pod other than the one prev records.
 func (g *rig) relaunchOnNewPod(prev runtime.Locator, spec *runtime.SpawnSpec) runtime.Locator {
 	g.t.Helper()
-	spec.Generation++
-	spec.BootToken = fmt.Sprintf("boot-%s-g%d", spec.Claim, spec.Generation)
+	next := g.resumeNext(prev, spec)
+	if next.Sandbox.PodUID == prev.Sandbox.PodUID {
+		g.t.Fatalf("the relaunch kept the pod %s, want a pod of its own", prev.Sandbox.PodUID)
+	}
+	return next
+}
+
+// resumeNext is the issue's next launch of spec's role after prev, at its next generation and
+// resumed on its session, as the supervisor starts a role again; spec moves to that generation. It
+// fails the test on an error.
+func (g *rig) resumeNext(prev runtime.Locator, spec *runtime.SpawnSpec) runtime.Locator {
+	g.t.Helper()
+	*spec = nextGeneration(*spec, spec.Generation+1)
 	resumed := *spec
 	resumed.ResumeSessionFile = resumeSession
 	next, err := g.r.Resume(g.ctx, &prev, resumed)
 	if err != nil {
 		g.t.Fatalf("relaunch at generation %d: %v", spec.Generation, err)
 	}
-	if next.Sandbox.PodUID == prev.Sandbox.PodUID {
-		g.t.Fatalf("the relaunch kept the pod %s, want a pod of its own", prev.Sandbox.PodUID)
-	}
 	return next
+}
+
+// nextGeneration is spec at generation, with that generation's boot token, as the supervisor builds
+// its next try.
+func nextGeneration(spec runtime.SpawnSpec, generation uint64) runtime.SpawnSpec {
+	spec.Generation, spec.BootToken = generation, fmt.Sprintf("boot-%s-g%d", spec.Claim, generation)
+	return spec
+}
+
+// recreatePod has the controller stand-in make the Sandbox name's pod again outside any launch, as
+// Agent Sandbox does after an eviction or a node loss: the pod with uid bound goes, and the
+// controller creates one from the template the Sandbox stores, under the same name, a new uid and
+// the same owner. It returns the new pod's uid once the pod store holds it.
+func (g *rig) recreatePod(name, bound string) string {
+	g.t.Helper()
+	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+		g.t.Fatal(err)
+	}
+	var recreated string
+	g.eventually("the pod store to hold the pod the controller recreated", func() bool {
+		pod := g.r.storedPod(name)
+		if pod == nil || string(pod.UID) == bound {
+			return false
+		}
+		recreated = string(pod.UID)
+		return true
+	})
+	return recreated
 }
 
 // launcher is the test rig's role-private launcher connection. It models only the launcher
@@ -1156,13 +1192,57 @@ func (g *rig) launcher(token claim.Token) {
 	}
 	g.wanted[token] = true
 	g.commandsMu.Unlock()
-	g.r.launchers.mu.Lock()
-	_, exists := g.r.launchers.sessions[token]
-	g.r.launchers.mu.Unlock()
-	if exists || g.pod(SandboxName(token)) == nil {
+	if launcherOf(g, token) != nil || g.pod(SandboxName(token)) == nil {
 		return
 	}
 	g.connect(token)
+}
+
+// launcherOf is the session the runtime holds for token's launcher, or nil.
+func launcherOf(g *rig, token claim.Token) *launcherSession {
+	g.r.launchers.mu.Lock()
+	defer g.r.launchers.mu.Unlock()
+	return g.r.launchers.sessions[token]
+}
+
+// launcherFirstState is the first state a fake launcher reports: its child at generation running,
+// none for 0.
+func launcherFirstState(running uint64) shimwire.LauncherState {
+	if running == 0 {
+		return shimwire.LauncherState{}
+	}
+	return shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: running, PID: 42}}
+}
+
+// answerGeneration is what a fake launcher running generation *running (0 for none) answers
+// command with, a Start or a Stop, running one generation at a time as the real launcher does: a
+// Start while a generation runs is refused, as a Stop of another generation is, and one it accepts
+// moves *running. It answers nothing to any other command. started is whether command was a Start
+// the launcher accepted.
+func answerGeneration(command shimwire.Frame, running *uint64) (answers []shimwire.Frame, started bool) {
+	switch command := command.(type) {
+	case shimwire.LauncherStart:
+		if *running != 0 {
+			return []shimwire.Frame{shimwire.LauncherStartResult{ID: command.ID, Error: fmt.Sprintf("generation %d is still running", *running)}}, false
+		}
+		*running = command.Generation
+		return []shimwire.Frame{
+			shimwire.LauncherStartResult{ID: command.ID, OK: true, RunningGeneration: command.Generation},
+			shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: command.Generation, PID: 42}},
+		}, true
+	case shimwire.LauncherStop:
+		if *running != 0 && *running != command.Generation {
+			return []shimwire.Frame{shimwire.LauncherStopResult{ID: command.ID, Error: fmt.Sprintf("generation %d is running, not %d", *running, command.Generation)}}, false
+		}
+		stopped := *running
+		*running = 0
+		state := shimwire.LauncherState{}
+		if stopped != 0 {
+			state.LastExit = &shimwire.LauncherExit{Generation: stopped, Code: 143, Signal: "terminated"}
+		}
+		return []shimwire.Frame{shimwire.LauncherStopResult{ID: command.ID, OK: true}, state}, false
+	}
+	return nil, false
 }
 
 // connect is one fake launcher process's connection for token, replacing any earlier one.
@@ -1238,10 +1318,14 @@ func (p *fakeLauncherProcess) hold(slice shimwire.LauncherBundle) bool {
 }
 
 // apply is a start's restore of the sequence p holds whole and has not applied: its id and the
-// release its save carried, which the start reports, or "" when there is none to apply.
-func (p *fakeLauncherProcess) apply() (string, int64) {
+// release its save carried, which the start reports, or "" when there is none to apply or the
+// start started nothing.
+func (p *fakeLauncherProcess) apply(started bool) (string, int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !started {
+		return "", 0
+	}
 	whole, release := p.whole, p.release
 	if whole != "" {
 		p.whole, p.release = "", 0
@@ -1263,11 +1347,7 @@ func (g *rig) serveLauncher(token claim.Token, running uint64, p *fakeLauncherPr
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
 	go func() {
 		writer := shimwire.NewWriter(client)
-		first := shimwire.LauncherState{}
-		if running != 0 {
-			first.Child = &shimwire.LauncherChild{Generation: running, PID: 42}
-		}
-		_ = writer.WriteFrame(first)
+		_ = writer.WriteFrame(launcherFirstState(running))
 		// checks is the slices of each leak check sequence that arrived and installed whether
 		// this launcher process holds the check installed, as the real launcher's checkInstall
 		// does: it installs nothing, and answers the last slice of a sequence, and every slice
@@ -1291,34 +1371,18 @@ func (g *rig) serveLauncher(token claim.Token, running uint64, p *fakeLauncherPr
 			g.commands[token] = append(g.commands[token], frame)
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
-			case shimwire.LauncherStart:
-				if running != 0 {
-					_ = writer.WriteFrame(shimwire.LauncherStartResult{ID: command.ID, Error: fmt.Sprintf("generation %d is still running", running)})
-					continue
-				}
+			case shimwire.LauncherStart, shimwire.LauncherStop:
+				answers, started := answerGeneration(frame, &running)
 				// The real launcher restores the bundle inside the start, before it answers it
 				// (internal/launcher's manager.start), so the report crosses first; it names the
 				// release whose save the bundle carried, so that the daemon deletes that
-				// release's bundle and no other.
-				if whole, release := p.apply(); whole != "" {
+				// release's bundle and no other. A start that started nothing applies nothing.
+				if whole, release := p.apply(started); whole != "" {
 					_ = writer.WriteFrame(shimwire.LauncherRestored{ID: whole, Release: release, OK: g.failRestore == "", Error: g.failRestore})
 				}
-				running = command.Generation
-				_ = writer.WriteFrame(shimwire.LauncherStartResult{ID: command.ID, OK: true, RunningGeneration: command.Generation})
-				_ = writer.WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: command.Generation, PID: 42}})
-			case shimwire.LauncherStop:
-				if running != 0 && running != command.Generation {
-					_ = writer.WriteFrame(shimwire.LauncherStopResult{ID: command.ID, Error: fmt.Sprintf("generation %d is running, not %d", running, command.Generation)})
-					continue
+				for _, answer := range answers {
+					_ = writer.WriteFrame(answer)
 				}
-				stopped := running
-				running = 0
-				_ = writer.WriteFrame(shimwire.LauncherStopResult{ID: command.ID, OK: true})
-				state := shimwire.LauncherState{}
-				if stopped != 0 {
-					state.LastExit = &shimwire.LauncherExit{Generation: stopped, Code: 143, Signal: "terminated"}
-				}
-				_ = writer.WriteFrame(state)
 			case shimwire.LauncherBundle:
 				if g.refuseBundle != "" {
 					_ = writer.WriteFrame(shimwire.LauncherBundleResult{ID: command.ID, Index: command.Index, Error: g.refuseBundle})
