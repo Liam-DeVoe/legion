@@ -172,9 +172,15 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // openSupervision hands the daemon's one limiter to its machines. A machine takes its deps when the
 // boot restores it, so the pacing is set before that, as beforeDecision is. The zero pace is the
 // pacing off: every launch runs where it is raised.
+//
+// over makes the runtime the supervision and every machine are built over from the rig's fake
+// (podUpdateRig.rt), which a test reads as it reads the fake: a runtime with a capability the fake
+// lacks, the save of a workspace among them (runtime.WorkspaceBundler). nil builds them over the
+// fake itself.
 type podUpdateRigOptions struct {
 	beforeDecision func(claim.Token, supervise.Event)
 	wakePace       supervise.WakePace
+	over           func(*fake.Runtime) runtime.Runtime
 }
 
 // newPodUpdateRigWith is newPodUpdateRig with the machines built with opts.
@@ -231,6 +237,10 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	clock := &heldClock{at: podUpdateStart}
 	rt := fake.NewRuntime()
 	rt.Now = clock.Now
+	var over runtime.Runtime = rt
+	if opts.over != nil {
+		over = opts.over(rt)
+	}
 	conns := fake.NewConns()
 	records := record.NewStore()
 	sup := newSupervisor(ctx, st, podUpdateProject, t.TempDir(), quietLogger())
@@ -250,7 +260,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 			PodUpdateGrace: podUpdateGrace, WorkerSilence: podUpdateSilence},
 		log:     log,
 		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
-		runtime: rt, supervisor: sup,
+		runtime: over, supervisor: sup,
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
@@ -260,7 +270,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// binds the Sandbox runtime's (plan.launchRounds).
 	rt.RoundPodEnds = s.roundPodEndsAtLaunch
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
+		Runtime: over, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		// The store's read of a launch's activity report, as openSupervision wires it: what a
 		// relaunch records the background work it ended from (supervise's recordEnd).
 		ClaimActivity:  st.ClaimActivity,
