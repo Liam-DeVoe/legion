@@ -878,7 +878,35 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	if err != nil || ancestor == "" {
 		return err
 	}
-	return e.notice(ctx, tx, child.Key, ChildUnderAcceptedParentNotice(child.Key, ancestor))
+	// Planted fault, a control of a test, never merged: the notice is sent twice for one plan. Where
+	// the ancestor's line holds no reviewer step, the same notice is queued a second time, and the
+	// count of child-status notice rows of the child is logged, so the run shows the fault took.
+	if err := e.notice(ctx, tx, child.Key, ChildUnderAcceptedParentNotice(child.Key, ancestor)); err != nil {
+		return err
+	}
+	above, err := e.store.Issue(ctx, tx, ancestor)
+	if err != nil || above == nil {
+		return err
+	}
+	w, err := e.walk(ctx, tx, *above)
+	if err != nil {
+		return err
+	}
+	reviewer := false
+	for _, step := range w.Line {
+		reviewer = reviewer || step == phase.Reviewing
+	}
+	if !reviewer {
+		if err := e.notice(ctx, tx, child.Key, ChildUnderAcceptedParentNotice(child.Key, ancestor)); err != nil {
+			return err
+		}
+	}
+	var rows int
+	if err := tx.QueryRow(ctx, "select count(*) from outbox where kind = 'notice' and issue = $1 and payload->>'kind' = 'child-status'", child.Key).Scan(&rows); err != nil {
+		return err
+	}
+	e.log.Info("planted fault: child-status notice rows of the child", "child", child.Key, "reviewerStep", reviewer, "rows", rows)
+	return nil
 }
 
 // drawExperiments draws every issue-unit experiment the project declares (Config.Experiments)
