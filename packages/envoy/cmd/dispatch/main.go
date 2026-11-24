@@ -2321,10 +2321,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	if boot.AgentSecretsURL == "" {
 		return nil, nil
 	}
+	origins := []string{strings.TrimSuffix(serverURL, "/")}
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
 		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
-		Origin:    strings.TrimSuffix(serverURL, "/"),
+		Origins:   origins,
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
