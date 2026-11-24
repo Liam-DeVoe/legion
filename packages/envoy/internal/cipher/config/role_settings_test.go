@@ -149,6 +149,8 @@ var settingRoles = map[string]settingRole{
 	"BROKER_DRAIN_SECONDS":               givesNone("a number of seconds"),
 	"BROKER_AIRLOCK_IDLE_SECONDS":        givesNone("a number of seconds"),
 	"BROKER_SIGNIN_SESSION_SECONDS":      givesNone("a number of seconds"),
+	"BROKER_GITHUB_APP_FIELD":            givesNone("a switch, off or unset"),
+	"BROKER_GITHUB_APP_FIELD_REQUESTERS": givesNone("services and people a github_app field is answered for"),
 
 	// parseSignIn's.
 	"BROKER_SIGNIN_ISSUER":             givesNone("an issuer"),

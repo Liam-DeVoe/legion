@@ -203,6 +203,26 @@ type Config struct {
 	// BROKER_SIGNIN_* setting, naming the ones set, and beside the model judge, which decides
 	// only a request that waits for a person; any other value refuses naming it.
 	SignInOff bool
+	// BROKER_GITHUB_APP_FIELD: off turns off the answer to the github_app field that an
+	// agent-secrets of a release before --target sends with --github-owner, --github-repo,
+	// --github-read-only and --github-token (requests.Machine.GitHubAppFieldOff): the field is
+	// then refused 400 GITHUB_APP_FIELD_REMOVED, as it was before this setting. Unset (or empty),
+	// the broker answers it: for the stored github-app secret the old body names, it serves the
+	// profile of that secret the profiles file grants the caller at once, narrowed to the body's
+	// account and repositories, minted in the released installations form and handed over outside
+	// the airlock, as legion-envoy-v33.7.0 did. Set it to off once no released client sends the
+	// field (the broker logs each answer, requests.GitHubAppFieldAnsweredMessage). Any other value
+	// refuses the start, naming the setting and the value.
+	GitHubAppFieldOff bool
+	// BROKER_GITHUB_APP_FIELD_REQUESTERS: the services and people the broker answers the
+	// github_app field for, separated by commas or spaces, each a registered service's name or a
+	// person's lowercase email. Unset, it is requests.DefaultGitHubAppFieldRequesters, the one
+	// service whose pods run a released client. A person asking for their own App, which the
+	// secret's owner tag names, is answered beside this list. Every other requester is refused
+	// 400 GITHUB_APP_FIELD_REMOVED, whatever the profiles file would grant it: a profile with no
+	// requesters list is granted to every agent-tier caller, and the old body hands over a real
+	// token outside the airlock, which such a caller's own --target request never gets.
+	GitHubAppFieldRequesters string
 	// BROKER_SIGNIN_WORKSPACE_DOMAINS: the other domains the Google Workspace owns beside
 	// BROKER_SIGNIN_DOMAIN, separated by commas, each a lowercase domain name; an
 	// internationalized one is written in Unicode or as its A-labels, and is held as its A-labels.
@@ -2412,6 +2432,10 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	gitHubAppFieldOff, err := parseGitHubAppField(getenv(gitHubAppFieldSetting))
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		ListenAddr:                orDefault(getenv("BROKER_LISTEN_ADDR"), "127.0.0.1:13380"),
 		MetricsListenAddr:         orDefault(getenv("BROKER_METRICS_LISTEN_ADDR"), "127.0.0.1:13382"),
@@ -2449,6 +2473,8 @@ func Load(getenv func(string) string) (Config, error) {
 		EnvoyURL:                  getenv("BROKER_ENVOY_URL"),
 		TrustedProxyHeader:        getenv("BROKER_TRUSTED_PROXY_HEADER"),
 		SignInOff:                 signInOff,
+		GitHubAppFieldOff:         gitHubAppFieldOff,
+		GitHubAppFieldRequesters:  strings.TrimSpace(getenv("BROKER_GITHUB_APP_FIELD_REQUESTERS")),
 	}
 	// The local stack's test-only settings, the airlock's and the judge's: each is read
 	// whatever the rules file says, since the two minter bases are read with no airlock at all.
@@ -3019,6 +3045,23 @@ func parseSignInSwitch(getenv func(string) string) (bool, error) {
 			signInSwitchSetting, signInOffValue, strings.Join(set, ", "), verb, signInSwitchSetting, signInOffValue)
 	}
 	return true, nil
+}
+
+// gitHubAppFieldSetting turns off the answer to the github_app field of an earlier agent-secrets
+// (Config.GitHubAppFieldOff).
+const gitHubAppFieldSetting = "BROKER_GITHUB_APP_FIELD"
+
+// parseGitHubAppField reads BROKER_GITHUB_APP_FIELD: unset (or empty) answers the field, exactly
+// off refuses it, and any other value refuses the start naming the setting and the value, so a
+// misspelled off never leaves the answer on.
+func parseGitHubAppField(value string) (bool, error) {
+	switch value {
+	case "":
+		return false, nil
+	case "off":
+		return true, nil
+	}
+	return false, fmt.Errorf("%s must be off or unset, got %q", gitHubAppFieldSetting, value)
 }
 
 // parseSignIn reads the broker's sign-in client, its session lasting sessionLifetime, the

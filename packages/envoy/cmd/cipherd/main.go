@@ -1383,7 +1383,12 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		// BROKER_SIGNIN=off: nobody signs in to approve, so a name that would wait for a
 		// person is denied at once.
 		SignInOff: cfg.SignInOff,
-		Groups:    groupReader,
+		// BROKER_GITHUB_APP_FIELD=off: an earlier agent-secrets' github_app field is refused
+		// rather than answered.
+		GitHubAppFieldOff: cfg.GitHubAppFieldOff,
+		// BROKER_GITHUB_APP_FIELD_REQUESTERS: whom that field is answered for.
+		GitHubAppFieldRequesters: cfg.GitHubAppFieldRequesters,
+		Groups:                   groupReader,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
 	m.Chain.Groups = groupReader
