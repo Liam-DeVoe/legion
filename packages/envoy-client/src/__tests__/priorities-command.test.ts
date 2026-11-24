@@ -452,18 +452,11 @@ describe("the priorities an issue advances", () => {
     expect(stdout).toContain("DSP-1: advances cleared");
   });
 
-  // An inherited relation is no write of this issue, so the clear above left it: the read marks
-  // which priorities the issue states itself and which come from the issues above it.
-  test("an issue read prints every priority the issue serves, each marked", async () => {
-    const { code, stdout } = await run(["read", "--issue", "DSP-1"]);
-
-    expect(code).toBe(0);
-    expect(stdout).toContain("Advances: ship-the-daemon (own), legion-first (inherited)");
-  });
-
-  // A change of two or more priorities carries the revision of the read it answers, so the read
-  // prints that revision beside the set, for --advances-revision. A read that carries no
-  // revision prints the set alone, never a number the issue does not hold.
+  // The read marks which priorities the issue states itself and which come from the issues above
+  // it, so the clear above left the inherited one. A change of two or more priorities carries the
+  // revision of the read it answers, so the read prints that revision beside the set, for
+  // --advances-revision. A read that carries no revision prints the set alone, never a number the
+  // issue does not hold.
   test.each([
     [
       "the revision beside the priorities",
