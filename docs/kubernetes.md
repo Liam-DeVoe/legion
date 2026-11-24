@@ -8304,8 +8304,7 @@ The wakes are these:
   Such a worker is OSSV-732's reviewer, whose approval stood while GitHub held the merge for a code-owner review; a backstop would wake it every `backstop_minutes` to do nothing.
   Any work such a worker gets later comes as a task or a message of the daemon's, which wakes the pod once it is sent: admission's owed-entry repair sends the entry's task to a worker behind its entry that holds no task of the issue's run and phase that no turn has confirmed.
   The exception is a task of news alone (`NewsOnly`), the second kind below.
-  Two kinds of worker that owe their phase nothing still get the backstop.
-  Which worker gets the backstop, one that owes its phase or one of these two kinds, has one statement, `getsBackstop` (`internal/daemon/wake.go`), which the release, a pause's stop and a paused cancel of a release each ask before they arm one.
+  Two kinds of worker that owe their phase nothing still get the backstop (`getsBackstop`).
   The first is one that holds a task of the issue's run and phase that no turn has confirmed, of that entry, of an earlier one or of no entry, while it is behind its entry or still serves an earlier run of the issue, unless its completion is recorded, a merge forward holds its role or its merged pull request is finishing its merge (`holdsUndeliveredEntryTask`, `internal/daemon/wake.go`).
   A send can fail before any turn and then waits for the claim to come back.
   A relaunch of a failed or retired worker keeps the task of an earlier entry that it still holds, and does not deliver the new entry (`keepsStartTask`, `internal/daemon/outbox.go`).
