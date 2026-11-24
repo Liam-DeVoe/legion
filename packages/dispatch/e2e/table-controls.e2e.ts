@@ -9312,3 +9312,83 @@ test("the Delivery page's Filter panel draws no count beside a verdict before th
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): the Inbox opened three times over two asks and two threads, with the thread read held, refused and answered.
+// INFRA-3135, round 25 (the tester's), by the architect's ruling of 2026-11-24 08:07Z: a count
+// beside a value is drawn only once the data it counts has answered, never as a 0 that stands for
+// "not read yet" (B2 of dispatch://INFRA-3135/artifact/t23-class-search-md, moved into this pull
+// request). Measured in builds Job infra-3135-b2-h-lrxq6 (head 683f1fdf), in Chromium, Firefox and
+// WebKit at 1440x900: with the reader's thread read (/api/v1/me/replies?state=inbox) held or
+// answered 500, the Filter panel's Type list reads "Reply, 0 rows" and "Agent message, 0 rows"
+// while two reply threads wait, because the counts are taken over the rows read so far
+// (Inbox.tsx:2051-2052, `counts.get(value) ?? 0`). With the read answered it reads "Reply, 2 rows",
+// which this row reads too, so it can tell a count from a placeholder. The questions' count comes
+// from the Inbox's own read, which answered, so it stands throughout.
+test("the Inbox's Type list draws no count for the thread kinds while the thread read is out or refused @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  for (let index = 0; index < 2; index++) {
+    const issue = await createIssue({ project: "CORE", title: `Ask item ${index}` });
+    await createAsk(
+      issue.key,
+      { question: `Item ${index}: what is the rule?`, urgency: "med" },
+      SURFACE_SESSION
+    );
+  }
+  for (const title of ["Nightly mirror", "Weekly digest"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await seedCommentThread(issue.key, `${title}: when does it run?`, "It moved to 03:00.");
+  }
+  const main = page.getByTestId("main-content");
+  const rows = main.locator("[data-inbox-row]");
+  /** Each option of the Type list, by its accessible name, read once the list holds all five. */
+  const typeOptions = async (): Promise<string[]> => {
+    await openFilterPanel(page, main);
+    await page.getByRole("button", { name: "Filter by type" }).click();
+    const options = page.getByRole("listbox", { name: "Type options" }).getByRole("option");
+    await expect(options).toHaveCount(5);
+    const names = await options.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("aria-label") ?? "")
+    );
+    await page.keyboard.press("Escape");
+    await closeControlPanel(main);
+    return names;
+  };
+  const threadRead = (url: URL) =>
+    url.pathname === "/api/v1/me/replies" && url.searchParams.get("state") === "inbox";
+  const wrong: string[] = [];
+  try {
+    for (const how of ["held", "refused"] as const) {
+      await page.route(threadRead, async (route) => {
+        // Held: the read is never answered. Refused: the server answers it 500 every time.
+        if (how === "refused") {
+          await route.fulfill({
+            body: '{"error":{"code":"TEST_REFUSED","message":"test refusal"}}',
+            contentType: "application/json",
+            status: 500,
+          });
+        }
+      });
+      await page.goto("/");
+      // The two asks are the Inbox's own read, which answered; the threads are not listed yet.
+      await expect(rows).toHaveCount(2);
+      const names = await typeOptions();
+      wrong.push(
+        ...names
+          .filter((name) => /^(Reply|Agent message), \d+ rows?$/u.test(name))
+          .map((name) => `thread read ${how}: the Type list offers "${name}"`)
+      );
+      expect(names, `thread read ${how}: the questions' count`).toContain("Question, 2 rows");
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+    }
+    // The control: the same Inbox with its thread read answered counts both reply threads.
+    await page.goto("/");
+    await expect(rows).toHaveCount(4);
+    expect(await typeOptions()).toContain("Reply, 2 rows");
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
