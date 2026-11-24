@@ -54,7 +54,7 @@ func TestAProductionCheckFollowsAPlan(t *testing.T) {
 			t.Fatal(err)
 		}
 		fresh := r.claimantOf(r.key, token, claim.RoleTester)
-		if launches := r.launchesOf(token); len(launches) != 1 || launches[0] != "Spawn" || lastLaunch(t, r.rt, token).ResumeSessionFile != "" {
+		if launches := r.launchesOfClaim(token); len(launches) != 1 || launches[0] != "Spawn" || lastLaunch(t, r.rt, token).ResumeSessionFile != "" {
 			t.Fatalf("%s's check agent %s was launched %v, want one Spawn that resumes no session: no tester ran on the plan implementer, so the check goes to a fresh agent of task a", r.key, token, launches)
 		}
 		if launches := r.launchesOfRole(claim.RoleTester); len(launches) != 0 {
