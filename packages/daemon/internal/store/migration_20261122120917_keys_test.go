@@ -12,7 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // A key's agent that ran on a claim before the upgrade keeps that claim's name, and so the session
@@ -306,4 +308,85 @@ func TestTheSessionAgentMigrationRecordsTheKeyNameAgentsKeepsAClaimsNameFor(t *t
 		t.Fatalf("roll forward: %v", err)
 	}
 	recorded("after the roll forward")
+}
+
+// A new agent with no key that a later version gives the name of a claim from before the upgrade
+// starts in a session of its own, even where every row that named the claim's agent is gone. The
+// release before ran LEGION-208's generation 1, `implementer:a reviewer`, with key a's agent on the
+// claim implementer, and its generation 2, `implementer reviewer`, gave the name implementer to the
+// agent with no key of step 1, which ran on that claim after key a's agent. After the upgrade a new
+// owner's run deletes both plans (workflow's passOverEarlierOwners), and its plan, `planner
+// implementer reviewer`, gives implementer to a new agent with no key, the agent of step 2: no row
+// and no claim holds the name for anyone. That agent's start must find the claim's session another
+// agent's (supervise.Claim.SessionOfAnotherAgent), so it starts a session of its own rather than
+// the conversation the claim holds. The control: the agent of generation 2's step 1, which the
+// rows gave the name last, finds the session its own.
+func TestANewAgentGivenTheNameOfAClaimFromBeforeTheUpgradeStartsASessionOfItsOwn(t *testing.T) {
+	ctx := context.Background()
+	st := emptyStore(t)
+	migrateThrough(t, st, claimSessionAgentVersion-1)
+	seedPlanSteps(t, st, "LEGION-208", 1, [2]string{"implementer", "a"}, [2]string{"reviewer", ""})
+	seedPlanSteps(t, st, "LEGION-208", 2, [2]string{"implementer", ""}, [2]string{"reviewer", ""})
+	for _, statement := range []string{
+		`update plan_steps set agent = role`,
+		`insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+			launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+			values ('legion-legion-legion-208-implementer', 'legion', 'LEGION-208', 'LEGION-208', 'implementer', 2,
+			'ses_implementer', '', 'idle', 0, 0, 0, 0)`,
+	} {
+		if _, err := st.Pool().Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through the agent of a claim's session: %v", err)
+	}
+
+	records := record.NewStore()
+	var named []record.PlanStep
+	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		for _, generation := range []uint64{1, 2} {
+			if err := records.DeletePlan(ctx, tx, "LEGION-208", generation); err != nil {
+				return err
+			}
+		}
+		earlier, err := records.PlanStepsOf(ctx, tx, "LEGION-208")
+		if err != nil {
+			return err
+		}
+		claims, err := records.IssueClaims(ctx, tx, "legion", "LEGION-208")
+		if err != nil {
+			return err
+		}
+		named = record.NameAgents(earlier, record.KeySessionsOf(claims), []record.PlanStep{
+			{Issue: "LEGION-208", Generation: 3, Task: "a", Position: 1, Role: "planner"},
+			{Issue: "LEGION-208", Generation: 3, Task: "a", Position: 2, Role: "implementer"},
+			{Issue: "LEGION-208", Generation: 3, Task: "a", Position: 3, Role: "reviewer"},
+		})
+		return nil
+	}); err != nil {
+		t.Fatalf("delete the earlier owner's plans and name the new one: %v", err)
+	}
+	if named[1].Agent != "implementer" {
+		t.Fatalf("the new plan's step 2 is named %q, want implementer, the name no row or claim holds now", named[1].Agent)
+	}
+	held := supervise.Claim{SessionAgent: sessionAgentOfToken(t, st, "legion-legion-legion-208-implementer")}
+	if newcomer := named[1].PlanAgent().ID(); !held.SessionOfAnotherAgent(newcomer) {
+		t.Errorf("the claim implementer records the agent %q of its session, so the start of %s, a new agent with no key, "+
+			"takes that session, want it to start a session of its own", held.SessionAgent, newcomer)
+	}
+	if lastNamed := plan.AgentOf("a", 1, plan.Step{Role: "implementer"}).ID(); held.SessionOfAnotherAgent(lastNamed) {
+		t.Errorf("the claim implementer records the agent %q of its session, so the start of %s, the agent the rows gave the "+
+			"name last, leaves its own session, want it to keep it", held.SessionAgent, lastNamed)
+	}
+}
+
+// sessionAgentOfToken is the agent whose session the stored claim token holds (claims.session_agent).
+func sessionAgentOfToken(t *testing.T, st *Store, token string) plan.AgentID {
+	t.Helper()
+	got := rowsAsText(t, st, `select session_agent from claims where token = '`+token+`'`)
+	if len(got) != 1 {
+		t.Fatalf("the claims %s = %q, want one", token, got)
+	}
+	return plan.AgentID(got[0])
 }
