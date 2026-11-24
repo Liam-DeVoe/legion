@@ -312,51 +312,43 @@ func TestTheOwnerStepsWayBackClearsItsProjectsTwoNewHoldReasons(t *testing.T) {
 	}
 }
 
-// ownerDoesAStepSection is the heading of docs/kubernetes.md's section on the rollback below the
-// release whose owner does a step. No migration header carries that release's delete of the queued
-// rows the release before cannot read, so the guide is where an operator reads it, and where this
-// test reads it.
-const ownerDoesAStepSection = "#### Rolling back below the release whose owner does a step"
+// ownerDoesAStepExtract is this package's copy of the statements docs/kubernetes.md gives under
+// "Rolling back below the release whose owner does a step". No migration header carries that
+// release's statements on the queued rows the release before cannot read, so the guide is where
+// an operator reads them, and internal/textcheck's
+// TestTheOwnerDoesAStepWayBackExtractIsTheGuidesBlock holds this copy to the guide's block. This
+// file reads the copy alone, as the plan ratings' test reads the header alone, so the guide stays
+// out of this package's CI filter.
+const ownerDoesAStepExtract = "owner_does_a_step_way_back_extract.txt"
 
-// ownerDoesAStepWayBack is the delete that section gives: its one fenced sql block whose every line
-// is a delete from the outbox, with <PROJECT> for the project that rolls back. A section or a block
-// of another shape stops the test by name.
+// ownerDoesAStepWayBack is the block ownerDoesAStepExtract carries, with <PROJECT> for the project
+// that rolls back: every byte under the blank line that ends the file's `#` header. A copy with no
+// blank line under its header, or with nothing under it, stops the test by name, since a block this
+// cannot read is a block the test would pass while running nothing.
 func ownerDoesAStepWayBack(t *testing.T) string {
 	t.Helper()
-	guide, err := os.ReadFile("../../../../docs/kubernetes.md")
+	text, err := os.ReadFile(ownerDoesAStepExtract)
 	if err != nil {
-		t.Fatalf("read docs/kubernetes.md: %v", err)
+		t.Fatalf("read %s: %v", ownerDoesAStepExtract, err)
 	}
-	_, section, found := strings.Cut(string(guide), "\n"+ownerDoesAStepSection+"\n")
-	if !found {
-		t.Fatalf("docs/kubernetes.md holds no section %q", ownerDoesAStepSection)
+	body := string(text)
+	for strings.HasPrefix(body, "#") {
+		_, body, _ = strings.Cut(body, "\n")
 	}
-	if end := strings.Index(section, "\n#"); end >= 0 {
-		section = section[:end]
+	body, ended := strings.CutPrefix(body, "\n")
+	if !ended {
+		t.Fatalf("%s carries no blank line under its `#` header: that line is what ends the header, and every byte under it is the block", ownerDoesAStepExtract)
 	}
-	var deletes []string
-	for _, fenced := range strings.Split(section, "```sql\n")[1:] {
-		block, _, closed := strings.Cut(fenced, "\n```")
-		if !closed {
-			t.Fatalf("the section %q opens an sql block it does not close", ownerDoesAStepSection)
-		}
-		every := true
-		for _, line := range strings.Split(block, "\n") {
-			every = every && strings.HasPrefix(line, "delete from outbox ")
-		}
-		if every {
-			deletes = append(deletes, block)
-		}
+	if block := strings.TrimRight(body, "\n"); block != "" {
+		return block
 	}
-	if len(deletes) != 1 {
-		t.Fatalf("the section %q holds %d sql blocks of deletes from the outbox alone, want one", ownerDoesAStepSection, len(deletes))
-	}
-	return deletes[0]
+	t.Fatalf("%s carries nothing under its header: its copy of the guide's block is gone", ownerDoesAStepExtract)
+	return ""
 }
 
 // refusedBeforeOwnerDoesAStep is why the release before the one whose owner does a step refuses
 // row, "" where it takes it. That release decodes every payload the tree decodes, strictly, but for
-// what the release whose owner does a step adds (ownerDoesAStepSection): the notice kinds owner-step
+// what the release whose owner does a step adds (ownerDoesAStepExtract): the notice kinds owner-step
 // and merge-forward-lost, the supervise op slot_credential, and the field covers of a merge-forward
 // message. It fails such a row at every attempt.
 func refusedBeforeOwnerDoesAStep(t *testing.T, row record.OutboxRow) string {
@@ -389,7 +381,7 @@ func refusedBeforeOwnerDoesAStep(t *testing.T, row record.OutboxRow) string {
 // same kinds stand, and so does every row the release before reads, of either project: a
 // merge-forward ask that covers nothing, a task-stopped notice, a phase-finished notice and a
 // suspend. The rows are queued for LEGION, which rolls back, and OTHER, which does not, and the
-// block runs as the guide gives it, as one exec, with <PROJECT> LEGION.
+// block runs as the guide gives it (ownerDoesAStepExtract), as one exec, with <PROJECT> LEGION.
 //
 // Two controls. Before the block, the release before's decode (refusedBeforeOwnerDoesAStep) refuses
 // each row of a new kind and takes each other row. And the same block with its project predicate
@@ -442,7 +434,7 @@ func TestTheOwnerDoesAStepWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCanno
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if !tc.otherKept && unscoped == scoped {
-				t.Fatalf("the block of %q holds no %q to take off: no delete of it names the project that rolls back", ownerDoesAStepSection,
+				t.Fatalf("the block of %s holds no %q to take off: no delete of it names the project that rolls back", ownerDoesAStepExtract,
 					ownerStepsProjectPredicate)
 			}
 			store := emptyStore(t)
@@ -476,7 +468,7 @@ func TestTheOwnerDoesAStepWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCanno
 			}
 
 			if _, err := store.Pool().Exec(ctx, strings.ReplaceAll(tc.block, "<PROJECT>", "LEGION"), pgx.QueryExecModeSimpleProtocol); err != nil {
-				t.Fatalf("run the delete the section %q gives: %v", ownerDoesAStepSection, err)
+				t.Fatalf("run the delete %s gives: %v", ownerDoesAStepExtract, err)
 			}
 
 			for _, q := range rows {
