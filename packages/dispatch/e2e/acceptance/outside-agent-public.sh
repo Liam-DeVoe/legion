@@ -293,18 +293,24 @@ else
   p2_pid=$!
   background="$background $p2_pid"
   code=''
+  p2_ended=''
   deadline=$(($(now) + 60))
-  while [ -z "$code" ] && [ "$(now)" -lt "$deadline" ]; do
+  # Whether the login still runs is read before its log: a login that has ended has written all it
+  # printed, so a code it printed as it ended is still read, and the wait ends on that read.
+  while [ -z "$code" ] && [ -z "$p2_ended" ] && [ "$(now)" -lt "$deadline" ]; do
+    running_child "$p2_pid" || p2_ended=yes
     while IFS= read -r line; do
       case $line in *'and enter the code '*) code=${line##*and enter the code } ;; esac
     done <"$work/p2.log"
-    [ -z "$code" ] || break
-    running_child "$p2_pid" || break
-    sleep 1
+    [ -n "$code" ] || [ -n "$p2_ended" ] || pause
   done
   if [ -z "$code" ]; then
     last=$(tr '\n' ' ' <"$work/p2.log")
-    row P2 "$want2" "dispatch login printed no code within 60 s: ${last:0:300}" UNKNOWN
+    if [ -n "$p2_ended" ]; then
+      row P2 "$want2" "dispatch login ended and printed no code: ${last:0:300}" UNKNOWN
+    else
+      row P2 "$want2" "dispatch login printed no code within 60 s: ${last:0:300}" UNKNOWN
+    fi
   else
     set -f
     # shellcheck disable=SC2086 # a command line, split on blanks on purpose

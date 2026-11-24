@@ -28,6 +28,10 @@ cell() {
 
 now() { date -u '+%s'; }
 
+# A copy of #5247's pause(): of #4523 and #5247, the one that merges second deletes this copy.
+# pause: the time between two looks at a state a wait is for, a tenth of a second.
+pause() { sleep 0.1; }
+
 # iso_seconds TIME: the Unix seconds of TIME, a `YYYY-MM-DDTHH:MM:SSZ` UTC time, read with GNU's
 # date or BSD's (macOS ships BSD's); nothing when neither reads it.
 iso_seconds() {
