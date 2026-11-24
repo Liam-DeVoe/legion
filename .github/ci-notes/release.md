@@ -112,10 +112,20 @@ command that prints it, to be run from packages/daemon for each target `legion` 
 into that target's binary alone) whenever what the binary links moves:
   CGO_ENABLED=0 GOOS=<os> GOARCH=<arch> go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
-ci.yaml's lint job runs that command for each of those targets on every change
-(.github/scripts/check-legion-release-paths.sh) and fails naming each package of this repository
-it prints, each such module's go.mod and go.sum, and the go.work the build reads and its
-go.work.sum, that no path of the list covers.
+ci.yaml's lint job holds the list to what the release builds legion from
+(.github/scripts/check-legion-release-paths.sh) on every change its legion_release_paths filter
+selects: release.yaml, the target list, the three scripts it runs, the package directories the
+binary builds from and the workspace's module files.
+The check keeps no rule of its own. Bash expands the list unquoted at the root, as the version step
+does; `release-push.sh version-paths` takes the paths out of it with `version`'s own parse; git
+says which files they cover (`git ls-files -- <paths>`), as it does for release-bump.sh's
+`git log`, so a glob or an `:(exclude)` in the list counts as the release counts it;
+release-build-legion.sh's `targets`, `list` and `env` give the targets, their environment and the
+command; and `go list -deps -f` gives the files each package compiles or embeds and its module's
+go.mod. The check fails naming each package of this repository with a tracked file of those that
+the list does not cover, each such module's go.mod and go.sum, and the go.work the build reads and
+its go.work.sum. A file git does not track is named by no commit, so no path can release a change
+to it, and the check does not require it.
 
 ## Why GOPROXY falls through to direct
 

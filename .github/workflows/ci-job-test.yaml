@@ -118,6 +118,12 @@ on:
           check-legion-release-paths.test.sh and what it tests.
         type: string
         required: false
+      release_build_legion_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.release_build_legion_test:
+          release-build-legion.test.sh and what it tests.
+        type: string
+        required: false
       workflow_paths_test:
         description: "ci.yaml's needs.changes.outputs.workflow_paths_test: workflow_paths.test.sh and what it tests."
         type: string
@@ -630,6 +636,11 @@ jobs:
       - name: Test the legion release path check
         if: inputs.changes-result != 'success' || inputs.check_legion_release_paths_test == 'true'
         run: .github/scripts/check-legion-release-paths.test.sh
+
+      # After setup-go too: its fixtures build a scratch legion for two targets and list it.
+      - name: Test the legion release build and the targets, listing and environment it gives
+        if: inputs.changes-result != 'success' || inputs.release_build_legion_test == 'true'
+        run: .github/scripts/release-build-legion.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Tests for `check-legion-release-paths.sh`: every package of this repository the `legion` binary
-# links, for each target .github/go-release-targets.json lists for it, the go.mod and go.sum of
-# its module, and the go.work its build reads with its go.work.sum, is covered by a path of
-# release.yaml's LEGION_VERSION_ARGS. The case that matters is the one the check exists for: a
-# package the binary links that the list does not name, on the runner's own target or on another
-# one.
+# Tests for `check-legion-release-paths.sh`: every tracked file each package of this repository
+# the `legion` binary links compiles or embeds, for each target .github/go-release-targets.json
+# lists for it, the go.mod and go.sum of its module, and the go.work its build reads with its
+# go.work.sum, is covered by release.yaml's LEGION_VERSION_ARGS, read as the release reads it:
+# expanded by bash at the root, parsed by release-push.sh, matched by git. The case that matters
+# is the one the check exists for: a package the binary links that the list does not cover, on the
+# runner's own target or on another one.
 #
-# Each case builds a miniature repository under a temporary directory, with a daemon module whose
-# `replace` reaches an envoy module as the real one does, and symlinks the real script into it, so
-# the script under test is the file CI runs and the `go list` it runs is a real one. Needs Go and
-# jq.
+# Each case builds a miniature repository under a temporary directory, a git repository whose
+# every file is added to the index before the check runs, with a daemon module whose `replace`
+# reaches an envoy module as the real one does. It symlinks the real script, release-push.sh and
+# release-build-legion.sh into it, so the scripts under test are the files CI and the release run
+# and the `go list` and `git ls-files` they run are real ones. Needs Go, jq and git.
 #
 # Run from anywhere: .github/scripts/check-legion-release-paths.test.sh
 # CI runs it in ci.yaml's test job, after setup-go.
@@ -40,6 +42,8 @@ fixture() {
     "$root/packages/daemon/cmd/legion" "$root/packages/daemon/internal/helper" \
     "$root/packages/envoy/used" "$root/packages/envoy/deep" "$root/packages/envoy/unused"
   ln -s "$check_script" "$root/.github/scripts/check-legion-release-paths.sh"
+  ln -s "$script_dir/release-push.sh" "$root/.github/scripts/release-push.sh"
+  ln -s "$script_dir/release-build-legion.sh" "$root/.github/scripts/release-build-legion.sh"
   printf 'module github.com/example/daemon\n\ngo 1.22\n\nrequire github.com/example/envoy v0.0.0\n\nreplace github.com/example/envoy => ../envoy\n' \
     > "$root/packages/daemon/go.mod"
   printf 'module github.com/example/envoy\n\ngo 1.22\n' > "$root/packages/envoy/go.mod"
@@ -62,6 +66,7 @@ GO
   printf 'package unused\n\nfunc Unused() {}\n' > "$root/packages/envoy/unused/unused.go"
   printf '{\n  "legion": ["linux/amd64", "darwin/arm64"],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
   release "$root" "$covering"
+  git init -q -b main "$root"
   echo "$root"
 }
 
@@ -79,8 +84,11 @@ gowork() {
   : > "$1/go.work.sum"
 }
 
+# run_check <root>: adds every file of <root> to its index, as a commit would track them, and runs
+# the check. Leaves its exit code in status and its output in out.
 run_check() {
   local root=$1
+  git -C "$root" add -A
   set +e
   out=$("$root/.github/scripts/check-legion-release-paths.sh" 2>&1)
   status=$?
@@ -92,7 +100,7 @@ root=$(fixture green)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it compared" \
-  "$(contains "$out" "covers all 4 packages of this repository that go list -deps ./cmd/legion prints for the 2 legion targets of .github/go-release-targets.json, and the go.mod and go.sum of their 2 modules")"
+  "$(contains "$out" "covers every tracked file that the 4 packages of this repository go list -deps ./cmd/legion prints for the 2 legion targets of .github/go-release-targets.json compile or embed, and the go.mod and go.sum of their 2 modules")"
 
 echo "case: a package the binary links that the list does not name"
 root=$(fixture planted)
@@ -210,19 +218,60 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the package the exclude takes out" "$(contains "$out" 'would release no legion: packages/envoy/a/internal/\.')"
 
-echo "case: an exclude takes a path back out"
-root=$(fixture exclude)
-release "$root" ':(exclude)packages/envoy/deep packages/daemon/ packages/envoy/'
+echo "case: a file of a linked package that git does not track is not required"
+# Go compiles packages/envoy/deep/gen.go, but git does not track it, so no commit can change it
+# and no path of the list can release a change to it: the list may leave it out.
+root=$(fixture untracked)
+printf 'package deep\n\nfunc gen() {}\n' > "$root/packages/envoy/deep/gen.go"
+mkdir -p "$root/.git/info"
+printf 'packages/envoy/deep/gen.go\n' >> "$root/.git/info/exclude"
+release "$root" 'packages/daemon/ packages/envoy/used/ packages/envoy/deep/deep.go packages/envoy/go.mod packages/envoy/go.sum'
 run_check "$root"
-check "exits 1" "$(is "$status" 1)"
-check "names the excluded package" "$(contains "$out" 'would release no legion: packages/envoy/deep/\.')"
+check "exits 0" "$(is "$status" 0)"
+# The same file tracked is one a commit can change, and the list leaves it out.
+root=$(fixture tracked)
+printf 'package deep\n\nfunc gen() {}\n' > "$root/packages/envoy/deep/gen.go"
+release "$root" 'packages/daemon/ packages/envoy/used/ packages/envoy/deep/deep.go packages/envoy/go.mod packages/envoy/go.sum'
+run_check "$root"
+check "the same file tracked: exits 1" "$(is "$status" 1)"
+check "the same file tracked: names its package" "$(contains "$out" 'would release no legion: packages/envoy/deep/\.')"
 
-echo "case: pathspec magic the check does not read"
-root=$(fixture magic)
-release "$root" 'packages/daemon/ :(glob)packages/envoy/**'
+echo "case: a file of a linked package that no target compiles is not required"
+# A README, a test and a file only windows compiles are in the package's directory, but no
+# legion target's build reads them, so a list naming the compiled file alone covers the package.
+root=$(fixture not-compiled)
+printf 'deep does nothing.\n' > "$root/packages/envoy/deep/README.md"
+printf 'package deep\n\nimport "testing"\n\nfunc TestDeep(t *testing.T) { Deep() }\n' > "$root/packages/envoy/deep/deep_test.go"
+printf 'package deep\n\nfunc windowsOnly() {}\n' > "$root/packages/envoy/deep/deep_windows.go"
+release "$root" 'packages/daemon/ packages/envoy/used/ packages/envoy/deep/deep.go packages/envoy/go.mod packages/envoy/go.sum'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a file a linked package embeds is required"
+# used embeds prompt.md, which is part of the binary as its .go file is.
+root=$(fixture embedded)
+printf 'use it.\n' > "$root/packages/envoy/used/prompt.md"
+cat > "$root/packages/envoy/used/used.go" <<'GO'
+package used
+
+import (
+	_ "embed"
+
+	"github.com/example/envoy/deep"
+)
+
+//go:embed prompt.md
+var prompt string
+
+func Use() { deep.Deep(); _ = prompt }
+GO
+release "$root" 'packages/daemon/ packages/envoy/used/used.go packages/envoy/deep/ packages/envoy/go.mod packages/envoy/go.sum'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names it" "$(contains "$out" 'names :(glob)packages/envoy/\*\*, a pathspec magic this check does not read')"
+check "names the package that embeds it" "$(contains "$out" 'would release no legion: packages/envoy/used/\.')"
+release "$root" 'packages/daemon/ packages/envoy/used/used.go packages/envoy/used/prompt.md packages/envoy/deep/ packages/envoy/go.mod packages/envoy/go.sum'
+run_check "$root"
+check "the embedded file named too: exits 0" "$(is "$status" 0)"
 
 echo "case: no list, or no paths in it"
 root=$(fixture no-list)
@@ -235,14 +284,21 @@ root=$(fixture no-dashes)
 printf 'name: Release\non: push\nenv:\n  LEGION_VERSION_ARGS: packages/daemon/\njobs: {}\n' > "$root/.github/workflows/release.yaml"
 run_check "$root"
 check "exits 1 with no --" "$(is "$status" 1)"
-check "says so" "$(contains "$out" 'LEGION_VERSION_ARGS has no `--`')"
+check "says release-push.sh refuses the words, as the release would" \
+  "$(is "$(contains "$out" "^::error file=.github/workflows/release.yaml::release-push.sh refused .github/workflows/release.yaml's LEGION_VERSION_ARGS, as the release's version step would")|$(contains "$out" '^::error::release-push.sh version-paths: unknown option packages/daemon/; usage: ')" 'true|true')"
 
 echo "case: a target list that names no legion target, or none at all"
 root=$(fixture no-targets)
+printf '{\n  "legion": [],\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
+run_check "$root"
+check "exits 1 with an empty legion list" "$(is "$status" 1)"
+check "says so" "$(contains "$out" 'go-release-targets.json lists no legion target, so the packages the legion binary links are unknown')"
+
+root=$(fixture no-legion-key)
 printf '{\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
 run_check "$root"
-check "exits 1 with no legion target" "$(is "$status" 1)"
-check "says so" "$(contains "$out" 'go-release-targets.json lists no legion target, so the packages the legion binary links are unknown')"
+check "exits 1 with no legion list" "$(is "$status" 1)"
+check "says it could not read the targets" "$(contains "$out" 'could not read the legion targets of .github/go-release-targets.json (release-build-legion.sh targets)')"
 
 root=$(fixture no-target-list)
 rm "$root/.github/go-release-targets.json"
@@ -266,7 +322,7 @@ printf 'package main\n\nimport (\n%s)\n\nfunc main() {}\n' "$imports" > "$root/p
 release "$root" 'packages/daemon/ packages/envoy/'
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "counts every package" "$(contains "$out" 'covers all 501 packages of this repository')"
+check "counts every package" "$(contains "$out" 'covers every tracked file that the 501 packages of this repository')"
 
 echo "case: go list fails"
 root=$(fixture broken)

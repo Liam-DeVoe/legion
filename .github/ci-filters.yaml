@@ -751,6 +751,15 @@ check_legion_release_paths_test: &check_legion_release_paths_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-legion-release-paths.test.sh'
   - '.github/scripts/check-legion-release-paths.sh'
+  - '.github/scripts/release-push.sh'
+  - '.github/scripts/release-build-legion.sh'
+release_build_legion_test: &release_build_legion_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/release-build-legion.test.sh'
+  - '.github/scripts/release-build-legion.sh'
 workflow_paths_test: &workflow_paths_test
   - *ci_router
   - *ci_filters_data
@@ -1114,6 +1123,7 @@ test:
   - *check_gh_version_test
   - *check_gitleaks_version_test
   - *check_legion_release_paths_test
+  - *release_build_legion_test
   - *workflow_paths_test
   - *check_image_trigger_paths_test
   - *check_ci_images_test
@@ -1336,6 +1346,19 @@ go_notices:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!**/*_test.go'
   # END generated
+# The lint job's release-path check: what it reads to hold LEGION_VERSION_ARGS to the files the
+# legion binary is built from (.github/ci-notes/release.md, the Go legion's version arguments).
+legion_release_paths:
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-lint.yaml'
+  - '.github/workflows/release.yaml'
+  - '.github/go-release-targets.json'
+  - '.github/scripts/check-legion-release-paths.sh'
+  - '.github/scripts/release-push.sh'
+  - '.github/scripts/release-build-legion.sh'
+  - *go_workspace
+  - *legion_command
 
 dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/cmd/dispatch/**'

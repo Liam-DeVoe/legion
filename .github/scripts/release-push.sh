@@ -805,6 +805,55 @@ render_notes() {
   return "$status"
 }
 
+# version_args <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>]
+# [--patch-path <path>]... -- <paths>...: the one parse of `version`'s
+# arguments, which `version` and `version-paths` both run. It sets prefix,
+# first_npm, expect, bump_args (each --patch-path, as release-bump.sh takes it)
+# and paths, the words after the first -- (none when no -- is given). A
+# missing or refused tag prefix, an option without its value, an --expect
+# that is not X.Y.Z and any other word before the -- is an ::error:: naming
+# the command and exit 2.
+version_args() {
+  local usage="usage: release-push.sh $command <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>..."
+  if [ $# -lt 1 ] || [[ $1 == -* ]]; then
+    echo "::error::release-push.sh $command: a tag prefix is needed; $usage" >&2
+    exit 2
+  fi
+  prefix=$1
+  shift
+  if ! [[ $prefix =~ $tag_prefix_re ]]; then
+    echo "::error::release-push.sh $command: tag prefix $(quote_all "$prefix") holds more than letters, digits, '.', '_' and '-'; refusing it" >&2
+    exit 2
+  fi
+  first_npm='' expect=''
+  bump_args=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --first-npm | --expect | --patch-path)
+        if [ $# -lt 2 ]; then
+          echo "::error::release-push.sh $command: $1 needs a value; $usage" >&2
+          exit 2
+        fi
+        case $1 in
+          --first-npm) first_npm=$2 ;;
+          --expect)
+            if ! is_plain_version "$2"; then
+              echo "::error::release-push.sh $command: --expect $(quote_all "$2") is not X.Y.Z, each field a number without leading zeros; refusing it" >&2
+              exit 2
+            fi
+            expect=$2
+            ;;
+          --patch-path) bump_args+=(--patch-path "$2") ;;
+        esac
+        shift 2
+        ;;
+      --) shift; break ;;
+      *) echo "::error::release-push.sh $command: unknown option $(quote_all "$1"); $usage" >&2; exit 2 ;;
+    esac
+  done
+  paths=("$@")
+}
+
 case "$command" in
   tag)
     version=${2:?version}
@@ -859,44 +908,8 @@ case "$command" in
     ;;
   version)
     shift
-    usage='usage: release-push.sh version <tag-prefix> [--first-npm <npm package>] [--expect <X.Y.Z>] [--patch-path <path>]... -- <paths>...'
-    if [ $# -lt 1 ] || [[ $1 == -* ]]; then
-      echo "::error::release-push.sh version: a tag prefix is needed; $usage" >&2
-      exit 2
-    fi
-    prefix=$1
-    shift
-    if ! [[ $prefix =~ $tag_prefix_re ]]; then
-      echo "::error::release-push.sh version: tag prefix $(quote_all "$prefix") holds more than letters, digits, '.', '_' and '-'; refusing it" >&2
-      exit 2
-    fi
-    first_npm='' expect=''
-    bump_args=()
-    while [ $# -gt 0 ]; do
-      case $1 in
-        --first-npm | --expect | --patch-path)
-          if [ $# -lt 2 ]; then
-            echo "::error::release-push.sh version: $1 needs a value; $usage" >&2
-            exit 2
-          fi
-          case $1 in
-            --first-npm) first_npm=$2 ;;
-            --expect)
-              if ! is_plain_version "$2"; then
-                echo "::error::release-push.sh version: --expect $(quote_all "$2") is not X.Y.Z, each field a number without leading zeros; refusing it" >&2
-                exit 2
-              fi
-              expect=$2
-              ;;
-            --patch-path) bump_args+=(--patch-path "$2") ;;
-          esac
-          shift 2
-          ;;
-        --) shift; break ;;
-        *) echo "::error::release-push.sh version: unknown option $(quote_all "$1"); $usage" >&2; exit 2 ;;
-      esac
-    done
-    # The remaining arguments are the paths release-bump.sh reads commits for.
+    version_args "$@"
+    # paths are the paths release-bump.sh reads commits for.
     summary_line='' on_head=false
     tag=$(pushed_tag "$prefix")
     if [ -n "$tag" ]; then
@@ -920,7 +933,7 @@ case "$command" in
       # command's, with nothing on stdout. Its status passes through, except a 3
       # or 4 (a sed it pipes into exits 4 on an I/O error), which --expect's
       # caller would read as another run's tag: that is a 1.
-      next=$("$(dirname "${BASH_SOURCE[0]}")/release-bump.sh" "$prev_version" "$range" "${bump_args[@]}" -- "$@") || {
+      next=$("$(dirname "${BASH_SOURCE[0]}")/release-bump.sh" "$prev_version" "$range" "${bump_args[@]}" -- "${paths[@]}") || {
         status=$?
         case $status in 3 | 4) exit 1 ;; *) exit "$status" ;; esac
       }
@@ -968,6 +981,15 @@ case "$command" in
       printf '%s\n' "$summary_line" >> "$GITHUB_STEP_SUMMARY"
     fi
     printf 'version=%s\ntag=%s\nskip=%s\n' "$version" "$tag" "$skip"
+    ;;
+  version-paths)
+    shift
+    version_args "$@"
+    # One printf per path list, never one with no path: printf repeats its
+    # format at least once, so an empty list would print a lone NUL.
+    if [ ${#paths[@]} -gt 0 ]; then
+      printf '%s\0' "${paths[@]}"
+    fi
     ;;
   restart)
     usage='usage: release-push.sh restart <workflow-file> <lost-races>'

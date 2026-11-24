@@ -1129,6 +1129,25 @@ def go_notices_runs():
     return out
 
 
+RELEASE_PATHS_STEP = "Check the legion release's version paths cover every package the binary links"
+RELEASE_PATHS_CHECK = ".github/scripts/check-legion-release-paths.sh"
+RELEASE_BUILD_LEGION = ".github/scripts/release-build-legion.sh"
+
+
+def legion_release_paths_runs():
+    """The go list lint's release-path check runs for each legion target: the line is
+    release-build-legion.sh's list mode, which the check runs with -deps over ./cmd/legion, with
+    the environment that script's build gives the target."""
+    started_by = at("lint", RELEASE_PATHS_STEP)
+    out = []
+    for target in targets(GO_TARGETS, "legion"):
+        goos, goarch = target.split("/")
+        out.append(script_run(RELEASE_BUILD_LEGION, 'for_target "$target" go -C packages/daemon list "$@" ./cmd/legion',
+                              started_by, DAEMON, ["./cmd/legion"], mode="build",
+                              env={"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch}))
+    return out
+
+
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's
 # pack step, envoy-smoke's schema step, and the tag steps below.
 PACK_STEP = "Pack envoy binaries"
@@ -2535,6 +2554,15 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/check-legion-release-paths.test.sh", [
         (f"{SCRIPTS}/check-legion-release-paths.sh",
          "the script under test, symlinked into every fixture (check-legion-release-paths.test.sh's fixture function)"),
+        (f"{SCRIPTS}/release-push.sh",
+         "symlinked into every fixture beside it: the check runs its version-paths"),
+        (f"{SCRIPTS}/release-build-legion.sh",
+         "symlinked into every fixture beside it: the check runs its targets, list and env modes"),
+    ]),
+    harness("release_build_legion_test", "Test the legion release build and the targets, listing and environment it gives",
+            f"{SCRIPTS}/release-build-legion.test.sh", [
+        (f"{SCRIPTS}/release-build-legion.sh",
+         "the script under test, symlinked into every fixture (release-build-legion.test.sh's fixture function)"),
     ]),
     harness("workflow_paths_test", "Test the workflow path model the path checks import",
             f"{SCRIPTS}/workflow_paths.test.sh", [
@@ -4048,6 +4076,17 @@ GATES = [
         (GO_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
         (CLIENT_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
         (INFRA_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
+    )),
+
+    # lint's release-path check: the go list of ./cmd/legion it runs for each legion target
+    # through release-build-legion.sh's list mode, and the files it reads to hold release.yaml's
+    # LEGION_VERSION_ARGS to that closure. Its go env GOWORK compiles nothing.
+    gate("legion_release_paths", "lint", step=RELEASE_PATHS_STEP, runs=legion_release_paths_runs(), reads=reads(
+        (RELEASE_PATHS_CHECK, at("lint", RELEASE_PATHS_STEP)),
+        (RELEASE_BUILD_LEGION, f"{RELEASE_PATHS_CHECK} runs its targets, list and env modes"),
+        (f"{SCRIPTS}/release-push.sh", f"{RELEASE_PATHS_CHECK} runs its version-paths"),
+        (".github/workflows/release.yaml", f"{RELEASE_PATHS_CHECK} reads its LEGION_VERSION_ARGS"),
+        (GO_TARGETS, f"{RELEASE_BUILD_LEGION}'s targets: jq reads it"),
     )),
 
     # This check itself: it lists every module's packages (vet mode: each package directory, its
