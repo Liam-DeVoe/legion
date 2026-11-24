@@ -2970,14 +2970,14 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	defer cancel()
 	loops.receiver.Stop(shutdownCtx)
 
-	// 3. The session relays: publish no frame and ack nothing more. Each relay the term's end
-	// stopped first gives the frame it had unanswered relaySettleGrace (0.75 s) to be answered
-	// and acks it (sessionRelays.settleStoppedFrames), so the pod taking over does not publish
-	// it again; this step waits for that, out of what the receive stop left of the budget, and
-	// is cut short with a warning when nothing is left. Each relay then returns to the server,
-	// with a nak, every message it still holds (sessionRelays.release), the frames the settle
-	// left in doubt among them, so the pod of this machine that receives the durable next is
-	// delivered them at once rather than after their ack wait.
+	// 3. The session relays: publish no frame and ack nothing more. Each relay the term's end stopped
+	// first gives the frame it had unanswered relaySettleGrace (0.75 s) to be answered and acks it
+	// (sessionRelays.settleStoppedFrames), so the pod taking over does not publish it again; this step
+	// waits for that, out of what the receive stop left of the budget. Each relay then returns to the
+	// server, with a nak, every message it still holds (sessionRelays.release), the frames the settle
+	// left in doubt among them, so the machine's pod that receives the durable next is delivered them
+	// at once, not after their ack wait. Past the budget the stop warns and the shutdown goes on, and
+	// a run still going may publish, have a frame acked or nak what it holds (sessionRelays.stop).
 	parts.relays.stop(shutdownCtx)
 	// An edge listener's relay sockets close next, each with 1012, on which its client opens it
 	// again at once on another replica, and every upgrade after it is refused. They stay open
