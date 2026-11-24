@@ -765,15 +765,34 @@ func measureMovedCostSide(t *testing.T, statements *readCostStatements, s *readC
 	return readings
 }
 
-// ───── the plans through the views ────────────────────────────────────────
+// ───── the plans of each side ─────────────────────────────────────────────
 
-// movedCostFourNames is a statement that names one of the four names the release before reads,
-// which after the move are the views. A statement a GET sends that names one reads it.
-var movedCostFourNames = regexp.MustCompile(`(?i)\b(priority|workflow)_(nodes|tuples)\b`)
+// movedCostPlanIdle is how long a server booted through the plan proxy stays up after the reads
+// are driven, with nothing reading it, so the proxy sees the background work it sends every few
+// seconds: the block index's tick every 2 s and its reconcile every 30 s, the process heartbeat
+// every 5 s and the leased loops' ticks.
+const movedCostPlanIdle = 40 * time.Second
 
-// movedCostProxy stands between the release before's server and Postgres while the test drives
-// each read once, and keeps each statement that server sends for the read that reads one of the
-// four names, with the parameters it binds. It relays every byte unchanged; it reads the
+// movedCostPlanModes are the two plans each statement is explained under, by the plan_cache_mode
+// that forces each: the custom plan Postgres plans a prepared statement's first five executions
+// with, over the values they bind, and the generic plan, over no values, it may switch it to after
+// them.
+var movedCostPlanModes = []struct{ plan, mode string }{
+	{"custom", "force_custom_plan"},
+	{"generic", "force_generic_plan"},
+}
+
+// movedCostExecutionTime is the line of EXPLAIN ANALYZE's text that states the execution time.
+var movedCostExecutionTime = regexp.MustCompile(`(?m)^Execution Time: (\S+ ms)$`)
+
+// movedCostPlanStatement is the name each statement is prepared under on the test's connection
+// while it is explained.
+const movedCostPlanStatement = "c_moved_read_cost_plan"
+
+// movedCostProxy stands between a server and Postgres while the test drives each read once, and
+// keeps each statement that server sends for the read, with the parameters it binds. A statement
+// whose text the server also sends while no read is driven, from its boot until it stops, is its
+// background work and not the read's (statements). It relays every byte unchanged; it reads the
 // frontend's Parse, Bind and Query messages, and nothing the backend answers.
 type movedCostProxy struct {
 	listener net.Listener
@@ -782,9 +801,11 @@ type movedCostProxy struct {
 	read     string
 	kept     []movedCostStatement
 	seen     map[string]bool
+	// idle holds the text of each statement the server sent while no read was driven.
+	idle map[string]bool
 }
 
-// movedCostStatement is one statement the release before sent for a read, as it sent it.
+// movedCostStatement is one statement a server sent for a read, as it sent it.
 type movedCostStatement struct {
 	read    string
 	sql     string
@@ -815,7 +836,7 @@ func startMovedCostProxy(t *testing.T, databaseURL string) (*movedCostProxy, str
 	if err != nil {
 		t.Fatalf("listen for the plan proxy: %v", err)
 	}
-	proxy := &movedCostProxy{listener: listener, upstream: net.JoinHostPort(parsed.Hostname(), port), seen: map[string]bool{}}
+	proxy := &movedCostProxy{listener: listener, upstream: net.JoinHostPort(parsed.Hostname(), port), seen: map[string]bool{}, idle: map[string]bool{}}
 	go proxy.accept()
 	t.Cleanup(func() { _ = listener.Close() })
 	through := *parsed
@@ -937,12 +958,13 @@ func (p *movedCostProxy) observe(parsed map[string]movedCostParsed, kind byte, b
 	}
 }
 
-// keep keeps a statement the read now driven sent, once for each read, where it reads one of the
-// four names.
+// keep keeps a statement the read now driven sent, once for each read, and the text of one sent
+// while no read is driven.
 func (p *movedCostProxy) keep(statement movedCostParsed, formats []int16, values [][]byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.read == "" || !movedCostFourNames.MatchString(statement.sql) {
+	if p.read == "" {
+		p.idle[statement.sql] = true
 		return
 	}
 	key := p.read + "\x00" + statement.sql
@@ -961,16 +983,21 @@ func (p *movedCostProxy) drive(read string) {
 	p.read = read
 }
 
-func (p *movedCostProxy) statements(read string) []movedCostStatement {
+// statements answers the statements kept for read, in the order the server first sent them, and
+// apart from them those whose text it also sent while no read was driven.
+func (p *movedCostProxy) statements(read string) (sent, background []movedCostStatement) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	var kept []movedCostStatement
 	for _, statement := range p.kept {
-		if statement.read == read {
-			kept = append(kept, statement)
+		switch {
+		case statement.read != read:
+		case p.idle[statement.sql]:
+			background = append(background, statement)
+		default:
+			sent = append(sent, statement)
 		}
 	}
-	return kept
+	return sent, background
 }
 
 // movedCostMessage reads the fields of one protocol message in order; a field past its end marks
@@ -1025,55 +1052,122 @@ func (m *movedCostMessage) count() int {
 	return count
 }
 
-// takeMovedCostPlans drives each read once on a server of the release before booted through the
-// proxy, over the moved database, and stops it.
-func takeMovedCostPlans(t *testing.T, proxy *movedCostProxy, s *readCostServer, reads []movedCostRead) {
+// planMovedCostSide prints the plans of the side s serves, before that side is measured: it waits
+// until s, a server booted through proxy, owes nothing, as counts record it, vacuums, drives each
+// read on s once, leaves s idle for movedCostPlanIdle, stops it, and prints the plans of each
+// statement each read sent it (printMovedCostPlans).
+func planMovedCostSide(t *testing.T, conn *pgx.Conn, proxy *movedCostProxy, s *readCostServer, counts []readCostOwedCount,
+	side string, reads []movedCostRead) {
 	t.Helper()
+	waitMovedCostOwed(t, conn, s, counts)
+	readCostVacuum(t, conn, side)
 	for _, read := range reads {
 		proxy.drive(read.name)
 		_, err := readCostGets(read.path)(s)
 		proxy.drive("")
 		if err != nil {
-			t.Fatalf("drive %s (%s) through the plan proxy: %v", read.name, read.path, err)
+			t.Fatalf("drive %s (%s) on the %s through the plan proxy: %v", read.name, read.path, side, err)
 		}
 	}
+	time.Sleep(movedCostPlanIdle)
 	s.stop(t)
+	printMovedCostPlans(t, conn, proxy, side, reads)
 }
 
-// printMovedCostPlans prints, for each read, the EXPLAIN (ANALYZE, BUFFERS) plan of each statement
-// the release before sent for it that reads one of the four names, run over conn with the
-// parameters that server bound, in a transaction rolled back after.
-func printMovedCostPlans(t *testing.T, conn *pgx.Conn, proxy *movedCostProxy, reads []movedCostRead) {
+// printMovedCostPlans prints, for each read, the two plans (movedCostPlanModes) of each statement
+// the server sent for it on side, run over conn with the parameters that server bound
+// (explainMovedCost): first a line of the read's name, the statement's number and each plan's
+// execution time, then the read's route, the statement's parameters and text, and the two plans.
+// The statements whose text the server also sent while no read was driven are named in a line of
+// their own, and not explained. Nothing is bound on a plan.
+func printMovedCostPlans(t *testing.T, conn *pgx.Conn, proxy *movedCostProxy, side string, reads []movedCostRead) {
 	t.Helper()
 	ctx := context.Background()
 	for _, read := range reads {
-		statements := proxy.statements(read.name)
+		statements, background := proxy.statements(read.name)
+		if len(background) > 0 {
+			heads := make([]string, len(background))
+			for index, statement := range background {
+				head := []rune(strings.Join(strings.Fields(statement.sql), " "))
+				heads[index] = strconv.Quote(string(head[:min(len(head), readCostStatementText)]))
+			}
+			t.Logf("c-moved-read-cost: plans of %s on the %s: %d statements it sent are the server's background work too, sent while no read "+
+				"was driven, and are not explained: %s", read.name, side, len(background), strings.Join(heads, ", "))
+		}
 		if len(statements) == 0 {
-			t.Errorf("c-moved-read-cost: %s (%s) sent the release before's server no statement that reads priority_nodes, "+
-				"priority_tuples, workflow_nodes or workflow_tuples, so it has no plan through the views", read.name, read.path)
+			t.Errorf("c-moved-read-cost: %s (%s) sent the server on the %s no statement of its own, so it has no plan", read.name, read.path, side)
 			continue
 		}
 		for index, statement := range statements {
-			plan, err := explainMovedCost(ctx, conn, statement)
+			plans, err := explainMovedCost(ctx, conn, statement)
 			if err != nil {
-				t.Errorf("c-moved-read-cost: explain statement %d of %s (%s) through the views: %v\n%s", index+1, read.name, read.path, err, statement.sql)
+				t.Errorf("c-moved-read-cost: explain statement %d of %s (%s) on the %s: %v\n%s", index+1, read.name, read.path, side, err, statement.sql)
 				continue
 			}
-			t.Logf("c-moved-read-cost: plan through the views of %s (%s), statement %d of %d, bound %s:\n%s\n%s",
-				read.name, read.path, index+1, len(statements), movedCostParameters(statement), statement.sql, plan)
+			times := make([]string, len(plans))
+			shown := make([]string, len(plans))
+			for mode, plan := range plans {
+				took := "no execution time"
+				if match := movedCostExecutionTime.FindStringSubmatch(plan); match != nil {
+					took = match[1]
+				}
+				times[mode] = movedCostPlanModes[mode].plan + " " + took
+				shown[mode] = fmt.Sprintf("%s plan (plan_cache_mode = %s):\n%s", movedCostPlanModes[mode].plan, movedCostPlanModes[mode].mode, plan)
+			}
+			t.Logf("c-moved-read-cost: plans of %s on the %s: statement %d: %s\nstatement %d of %d of %s, bound %s:\n%s\n%s",
+				read.name, side, index+1, strings.Join(times, ", "), index+1, len(statements), read.path, movedCostParameters(statement),
+				statement.sql, strings.Join(shown, "\n"))
 		}
 	}
 }
 
-func explainMovedCost(ctx context.Context, conn *pgx.Conn, statement movedCostStatement) (string, error) {
+// explainMovedCost prepares statement over conn as pgx prepares one (pgx.Conn.Prepare): a Parse of
+// the text and the parameter types the server sent, under a name of its own, and a Describe. It
+// answers the statement's EXPLAIN (ANALYZE, BUFFERS) EXECUTE under each plan cache mode of
+// movedCostPlanModes, in that order, each in a transaction of its own with JIT off, rolled back
+// after; EXECUTE is given the values the server bound, as the literals Postgres quotes them to
+// (movedCostLiterals). The statement is deallocated after.
+func explainMovedCost(ctx context.Context, conn *pgx.Conn, statement movedCostStatement) (plans []string, err error) {
+	pg := conn.PgConn()
+	description, err := pg.Prepare(ctx, movedCostPlanStatement, statement.sql, statement.oids)
+	if err != nil {
+		return nil, fmt.Errorf("prepare: %w", err)
+	}
+	defer func() {
+		if closed := pg.Deallocate(ctx, movedCostPlanStatement); closed != nil && err == nil {
+			err = fmt.Errorf("deallocate: %w", closed)
+		}
+	}()
+	literals, err := movedCostLiterals(ctx, pg, statement, description.ParamOIDs)
+	if err != nil {
+		return nil, err
+	}
+	execute := "explain (analyze, buffers) execute " + movedCostPlanStatement
+	if len(literals) > 0 {
+		execute += "(" + strings.Join(literals, ", ") + ")"
+	}
+	for _, mode := range movedCostPlanModes {
+		plan, err := explainMovedCostUnder(ctx, conn, mode.mode, execute)
+		if err != nil {
+			return nil, fmt.Errorf("the %s plan: %w", mode.plan, err)
+		}
+		plans = append(plans, plan)
+	}
+	return plans, nil
+}
+
+// explainMovedCostUnder runs execute, an EXPLAIN, over conn in a transaction of its own with JIT
+// off and plan_cache_mode set to mode, rolled back after, and answers the plan it prints.
+func explainMovedCostUnder(ctx context.Context, conn *pgx.Conn, mode, execute string) (string, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	oids := make([]uint32, len(statement.values))
-	copy(oids, statement.oids)
-	result := tx.Conn().PgConn().ExecParams(ctx, "explain (analyze, buffers) "+statement.sql, statement.values, oids, statement.formats, nil).Read()
+	if _, err := tx.Exec(ctx, "set local jit = off; set local plan_cache_mode = "+mode); err != nil {
+		return "", err
+	}
+	result := tx.Conn().PgConn().ExecParams(ctx, execute, nil, nil, nil, nil).Read()
 	if result.Err != nil {
 		return "", result.Err
 	}
@@ -1084,6 +1178,40 @@ func explainMovedCost(ctx context.Context, conn *pgx.Conn, statement movedCostSt
 	return strings.Join(lines, "\n"), nil
 }
 
+// movedCostLiterals answers each value the server bound statement as a literal EXECUTE takes: the
+// value read as the type oids names for its parameter, in the format it was bound in, and quoted
+// by Postgres (quote_literal), or null.
+func movedCostLiterals(ctx context.Context, pg *pgconn.PgConn, statement movedCostStatement, oids []uint32) ([]string, error) {
+	if len(oids) != len(statement.values) {
+		return nil, fmt.Errorf("the statement takes %d parameters, and the server bound %d", len(oids), len(statement.values))
+	}
+	literals := make([]string, len(statement.values))
+	for index, value := range statement.values {
+		if value == nil {
+			literals[index] = "null"
+			continue
+		}
+		result := pg.ExecParams(ctx, "select quote_literal($1)", [][]byte{value}, []uint32{oids[index]}, []int16{statement.format(index)}, nil).Read()
+		if result.Err != nil {
+			return nil, fmt.Errorf("quote parameter $%d: %w", index+1, result.Err)
+		}
+		literals[index] = string(result.Rows[0][0])
+	}
+	return literals, nil
+}
+
+// format is the format the server bound parameter index in: the one format of every parameter, the
+// parameter's own, or text where it named none.
+func (s movedCostStatement) format(index int) int16 {
+	switch len(s.formats) {
+	case 1:
+		return s.formats[0]
+	case len(s.values):
+		return s.formats[index]
+	}
+	return 0
+}
+
 // movedCostParameters is each parameter a statement was bound, text quoted and binary in hex.
 func movedCostParameters(statement movedCostStatement) string {
 	if len(statement.values) == 0 {
@@ -1091,13 +1219,7 @@ func movedCostParameters(statement movedCostStatement) string {
 	}
 	parts := make([]string, len(statement.values))
 	for index, value := range statement.values {
-		format := int16(0)
-		switch len(statement.formats) {
-		case 1:
-			format = statement.formats[0]
-		case len(statement.values):
-			format = statement.formats[index]
-		}
+		format := statement.format(index)
 		switch {
 		case value == nil:
 			parts[index] = fmt.Sprintf("$%d=null", index+1)
@@ -1121,9 +1243,16 @@ func movedCostParameters(statement movedCostStatement) string {
 // migrates it and makes the four projects; the run stops it, writes the corpus by SQL, boots it
 // again and measures the old side over the four tables. Second, this head boots, which moves both
 // stores into the graph store, and the run measures the new side. Third, as a rollback does, the
-// release before boots again, now reading through the four views: the run first prints the plan of
-// each of its statements through the views, taken through a proxy on a boot of its own, then
-// measures the third side. Each side answers each read alike before it is measured.
+// release before boots again, now reading through the four views, and the run measures the third
+// side. Each side answers each read alike before it is measured.
+//
+// Before each side is measured, the run prints the plans of every statement each read sends on
+// that side (planMovedCostSide). A side's readings run each statement past its fifth execution,
+// where Postgres may switch a prepared statement from a custom plan to a generic one, so each
+// statement is explained under both, with each plan's execution time, and nothing is bound on
+// them. They are taken on a boot of the side's build of its own, through a proxy that keeps what
+// each read sends, after the wait and the vacuum the side's readings follow, and that boot is
+// stopped before the side's measured boot; this head's move runs on it.
 //
 // No reading is taken while a server's own background work runs over the corpus: after each boot,
 // before its first reading or plan, the run waits until that server owes nothing, as it records
@@ -1187,11 +1316,16 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	reads := movedCostReads(corpus)
 	baseName := func(what string) string { return "the release before (" + baseCommit + ")" + what }
 
-	// ───── first: the corpus and the old side, on the release before ─────
+	// ───── first: the corpus and the old side, on the release before; the plans first ─────
 	first := startReadCostServer(t, client, baseName(", migrating"), baseBinary, baseCommit, databaseURL, listener)
 	seedMovedCostTemplates(t, first)
 	first.stop(t)
 	seedMovedCostCorpus(t, conn, corpus)
+	if !seedOnly {
+		proxy, throughProxy := startMovedCostProxy(t, databaseURL)
+		planned := startReadCostServer(t, client, baseName(" through the plan proxy, over the four tables"), baseBinary, baseCommit, throughProxy, listener)
+		planMovedCostSide(t, conn, proxy, planned, movedCostBaseOwed, "old side", reads)
+	}
 	base := startReadCostServer(t, client, baseName(""), baseBinary, baseCommit, databaseURL, listener)
 	waitMovedCostOwed(t, conn, base, movedCostBaseOwed)
 	if seedOnly {
@@ -1199,14 +1333,14 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 		keepMovedCostSeed(t, conn, databaseURL)
 		return
 	}
-	readCostVacuum(t, conn, "old side")
 	counts := holdMovedCostReads(t, base, "old side", reads, nil)
 	old := measureMovedCostSide(t, statements, base, "old side", reads)
 	base.stop(t)
 
-	// ───── second: this head, which moves both stores at boot ─────
-	head := startReadCostServer(t, client, "this head ("+headCommit+")", headBinary, headCommit, databaseURL, listener)
-	for _, line := range strings.Split(head.process.Output.String(), "\n") {
+	// ───── second: this head, which moves both stores at boot; the plans first ─────
+	proxy, throughProxy := startMovedCostProxy(t, databaseURL)
+	moved := startReadCostServer(t, client, "this head ("+headCommit+") through the plan proxy", headBinary, headCommit, throughProxy, listener)
+	for _, line := range strings.Split(moved.process.Output.String(), "\n") {
 		if strings.Contains(line, `msg="dispatch: the boot's migrations begin"`) ||
 			strings.Contains(line, `msg="dispatch: the move of the priority store and the workflow store into the graph store ended"`) {
 			t.Logf("c-moved-read-cost: this head's boot: %s", line)
@@ -1219,19 +1353,17 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	if relkind != "v" {
 		t.Fatalf("after this head's boot priority_nodes is of relkind %q, where the move leaves a view", relkind)
 	}
+	planMovedCostSide(t, conn, proxy, moved, readCostHeadOwed, "new side", reads)
+	head := startReadCostServer(t, client, "this head ("+headCommit+")", headBinary, headCommit, databaseURL, listener)
 	waitMovedCostOwed(t, conn, head, readCostHeadOwed)
-	readCostVacuum(t, conn, "new side")
 	holdMovedCostReads(t, head, "new side", reads, counts)
 	now := measureMovedCostSide(t, statements, head, "new side", reads)
 	head.stop(t)
 
 	// ───── third: the release before again, through the views; the plans first ─────
-	proxy, throughProxy := startMovedCostProxy(t, databaseURL)
-	planned := startReadCostServer(t, client, baseName(" through the plan proxy"), baseBinary, baseCommit, throughProxy, listener)
-	waitMovedCostOwed(t, conn, planned, movedCostBaseOwed)
-	readCostVacuum(t, conn, "third side")
-	takeMovedCostPlans(t, proxy, planned, reads)
-	printMovedCostPlans(t, conn, proxy, reads)
+	proxy, throughProxy = startMovedCostProxy(t, databaseURL)
+	planned := startReadCostServer(t, client, baseName(" through the plan proxy, over the four views"), baseBinary, baseCommit, throughProxy, listener)
+	planMovedCostSide(t, conn, proxy, planned, movedCostBaseOwed, "third side", reads)
 	rollback := startReadCostServer(t, client, baseName(" after the rollback"), baseBinary, baseCommit, databaseURL, listener)
 	waitMovedCostOwed(t, conn, rollback, movedCostBaseOwed)
 	holdMovedCostReads(t, rollback, "third side", reads, counts)
