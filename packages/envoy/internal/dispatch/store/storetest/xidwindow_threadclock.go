@@ -46,7 +46,7 @@ func xidThreadClocksUnavailable() string {
 		case probe.read().thread == 0:
 			probe.unavailable = "this thread's scheduler clocks cannot be read (CLOCK_THREAD_CPUTIME_ID and the run_delay of /proc/thread-self/schedstat; this build reads them on Linux only)"
 		case !xidHoldOnce(probe.hold):
-			probe.unavailable = "this thread cannot be held out of NUMA balancing (get_mempolicy or set_mempolicy MPOL_LOCAL was refused)"
+			probe.unavailable = "this thread cannot be held out of NUMA balancing (its get_mempolicy or its set_mempolicy MPOL_LOCAL failed)"
 		case !probe.memory():
 			probe.unavailable = "the process's memory cannot be held out of NUMA balancing (mbind MPOL_LOCAL was refused)"
 		}
