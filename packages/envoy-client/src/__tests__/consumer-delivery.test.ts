@@ -661,6 +661,49 @@ describe("replies", () => {
     });
   });
 
+  // A Dispatch event's actor carries whatever keys its sender put beside `kind` and `id`
+  // (DispatchEventSchema passes them through). A card that cannot lay the event out shows it by
+  // its owner, its type and the actor's `kind` and `id`, so an actor holding an object chain
+  // 100,000 deep, past the encoder's recursion and JSON.stringify's, neither throws out of the
+  // render nor sends the frame back to the stream.
+  test("a Dispatch frame whose actor is an object chain 100,000 deep is taken, its card holding the owner and the type", async () => {
+    const { delivery, logs, replies, state, settled } = setup();
+    const shown: string[] = [];
+    state.deliver = (frame) => {
+      shown.push(renderInbound(frame.data, SESSION, frame.subject).content);
+      frame.done();
+    };
+    const deep = `${'{"a":'.repeat(100_000)}1${"}".repeat(100_000)}`;
+    const event = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice","x":${deep}},"payload":{}}`;
+    const payload = JSON.stringify({
+      event_id: "evt-deep-actor",
+      source: "dispatch",
+      payload: event,
+    });
+    const answers: Array<RelayReply | undefined> = [];
+
+    for (const delivered of [1, 2, 3, 4, 5, 6]) {
+      const reply = `_INBOX.deep-actor-${delivered}`;
+      delivery.receive(relay({ seq: 1, delivered, reply, payload }));
+      await settled();
+      answers.push(repliesTo(replies, reply).at(-1));
+      if (answers.at(-1) === "done") break;
+    }
+
+    expect({ answers, logs, shown: shown.length }).toEqual({
+      answers: ["done"],
+      logs: [],
+      shown: 1,
+    });
+    const card = decode(shown[0] ?? "") as { envoy: { dispatch: Record<string, unknown> } };
+    expect(card.envoy.dispatch).toMatchObject({
+      owner: "PRIV-1",
+      type: "comment.created",
+      actor: { kind: "user", id: "alice" },
+    });
+    expect(card.envoy.dispatch["actor"]).not.toHaveProperty("x");
+  });
+
   test("closing the session answers nak for every unsettled frame and any later one", () => {
     const { delivery, replies } = setup();
     delivery.receive(relay({ seq: 1, reply: "_INBOX.1" }));

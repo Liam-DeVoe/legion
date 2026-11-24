@@ -1052,7 +1052,10 @@ type DispatchCardEvent = {
  *  place of the part the frame carried - and never the frame's payload, so a key readDispatchPayload
  *  dropped reaches no card. An event JSON.stringify cannot write either (it recurses as the encoder
  *  does: an object chain 100,000 deep overflows it in Bun 1.4.4), or whose text would still pass
- *  `bound`, keeps its owner, type and actor and the reason alone. */
+ *  `bound`, is shown by its owner, its type, the actor's `kind` and `id` and the reason. The actor
+ *  is written by those two strings alone: the schema passes its other keys through, and one of
+ *  them may be as deep as the payload. A header `bound` cannot hold either keeps the owner, the
+ *  type and the reason. */
 function dispatchCardAsText(
   rendered: Readonly<Record<string, unknown>>,
   event: DispatchCardEvent,
@@ -1065,20 +1068,30 @@ function dispatchCardAsText(
   } catch {
     // No text to show: the header and the reason below.
   }
-  return (
-    (text === undefined
+  const asText =
+    text === undefined
       ? undefined
-      : encodeWithin({ envoy: { ...rendered, dispatch: text } }, bound)) ??
-    encode({
-      envoy: {
-        ...rendered,
-        dispatch: {
-          owner: event.owner,
-          type: event.type,
-          actor: event.actor,
-          payload: `not shown: ${reason}`,
+      : encodeWithin({ envoy: { ...rendered, dispatch: text } }, bound);
+  if (asText !== undefined) return asText;
+  const notShown = `not shown: ${reason}`;
+  const { kind, id } = event.actor;
+  return (
+    encodeWithin(
+      {
+        envoy: {
+          ...rendered,
+          dispatch: {
+            owner: event.owner,
+            type: event.type,
+            actor: id === undefined ? { kind } : { kind, id },
+            payload: notShown,
+          },
         },
       },
+      bound
+    ) ??
+    encode({
+      envoy: { ...rendered, dispatch: { owner: event.owner, type: event.type, payload: notShown } },
     })
   );
 }

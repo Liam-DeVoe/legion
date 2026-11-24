@@ -10,5 +10,5 @@ body: |-
   A Dispatch event whose card is too large to lay out is shown as the text of the event
   `renderInbound` read - its owner, type, actor and payload, with a body read whole in place of
   the part the frame carried - and no longer as the frame's payload, so a key the reader drops
-  beside the event reaches no card; an event too deep to write as text shows its owner, type and
-  actor alone.
+  beside the event reaches no card; an event too deep to write as text shows its owner, its type
+  and its actor's `kind` and `id` (no other key of the actor), within the same bound.

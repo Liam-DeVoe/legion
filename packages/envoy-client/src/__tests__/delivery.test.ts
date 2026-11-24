@@ -2007,6 +2007,36 @@ describe("renderInbound non-dispatch envelopes", () => {
       expect(rendered.content).toContain(end);
     });
 
+    // A Dispatch event JSON.stringify cannot write (a payload 100,000 deep) is shown by its owner,
+    // its type and its actor's `kind` and `id`: the actor's other keys pass the schema, and an
+    // array chain 9,999 deep among them lays out in about 100 MB, so the card writes none of them.
+    test("a Dispatch event with an actor 9,999 deep beside a payload 100,000 deep is shown within the bound", () => {
+      const arrays = `${"[".repeat(9_999)}${"]".repeat(9_999)}`;
+      const deeper = `${'{"a":'.repeat(100_000)}1${"}".repeat(100_000)}`;
+      const raw = JSON.stringify(
+        envelope({
+          event_id: "dispatch-deep-actor",
+          source: "dispatch",
+          payload: `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice","x":${arrays}},"payload":{"deep":${deeper}}}`,
+        })
+      );
+      const rendered = renderInbound(raw, reader);
+
+      const bound = Math.max(INBOUND_CARD_MAX_BYTES, 2 * Buffer.byteLength(raw));
+      const cardBytes = Buffer.byteLength(rendered.content);
+      console.log(
+        `a card of an actor 9,999 deep beside a payload 100,000 deep: ${cardBytes} bytes, bound ${bound}`
+      );
+      expect(cardBytes).toBeLessThanOrEqual(bound);
+      const card = decode(rendered.content) as { envoy: { dispatch: Record<string, unknown> } };
+      expect(card.envoy.dispatch).toEqual({
+        owner: "PRIV-1",
+        type: "comment.created",
+        actor: { kind: "user", id: "alice" },
+        payload: `not shown: ${rendered.payloadShownAsText}`,
+      });
+    });
+
     // A Dispatch payload readDispatchPayload reads no event of is shown as unrecognised and
     // none of its text, however deep: the edge passes a Dispatch frame only by the event it reads.
     test("a Dispatch payload nested 9,999 deep that is no event shows none of its text", () => {
