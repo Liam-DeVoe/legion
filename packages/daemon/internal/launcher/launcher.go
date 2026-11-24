@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1189,8 +1188,7 @@ func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, gener
 	for {
 		if data, err := os.ReadFile(path); err == nil {
 			if token, err := ghconfig.TokenFromHosts(data); err == nil {
-				sum := sha256.Sum256([]byte(token))
-				if hex.EncodeToString(sum[:]) == want.TokenDigest {
+				if shimwire.GitHubTokenDigest(token) == want.TokenDigest {
 					return nil
 				}
 			}

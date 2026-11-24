@@ -2,8 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -570,8 +568,7 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 		r.log.Info("sandbox runtime: the start waits for its slot's gh files to hold its credential",
 			"claim", spec.Claim, "slot", slot, "app", held.app, "generation", spec.Generation)
 	}
-	sum := sha256.Sum256([]byte(held.token))
-	return &shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: hex.EncodeToString(sum[:])}, nil
+	return &shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: shimwire.GitHubTokenDigest(held.token)}, nil
 }
 
 // slotAppChanges is whether a launch of spec into pod, a pod it keeps, would start its claim's slot
