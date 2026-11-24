@@ -4,7 +4,8 @@
 // out yet. It reads the blocks of one version of the plan document (FromBlocks) and
 // compares two versions (ChangedTasks); it holds no store and calls nothing.
 //
-// It imports internal/phase alone, so both the configuration loader, which reads a project's
+// It imports internal/phase and internal/claim alone, phase imports claim alone, and claim
+// imports no package of Legion's, so both the configuration loader, which reads a project's
 // default steps with this grammar and these checks, and the workflow, which walks the line they
 // make (Line), can import it.
 package plan

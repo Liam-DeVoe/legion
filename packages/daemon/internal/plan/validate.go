@@ -2,7 +2,11 @@ package plan
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // The two checks a plan passes before Legion takes it. Both run on every plan, and each gives one
@@ -16,11 +20,14 @@ const noTask = "the plan has no task block, so it gives Legion no work."
 // notYet ends each reason of Supported: what a later release carries out.
 const notYet = " This release of Legion does not carry it out yet."
 
-// Validate is what Legion cannot carry out in any release: a plan with no task, and each step
-// that names a role neither d nor the plan's own role blocks define, refused once for each role
-// at the first step that names it. It refuses no plan for a step the plan lacks. The other causes
-// no release carries out need an attribute or a block that Supported refuses in this release, so
-// the release that lifts that refusal adds them here.
+// Validate is what Legion cannot carry out in any release: a plan with no task, each role the
+// plan defines that would share a name with an agent of another role (numberedRoleRefusals), and
+// each step that names a role neither d nor the plan's own role blocks define, refused once for
+// each role at the first step that names it. It refuses no plan for a step the plan lacks. A role
+// block's name is judged here although Supported refuses every role block in this release, so
+// that no release takes such a name. The other causes no release carries out need an attribute or
+// a block that Supported refuses in this release, so the release that lifts that refusal adds
+// them here.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
@@ -29,7 +36,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 	for _, role := range p.RoleBlocks {
 		defined[role] = true
 	}
-	var refusals []Refusal
+	refusals := numberedRoleRefusals(p, d)
 	for _, task := range p.Tasks {
 		refused := map[string]bool{}
 		for i, step := range task.Steps {
@@ -39,6 +46,39 @@ func Validate(p Plan, d Deployment) []Refusal {
 			refused[step.Role] = true
 			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf(
 				"step %d of task %s names the role %s, which neither the deployment nor the plan defines.", i+1, task.ID, step.Role)})
+		}
+	}
+	return refusals
+}
+
+// numberedRoleRefusals is a refusal for each role the plan defines, in the order of its role
+// blocks, whose name is the name Legion gives a second or later agent of another role
+// (claim.NumberedAgentRole), of Legion's, of the deployment's or of the plan's own, or a second or
+// later agent of which Legion would name as a role of the deployment: an agent of each role would
+// hold one claim token, and so one slot and one session. The settings loader refuses such a name
+// among the deployment's own roles (config's readRoles), so the deployment's roles alone give no
+// refusal here.
+func numberedRoleRefusals(p Plan, d Deployment) []Refusal {
+	const held = ", so an agent of each role would hold one claim."
+	deployment := slices.Sorted(maps.Keys(d.Roles))
+	names := make([]claim.Role, 0, len(deployment)+len(p.RoleBlocks))
+	for _, name := range slices.Concat(deployment, p.RoleBlocks) {
+		names = append(names, claim.Role(name))
+	}
+	var refusals []Refusal
+	for _, role := range p.RoleBlocks {
+		others := slices.DeleteFunc(slices.Clone(names), func(r claim.Role) bool { return r == claim.Role(role) })
+		if of, ok := claim.NumberedAgentRole(role, others); ok {
+			refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
+				"the plan defines the role %s, the name Legion gives a second or later agent of the role %s%s", role, of, held)})
+			continue
+		}
+		for _, name := range deployment {
+			if _, ok := claim.NumberedAgentRole(name, []claim.Role{claim.Role(role)}); ok && name != role {
+				refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
+					"the plan defines the role %s, whose second or later agent Legion would name %s, the deployment's role%s", role, name, held)})
+				break
+			}
 		}
 	}
 	return refusals

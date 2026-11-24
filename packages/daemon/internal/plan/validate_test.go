@@ -51,6 +51,45 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	}
 }
 
+// A role the plan defines is never named as a second or later agent of another role
+// (claim.NumberedAgentName), Legion's, the deployment's or the plan's own, and its own such agent
+// is never named as a role of the deployment: an agent of each role would hold one claim. Each
+// cause is refused once, naming the role the plan defines. The control is a plan whose roles only
+// look numbered or hold another role's name, which Validate takes.
+func TestValidateRefusesARoleNamedAsAnotherRolesNumberedAgent(t *testing.T) {
+	withBlocks := func(blocks ...string) Plan {
+		p := oneTask("a", "implementer")
+		p.RoleBlocks = blocks
+		return p
+	}
+	held := ", so an agent of each role would hold one claim."
+	for _, tc := range []struct {
+		name string
+		plan Plan
+		d    Deployment
+		want string
+	}{
+		{"a second agent of Legion's planner", withBlocks("planner-2"), builtin,
+			"the plan defines the role planner-2, the name Legion gives a second or later agent of the role planner" + held},
+		{"a second agent of the deployment's role", withBlocks("checker-2"), withRole("checker", TypeTesting),
+			"the plan defines the role checker-2, the name Legion gives a second or later agent of the role checker" + held},
+		{"a third agent of a role the plan defines after it", withBlocks("prober-3", "prober"), builtin,
+			"the plan defines the role prober-3, the name Legion gives a second or later agent of the role prober" + held},
+		{"a role of the deployment named as a second agent of the plan's role", withBlocks("prober"), withRole("prober-2", TypeTesting),
+			"the plan defines the role prober, whose second or later agent Legion would name prober-2, the deployment's role" + held},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if r, want := Validate(tc.plan, tc.d), []Refusal{{Reason: tc.want}}; !reflect.DeepEqual(r, want) {
+				t.Fatalf("Validate =\n%+v\nwant\n%+v", r, want)
+			}
+		})
+	}
+	control := withBlocks("security-reviewer", "planner2", "code-checker", "checker-1", "planner-02")
+	if r := Validate(control, withRole("checker", TypeTesting)); len(r) != 0 {
+		t.Fatalf("Validate(roles no agent of another role takes) = %+v, want none", r)
+	}
+}
+
 // A plan with no task block gives Legion no work, and Validate refuses it with the one reason no
 // later release lifts, so the route answers it as each other plan Legion does not take. The
 // control: a plan of one block with no `steps` is taken.

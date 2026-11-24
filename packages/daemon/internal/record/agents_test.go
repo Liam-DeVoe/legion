@@ -315,6 +315,66 @@ func TestANumberedNameOnlyAgentsWithNoKeyHeldIsGivenAgain(t *testing.T) {
 	}
 }
 
+// An agent named by pass 4 passes over a name that any earlier row of the issue held on another
+// role, at its own place or at any other, so the name of a second agent of a role never equals the
+// name of an agent of another role. At its own place, that name's claim would also resume the
+// session of the place's agent of the other role, since the agent of a step with no key is
+// `step:<place>:<task>` whatever its role. Two roles give one name where a role is named as a
+// numbered agent of another, as `planner-2` is of the planner, and where two roles of 30 bytes or
+// more agree in their first 30, which claim.NumberedAgentName cuts to one name. The controls: the
+// same role at the place keeps its name (pass 3); a name held only on the agent's own role is given
+// in another task, as a stopped task's agent's name is; and a key that holds a name keeps it,
+// whatever roles its rows were on. The faults: version 2's second planner took planner-2, which
+// the role planner-2's agent held, at that agent's place or at another.
+func TestAnAgentPassesOverANameAnotherRoleHeld(t *testing.T) {
+	steps := func(task string, words ...string) []PlanStep {
+		named := make([]PlanStep, len(words))
+		for i, word := range words {
+			role, key, _ := strings.Cut(word, ":")
+			named[i] = PlanStep{Generation: 1, Task: task, Position: i + 1, Role: role, AgentKey: key}
+		}
+		return named
+	}
+	long := strings.Repeat("r", 30)
+	for _, tc := range []struct {
+		name          string
+		first, second []PlanStep
+		want          []claim.Agent
+	}{
+		{name: "a role named as the planner's second agent, at its place",
+			first: steps("t", "implementer", "planner-2"), second: steps("t", "planner", "planner", "implementer"),
+			want: []claim.Agent{"planner", "planner-3", "implementer"}},
+		{name: "a role named as the planner's second agent, at another place",
+			first: steps("t", "implementer", "planner-2"), second: steps("t", "planner", "reviewer", "planner"),
+			want: []claim.Agent{"planner", "reviewer", "planner-3"}},
+		{name: "two roles that a cut of 30 bytes makes one, at the place",
+			first: steps("t", long+"-a", long+"-a"), second: steps("t", long+"-b", long+"-b"),
+			want: []claim.Agent{claim.Agent(long + "-b"), claim.Agent(long + "-3")}},
+		{name: "two roles that a cut of 30 bytes makes one, in another task",
+			first: steps("t", long+"-a", long+"-a"), second: steps("u", long+"-b", long+"-b"),
+			want: []claim.Agent{claim.Agent(long + "-b"), claim.Agent(long + "-3")}},
+		{name: "a new key whose first step is the planner's",
+			first: steps("t", "implementer", "planner-2"), second: steps("t", "planner", "planner:j", "implementer"),
+			want: []claim.Agent{"planner", "planner-3", "implementer"}},
+		{name: "control: the same role at the place",
+			first: steps("t", "implementer", "reviewer", "implementer"), second: steps("t", "implementer", "reviewer", "implementer"),
+			want: []claim.Agent{"implementer", "reviewer", "implementer-2"}},
+		{name: "control: the agent's own role in another task",
+			first: steps("t", "implementer", "reviewer", "implementer"), second: steps("u", "implementer", "reviewer", "implementer"),
+			want: []claim.Agent{"implementer", "reviewer", "implementer-2"}},
+		{name: "control: a key that holds a name its rows held on two roles",
+			first: steps("t", "implementer", "planner:k", "reviewer:k"), second: steps("t", "implementer", "reviewer:k", "planner"),
+			want: []claim.Agent{"implementer", "planner", "planner-2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := NameAgents(nil, nil, tc.first)
+			if got := agentNames(NameAgents(first, nil, tc.second)); !slices.Equal(got, tc.want) {
+				t.Errorf("version 2 after version 1 named %q: names %q, want %q", agentNames(first), got, tc.want)
+			}
+		})
+	}
+}
+
 // A step with no key takes a name even where the latest earlier row of its task, place and role
 // holds none: its role, or a name of its own where another agent of the version holds the role.
 // The first form of the migration that added plan_steps.agent, 20261117213545, left every row it
