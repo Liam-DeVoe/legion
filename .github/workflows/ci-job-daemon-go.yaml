@@ -403,10 +403,12 @@ jobs:
       - name: Report the service's peak connections
         if: always()
         # It only measures, so it may neither fail nor hold the job: each read falls back to
-        # UNKNOWN, the read of max_connections gives up after 10 s, and the step after a minute.
+        # UNKNOWN; the read of max_connections gets TERM after 10 s and KILL 5 s later; and a step
+        # that still reaches its minute shows red without failing the job (continue-on-error).
         timeout-minutes: 1
+        continue-on-error: true
         run: |
-          allowed=$(timeout 10 docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_connections" 2>/dev/null) || allowed=""
+          allowed=$(timeout -k 5 10 docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_connections" 2>/dev/null) || allowed=""
           peak=$(sort -n "$RUNNER_TEMP/pg-connections.txt" 2>/dev/null | tail -n 1) || peak=""
           samples=$(wc -l 2>/dev/null < "$RUNNER_TEMP/pg-connections.txt") || samples=0
           if [ -n "$peak" ]; then
