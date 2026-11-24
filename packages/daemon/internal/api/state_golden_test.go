@@ -666,6 +666,11 @@ func populatedState(t *testing.T) State {
 				// architect (workflow.StartArchitect).
 				PhaseEntry: 2,
 				GivenEntry: 1,
+				DesignGate: &GateView{
+					ArtifactID:      "e5a2c1d7-3b46-4f82-9e07-2d4a6c8b1f53",
+					CurrentVersion:  3,
+					ApprovedVersion: &lineApproval,
+				},
 				// Its spec stands approved at the version Dispatch holds, which is how its work
 				// began: what holds it now is the blocker, not the gate.
 				GatedSteps: []GatedStepView{{
@@ -734,6 +739,10 @@ func populatedState(t *testing.T) State {
 					Since:      &waitedSince,
 					AnsweredAt: &answeredAt,
 					AnsweredBy: record.AnsweredByAsk,
+				},
+				DesignGate: &GateView{
+					ArtifactID:     "b71f0a94-6c3e-4d28-85af-19c7d0e3b462",
+					CurrentVersion: 2,
 				},
 				// Its spec's reviewer asked for changes at the version Dispatch holds, which the
 				// architect was told of: the one status that carries the reviewer's reason.
@@ -857,6 +866,11 @@ func populatedState(t *testing.T) State {
 					LastWake:    &CheckWakeView{Kind: "issue.deployed", Detail: "run 38230245571 completed 2026-09-22T09:10:44Z", At: time.Date(2026, 9, 22, 9, 10, 51, 0, time.UTC)},
 					NextWakeAt:  time.Date(2026, 10, 6, 8, 40, 12, 0, time.UTC),
 				},
+				DesignGate: &GateView{
+					ArtifactID:      "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
+					CurrentVersion:  4,
+					ApprovedVersion: &mergedApproval,
+				},
 				// A root whose spec a person approved at the version Dispatch holds: the status
 				// that lets the tree's work past the step.
 				GatedSteps: []GatedStepView{{
@@ -912,6 +926,11 @@ func populatedState(t *testing.T) State {
 				MergeWait: &MergeWaitView{
 					WaitsOn:       "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
 					HeadUpdatedAt: &waitingHeadUpdatedAt,
+				},
+				DesignGate: &GateView{
+					ArtifactID:      "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38",
+					CurrentVersion:  5,
+					ApprovedVersion: &reviewApproval,
 				},
 				GatedSteps: []GatedStepView{{
 					Step:            record.DesignStepSpec,
@@ -970,6 +989,11 @@ func populatedState(t *testing.T) State {
 					CheckRuns:     2,
 					ToldHead:      "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
 					ToldState:     "blocked",
+				},
+				DesignGate: &GateView{
+					ArtifactID:      "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
+					CurrentVersion:  2,
+					ApprovedVersion: &stuckApproval,
 				},
 				GatedSteps: []GatedStepView{{
 					Step:            record.DesignStepSpec,
@@ -1258,8 +1282,11 @@ func TestStateGolden(t *testing.T) {
 // `trees` names carries that tree's quiet time, and no other issue carries one
 // (internal/projection's quietTrees): one pair for the whole tree, each pair read at the one
 // instant the state is measured at, unless its movement stands at or after that instant and it
-// reads 0 (record.QuietTrees). A golden that breaks any of these rules shows every reader of
-// state.json a state the daemon never serves.
+// reads 0 (record.QuietTrees). The spec row of a root is served twice, as `designGate`
+// (record.SpecGate) and as the spec entry of `gatedSteps` (GatedStepViewsOf), so where the
+// deployment gates spec an issue carries `designGate` exactly when that entry names a document,
+// and the two name the same artifact and versions (internal/projection). A golden that breaks any
+// of these rules shows every reader of state.json a state the daemon never serves.
 func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 	state := populatedState(t)
 	admission := state.Admission
@@ -1349,6 +1376,39 @@ func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 			t.Errorf("%s's quiet time is read at %s, and the state's other quiet times at %s", key, at, readAt)
 		}
 	}
+	// The design gate: one spec row, served as `designGate` and as the spec entry of `gatedSteps`.
+	// Only a root holds gate rows, so an issue that is no root carries neither, and the spec entry
+	// names a document exactly when the row exists, which is when `designGate` is served.
+	if !slices.Contains(state.Settings.Gates.Design, record.DesignStepSpec) {
+		t.Errorf("the golden's deployment gates %v, no spec step, so no issue's `designGate` can be read against its spec entry", state.Settings.Gates.Design)
+	}
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		var spec *GatedStepView
+		for i, entry := range issue.GatedSteps {
+			if entry.Step == record.DesignStepSpec && entry.ArtifactID != "" {
+				spec = &issue.GatedSteps[i]
+			}
+		}
+		gate := issue.DesignGate
+		switch {
+		case spec == nil && gate != nil:
+			t.Errorf("%s carries the design gate of document %s, and no spec step of its `gatedSteps` names a document", key, gate.ArtifactID)
+		case spec != nil && gate == nil:
+			t.Errorf("%s's spec step names document %s at version %d, and the issue carries no `designGate`", key, spec.ArtifactID, spec.CurrentVersion)
+		case spec != nil && (gate.ArtifactID != spec.ArtifactID || gate.CurrentVersion != spec.CurrentVersion || !reflect.DeepEqual(gate.ApprovedVersion, spec.ApprovedVersion)):
+			t.Errorf("%s carries the design gate of document %s at version %d approved at %s, and its spec step names document %s at version %d approved at %s",
+				key, gate.ArtifactID, gate.CurrentVersion, approvedAt(gate.ApprovedVersion), spec.ArtifactID, spec.CurrentVersion, approvedAt(spec.ApprovedVersion))
+		}
+	}
+}
+
+// approvedAt is an approved version as a person reads it: the number, or none.
+func approvedAt(version *int) string {
+	if version == nil {
+		return "none"
+	}
+	return fmt.Sprint(*version)
 }
 
 // The state route's body for a caller whose plugin is at the contract before
