@@ -67,19 +67,19 @@ func noChecksAt(t *testing.T, pool *pgxpool.Pool, issue, repo, head string) {
 
 // ciPassedAt holds what Dispatch publishes of issue at head of repo where checks are the head's
 // set and the CI job of each passed there, as its check.state_changed events of that head carry
-// them, at sequence 0, below every event a test applies, so a later event of the head replaces
-// each. A task whose head holds no set waits for CI at its end (retroHold); one whose head's every
-// check passed, or that has no check, waits for none.
+// them, at sequence 1, below every event a test applies (checkstatetest.Seq), so a later event of
+// the head replaces each. A task whose head holds no set waits for CI at its end (retroHold); one
+// whose head's every check passed, or that has no check, waits for none.
 func ciPassedAt(t *testing.T, pool *pgxpool.Pool, issue, repo, head string, checks ...string) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		store := record.NewStore()
-		if _, err := store.PutCheckSet(t.Context(), tx, issue, repo, head, append([]string{}, checks...), 0); err != nil {
+		if _, err := store.PutCheckSet(t.Context(), tx, issue, repo, head, append([]string{}, checks...), 1); err != nil {
 			return err
 		}
 		for _, check := range checks {
 			if _, err := store.PutCheckState(t.Context(), tx, record.CheckState{Issue: issue, Repo: repo, Head: head, Check: check,
-				State: stateYes, CICase: "success", Roles: []string{"ci"}}); err != nil {
+				State: stateYes, CICase: "success", Roles: []string{"ci"}, Seq: 1}); err != nil {
 				return err
 			}
 		}
