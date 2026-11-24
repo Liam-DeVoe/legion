@@ -1807,7 +1807,7 @@ const BROKER_ROUTES: readonly {
         ms: TRADE_ATTEMPT_MS,
         cut: true,
       },
-      // pool-identity.ts:40's POOL_TIMEOUT_MS, at :191.
+      // pool-identity.ts:39's POOL_TIMEOUT_MS, at :191.
       {
         file: "packages/cipher-client/src/pool-identity.ts",
         kind: "AbortSignal.timeout",
@@ -2018,7 +2018,7 @@ const REVIEWED_WAIT_SITES: readonly {
     text: 'fetchImpl(input, { ...init, redirect: "manual" })',
     count: 1,
     bound:
-      "the fetch behind the client's #fetch, whose every request is made at :2181 or :2508 with a " +
+      "the fetch behind the client's #fetch, whose every request is made at :2324 or :2651 with a " +
       "signal this scan traces to AbortSignal.timeout; `init` is that request's own",
   },
   {
@@ -2035,7 +2035,7 @@ const REVIEWED_WAIT_SITES: readonly {
     text: "execFileAsync(file, args, { cwd, signal })",
     count: 1,
     bound:
-      "its signal is tryExec's controller (:77), which a setTimeout(limitMs) aborts (:79): a timer " +
+      "its signal is tryExec's controller (:78), which a setTimeout(limitMs) aborts (:80): a timer " +
       "the census sees, REMOTE_LOOKUP_MS at its callers",
   },
   {
@@ -2055,7 +2055,7 @@ const REVIEWED_WAIT_SITES: readonly {
       "requestInit merges openid-client's own signal and `signal` into the request's (:103); its " +
       "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts:274) and the trade's " +
       "AbortSignal.any([closed, attempt]) (token-client.ts:557), attempt being " +
-      "AbortSignal.timeout(this.#attemptMs) (:554)",
+      "AbortSignal.timeout(this.#attemptMs) (token-client.ts:554)",
   },
   {
     file: "packages/cipher-client/src/device-login.ts",
@@ -2078,7 +2078,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the fetch handed to the open-asks read's DispatchClient (:319), whose every request is made at dispatch-http.ts:2181 or :2508 under a signal this scan traces to AbortSignal.timeout",
+      "the fetch handed to the open-asks read's DispatchClient (:379), whose every request is made at dispatch-http.ts:2324 or :2651 under a signal this scan traces to AbortSignal.timeout",
   },
   {
     file: "packages/envoy-client/src/dispatch-http.ts",
@@ -2086,7 +2086,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "DispatchClient's default fetchImpl (:963), called only at :992 for the requests of :2181 and :2508",
+      "DispatchClient's default fetchImpl (:1000), called only at :1029 for the requests of :2324 and :2651",
   },
   {
     file: "packages/envoy-client/src/session-answers.ts",
@@ -2094,7 +2094,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the answers mode's DispatchClient (:578), whose requests are made at dispatch-http.ts:2181 and :2508 under the client's own deadline; the open-asks mode does not reach it",
+      "the answers mode's DispatchClient (:601), whose requests are made at dispatch-http.ts:2324 and :2651 under the client's own deadline; the open-asks mode does not reach it",
   },
   {
     file: "packages/envoy-client/src/dispatch-commands/context.ts",

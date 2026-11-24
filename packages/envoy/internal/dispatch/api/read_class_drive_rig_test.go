@@ -155,25 +155,20 @@ func (p *poolStatements) quiet(t *testing.T, what string) {
 }
 
 var (
-	// driveRowLock is a select's row lock, whose update is no write: writesOf would read the word
-	// after it as a table.
-	driveRowLock = regexp.MustCompile(`(?i)\bfor\s+(no\s+key\s+)?update\b`)
 	// driveUpdateColumn is doc_updates' column named update, which a document load reads (select
 	// update, d.update) and a compaction rewrites (set update =): the word is the column's, not a
-	// write.
+	// write, and updateNoWrite does not place it after set.
 	driveUpdateColumn = regexp.MustCompile(`(?i)(\.update\b|\bselect\s+update\b|\bset\s+update\s*=)`)
-	// driveUpdateWord is the word update inside one of those.
-	driveUpdateWord = regexp.MustCompile(`(?i)\bupdate\b`)
 	// lastUsedUpdate is the one write of a personal token a read may make: its last use.
 	lastUsedUpdate = regexp.MustCompile(`(?is)^\s*update\s+agent_(read_)?tokens\s+set\s+last_used_at\s*=`)
 )
 
-// driveWritesOf is writesOf (read_only_token_test.go) over statement with the words update that
-// are no write set aside: a row lock's, and the column of doc_updates named update.
+// driveWritesOf is writesOf (read_only_token_test.go) over statement with the column of
+// doc_updates named update set aside, which a compaction's set update = names where updateNoWrite
+// does not read a column.
 func driveWritesOf(statement string) ([]string, bool) {
-	read := driveRowLock.ReplaceAllString(statement, "for lock")
-	read = driveUpdateColumn.ReplaceAllStringFunc(read, func(column string) string {
-		return driveUpdateWord.ReplaceAllString(column, "update_column")
+	read := driveUpdateColumn.ReplaceAllStringFunc(statement, func(column string) string {
+		return updateWord.ReplaceAllString(column, "update_column")
 	})
 	return writesOf(read)
 }
