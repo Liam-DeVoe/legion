@@ -14,6 +14,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/nats-io/nats.go"
@@ -23,13 +24,17 @@ import (
 )
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "fixturebuckets: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
+// run provisions the server args name, and prints what it provisioned to stdout. Its output and
+// its errors name the server without the URL's user info (bus.NATSURLWithoutUserinfo): a rig can
+// hand it a URL an operator gave, from which nats.go reads a password or a token, and the rig
+// keeps the output in a log and prints it on a failure.
+func run(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("fixturebuckets", flag.ContinueOnError)
 	url := flags.String("url", "", "the fixture's own NATS server, on loopback")
 	replicas := flags.Int("replicas", 1, "the copies each bucket is created with")
@@ -39,8 +44,9 @@ func run(args []string) error {
 	if *url == "" || flags.NArg() > 0 {
 		return fmt.Errorf("usage: fixturebuckets -url nats://127.0.0.1:<port> [-replicas N]")
 	}
+	server := bus.NATSURLWithoutUserinfo(*url)
 	if !bus.LocalNATSURL(*url) {
-		return fmt.Errorf("%s is not a server on this machine's loopback: a fixture provisions only its own server", *url)
+		return fmt.Errorf("%s is not a server on this machine's loopback: a fixture provisions only its own server", server)
 	}
 	conn, err := nats.Connect(*url, nats.Name("fixturebuckets"))
 	if err != nil {
@@ -50,6 +56,6 @@ func run(args []string) error {
 	if err := bustest.Provision(conn, *replicas); err != nil {
 		return err
 	}
-	fmt.Printf("provisioned %s: %v and %s\n", *url, bus.CopiedBuckets(), bustest.MarkerStream)
+	fmt.Fprintf(stdout, "provisioned %s: %v and %s\n", server, bus.CopiedBuckets(), bustest.MarkerStream)
 	return nil
 }
