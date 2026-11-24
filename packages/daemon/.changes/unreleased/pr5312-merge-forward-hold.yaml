@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  A worker that starts while another role's merge forward of the head is open is told to wait for
+  it, as the worker of the phase the merge was asked in is told: on a move forward or back, in any
+  order of a task's steps, and on the architect's retry of a held phase and the operator's restart
+  of a phase's worker. The planner gets the hold and the landed message where its step follows the
+  implementer, and its completion at a head a merge forward replaced is refused as the tester's and
+  the reviewer's are. The reviewer's review of a landed merge tells the worker of the phase the
+  issue stands in, the planner included. One merge of one head has one asked role: when the merger
+  is asked for a head the implementer was asked to merge in `implementing`, the implementer is told
+  once that the merge is no longer its work, and its ask is delivered no more. The news of an
+  approved design to the architect that holds an issue in `accepting` names, as its move-back
+  targets, the phases of the task's steps before the acceptance.
+
+  An earlier release cannot decode the new `withdrawn` step of a merge-forward message. A rollback
+  past this release deletes the queued `merge_forward` outbox rows whose payload step is
+  `withdrawn` first.
+time: 2026-11-24T01:50:00Z
+custom:
+    Issue: pr5312
