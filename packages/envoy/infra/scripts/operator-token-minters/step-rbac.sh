@@ -16,6 +16,8 @@ elif ! kube_for "$CLUSTER" "$OPERATOR_LOCATION" "$PROJECT"; then
   unknown "$step" "$KUBE_ERROR"
 elif ! kubectl --kubeconfig "$KUBE" get serviceaccounts --all-namespaces -o json >"$WORK/serviceaccounts.json" 2>"$WORK/serviceaccounts.err"; then
   unknown "$step" "the API server refused the ServiceAccounts' list (it needs list on serviceaccounts, container.serviceAccounts.list on GKE): $(first_line "$WORK/serviceaccounts.err")"
+elif ! is_list "$WORK/serviceaccounts.json" "$WORK/serviceaccounts.err"; then
+  unknown "$step" "the API server's list of ServiceAccounts could not be read: $(first_line "$WORK/serviceaccounts.err")"
 else
   mark
   # Every guarded pair's rights and the other clusters' guard rights, each right once: where both
@@ -85,7 +87,7 @@ else
   # who can write it.
   fence_live "$KUBE" "$step"
   [ -z "$FENCE_CREDITED" ] || rights="$(with_rights "$rights" "$FENCE_WRITE_RIGHTS")"
-  jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
+  jq -r "$JQ_REC"'.items[] | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
   declare -A seen_accounts=() pattern_matched=()

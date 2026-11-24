@@ -222,30 +222,20 @@ if [ -e "$dir/token-secret-data" ]; then
     [ -z "$found" ] || printf '%s\n' "$found" >>"$dir/secret-data-in-work"
   done
 fi
-# A list answered with exit 0 but not as a List, as a proxy between kubectl and the API server can
-# answer (rows cu, bu and al): a world holding garbage-<list> answers an error page, empty-<list>
-# an empty body and object-<list> `{}`. jq reads an empty body as no value and `{}` as an object
-# whose .items[]? is nothing, so a program over either prints nothing or an empty list and exits 0;
-# only a check of the answer's shape tells them from an empty list.
-answered_list=""
-case "${args[*]}" in
-  "get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json") answered_list=webhooks ;;
-  "get customresourcedefinitions -o json") answered_list=crds ;;
-  "get workloadallowlists.auto.gke.io -o json") answered_list=allowlists ;;
-  "get "*admissionpolic*" -o json") answered_list=policies ;;
-  "get serviceaccounts --all-namespaces -o json") answered_list=serviceaccounts ;;
-  "get clusterrolebindings,rolebindings --all-namespaces -o json") answered_list=bindings ;;
-  "get roles,clusterroles --all-namespaces -o json") answered_list=roles ;;
-  "get service -n "*" -o json") answered_list=service ;;
-  "get pods -n "*" -o json") answered_list=pods ;;
-esac
-if [ -n "$answered_list" ]; then
-  [ ! -e "$dir/garbage-$answered_list" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
-  [ ! -e "$dir/empty-$answered_list" ] || exit 0
-  [ ! -e "$dir/object-$answered_list" ] || { echo '{}'; exit 0; }
-fi
+# shaped_answer NAME: when the world holds garbage-NAME, empty-NAME or object-NAME, answers the call
+# with exit 0 but not as the List or object kubectl writes: an error page, an empty body or `{}`, as
+# a proxy between kubectl and the API server can (rows cu and cy). jq reads an empty body as no value
+# and `{}` as an object whose .items[]? is nothing, so a program over either prints nothing or an
+# empty list and exits 0; only a check of the answer's shape tells them from an empty list. Each
+# branch it serves calls it first, so its command is matched once.
+shaped_answer() {
+  [ ! -e "$dir/garbage-$1" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
+  [ ! -e "$dir/empty-$1" ] || exit 0
+  [ ! -e "$dir/object-$1" ] || { echo '{}'; exit 0; }
+}
 case "${args[*]}" in
   "create -f - -o json")
+    shaped_answer reviews
     [ ! -e "$dir/refuse-sar" ] || forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
     # A world marked review-answers-reversed answers a List of reviews in the reverse of the order
     # it was asked in: the check matches each answer to its question by what the answer echoes, so
@@ -272,12 +262,14 @@ case "${args[*]}" in
       if .kind == "List" then .items |= map(answer) | (if $reversed == "on" then .items |= reverse else . end) else answer end'
     ;;
   "get serviceaccounts --all-namespaces -o json")
+    shaped_answer serviceaccounts
     [ ! -e "$dir/refuse-list" ] || forbidden serviceaccounts 'list resource "serviceaccounts" in API group ""' container.serviceAccounts.list
     jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "v1", kind: "ServiceAccount", metadata: ({namespace: .namespace, name: .name, uid: "uid-\(.namespace)-\(.name)"} + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))} + (if .secrets then {secrets: .secrets} else {} end)]}' "$dir/serviceaccounts.json"
     ;;
   "get clusterrolebindings,rolebindings --all-namespaces -o json")
     # The built-in cluster-admin binding (unless the world drops it), and one binding of each grant,
     # naming its subject.
+    shaped_answer bindings
     [ ! -e "$dir/refuse-bindings" ] || forbidden clusterrolebindings.rbac.authorization.k8s.io 'list resource "clusterrolebindings" in API group "rbac.authorization.k8s.io"' container.clusterRoleBindings.list
     jq --arg boot "$([ -e "$dir/no-bootstrap-binding" ] && echo off || echo on)" '{apiVersion: "v1", kind: "List", items: (
       [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding",
@@ -351,33 +343,39 @@ case "${args[*]}" in
   "get service -n "*" -o json")
     # One Service: the world's services.json entry for <namespace>/<name>, or a ClusterIP Service
     # whose selector picks pods labelled app=<name>.
+    shaped_answer service
     { if [ -e "$dir/services.json" ]; then cat "$dir/services.json"; else echo '{}'; fi; } |
       jq --arg key "${args[3]}/${args[4]}" --arg name "${args[4]}" \
         '.[$key] // {spec: {type: "ClusterIP", selector: {app: $name}}} | {apiVersion: "v1", kind: "Service"} + .'
     ;;
   "get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json")
     # The cluster's webhook configurations: the world's webhooks.json (each a configuration object), or none.
+    shaped_answer webhooks
     [ ! -e "$dir/refuse-webhooks" ] || forbidden mutatingwebhookconfigurations.admissionregistration.k8s.io 'list resource "mutatingwebhookconfigurations" in API group "admissionregistration.k8s.io"' container.mutatingWebhookConfigurations.list
     { if [ -e "$dir/webhooks.json" ]; then cat "$dir/webhooks.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get customresourcedefinitions -o json")
     # The cluster's CRDs: the world's crds.json (each a CustomResourceDefinition), or none.
+    shaped_answer crds
     [ ! -e "$dir/refuse-crds" ] || forbidden customresourcedefinitions.apiextensions.k8s.io 'list resource "customresourcedefinitions" in API group "apiextensions.k8s.io"' container.customResourceDefinitions.list
     { if [ -e "$dir/crds.json" ]; then cat "$dir/crds.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get workloadallowlists.auto.gke.io -o json")
     # Autopilot's installed workload allowlists: the world's allowlists.json (names), or none.
+    shaped_answer allowlists
     [ ! -e "$dir/refuse-allowlists" ] || forbidden workloadallowlists.auto.gke.io 'list resource "workloadallowlists" in API group "auto.gke.io"' container.thirdPartyObjects.list
     { if [ -e "$dir/allowlists.json" ]; then cat "$dir/allowlists.json"; else echo '[]'; fi; } |
       jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "auto.gke.io/v1", kind: "WorkloadAllowlist", metadata: {name: .}}]}'
     ;;
   "get "*admissionpolic*" -o json")
     # The cluster's admission policies and their bindings: the world's admission-policies.json, or none.
+    shaped_answer policies
     [ ! -e "$dir/refuse-policies" ] || forbidden validatingadmissionpolicies.admissionregistration.k8s.io 'list resource "validatingadmissionpolicies" in API group "admissionregistration.k8s.io"' container.thirdPartyObjects.list
     { if [ -e "$dir/admission-policies.json" ]; then cat "$dir/admission-policies.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
     ;;
   "get pods -n "*" -o json")
     # A namespace's pods: the world's pods.json entries (each a Pod) there, or none.
+    shaped_answer pods
     [ ! -e "$dir/refuse-pods" ] || forbidden pods 'list resource "pods" in API group ""' container.pods.list
     { if [ -e "$dir/pods.json" ]; then cat "$dir/pods.json"; else echo '[]'; fi; } |
       jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.metadata.namespace == $ns)]}'
@@ -390,6 +388,7 @@ case "${args[*]}" in
   "get roles,clusterroles --all-namespaces -o json")
     # The built-in cluster-admin role, and one ClusterRole of each grant (planted-<its index>, as the
     # bindings' list names it), holding the grant as a rule, limited by name when the grant names one.
+    shaped_answer roles
     [ ! -e "$dir/refuse-roles" ] || forbidden roles.rbac.authorization.k8s.io 'list resource "roles" in API group "rbac.authorization.k8s.io"' container.roles.list
     jq '{apiVersion: "v1", kind: "List", items: (
       [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "cluster-admin"},
@@ -422,6 +421,22 @@ case "${args[*]}" in
     [ ! -e "$dir/api-resources" ] || cat "$dir/api-resources"
     if [ -e "$dir/refuse-api-resources" ]; then
       echo "error: unable to retrieve the complete list of server APIs: agents.x-k8s.io/v1alpha1: the server is currently unable to handle the request" >&2
+      exit 1
+    fi
+    ;;
+  "api-resources --namespaced=false -o name")
+    # The cluster's cluster-scoped discovery: Kubernetes' own, and each of cluster-resources' lines,
+    # a cluster-scoped custom resource the world plants (row ce).
+    printf '%s\n' componentstatuses namespaces nodes persistentvolumes mutatingwebhookconfigurations.admissionregistration.k8s.io \
+      validatingadmissionpolicies.admissionregistration.k8s.io validatingadmissionpolicybindings.admissionregistration.k8s.io \
+      validatingwebhookconfigurations.admissionregistration.k8s.io customresourcedefinitions.apiextensions.k8s.io \
+      apiservices.apiregistration.k8s.io tokenreviews.authentication.k8s.io subjectaccessreviews.authorization.k8s.io \
+      certificatesigningrequests.certificates.k8s.io ingressclasses.networking.k8s.io runtimeclasses.node.k8s.io \
+      clusterrolebindings.rbac.authorization.k8s.io clusterroles.rbac.authorization.k8s.io priorityclasses.scheduling.k8s.io \
+      csidrivers.storage.k8s.io csinodes.storage.k8s.io storageclasses.storage.k8s.io volumeattachments.storage.k8s.io
+    [ ! -e "$dir/cluster-resources" ] || cat "$dir/cluster-resources"
+    if [ -e "$dir/refuse-cluster-resources" ]; then
+      echo "error: unable to retrieve the complete list of server APIs: example.io/v1: the server is currently unable to handle the request" >&2
       exit 1
     fi
     ;;

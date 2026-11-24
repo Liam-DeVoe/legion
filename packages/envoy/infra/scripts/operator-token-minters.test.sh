@@ -483,6 +483,24 @@ run_only() {
   status=0
   output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "${run_script:-$check}" "$@" 2>&1)" || status=$?
 }
+# script_copy NAME: a copy of the script and its parts under the test's temporary directory, for a
+# row that breaks or removes one part; prints the copy's script path, for run_script.
+script_copy() {
+  local copy="$temporary_dir/copy-$1"
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp "$check" "$copy/operator-token-minters.sh"
+  cp -r "$(dirname "$check")/operator-token-minters" "$copy/"
+  printf '%s' "$copy/operator-token-minters.sh"
+}
+# plant FILE OLD NEW: FILE with its one OLD made NEW; fails the row when FILE does not hold OLD once,
+# so a plant that missed its line cannot pass as a control.
+plant() {
+  local text
+  text="$(<"$1")"
+  [ "$(grep -cF -- "$2" "$1")" -eq 1 ] || fail "the plant's line is not in $(basename "$1") once: $2"
+  printf '%s\n' "${text/"$2"/"$3"}" >"$1"
+}
 fail() {
   echo "FAIL: $*" >&2
   printf 'the check printed (exit %s):\n%s\n' "$status" "$output" >&2
@@ -497,17 +515,19 @@ count_prefix() { grep -c "^$1" <<<"$output" || true; }
 want_status() { [ "$status" -eq "$1" ] || fail "$2: exit $status, want $1"; }
 want_line() { has_line "$1" || fail "$2: no line '$1'"; }
 want_text() { has_prefix "$1" || fail "$2: no line holding '$1'"; }
-# want_rbac_unknown TEXT WHAT: the operator's RBAC step read UNKNOWN holding TEXT, the run reached its
-# end with no finding (its last line says so, which a run that stopped mid-way does not), exit 2, and
-# the step did not pass. The rows that break a read share it, so a text one of them changes is
-# fixed here once, and a run that stopped fails it by its own last line.
-want_rbac_unknown() {
-  want_status 2 "$2"
-  want_text "UNKNOWN live: RBAC on operator-cluster: $1" "$2"
+# want_step_unknown STEP TEXT WHAT: the step STEP (as its lines name it: `RBAC on operator-cluster`)
+# read UNKNOWN holding TEXT, the run reached its end with no finding (its last line says so, which a
+# run that stopped mid-way does not), exit 2, and the step did not pass. The rows that break a read
+# share it, so a text one of them changes is fixed here once, and a run that stopped fails it by its
+# own last line. want_rbac_unknown TEXT WHAT is it for the operator's RBAC step.
+want_step_unknown() {
+  want_status 2 "$3"
+  want_text "UNKNOWN live: $1: $2" "$3"
   has_prefix "operator-token-minters: no finding, " ||
-    fail "$2: the run did not reach its end with no finding; its last line is '$(tail -n 1 <<<"$output")'"
-  ! has_prefix "PASS live: RBAC on operator-cluster: " || fail "$2: the RBAC step passed"
+    fail "$3: the run did not reach its end with no finding; its last line is '$(tail -n 1 <<<"$output")'"
+  ! has_prefix "PASS live: $1: " || fail "$3: the step $1 passed"
 }
+want_rbac_unknown() { want_step_unknown "RBAC on operator-cluster" "$1" "$2"; }
 rows=0
 passed() {
   rows=$((rows + 1))
