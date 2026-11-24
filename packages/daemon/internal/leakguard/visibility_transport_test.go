@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The tests of the reads the guard makes when gh's REST read fails on its connection to GitHub
@@ -598,9 +599,12 @@ func shorten(t *testing.T, bound *time.Duration, d time.Duration) {
 // A gh REST read that hangs, as gh did for about 42 s in the busy one-CPU pod, is stopped by the
 // guard's own bound, which leaves the rest of the caller's bound to curl: curl answers private
 // within the caller's bound, and gets what is left of it as its --max-time. The guard's bound is
-// ghReadBound inside a caller's 15 s (the bound `legion gh` gives the shared check's own read),
-// here shortened to 1 s; or the caller's deadline less curlReserve where that is sooner, here a
-// deadline of 6 s and a reserve of 3 s.
+// ghReadBound inside a caller's bound, here shortened to 1 s inside 31 s; or the caller's deadline
+// less curlReserve where that is sooner, here a deadline of 33 s and a reserve of 30 s. Either
+// leaves curl 30 s, far from a stand-in curl's own answer on a loaded machine. The guard's bound
+// is counted from before gh starts, and a loaded machine can spend it before gh has logged its
+// read: that run shows nothing of a hanging gh, so the row reads again until a read in which gh
+// logged itself before the bound stopped it, within a minute.
 func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -608,42 +612,55 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 		// case; stoppedAt is when the guard's bound stops gh.
 		caller, ghBound, reserve, stoppedAt time.Duration
 	}{
-		{name: "the read's own cap", caller: 15 * time.Second, ghBound: time.Second, reserve: curlReserve, stoppedAt: time.Second},
-		{name: "the caller's deadline less the reserve", caller: 6 * time.Second, ghBound: ghReadBound, reserve: 3 * time.Second, stoppedAt: 3 * time.Second},
+		{name: "the read's own cap", caller: 31 * time.Second, ghBound: time.Second, reserve: curlReserve, stoppedAt: time.Second},
+		{name: "the caller's deadline less the reserve", caller: 33 * time.Second, ghBound: ghReadBound, reserve: 30 * time.Second, stoppedAt: 3 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			shorten(t, &ghReadBound, tc.ghBound)
 			shorten(t, &curlReserve, tc.reserve)
-			rig := newTransportRig(t, "sleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
-			ctx, cancel := context.WithTimeout(context.Background(), tc.caller)
-			t.Cleanup(cancel)
-			began := time.Now()
-			visibility, err := rig.guard.Visibility(ctx, theRepo)
-			if took := time.Since(began); took >= tc.caller {
-				t.Errorf("the call answered after %s, want within the caller's %s", took.Round(time.Millisecond), tc.caller)
-			}
-			if err != nil || visibility != Private {
-				t.Fatalf("read %q, %v; want curl's private", visibility, err)
-			}
-			if want := []VisibilitySource{VisibilityFromCurl}; !slices.Equal(rig.sources, want) {
-				t.Errorf("the guard reported the sources %q, want %q", rig.sources, want)
-			}
-			if rest, graphql, curl, git := rig.runs(t); rest != 1 || curl != 1 || graphql != 0 || git != 0 {
-				t.Errorf("gh's REST read ran %d times, curl %d, GraphQL %d and git %d; want 1, 1, 0 and 0", rest, curl, graphql, git)
-			}
-			calls := readCalls(t, rig.curl)
-			if len(calls) != 1 {
-				t.Fatalf("curl ran %d times, want once", len(calls))
-			}
-			_, after, _ := strings.Cut(calls[0]["argv"], "--max-time ")
-			word, _, _ := strings.Cut(after, " ")
-			maxTime, err := time.ParseDuration(word + "s")
-			if err != nil {
-				t.Fatalf("curl ran with --max-time %q: %v", word, err)
-			}
-			if left := tc.caller - tc.stoppedAt; maxTime < curlLeast || maxTime >= left {
-				t.Errorf("curl ran with --max-time %s, want at least %s and less than the %s the caller's bound has left after gh's stop",
-					maxTime, curlLeast, left)
+			within := testwait.Bounded(t, time.Minute, tc.caller)
+			until := time.Now().Add(within)
+			for reads := 1; ; reads++ {
+				rig := newTransportRig(t, "sleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+				ctx, cancel := context.WithTimeout(context.Background(), tc.caller)
+				began := time.Now()
+				visibility, err := rig.guard.Visibility(ctx, theRepo)
+				took := time.Since(began)
+				cancel()
+				rest, graphql, curl, git := rig.runs(t)
+				if rest == 0 {
+					if time.Now().Before(until) {
+						continue
+					}
+					t.Fatalf("no read of %d over %s in which gh logged itself before the guard's bound stopped it (read %q, %v)", reads, within, visibility, err)
+				}
+				if took >= tc.caller {
+					t.Errorf("read %d: the call answered after %s, want within the caller's %s", reads, took.Round(time.Millisecond), tc.caller)
+				}
+				if err != nil || visibility != Private {
+					t.Fatalf("read %d: read %q, %v; want curl's private", reads, visibility, err)
+				}
+				if want := []VisibilitySource{VisibilityFromCurl}; !slices.Equal(rig.sources, want) {
+					t.Errorf("read %d: the guard reported the sources %q, want %q", reads, rig.sources, want)
+				}
+				if rest != 1 || curl != 1 || graphql != 0 || git != 0 {
+					t.Errorf("read %d: gh's REST read ran %d times, curl %d, GraphQL %d and git %d; want 1, 1, 0 and 0", reads, rest, curl, graphql, git)
+				}
+				calls := readCalls(t, rig.curl)
+				if len(calls) != 1 {
+					t.Fatalf("read %d: curl ran %d times, want once", reads, len(calls))
+				}
+				_, after, _ := strings.Cut(calls[0]["argv"], "--max-time ")
+				word, _, _ := strings.Cut(after, " ")
+				maxTime, err := time.ParseDuration(word + "s")
+				if err != nil {
+					t.Fatalf("read %d: curl ran with --max-time %q: %v", reads, word, err)
+				}
+				if left := tc.caller - tc.stoppedAt; maxTime < curlLeast || maxTime >= left {
+					t.Errorf("read %d: curl ran with --max-time %s, want at least %s and less than the %s the caller's bound has left after gh's stop",
+						reads, maxTime, curlLeast, left)
+				}
+				return
 			}
 		})
 	}
