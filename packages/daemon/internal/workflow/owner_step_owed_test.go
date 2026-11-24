@@ -18,12 +18,9 @@ import (
 // owedBound is the silence bound the owner's facts below carry (config.Config.WorkerSilence).
 const owedBound = 30 * time.Minute
 
-// owedClock is the moment the steps below start at (stepEngine's clock, stepClock), and
-// owedIdleSince the moment the owner last stepped: an hour before, so the owner was idle when its
-// step started.
-func owedClock() time.Time { return stepClock }
-
-func owedIdleSince() time.Time { return owedClock().Add(-time.Hour) }
+// owedIdleSince is the moment the owner last stepped: an hour before stepClock, the moment the
+// steps below start at (stepEngine's clock), so the owner was idle when its step started.
+func owedIdleSince() time.Time { return stepClock.Add(-time.Hour) }
 
 // engineAt is returnEngine with its clock at now: the pass that reads an owner idle past the bound
 // runs after the step's start.
@@ -97,7 +94,7 @@ func TestAnOwnersStepNoTurnHeardIsToldAgainByThePeriodicPass(t *testing.T) {
 
 	t.Run("the step that runs is told once", func(t *testing.T) {
 		pool, first := started(t)
-		later := engineAt(owedClock().Add(time.Hour))
+		later := engineAt(stepClock.Add(time.Hour))
 		applyOwned(t, pool, later, "owner-silent:1", ownerSilence("LEGION-208", 1))
 
 		told := ownerSteps(t, pool, "LEGION-208")
@@ -120,7 +117,7 @@ func TestAnOwnersStepNoTurnHeardIsToldAgainByThePeriodicPass(t *testing.T) {
 			t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
 		}
 		dropNotices(t, pool, "LEGION-208")
-		applyOwned(t, pool, engineAt(owedClock().Add(time.Hour)), "owner-silent:1", ownerSilence("LEGION-208", 1))
+		applyOwned(t, pool, engineAt(stepClock.Add(time.Hour)), "owner-silent:1", ownerSilence("LEGION-208", 1))
 		if told := ownerSteps(t, pool, "LEGION-208"); len(told) != 0 {
 			t.Fatalf("the pass after the owner's report told %+v, want nothing: the step ended", told)
 		}
@@ -128,7 +125,7 @@ func TestAnOwnersStepNoTurnHeardIsToldAgainByThePeriodicPass(t *testing.T) {
 
 	t.Run("a run that started within the bound is not told", func(t *testing.T) {
 		pool, _ := started(t)
-		applyOwned(t, pool, engineAt(owedClock().Add(owedBound/2)), "owner-silent:1", ownerSilence("LEGION-208", 1))
+		applyOwned(t, pool, engineAt(stepClock.Add(owedBound/2)), "owner-silent:1", ownerSilence("LEGION-208", 1))
 		if told := ownerSteps(t, pool, "LEGION-208"); len(told) != 0 {
 			t.Fatalf("the pass within the bound of the step's start told %+v, want nothing", told)
 		}
@@ -187,7 +184,7 @@ func TestAnOwnersCatchUpAndAChildsSilenceTellTheOwnersStepAgain(t *testing.T) {
 		dropNotices(t, pool, child.Key)
 		seedIdleOwner(t, pool, "LEGION-208", "LEGION-208", 1)
 		seedIdleOwner(t, pool, child.Key, "LEGION-208", child.Generation)
-		later := engineAt(owedClock().Add(time.Hour))
+		later := engineAt(stepClock.Add(time.Hour))
 
 		applyOwned(t, pool, later, "owner-silent:root", ownerSilence("LEGION-208", 1))
 		if told := ownerSteps(t, pool, child.Key); len(told) != 0 {
