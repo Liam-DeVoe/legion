@@ -237,7 +237,10 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 }
 
 // azureStatusError describes a non-2xx answer by its status and Azure's error code, and marks a
-// throttle (azureThrottled) for IsThrottled and an outage (azureOutage) for IsOutage.
+// throttle (azureThrottled) for IsThrottled and any other outage status (httpoutage.Is: a 408, or a
+// 5xx but the 503) for IsOutage: Azure failing to answer now, which unlike a throttle may be one
+// text Azure fails on every time, so it stays a failure embedqueue bisects and confirms with its
+// canary.
 func azureStatusError(response *http.Response) error {
 	var decoded azureErrorResponse
 	body, _ := io.ReadAll(io.LimitReader(response.Body, azureErrorBodyLimit))
@@ -249,7 +252,7 @@ func azureStatusError(response *http.Response) error {
 	switch {
 	case azureThrottled(response.StatusCode):
 		return &throttleError{err: err}
-	case azureOutage(response.StatusCode):
+	case httpoutage.Is(response.StatusCode):
 		return &outageError{err: err}
 	}
 	return err
@@ -260,14 +263,6 @@ func azureStatusError(response *http.Response) error {
 // texts, so embedqueue retries the batch whole on either and never counts it against a row.
 func azureThrottled(status int) bool {
 	return status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable
-}
-
-// azureOutage reports whether an HTTP status that is no throttle is Azure failing to answer now:
-// a 408 (a request it did not take in time) or a 5xx (RFC 9110 sections 15.5.9 and 15.6,
-// httpoutage.Is). Unlike a throttle it may be one text Azure fails on every time, so it
-// stays a failure embedqueue bisects and confirms with its canary (IsOutage).
-func azureOutage(status int) bool {
-	return httpoutage.Is(status) && !azureThrottled(status)
 }
 
 // placeAzureVectors puts each vector at the index Azure gave it, refusing an answer that does not

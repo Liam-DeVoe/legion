@@ -174,13 +174,13 @@ func IsThrottled(err error) bool {
 }
 
 // IsOutage reports whether err is the model service failing to answer now in a way that is no
-// throttle (azureOutage: a 408, or a 5xx but the 503 that is Azure's capacity throttle; Bedrock's
-// bedrockOutageErrorCodes). Such an answer is either the service failing or one text it fails on
-// every time, and only embedqueue can tell them apart: it still bisects the batch and confirms a
-// row's own failure with its canary, which fails too while the whole service does. Only then does
-// it back RateLimitedEmbedder off (BackOff): a failing half of a bisection moves the pace not at
-// all. It reads only the marker the client puts on its own outages - an error in err's chain with
-// an Outage() bool method answering true.
+// throttle (azureStatusError: a 408, or a 5xx but the 503 that is Azure's capacity throttle;
+// Bedrock's bedrockOutageErrorCodes). Such an answer is either the service failing or one text it
+// fails on every time, and only embedqueue can tell them apart: it still bisects the batch and
+// confirms a row's own failure with its canary, which fails too while the whole service does. Only
+// then does it back RateLimitedEmbedder off (BackOff): a failing half of a bisection moves the pace
+// not at all. It reads only the marker the client puts on its own outages - an error in err's
+// chain with an Outage() bool method answering true.
 func IsOutage(err error) bool {
 	var marked interface{ Outage() bool }
 	return errors.As(err, &marked) && marked.Outage()
