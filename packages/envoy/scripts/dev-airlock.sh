@@ -98,6 +98,16 @@
 #                     BROKER_JUDGE_TEST_SKIP_CHECKS=true (the judge's negative control: its
 #                     checks before the model are off, so a request one of them would hold back
 #                     is put to the model anyway)
+#   --slack-limit     the Slack limit's stack (airlock-check.sh slack-limit): both brokers ask
+#                     the Dispatch stand about projects (BROKER_PROJECT_ACCESS_URL and
+#                     BROKER_PROJECT_ACCESS_TOKEN_FILE), whose project-access file holds PRIV,
+#                     a private project its owner lets post to one Slack channel, C0ALLOWED1;
+#                     the Slack stand listens on slack.airlock.test; AIRLOCK_SLACK_TOKEN, a
+#                     shared agent-tier secret tagged project-channels=slack, is served behind
+#                     the proxy there; and a second pod, a person's (BROKER_POD_OPERATORS maps
+#                     system:serviceaccount:airlock:person-pod to person@airlock.test, a full
+#                     member PRIV lists), enrols itself naming PRIV under a token the issuer
+#                     mints for its own account, and is renewed as the stack's pod is
 #   --help            print this and exit
 set -euo pipefail
 
@@ -109,7 +119,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   cat <<'EOF'
 usage: dev-airlock.sh [--keep-values] [--no-kind] [--idle-seconds N] [--one-broker]
-                      [--judge-skip-checks]
+                      [--judge-skip-checks] [--slack-limit]
 
 Starts the airlock's whole local stack - dev-broker.sh's Postgres, issuer and broker, the
 stand-in services, a certificate authority, a profiles file, two brokers behind one API front and
@@ -121,6 +131,9 @@ one proxy front, and an enrolled pod session - and prints the exports a check ne
   --one-broker      start one broker rather than two
   --judge-skip-checks
                     BROKER_JUDGE_TEST_SKIP_CHECKS=true, the model judge's negative control
+  --slack-limit     a private project's Dispatch, a Slack stand and a Slack token, and a
+                    person's pod naming that project: the stack airlock-check.sh slack-limit
+                    runs on
   --help            print this
 EOF
 }
@@ -130,6 +143,7 @@ NO_KIND=false
 IDLE_SECONDS=300
 BROKER_COUNT=2
 JUDGE_SKIP_CHECKS=false
+SLACK_LIMIT=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep-values) KEEP_VALUES=true ;;
@@ -148,6 +162,7 @@ while [ $# -gt 0 ]; do
       ;;
     --one-broker) BROKER_COUNT=1 ;;
     --judge-skip-checks) JUDGE_SKIP_CHECKS=true ;;
+    --slack-limit) SLACK_LIMIT=true ;;
     --help|-h)
       usage
       exit 0
@@ -180,6 +195,14 @@ API_BACKENDS="$WORK_DIR/api-backends"
 PROXY_FRONT_JSON="$WORK_DIR/proxy-front.json"
 PROXY_FRONT_LOG="$WORK_DIR/proxy-front.log"
 PROXY_BACKENDS="$WORK_DIR/proxy-backends"
+# --slack-limit's: the project-access file the Dispatch stand answers from, the bearer the brokers
+# present to it, and the person's pod's token, key, enrolment and renewer log.
+PROJECT_ACCESS_FILE="$WORK_DIR/project-access.json"
+PROJECT_ACCESS_TOKEN_FILE="$WORK_DIR/project-access-token"
+PERSON_TOKEN_FILE="$WORK_DIR/person-pod-token"
+PERSON_KEY_DIR="$WORK_DIR/person-pod-key"
+PERSON_ENROLL_JSON="$WORK_DIR/person-pod-enrollment.json"
+PERSON_RENEW_LOG="$WORK_DIR/person-pod-renew.log"
 
 # The namespace and the key this run's fake secrets sit under. The key is an example ARN in AWS's
 # documentation account, and nothing here calls AWS; a secret on any other key is refused by the
@@ -287,6 +310,32 @@ AWS_SESSION_TOKEN="the-stand-in-aws-session-token"
 # assertion.
 AZURE_FEDERATED_TOKEN="eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
 
+# --slack-limit's world. The Slack stand listens on port 443 of a loopback address of its own,
+# as every bound host does. PRIV is a private project its owner lets post to one Slack channel,
+# and its access list names the person, a full member; the person's pod account logs in under a
+# login service of its own (BROKER_SERVICE_LOGINS) that BROKER_SERVICES names nowhere, and
+# BROKER_POD_OPERATORS maps it to that person, which is what BROKER_POD_OPERATORS requires of a
+# mapped account. The Slack token is shared and agent tier, so the person's pod and the stack's
+# service pod are each granted it at once: the one names PRIV and is held to its channel, the
+# other names no project and is not, which is the Slack limit's control.
+SLACK_HOST="slack.airlock.test"
+SLACK_ADDRESS="127.0.0.6:443"
+SLACK_SECRET="AIRLOCK_SLACK_TOKEN"
+SLACK_VALUE="the-real-airlock-slack-token-3c9e"
+PRIVATE_PROJECT="PRIV"
+PROJECT_OWNER="owner@airlock.test"
+ALLOWED_CHANNEL="C0ALLOWED1"
+PERSON_LOGIN="person@airlock.test"
+PERSON_ACCOUNT="system:serviceaccount:airlock:person-pod"
+PERSON_SERVICE="airlock-person"
+# The bearer the Dispatch stand's project-access routes take, which the brokers read from
+# PROJECT_ACCESS_TOKEN_FILE as a deployment's broker reads its projected token for Dispatch.
+PROJECT_ACCESS_BEARER="the-stand-in-project-access-bearer"
+# The issuer mints a token for an hour (dev-oidc-issuer's tokenLifetime) and rewrites its own
+# files four fifths of the way through it; the person's pod's is minted here, so it is minted
+# again on that schedule, and its renewer always reads a live one.
+PERSON_TOKEN_REFRESH_SECONDS=2880
+
 # DEV_BROKER_POSTGRES_URL is read exactly as dev-broker.sh reads it, and checked here before
 # anything is created, so a malformed one leaves nothing behind. dev-broker.sh checks it again
 # for its own database.
@@ -314,6 +363,8 @@ fi
 
 DEV_BROKER_PID=""
 RENEW_PID=""
+PERSON_RENEW_PID=""
+PERSON_TOKEN_PID=""
 STANDS_PID=""
 API_FRONT_PID=""
 PROXY_FRONT_PID=""
@@ -321,11 +372,11 @@ BROKER_PIDS=()
 CREATED_DB=false
 
 cleanup() {
-  # This stack's own processes first, the session's renewer before the brokers it renews at,
-  # then dev-broker.sh, whose own EXIT trap stops its broker and its issuer and drops its
-  # database.
+  # This stack's own processes first, the sessions' renewers before the brokers they renew at
+  # (and the person's pod's token minter with its renewer), then dev-broker.sh, whose own EXIT
+  # trap stops its broker and its issuer and drops its database.
   local pid
-  for pid in "$RENEW_PID" "${BROKER_PIDS[@]+"${BROKER_PIDS[@]}"}" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$STANDS_PID" "$DEV_BROKER_PID"; do
+  for pid in "$RENEW_PID" "$PERSON_RENEW_PID" "$PERSON_TOKEN_PID" "${BROKER_PIDS[@]+"${BROKER_PIDS[@]}"}" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$STANDS_PID" "$DEV_BROKER_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -457,7 +508,23 @@ DISPLAY_URL="$(pg_url_without_password "$POSTGRES_URL")"
 # Microsoft stand carries the resource host's name too: it answers the tenant's OpenID
 # configuration document, which is the first thing az reads of an authority, and a token
 # request at /{tenant}/oauth2/v2.0/token, and leaves every other request to its own body, so
-# one process plays the authority and the service an access token is spent at. ---
+# one process plays the authority and the service an access token is spent at.
+#
+# With --slack-limit the Slack stand takes its own loopback address's port 443, and the Dispatch
+# stand answers the brokers' project-access client from a file of this run's: PRIV, private,
+# owned by its owner, listing the person, with the owner's one channel, and the person a full
+# member, to the one bearer the brokers present. ---
+SLACK_STANDS_ARGS=()
+if [ "$SLACK_LIMIT" = true ]; then
+  jq -n --arg project "$PRIVATE_PROJECT" --arg owner "$PROJECT_OWNER" --arg person "$PERSON_LOGIN" \
+    --arg channel "$ALLOWED_CHANNEL" --arg token "$PROJECT_ACCESS_BEARER" \
+    '{rows: {($project): {visibility: "private", owner: $owner, listed: [$person], slack_channels: [$channel]}},
+      people: {($person): "full"}, token: $token}' >"$PROJECT_ACCESS_FILE"
+  chmod 600 "$PROJECT_ACCESS_FILE"
+  printf '%s' "$PROJECT_ACCESS_BEARER" >"$PROJECT_ACCESS_TOKEN_FILE"
+  chmod 600 "$PROJECT_ACCESS_TOKEN_FILE"
+  SLACK_STANDS_ARGS=(--address "slack=$SLACK_ADDRESS" --host "slack=$SLACK_HOST" --project-access-file "$PROJECT_ACCESS_FILE")
+fi
 echo "dev-airlock: starting dev-airlock-stands..." >&2
 : >"$STANDS_LOG"
 "$STANDS_BIN" --dir "$STANDS_DIR" \
@@ -466,6 +533,7 @@ echo "dev-airlock: starting dev-airlock-stands..." >&2
   --address "microsoft=$MICROSOFT_ADDRESS" \
   --host "microsoft=$MICROSOFT_HOST" --host "microsoft=$AZURE_RESOURCE_HOST" \
   --address "aws=$AWS_ADDRESS" --host "aws=$AWS_HOST" \
+  "${SLACK_STANDS_ARGS[@]+"${SLACK_STANDS_ARGS[@]}"}" \
   --installation "$GITHUB_OWNER=$GITHUB_INSTALLATION" \
   --google-lifetime 7m \
   --aws-session-token "$AWS_SESSION_TOKEN" \
@@ -503,16 +571,26 @@ T_URL="https://${T_HOST}"
 MICROSOFT_URL="https://${MICROSOFT_HOST}"
 AZURE_RESOURCE_URL="https://${AZURE_RESOURCE_HOST}"
 AWS_URL="https://${AWS_HOST}"
+SLACK_URL="https://${SLACK_HOST}"
 # What the proxy may dial although it resolves to loopback, and where each name is. The two
 # together are what check k4 reads: in one run S and T on loopback are reachable and the
 # broker's own loopback port is still refused, which no switch for loopback could give.
 DIAL_ALLOW="${S_HOST}:443 ${T_HOST}:443 ${MICROSOFT_HOST}:443 ${AZURE_RESOURCE_HOST}:443 ${AWS_HOST}:443"
 RESOLVE="${S_HOST}=${S_ADDRESS%:*} ${T_HOST}=${T_ADDRESS%:*} ${MICROSOFT_HOST}=${MICROSOFT_ADDRESS%:*} ${AZURE_RESOURCE_HOST}=${MICROSOFT_ADDRESS%:*} ${AWS_HOST}=${AWS_ADDRESS%:*}"
+if [ "$SLACK_LIMIT" = true ]; then
+  DIAL_ALLOW+=" ${SLACK_HOST}:443"
+  RESOLVE+=" ${SLACK_HOST}=${SLACK_ADDRESS%:*}"
+fi
 
 # --- The profiles file: each secret a profile of its own name whose proxy block says where its
 # value may go, in which headers, and how many seconds of it the model judge may decide; the
 # github-app secret's carries the github block every GitHub profile has, and AIRLOCK_PLAIN_GITHUB
-# is that secret's with no proxy block (the header). ---
+# is that secret's with no proxy block (the header). With --slack-limit the Slack token is served
+# behind the proxy on the Slack stand's host. ---
+SLACK_PROFILE=""
+if [ "$SLACK_LIMIT" = true ]; then
+  SLACK_PROFILE=$',\n  {"name": "'"$SLACK_SECRET"'", "proxy": {"hosts": ["'"$SLACK_HOST"'"]}}'
+fi
 cat >"$PROFILES_FILE" <<EOF
 {"profiles": [
   {"name": "$DEMO_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
@@ -529,7 +607,7 @@ cat >"$PROFILES_FILE" <<EOF
   {"name": "$UNJUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"]}},
   {"name": "$SHARED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}},
   {"name": "$ADMIN_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}},
-  {"name": "$SECOND_JUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS, "guidance": "$SECOND_JUDGE_GUIDANCE"}}
+  {"name": "$SECOND_JUDGED_SECRET", "proxy": {"hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS, "guidance": "$SECOND_JUDGE_GUIDANCE"}}$SLACK_PROFILE
 ]}
 EOF
 
@@ -545,7 +623,9 @@ EOF
 # the approver's administrator's credential (admin: "true"), which carries the requesters list
 # and the hour's cap that tag demands of a secret: a list naming the approver and this stack's
 # service, since the enrolled pod acts for that service and a list no requester is on is
-# refused before owner and tier are read at all. ---
+# refused before owner and tier are read at all. With --slack-limit the store also holds the
+# Slack token, shared and agent tier, tagged project-channels=slack with the rollback guard
+# `agent-secrets secret create --project-channels slack` writes beside that tag. ---
 jq -n \
   --arg prefix "$SECRETS_PREFIX" --arg kms "$SECRETS_KMS_KEY_ARN" \
   --arg service "$SERVICE" --arg approver "$APPROVER_LOGIN" \
@@ -555,6 +635,7 @@ jq -n \
   --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
   --arg owner "$GITHUB_OWNER" \
   --arg awskey "$AWS_KEY_ID" --arg awssecret "$AWS_SECRET_KEY" --arg awssession "$AWS_SESSION_TOKEN" \
+  --argjson slacklimit "$SLACK_LIMIT" --arg slack "$SLACK_VALUE" \
   '{secrets: [
      {name: ($prefix + "airlock-demo-token"), kms_key_id: $kms,
       tags: {owner: $service, tier: "agent"}, value: $demo},
@@ -587,7 +668,12 @@ jq -n \
       value: $admin},
      {name: ($prefix + "airlock-second-judged-token"), kms_key_id: $kms,
       tags: {owner: $approver, tier: "human"}, value: $second}
-   ]}' >"$FAKE_SECRETS_FILE"
+   ]}
+   | if $slacklimit then .secrets += [
+       {name: ($prefix + "airlock-slack-token"), kms_key_id: $kms,
+        tags: {owner: "shared", tier: "agent", "project-channels": "slack",
+               requesters: "rollback-guard:project-tags"}, value: $slack}]
+     else . end' >"$FAKE_SECRETS_FILE"
 chmod 600 "$FAKE_SECRETS_FILE"
 printf '%s' "$AZURE_FEDERATED_TOKEN" >"$AZURE_TOKEN_FILE"
 chmod 600 "$AZURE_TOKEN_FILE"
@@ -640,7 +726,20 @@ PROXY_FRONT_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
 # is one deployed in a cluster: it refuses to start unless BROKER_AIRLOCK_CLUSTER_RANGES holds that
 # cluster's Service range, which a pod cannot read. These brokers are local processes on loopback,
 # so they start as a local run does, and a BROKER_AIRLOCK_CLUSTER_RANGES the caller exports still
-# reaches them. ---
+# reaches them.
+#
+# With --slack-limit each also asks the Dispatch stand about projects, with the bearer the stand
+# takes (BROKER_PROJECT_ACCESS_URL and BROKER_PROJECT_ACCESS_TOKEN_FILE), logs the person's pod
+# account in under its own login service, and maps that account to its person
+# (BROKER_POD_OPERATORS). Without it a broker is given none of the three, as a deployment with no
+# private project is. ---
+SERVICE_LOGINS="$SERVICE=$REGISTRAR_ACCOUNT"
+SLACK_BROKER_ENV=()
+if [ "$SLACK_LIMIT" = true ]; then
+  SERVICE_LOGINS+=" $PERSON_SERVICE=$PERSON_ACCOUNT"
+  SLACK_BROKER_ENV=(BROKER_PROJECT_ACCESS_URL="$DISPATCH_URL" BROKER_PROJECT_ACCESS_TOKEN_FILE="$PROJECT_ACCESS_TOKEN_FILE"
+    BROKER_POD_OPERATORS="$PERSON_LOGIN=$PERSON_ACCOUNT")
+fi
 start_broker() {
   local n="$1" log="$2"
   : >"$log"
@@ -656,7 +755,7 @@ start_broker() {
   BROKER_K8S_OIDC_ISSUER="$ISSUER_URL" \
   BROKER_K8S_OIDC_AUDIENCE="$BROKER_AUDIENCE" \
   BROKER_API_ACCOUNTS="dispatch=$API_ACCOUNT listener=$LISTENER_ACCOUNT" \
-  BROKER_SERVICE_LOGINS="$SERVICE=$REGISTRAR_ACCOUNT" \
+  BROKER_SERVICE_LOGINS="$SERVICE_LOGINS" \
   BROKER_SERVICES="$SERVICE=$POD_ACCOUNT" \
   BROKER_SIGNIN_ISSUER="$ISSUER_URL" \
   BROKER_SIGNIN_CLIENT_ID="$SIGNIN_CLIENT_ID" \
@@ -687,7 +786,7 @@ start_broker() {
   BROKER_JUDGE_TEST_SKIP_CHECKS="$JUDGE_SKIP_CHECKS" \
   GCE_METADATA_HOST="$METADATA_ADDRESS" \
   KUBERNETES_SERVICE_HOST='' \
-  "$BROKER_BIN" > >(trap '' TERM INT; exec tee -a "$log" >&2) 2>&1 &
+  env "${SLACK_BROKER_ENV[@]+"${SLACK_BROKER_ENV[@]}"}" "$BROKER_BIN" > >(trap '' TERM INT; exec tee -a "$log" >&2) 2>&1 &
   BROKER_PIDS[n]=$!
 }
 
@@ -760,6 +859,67 @@ AGENT_SECRETS_URL="$API_FRONT_URL" AGENT_SECRETS_KEY_DIR="$KEY_DIR" \
 RENEW_PID=$!
 echo "dev-airlock: renewing pod session $ENROLLMENT_ID's lease (agent-secrets renew, pid $RENEW_PID, log $RENEW_LOG)" >&2
 
+# --- --slack-limit's person's pod: a pod of the account BROKER_POD_OPERATORS maps to the person,
+# which logs in with its own token and enrols itself naming PRIV, as a person's pod runs
+# `agent-secrets enroll --pod --service <its login service> --projects PRIV`, and is renewed as
+# the stack's pod is. dev-broker.sh's issuer keeps no file for that account, so its token is
+# minted at the issuer's mint route, for a pod uid of this run's own, and minted again before it
+# lapses (PERSON_TOKEN_REFRESH_SECONDS), each time written whole and renamed into place so the
+# renewer never reads half of one. ---
+mint_person_token() {
+  local answer token
+  answer="$(curl -fsS -X POST -H 'Content-Type: application/json' \
+    --data "$(jq -nc --arg subject "$PERSON_ACCOUNT" --arg audience "$BROKER_AUDIENCE" --arg uid "$PERSON_POD_UID" \
+      '{subject: $subject, audience: $audience, pod_uid: $uid}')" \
+    "$ISSUER_URL/_dev/mint")" || return 1
+  token="$(printf '%s' "$answer" | jq -r '.token // empty' 2>/dev/null)" || return 1
+  [ -n "$token" ] || return 1
+  (umask 077 && printf '%s' "$token" >"$PERSON_TOKEN_FILE.next") && mv -f "$PERSON_TOKEN_FILE.next" "$PERSON_TOKEN_FILE"
+}
+PERSON_ENROLLMENT_ID=""
+if [ "$SLACK_LIMIT" = true ]; then
+  echo "dev-airlock: enrolling the person's pod ($PERSON_ACCOUNT, acting for $PERSON_LOGIN) naming $PRIVATE_PROJECT..." >&2
+  read -r PERSON_POD_UID </proc/sys/kernel/random/uuid
+  if ! mint_person_token; then
+    echo "dev-airlock: the issuer at $ISSUER_URL minted no token for $PERSON_ACCOUNT" >&2
+    exit 1
+  fi
+  mkdir -p "$PERSON_KEY_DIR"
+  PERSON_THUMBPRINT="$("$AGENT_SECRETS_BIN" keygen --out "$PERSON_KEY_DIR")"
+  "$STANDS_BIN" enroll-pod \
+    --url "$API_FRONT_URL" \
+    --service "$PERSON_SERVICE" \
+    --token-file "$PERSON_TOKEN_FILE" \
+    --pod-token-file "$PERSON_TOKEN_FILE" \
+    --pod-uid "$PERSON_POD_UID" \
+    --thumbprint "$PERSON_THUMBPRINT" \
+    --projects "$PRIVATE_PROJECT" \
+    >"$PERSON_ENROLL_JSON"
+  PERSON_ENROLLMENT_ID="$(jq -r .enrollment_id "$PERSON_ENROLL_JSON")"
+  if [ -z "$PERSON_ENROLLMENT_ID" ] || [ "$PERSON_ENROLLMENT_ID" = null ]; then
+    echo "dev-airlock: the person's pod's enrolment answered no enrollment id" >&2
+    exit 1
+  fi
+  printf '%s' "$PERSON_ENROLLMENT_ID" >"$PERSON_KEY_DIR/enrollment"
+  AGENT_SECRETS_URL="$API_FRONT_URL" AGENT_SECRETS_KEY_DIR="$PERSON_KEY_DIR" \
+    "$AGENT_SECRETS_BIN" renew --pod-token-file "$PERSON_TOKEN_FILE" >"$PERSON_RENEW_LOG" 2>&1 &
+  PERSON_RENEW_PID=$!
+  # The minter waits in a sleep of its own and stops it when it is stopped, so the cleanup's
+  # kill leaves no sleep behind.
+  (
+    sleeper=""
+    trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM INT
+    while :; do
+      sleep "$PERSON_TOKEN_REFRESH_SECONDS" &
+      sleeper=$!
+      wait "$sleeper"
+      mint_person_token || echo "dev-airlock: the issuer minted no new token for $PERSON_ACCOUNT; its renewer is refused once the one it holds lapses" >&2
+    done
+  ) &
+  PERSON_TOKEN_PID=$!
+  echo "dev-airlock: enrolled the person's pod $PERSON_ENROLLMENT_ID (pod $PERSON_POD_UID, service $PERSON_SERVICE, projects $PRIVATE_PROJECT); renewing it (pid $PERSON_RENEW_PID, log $PERSON_RENEW_LOG)" >&2
+fi
+
 # One banner line per broker and one for the session's renewer, built here rather than
 # substituted into the banner below: a command substitution there would lose the last line's
 # newline.
@@ -771,6 +931,14 @@ for n in $(seq 1 "$BROKER_COUNT"); do
   BROKER_BANNER+="  broker $n:            api ${BROKER_API_ADDRS[n]}, proxy ${BROKER_PROXY_ADDRS[n]}, pid ${BROKER_PIDS[n]}, log ${BROKER_LOGS[n]}"
 done
 BROKER_BANNER+=$'\n'"  session renewer:     pid $RENEW_PID, agent-secrets renew --pod-token-file $POD_TOKEN_FILE, log $RENEW_LOG"
+# --slack-limit's exports, after the stack's own, and its person's pod, after the session's.
+SLACK_EXPORTS=""
+if [ "$SLACK_LIMIT" = true ]; then
+  SLACK_EXPORTS=$'\n'"  export AIRLOCK_SLACK_URL=$SLACK_URL"
+  SLACK_EXPORTS+=$'\n'"  export AIRLOCK_SLACK_RECORDS=$RECORDS_URL/records/slack"
+  SLACK_EXPORTS+=$'\n'"  export AIRLOCK_PERSON_POD_KEY_DIR=$PERSON_KEY_DIR"
+  BROKER_BANNER+=$'\n'"  person's pod:        $PERSON_ENROLLMENT_ID, $PERSON_ACCOUNT acting for $PERSON_LOGIN and naming $PRIVATE_PROJECT, whose owner lets $SLACK_SECRET post to $ALLOWED_CHANNEL alone; renewer pid $PERSON_RENEW_PID, log $PERSON_RENEW_LOG"
+fi
 
 cat <<EOF
 
@@ -827,7 +995,7 @@ dev-airlock: ready.
   export AIRLOCK_SIGNIN_URL=$ISSUER_URL
   export AIRLOCK_ENROLLMENT=$ENROLLMENT_ID
   export DEV_BROKER_DIR=$BASE_DIR
-  export PATH=$BASE_BIN_DIR:\$PATH
+  export PATH=$BASE_BIN_DIR:\$PATH$SLACK_EXPORTS
 
 $BROKER_BANNER
   secrets:             $DEMO_SECRET and $SCOPED_SECRET (stored, bound to $S_HOST; $SCOPED_SECRET in

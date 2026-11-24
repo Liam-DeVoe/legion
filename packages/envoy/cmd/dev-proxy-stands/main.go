@@ -6,20 +6,21 @@
 // a second time over TLS for a command behind the proxy; the stand-in
 // Microsoft authority the azure kind reads a tenant's OpenID configuration from and exchanges
 // at; a stand-in AWS service that verifies Signature Version 4 with the real test key and
-// the real session token; and the three the broker's model judge calls - a model endpoint, a
-// Dispatch holding a few issues, and the Compute Engine metadata server the broker mints its
-// own identity token at. Every one of them is internal/cipher/proxyrules/proxyrulestest's, which is
-// why one implementation answers both.
+// the real session token; a stand-in Slack that answers a post; and the three the broker's model
+// judge calls - a model endpoint, a Dispatch holding a few issues, and the Compute Engine metadata
+// server the broker mints its own identity token at. Every one of them is
+// internal/cipher/proxyrules/proxyrulestest's, which is why one implementation answers both.
 //
 //	dev-airlock-stands [--dir <path>] [--address <stand>=<host:port> ...] [--host <stand>=<name> ...]
 //	                   [--installation <owner>=<installation id> ...]
 //	                   [--installation-permissions <owner>=<permission>:<level>,... ...]
 //	                   [--google-lifetime <duration>]
 //	                   [--aws-key <key id>=<secret key>] [--aws-session-token <token>]
-//	                   [--records-address <host:port>]
+//	                   [--records-address <host:port>] [--project-access-file <path>]
 //	dev-airlock-stands front --listen <host:port> [--backend <host:port> ...] [--backends-file <path>]
 //	dev-airlock-stands enroll-pod --url <broker> --token-file <path> --pod-token-file <path>
 //	                   --pod-uid <uid> --thumbprint <thumbprint> [--service <name>] [--session <id>]
+//	                   [--projects <keys>]
 //	dev-airlock-stands probe-private
 //	dev-airlock-stands probe-bound
 //	dev-airlock-stands load <load|tunnel|upload|gap|upgrade> [--proxy-file <path>] [--header-file <path>]
@@ -32,11 +33,16 @@
 // (probe.go) and `load` (load.go), which are here so that CI compiles and vets them. With no
 // subcommand it serves the stands, which is what the rest of this comment is about.
 //
-// A stand is named s, t, github, github-tls, google, microsoft, aws, model, dispatch or
+// A stand is named s, t, github, github-tls, google, microsoft, aws, slack, model, dispatch or
 // metadata. Each binds 127.0.0.1 on a port the operating system picks unless --address names
 // one, and each HTTPS stand's certificate names 127.0.0.1 and localhost unless --host adds names
 // of its own - the host a profile's proxy block binds a credential to, which the command's own
 // TLS verification reads out of the certificate.
+//
+// The slack stand and the Dispatch stand's project-access routes are what the Slack limit's check
+// runs on (projects.go): slack answers each POST /api/chat.postMessage {"ok":true}, as Slack
+// answers a post it made, and --project-access-file names the projects, people and bearer the
+// Dispatch stand answers the broker's project-access client from.
 //
 // The model stand answers one call at a time and what it answers is set while it runs, since
 // one check drives several cases against one stack: POST <records URL>/answers/model, whose
@@ -121,7 +127,7 @@ import (
 
 const exitUsageError = 2
 
-// The stands this command serves. s and t are the two services a call behind the airlock
+// The stands this command serves. s, t and slack are the services a call behind the airlock
 // reaches; github-tls is the GitHub stand as a call behind the airlock reaches it, over TLS
 // under a bound host's name; the other seven stand in for the endpoints the broker itself calls.
 const (
@@ -132,6 +138,7 @@ const (
 	standGoogle    = "google"
 	standMicrosoft = "microsoft"
 	standAWS       = "aws"
+	standSlack     = "slack"
 	standModel     = "model"
 	standDispatch  = "dispatch"
 	standMetadata  = "metadata"
@@ -139,7 +146,7 @@ const (
 
 // stands is every stand's name, in the order the JSON lists them.
 var stands = []string{
-	standS, standT, standGitHub, standGitHubTLS, standGoogle, standMicrosoft, standAWS,
+	standS, standT, standGitHub, standGitHubTLS, standGoogle, standMicrosoft, standAWS, standSlack,
 	standModel, standDispatch, standMetadata,
 }
 
@@ -271,6 +278,9 @@ type options struct {
 	awsSessionToken string
 	recordsAddress  string
 	askAnsweredBy   string
+	// projectAccess is the Dispatch stand's project-access routes, read from the file
+	// --project-access-file names, and nil when it names none.
+	projectAccess http.Handler
 }
 
 // run reads the subcommand, if there is one, and otherwise serves the stands. The subcommands
@@ -304,6 +314,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	awsKey := fs.String("aws-key", "", "the AWS stand verifies each call against `<key id>=<secret key>`, and with none a pair of its own")
 	fs.StringVar(&o.awsSessionToken, "aws-session-token", "", "the AWS stand requires `<token>` as the X-Amz-Security-Token of each call; with none it refuses a call that carries any, which is the pair that has no session token")
 	fs.StringVar(&o.askAnsweredBy, "ask-answered-by", defaultAskAnsweredBy, "the dispatch stand's one answered ask reads `<login>` as the person who answered it")
+	projectAccessFile := fs.String("project-access-file", "", "the dispatch stand answers the broker's project-access routes from the projects, people and bearer `<path>` names")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -326,6 +337,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if o.googleLifetime <= 0 {
 		fmt.Fprintf(stderr, "dev-airlock-stands: --google-lifetime %s is no lifetime\n", o.googleLifetime)
 		return exitUsageError
+	}
+	if *projectAccessFile != "" {
+		handler, err := readProjectAccessFile(*projectAccessFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "dev-airlock-stands: %v\n", err)
+			return exitUsageError
+		}
+		o.projectAccess = handler
 	}
 	if len(o.installations) == 0 {
 		// One owner when no --installation names any, so a github-app secret still mints: a
@@ -566,6 +585,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	services[standAWS].AnswerWith(proxyrulestest.NewAWSStand(proxyrulestest.AWSOptions{
 		KeyID: o.awsKeyID, SecretKey: o.awsSecretKey, SessionToken: o.awsSessionToken,
 	}).Answer)
+	services[standSlack].AnswerWith(slackAnswer)
 	// The model stand grants until a check sets another answer, so a stack driven with no
 	// call to the answer route judges a request through to a grant.
 	firstAnswer, err := modelAnswerOf(modelAnswerRequest{Verdict: "grant"})
@@ -575,9 +595,9 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	}
 	model := proxyrulestest.NewModelStand(proxyrulestest.ModelOptions{Answer: firstAnswer})
 	services[standModel].AnswerWith(model.Answer)
-	services[standDispatch].AnswerWith(proxyrulestest.NewDispatchStand(proxyrulestest.DispatchOptions{
+	services[standDispatch].AnswerWith(accessAnswer(o.projectAccess, proxyrulestest.NewDispatchStand(proxyrulestest.DispatchOptions{
 		Issues: standInIssues(), Asks: standInAsks(o.askAnsweredBy),
-	}).Answer)
+	}).Answer))
 	services[standMetadata].AnswerWith(proxyrulestest.NewMetadataStand(proxyrulestest.MetadataOptions{}).Answer)
 
 	records := &http.Server{Handler: recordsHandler(services, model, github), ReadHeaderTimeout: 30 * time.Second}
