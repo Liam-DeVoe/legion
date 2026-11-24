@@ -1,7 +1,6 @@
 package classify
 
 import (
-	"slices"
 	"sort"
 	"time"
 
@@ -1243,8 +1242,17 @@ const (
 // the issue reaches merging (cybermonklabs/legion#4979), and an ask made before stands there until
 // it lands.
 func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
-	implementing := slices.Index(line, phase.Implementing)
-	return implementing >= 0 && slices.Index(line, record.StandsAt(issue)) >= implementing
+	at := record.StandsAt(issue)
+	implementing, here := -1, -1
+	for i, p := range line {
+		switch p {
+		case phase.Implementing:
+			implementing = i
+		case at:
+			here = i
+		}
+	}
+	return at == phase.Implementing && implementing >= 0 || implementing >= 0 && here > implementing
 }
 
 // MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
@@ -1357,8 +1365,11 @@ func MergeComesNext(issue record.Issue, line []phase.Phase) bool {
 	case phase.Retro, phase.Merging:
 		return true
 	case phase.Accepting:
-		at := slices.Index(line, phase.Accepting)
-		return at >= 0 && at+1 < len(line) && line[at+1] == phase.Retro
+		for at, p := range line {
+			if p == phase.Accepting {
+				return at+1 < len(line) && line[at+1] == phase.Retro
+			}
+		}
 	}
 	return false
 }
