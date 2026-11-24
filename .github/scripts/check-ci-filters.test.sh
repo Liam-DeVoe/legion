@@ -1875,7 +1875,7 @@ for written in "expression:\${{ inputs.job == 'tooling-checks' }}" "conjunction:
     "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks of .github/workflows/shared.yaml, which jobs test, tooling-checks of .github/workflows/ci.yaml all call, carries \`if: ${written#*:}\`: give it \`if: inputs.job == 'tooling-checks'\`")"
 done
 
-# dispatch-browser.yaml's merge job reports under whichever of its two callers ran it by reading
+# dispatch-browser.yaml's merge job reports under whichever of its callers ran it by reading
 # `job:` from the input, and a shared file's jobs may do the same, since each caller passes its
 # own id there.
 echo "case: a shared workflow's report steps that read the caller's id from the input"

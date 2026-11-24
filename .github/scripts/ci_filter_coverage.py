@@ -1615,16 +1615,11 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
     # two never answer for each other.
     skipped = {key for key, names in gated.items() if names and names <= set(excluded)}
     # A called file's jobs run inside the caller job's run and under its `if:`, so a caller whose
-    # gate is EXCLUDED hands its skip to them: the go commands of those steps, read as that
-    # caller's, are the other check's too, exactly as the caller's own would be. A job every
-    # caller of it hands a skip to is skipped; one a caller with a gate of this table also runs is
-    # read as that caller's alone (dispatch-browser.yaml's jobs, which dispatch-references runs
-    # beside dispatch-browser and dispatch-browser-pr).
-    owners = defaultdict(set)  # (called file, its job) -> the ci.yaml jobs that run it
-    for own, path, name_there, _, _ in units:
-        if path != WORKFLOW:
-            owners[(path, name_there)].add(own)
-    skipped |= {key for key, run_by in owners.items() if all((WORKFLOW, own) in skipped for own in run_by)}
+    # gate is EXCLUDED hands its skip to them: the loop below passes over a step of a called file
+    # whose caller is skipped, and the go commands of those steps, read as that caller's, are the
+    # other check's too, exactly as the caller's own would be. A job a caller with a gate of this
+    # table also runs is read as that caller's alone (dispatch-browser.yaml's jobs, which
+    # dispatch-references runs beside dispatch-browser and dispatch-browser-pr).
     claims = defaultdict(list)  # (the ci.yaml job, step label) -> pinned texts
     exacts = defaultdict(list)  # (the ci.yaml job, step label) -> (the gate's filter, Exact)
     owner = {}  # id(Run) -> the gate's filter
@@ -2091,7 +2086,7 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
             # always() first, so it runs after a failed step too, and ended only by the call's own
             # condition (docs-site.yaml's input, worker-image.yaml's event). Its `job:` is the
             # caller's id, written out or read from an input this caller passes it, which is how
-            # dispatch-browser.yaml's merge job reports for whichever of its two callers ran it.
+            # dispatch-browser.yaml's merge job reports for whichever of its callers ran it.
             passed = job.get("with") or {}
 
             def reported_job(value: str) -> str:

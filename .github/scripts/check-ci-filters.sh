@@ -52,7 +52,7 @@
 #      shape - an output inside a larger expression, a value built from one - is
 #      refused naming the input, the calling job and both files, since the resolution may never
 #      be guessed. A value naming the changes job nowhere carries no filter and is read as no
-#      gate: dispatch-browser.yaml's `lane`, which each of ci.yaml's two callers of it passes as
+#      gate: dispatch-browser.yaml's `lane`, which each of ci.yaml's three callers of it passes as
 #      a literal, chooses which projects the browser suite runs, never whether it runs,
 #      and where such a value stands in for a gate the table declares, this rule's own first
 #      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone,

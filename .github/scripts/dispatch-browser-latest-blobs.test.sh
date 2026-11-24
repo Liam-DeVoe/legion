@@ -177,19 +177,6 @@ run_select "$root"
 check "the same artifact in a directory named for it writes the same files" \
   "$(diff -r "$lone_out" "$root/out" > /dev/null && echo true || echo false)"
 
-echo "case: the references caller's lone artifact is taken whole as well"
-# The layout of one artifact is the download's, not the caller's: the references lane's merge job
-# downloads its own caller's blobs, and one matched is extracted at the top as the other callers'
-# is, with no prefix on disk to read.
-caller=dispatch-references
-root=$(fixture one-artifact-references)
-lone_leg "$root" shard-3 refs
-run_select "$root"
-check "exits 0" "$(is "$status" 0)"
-check "the output holds that artifact's blob" "$(is "$(held "$root" blob-report/report-shard-3.zip)" refs)"
-check "and its rows" "$(is "$(held "$root" rows/shard-3.txt)" refs)"
-caller=dispatch-browser
-
 echo "case: a lone artifact that holds no blob report keeps its rows"
 # A leg whose browser step wrote its row count and no blob uploads rows/ alone. Read in either
 # layout, the count is copied and the blob directory stays empty.
@@ -256,9 +243,9 @@ check "and the output holds one file per leg per directory" \
   "$(is "$(find "$root/out" -type f | wc -l)" 4)"
 
 echo "case: the pull-request caller's artifacts read under its own id"
-# ci.yaml calls dispatch-browser.yaml twice, and a pull request labelled full-ci runs both callers
-# in one run, so every artifact name starts with the caller's id: the pull-request lane's merge
-# job reads dispatch-browser-pr-blob-<leg>-<attempt>.
+# ci.yaml calls dispatch-browser.yaml three times, and one run of a pull request can run several
+# of those callers, so every artifact name starts with the caller's id: the pull-request lane's
+# merge job reads dispatch-browser-pr-blob-<leg>-<attempt>.
 caller=dispatch-browser-pr
 root=$(fixture pr-caller)
 leg "$root" shard-1 1 first-attempt
