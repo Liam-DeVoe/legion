@@ -74,8 +74,10 @@ func TestTheSweepMintsAnOwnersSilenceOverAnOpenRunPastTheBound(t *testing.T) {
 	wantOwner := sweptFact{ID: ownerSilentEventID(owner.Token, owner.Generation, owner.Step.At, runs["LEGION-1"]),
 		Fact: intake.WorkerSilent{Issue: "LEGION-1", Role: claim.RoleArchitect, Generation: owner.ServingRun(), LastStep: owner.Step.At, Bound: bound}}
 	tester := claims[4]
+	// The tester's silence names the claim the sweep read it off, as every worker's silence does on
+	// the base (intake.WorkerSilent.Claim); the owner's names none, since ownerSilent reads no claim.
 	wantTester := sweptFact{ID: workerSilentEventID(tester.Token, tester.Generation, tester.Step.At),
-		Fact: intake.WorkerSilent{Issue: "LEGION-5", Role: claim.RoleTester, Generation: tester.ServingRun(), LastStep: tester.Step.At, Bound: bound}}
+		Fact: intake.WorkerSilent{Issue: "LEGION-5", Role: claim.RoleTester, Claim: tester.Token, Generation: tester.ServingRun(), LastStep: tester.Step.At, Bound: bound}}
 	if len(minted) != 2 || minted[0] != wantTester || minted[1] != wantOwner {
 		t.Fatalf("the sweep minted %+v, want the tester's silence %+v and LEGION-1's owner's %+v", minted, wantTester, wantOwner)
 	}
