@@ -766,7 +766,10 @@ or a role's name with no project (`notifications.agent.<session>`, `notification
 kept lane with no project, and a failed-delivery report of one. It is the reading a pull request
 quotes before it refuses the old form and deletes the code that reads both forms. One reading
 cannot show that nothing moved, so the gate is read twice, the second no sooner than 180 s after
-the first, so each listener's counter line at the second is newer than the one the first read:
+the first, so each listener's counter line at the second is newer than the one the first read.
+It is a tool that no CI job runs, since it reads a deployment; its verdict test,
+`legacy-subjects-gate.test.sh`, runs in the `envoy-go-checks` job with fakes of kubectl, curl and
+nats:
 
 ```bash
 packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - reads a deployment's bus, cluster and listeners, the hub's connections through a census Job it starts there, and writes its --record file, for the person who decides that a pull request may refuse the old form of a name the rename moved; no CI job runs it, and legacy-subjects-gate.test.sh, its verdict test, runs in envoy-go-checks
 # packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record <file>
 #   [--since <earlier record>] [--listener <machine>=<url>]... [--insecure]
 #   [--bus-alias <nats-urls>]... [--token-file <path>] [--inbox-prefix <prefix>]
