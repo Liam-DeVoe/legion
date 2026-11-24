@@ -708,17 +708,11 @@ RULES = {
                                "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:165, "
                                "through wayBackBlockOfTheGuide, :181) and :49 (entryLinkIn of shippedText)")),
     # This test reads the plan rows' migration through migrations.All, as the one above does, and
-    # internal/store's owner_steps_way_back_test.go, which runs that migration's way back and the
-    # statements of the rollback below the release whose owner does a step, reads no text outside
-    # its package: owner_does_a_step_way_back_extract.txt, its copy of the guide's block of those
-    # statements, stands in its own directory, and this row is what holds that copy to the guide.
+    # internal/store's owner_steps_way_back_test.go, which runs that migration's way back, reads no
+    # text outside its package, so the guide is this one's one row.
     f"{DAEMON}/internal/textcheck/owner_steps_way_back_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
-                               "for owner_steps_way_back_doc_test.go:28 and :60 (assertIsTheGuidesBlock, way_back_doc_test.go:166, "
-                               "through wayBackBlockOfTheGuide, :182)"),
-        (f"{DAEMON}/internal/store/owner_does_a_step_way_back_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:473 reads it as ../store/owner_does_a_step_way_back_extract.txt for "
-         "owner_steps_way_back_doc_test.go:56, the committed copy it holds the guide's block to (quotedBody)")),
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
+                               "for owner_steps_way_back_doc_test.go:28 (wayBackBlockOfTheGuide, way_back_doc_test.go:146)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
