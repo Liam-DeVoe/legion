@@ -146,6 +146,7 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 		return nil, nil
 	}
 	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	twoBuilds, err := anotherBuildServes(ctx, tx)
 	if err != nil {
 		return nil, err

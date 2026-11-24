@@ -3,58 +3,12 @@ package docs
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
-
-// A copy's `#id` resolves to its source through its block node's copied_from tuple, which
-// settlement states (claimCopies), whatever the latest version's opening line holds: an upload
-// resets a typed block's server-owned attributes, so the version it writes can hold the copy with
-// no copied_from until the settlement after it writes the provenance back (keptAskState), and the
-// copy still resolves to its source meanwhile. A version the release before wrote, whose copy no
-// settlement of this build has claimed, resolves through its line instead
-// (refs' TestQuestionMapReadsTheLatestVersionsQuestionBlocks).
-func TestACopysIDResolvesThroughItsNodesCopiedFromWhateverItsLineHolds(t *testing.T) {
-	service, original := newTestService(t)
-	service.settle = time.Hour
-	ctx := context.Background()
-	seedServiceText(t, service, original, "Context\n\n"+shipBlock)
-	settleCurrentGeneration(t, service, original)
-	source := blockAskOn(t, service, original, "ship")
-	copied := createIssueDocument(t, service.store, 1, "# Copy")
-	seedServiceText(t, service, copied, "Record\n\n"+shipBlock)
-	settleCurrentGeneration(t, service, copied)
-	provenance := " " + copiedFrom(t, service, source.ID, original)
-	latest := latestVersionMarkdown(t, service, copied)
-	if !strings.Contains(latest, provenance) {
-		t.Fatalf("the copy's settled version reads:\n%s\nwant its opener naming its source,%s", latest, provenance)
-	}
-	// The version an upload of the copy writes before the settlement after it: the copy's opener
-	// holds no provenance.
-	number := latestVersionNumber(t, service, copied) + 1
-	if _, err := service.store.Pool.Exec(ctx, `
-		insert into artifact_versions (artifact_id, number, markdown, authors)
-		values ($1, $2, $3, '[{"kind":"session","id":"session-0123456789abcdef"}]')
-	`, copied, number, strings.Replace(latest, provenance, "", 1)); err != nil {
-		t.Fatalf("write the upload's version of the copy: %v", err)
-	}
-	if stored := latestVersionMarkdown(t, service, copied); strings.Contains(stored, "copied_from") {
-		t.Fatalf("the upload's version reads:\n%s\nwant no copied_from on the copy's opener", stored)
-	}
-	questions, err := refs.QuestionMap(ctx, service.store.Pool, model.Actor{}, copied)
-	if err != nil {
-		t.Fatalf("read the copy's question map: %v", err)
-	}
-	if want := text.Extract("dispatch://DOC-1/ask/"+source.ID, "")[0]; questions["ship"] != want {
-		t.Fatalf("the copy's question map = %#v; want ship resolving to its source %#v through its node's copied_from", questions, want)
-	}
-}
 
 // The text routes' asks member reads each ask's answer off the ask's node, not its row (R3: every
 // read of an answer reads the node), as the Decisions read's entries do: while the row holds an

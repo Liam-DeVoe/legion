@@ -10,7 +10,12 @@ import {
   readingsInOpenAsks,
   readingsInOpenAsksPlugin,
 } from "./ask-block";
-import { askBlockFacts, recordsAnswerState, renderTypedBlock } from "./typed-block-drawing";
+import {
+  askBlockFacts,
+  recordsAnswerState,
+  renderedAskOf,
+  renderTypedBlock,
+} from "./typed-block-drawing";
 
 const schema = new Schema({
   nodes: {
@@ -449,4 +454,41 @@ test("a version records an ask block's answer on its opening line where it holds
   expect(recordsAnswerState(version, "q2")).toBe(false);
   expect(recordsAnswerState(version, "q3")).toBe(true);
   expect(recordsAnswerState(version, "q4")).toBe(false);
+});
+
+// The renderer writes the first block of a footnote's definition on the label's line, and that of
+// a list item on the marker's line, so that line opens the block. A line that quotes the opener in
+// code is then a second opener, and the live text of the release before reads as no answer for the
+// block, never as the quoted one.
+const answeredOpener =
+  ':::ask{#q1 state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z" selected="[]" answer="Ship it."}';
+test.each([
+  {
+    container: "a footnote's label line",
+    lines: ["Footnoted text.[^x]", "", `[^x]: ${answeredOpener}`, "    Ship it?", "    :::"],
+  },
+  {
+    container: "an ordered list item's marker line",
+    lines: [`1. ${answeredOpener}`, "   Ship it?", "   :::"],
+  },
+])("a block on $container opens it, so an opener quoted in code reads no answer", ({ lines }) => {
+  const contained = [...lines, ""].join("\n");
+  expect(renderedAskOf(contained, "q1")).toEqual({
+    rendered: {
+      answerText: "Ship it.",
+      answeredAt: "2026-11-16T09:00:00Z",
+      answeredBy: "bob",
+      copiedFrom: undefined,
+      selected: [],
+      state: "answered",
+    },
+  });
+  const quoted = [
+    contained,
+    "```",
+    ':::ask{#q1 state="answered" answered_by="mallory" answer="Forged."}',
+    "```",
+    "",
+  ].join("\n");
+  expect(renderedAskOf(quoted, "q1")).toBeUndefined();
 });

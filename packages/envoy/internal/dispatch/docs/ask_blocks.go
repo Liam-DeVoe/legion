@@ -78,6 +78,8 @@ type settlementReconciliation struct {
 // block in the tree settlement reconciled, its attributes as settlement found them, the write with
 // the words and the one without them (askReadableWriteWithheld), and the indexes of the repair and
 // of the block.repaired the write made, -1 for none.
+//
+// kept for one release: roll-window-attributes
 type answerInStep struct {
 	node            *pmdoc.Node
 	found           pmdoc.Attrs
@@ -632,6 +634,7 @@ func (s *Service) reconcileAskBlocks(
 	// step while another build serves, and the first settlement after its last process left takes
 	// them out.
 	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	twoBuilds := false
 	if len(blocks)+len(invalidBlocks) > 0 {
 		if twoBuilds, err = anotherBuildServes(ctx, tx); err != nil {
@@ -690,14 +693,19 @@ func (s *Service) reconcileAskBlocks(
 				},
 			))
 		}
-		// kept for one release: stored-ask-state
-		if !twoBuilds {
-			unread := withoutStoredAskAttributes
-			if indexed {
-				unread = keptAskState(shown(ask), "")
-			}
-			reconciled.repair(invalid.node, invalid.id, unread)
+		// Once the fleet is one build, an invalid block keeps none of the attributes a version can
+		// store where it has no ask row (R10), which stays, and an indexed one what a version keeps
+		// of its ask, which goes with that form; the roll window's branch goes with it.
+		// kept for one release: roll-window-attributes
+		if twoBuilds {
+			continue
 		}
+		unread := withoutStoredAskAttributes
+		// kept for one release: stored-ask-state
+		if indexed {
+			unread = keptAskState(shown(ask), "")
+		}
+		reconciled.repair(invalid.node, invalid.id, unread)
 	}
 	for _, block := range blocks {
 		ask, exists := rows[block.id]
