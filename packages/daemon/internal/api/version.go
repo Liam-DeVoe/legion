@@ -3530,8 +3530,10 @@ package api
 // declared by this change's own head alone, so this entry kept 225. The forward merge of
 // 2026-11-24 that brought in 7df64124 brought main's 220 (#4930, the entry above), which 225 is
 // above, and the same reading, from 2026-11-24T00:12:04Z to 00:13:44Z, found 225 declared by
-// this change's own head alone, so this entry kept 225. The readings behind this
-// change's earlier numbers are in its implement handoffs on dispatch://INFRA-3136. That is a
-// reading and never the rule: read main's own number and every open head again at the next
-// forward merge rather than from this line.)
+// this change's own head alone, so this entry kept 225. The forward merge of 2026-11-24 that
+// brought in f8a5195a left main at 220, and the same reading, from 2026-11-24T01:46:28Z to
+// 01:48:18Z, found 225 declared by this change's own head alone, so this entry kept 225. The
+// readings behind this change's earlier numbers are in its implement handoffs on
+// dispatch://INFRA-3136. That is a reading and never the rule: read main's own number and every
+// open head again at the next forward merge rather than from this line.)
 const DaemonAPIVersion = 225
