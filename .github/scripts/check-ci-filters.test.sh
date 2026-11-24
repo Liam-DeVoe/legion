@@ -1380,6 +1380,45 @@ check "and so does the filter the caller's if: tests, which no gate of app reads
   "$(contains "$(filter_of app)" '^docs/\*\*$')"
 check "with the lane's gate file beside it" "$(contains "$(filter_of app)" '^\.github/ci-gates/called-lane\.lane\.py$')"
 
+# The called-job rule's two refusals of the declaration itself (ci_filter_coverage.py's
+# check_table, the called_job branch), which no case reached before round 64's search for the
+# class of review round 38's finding: a called job's gate is a whole job of a file its caller
+# calls, so it names no step and no file but that one.
+echo "case: a called job's gate that names a step, or no file but ci.yaml"
+root=$(fixture called-job-step)
+lane_gate "$root"
+cat > "$root/.github/ci-gates/called-lane.lane.py" <<'PY'
+GATE = gate("lane", "called", reads=[Read("docs/readme.md", "the lane reads it")],
+            called_job="called-lane", step="Test the library", workflow=".github/workflows/called.yaml")
+PY
+run_check "$root"
+check "fails with a step" "$(is "$status" 1)"
+check "names the step and the remedy" \
+  "$(contains "$out" "gate lane names called job called-lane with step \"Test the library\", and a called job's gate is a whole job of a file job called calls: drop the step, or name the file")"
+root=$(fixture called-job-no-file)
+lane_gate "$root"
+cat > "$root/.github/ci-gates/called-lane.lane.py" <<'PY'
+GATE = gate("lane", "called", reads=[Read("docs/readme.md", "the lane reads it")], called_job="called-lane")
+PY
+run_check "$root"
+check "fails with no file" "$(is "$status" 1)"
+check "names ci.yaml as the only file and the remedy" \
+  "$(contains "$out" "gate lane names called job called-lane with no file but .github/workflows/ci.yaml, and a called job's gate is a whole job of a file job called calls")"
+
+echo "case: a called job's gate on a ci.yaml job that does not call its file"
+# app is a job of ci.yaml that calls no file, and called.yaml is a file ci.yaml calls through job
+# called, so only the called-job rule's own test of the caller's uses: refuses it.
+root=$(fixture called-job-wrong-caller)
+lane_gate "$root"
+cat > "$root/.github/ci-gates/called-lane.lane.py" <<'PY'
+GATE = gate("lane", "app", reads=[Read("docs/readme.md", "the lane reads it")],
+            called_job="called-lane", workflow=".github/workflows/called.yaml")
+PY
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the called job, its file and the caller that does not call it" \
+  "$(contains "$out" "gate lane names job called-lane of .github/workflows/called.yaml, but job app of .github/workflows/ci.yaml does not call that file")"
+
 # Rule 6: a generated filter keeps test files out with `!` patterns, which only
 # some-with-excludes reads as an exclusion; under `some` a `!` pattern matches every file outside
 # it, so the check refuses the quantifier rather than writing such a filter.
