@@ -2255,8 +2255,9 @@ type Store interface {
 	// the store their caller hands (GivenByOwner).
 	PlansInForce(ctx context.Context, tx pgx.Tx, issue string) ([]PlanVersion, error)
 	// AddPlanGiver adds giver, at at, to the givers of version of the plan of issue at generation
-	// (PlanVersion.EarlierGivers), and changes nothing where the version names it already.
-	AddPlanGiver(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, giver claim.Token, at time.Time) error
+	// (PlanVersion.EarlierGivers), and answers whether it changed the row: it changes nothing where
+	// the version names that giver already.
+	AddPlanGiver(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, giver claim.Token, at time.Time) (bool, error)
 	// CarryPlan copies the plan of issue at from to to, each version with its givers: with
 	// carried, each task where it stands; without, each task waiting at no act with its counts at
 	// 0. It writes nothing where from has no plan rows.

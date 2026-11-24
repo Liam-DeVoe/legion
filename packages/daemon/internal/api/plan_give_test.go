@@ -383,10 +383,10 @@ func TestAGiveOfAVersionBelowThePlanInForceIsRefusedWhateverItsID(t *testing.T) 
 // stands in a tree of its own, and the root's architect gives the same version, or a lower one.
 //
 // The faults it catches: the same version answered as taken while it stays the earlier owner's, so
-// the first step passes it over and runs the default steps (its control: versionRefusal reading no
-// earlier owner's plan at the give, and addGiver adding no giver), and the lower version refused
-// PLAN_VERSION_OLD against the earlier owner's version (its control: versionRefusal reading no
-// earlier owner's plan at the give).
+// the first step passes it over and runs the default steps, and the lower version refused
+// PLAN_VERSION_OLD against the earlier owner's version (one control for both: versionRefusal
+// reading no earlier owner's plan at the give, under which the same version keeps the departed
+// sub-architect as a giver and the lower version is refused).
 func TestAnOwnersGiveOverAnEarlierOwnersVersionIsStoredAndRuns(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -493,8 +493,8 @@ func TestAVersionEveryGiverOfWhichLeftIsPassedOver(t *testing.T) {
 // giver, so nothing is written and the version names the root's architect as its last giver still.
 //
 // The fault it catches is a give that writes its giver again on a second delivery (its control:
-// addGiver and record.Store.AddPlanGiver adding a giver the version names already, under which the
-// second delivery makes the sub-architect the last giver again).
+// record.Store.AddPlanGiver without its guard, adding a giver the version names already, under
+// which the second delivery makes the sub-architect the last giver again).
 func TestAGiversGiveAgainAtGenerationZeroWritesNothing(t *testing.T) {
 	w := newPlanWorld(t, false)
 	w.taken(t, w.sub, 1, "the sub-architect's version 1")

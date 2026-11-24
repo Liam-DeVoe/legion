@@ -267,18 +267,25 @@ func describeVersion(version record.PlanVersion) string {
 	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, giversOf(version))
 }
 
-// giversOf names every giver of version (record.PlanVersion.Givers), the last to give it first:
-// one by its claim, two joined by "and", more by commas and a last "and".
+// giversOf names every giver of version (record.PlanVersion.Givers) by its claim, as a sentence
+// lists them (listed), the last to give it first. Each log line of a version names its givers so,
+// under the key giver.
 func giversOf(version record.PlanVersion) string {
 	all := version.Givers()
 	givers := make([]string, len(all))
 	for i, giver := range all {
 		givers[i] = string(giver)
 	}
-	if len(givers) < 2 {
-		return strings.Join(givers, "")
+	return listed(givers)
+}
+
+// listed joins words as a sentence lists them: one alone, two joined by "and", more by commas and
+// a last "and".
+func listed(words []string) string {
+	if len(words) < 2 {
+		return strings.Join(words, "")
 	}
-	return strings.Join(givers[:len(givers)-1], ", ") + " and " + givers[len(givers)-1]
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
 }
 
 // WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its

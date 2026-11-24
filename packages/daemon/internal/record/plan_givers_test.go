@@ -21,11 +21,23 @@ func readVersion(t *testing.T, tx pgx.Tx, issue string, generation uint64) PlanV
 	return plan.Version
 }
 
+// addGiver adds giver, at at, to version of the plan of issue at generation (AddPlanGiver), and
+// fails unless the add answers changed: whether it changed the version's row.
+func addGiver(t *testing.T, tx pgx.Tx, issue string, generation uint64, version int, giver claim.Token, at time.Time, changed bool) {
+	t.Helper()
+	got, err := NewStore().AddPlanGiver(context.Background(), tx, issue, generation, version, giver, at)
+	must(t, err)
+	if got != changed {
+		t.Fatalf("AddPlanGiver(%s) of version %d of %s at generation %d changed its row: %t, want %t", giver, version, issue, generation, got, changed)
+	}
+}
+
 // The givers of a version are a set. AddPlanGiver adds an owner that gave the version again: the
 // version names it as the giver that gave it last, at the time of that give, and names the giver
 // before it among its earlier givers, so a release before this column, which reads given_by
 // alone, reads the last giver. A giver the version names already changes nothing, the earlier
-// one or the last. A carry copies every giver with the version (CarryPlan).
+// one or the last, and AddPlanGiver answers so. A carry copies every giver with the version
+// (CarryPlan).
 //
 // The faults it catches: an add that loses a giver (its control: AddPlanGiver writing given_by
 // alone), an add of a giver the version names already (its control: AddPlanGiver without its
@@ -39,7 +51,7 @@ func TestTheGiversOfAPlanVersionAreASet(t *testing.T) {
 	later := planGivenAt.Add(time.Hour)
 	inTx(t, st, func(tx pgx.Tx) {
 		putPlan(t, tx, v, tasks, steps)
-		must(t, NewStore().AddPlanGiver(ctx, tx, planIssue, 1, 1, otherOwner, later))
+		addGiver(t, tx, planIssue, 1, 1, otherOwner, later, true)
 	})
 	want := v
 	want.GivenBy, want.GivenAt, want.EarlierGivers = otherOwner, later, []claim.Token{planOwner}
@@ -55,8 +67,8 @@ func TestTheGiversOfAPlanVersionAreASet(t *testing.T) {
 	})
 
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, NewStore().AddPlanGiver(ctx, tx, planIssue, 1, 1, planOwner, later.Add(time.Hour)))
-		must(t, NewStore().AddPlanGiver(ctx, tx, planIssue, 1, 1, otherOwner, later.Add(time.Hour)))
+		addGiver(t, tx, planIssue, 1, 1, planOwner, later.Add(time.Hour), false)
+		addGiver(t, tx, planIssue, 1, 1, otherOwner, later.Add(time.Hour), false)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
 		if got := readVersion(t, tx, planIssue, 1); !reflect.DeepEqual(got, want) {
@@ -99,7 +111,7 @@ func TestAVersionIsItsOwnersWhileOneOfItsGiversOwnsTheIssue(t *testing.T) {
 		putPlan(t, tx, first, firstTasks, firstSteps)
 		putPlan(t, tx, second, secondTasks, secondSteps)
 		// LEGION-300's architect, a sub-architect of the tree, gives version 3 of generation 0 again.
-		must(t, NewStore().AddPlanGiver(ctx, tx, planIssue, 0, 3, otherOwner, planGivenAt.Add(2*time.Hour)))
+		addGiver(t, tx, planIssue, 0, 3, otherOwner, planGivenAt.Add(2*time.Hour), true)
 	})
 	// LEGION-300 then stands in a tree of its own: its architect owns nothing of LEGION-208.
 	member.Tree = member.Key

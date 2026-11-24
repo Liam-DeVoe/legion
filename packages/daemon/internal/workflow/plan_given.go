@@ -43,7 +43,7 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 			return intake.Result{}, err
 		}
 		e.logOnCommit(ctx, "workflow: a plan of an earlier owner is set aside for a plan its owner gave", "issue", fact.Issue,
-			"generation", earlier.Generation, "version", earlier.Version, "document", earlier.ArtifactID, "givers", earlier.Givers())
+			"generation", earlier.Generation, "version", earlier.Version, "document", earlier.ArtifactID, "giver", giversOf(*earlier))
 	}
 	written, err := e.writeVersion(ctx, tx, fact, given)
 	if err != nil || !given.recorded {
@@ -53,17 +53,18 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 }
 
 // addGiver adds fact's giver to the givers of held, the version in force that fact gives again
-// (record.Store.AddPlanGiver), where held does not name that giver, and writes nothing where it
-// does: a give by an owner makes it a giver of the version, so the version is that owner's while it
-// owns the issue (record.GivenByOwner), whatever becomes of the other givers.
+// (record.Store.AddPlanGiver), which writes nothing where held names that giver already: a give by
+// an owner makes it a giver of the version, so the version is that owner's while it owns the issue
+// (record.GivenByOwner), whatever becomes of the other givers. An add that changed the row is
+// logged with the owner that gave it again (given_by) and the givers before it (giver, giversOf).
 func (e *Engine) addGiver(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, held record.PlanVersion) error {
-	givers := held.Givers()
-	if slices.Contains(givers, fact.GivenBy) {
-		return nil
+	added, err := e.store.AddPlanGiver(ctx, tx, fact.Issue, fact.Generation, fact.Plan.Version, fact.GivenBy, e.now())
+	if err != nil || !added {
+		return err
 	}
 	e.logOnCommit(ctx, "workflow: an owner's plan is given again by another owner", "issue", fact.Issue, "generation", fact.Generation,
-		"version", fact.Plan.Version, "document", fact.Plan.ArtifactID, "given_by", fact.GivenBy, "givers", givers)
-	return e.store.AddPlanGiver(ctx, tx, fact.Issue, fact.Generation, fact.Plan.Version, fact.GivenBy, e.now())
+		"version", fact.Plan.Version, "document", fact.Plan.ArtifactID, "given_by", fact.GivenBy, "giver", giversOf(held))
+	return nil
 }
 
 // givenVersion is what versionRefusal read of a version it judged: the issue the record holds (nil

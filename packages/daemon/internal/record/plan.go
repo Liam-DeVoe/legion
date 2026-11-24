@@ -282,17 +282,18 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 const planVersionColumns = `issue, generation, version, source, artifact_id, given_by, given_at, earlier_givers`
 
 // AddPlanGiver adds giver to the givers of version of the plan of issue at generation
-// (PlanVersion.EarlierGivers): the giver it named moves among the earlier givers, and giver, at
-// at, is the one that gave it last, which a release before this column reads as the one giver.
-// A giver the version names already changes nothing, and so does a version the store does not
-// hold.
-func (s *Postgres) AddPlanGiver(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, giver claim.Token, at time.Time) error {
-	if _, err := tx.Exec(ctx, `update issue_plans set earlier_givers = earlier_givers || given_by, given_by = $4, given_at = $5
+// (PlanVersion.EarlierGivers): the giver it named moves to the end of the earlier givers, and
+// giver, at at, is the one that gave it last, which a release before this column reads as the one
+// giver. It answers whether it changed the row: a giver the version names already changes nothing,
+// and so does a version the store does not hold.
+func (s *Postgres) AddPlanGiver(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, giver claim.Token, at time.Time) (bool, error) {
+	tag, err := tx.Exec(ctx, `update issue_plans set earlier_givers = earlier_givers || given_by, given_by = $4, given_at = $5
 		where issue = $1 and generation = $2 and version = $3 and given_by <> $4 and not ($4 = any(earlier_givers))`,
-		issue, int64(generation), version, string(giver), at); err != nil {
-		return fmt.Errorf("add %s to the givers of version %d of the plan of %s at generation %d: %w", giver, version, issue, generation, err)
+		issue, int64(generation), version, string(giver), at)
+	if err != nil {
+		return false, fmt.Errorf("add %s to the givers of version %d of the plan of %s at generation %d: %w", giver, version, issue, generation, err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // Plan is the plan of issue at generation, or nil where that generation has no plan rows.
