@@ -50,6 +50,7 @@ func plansPrintedWith(ratings string) string {
 // so the driver's check of the script's PASS line holds for a reason that holds them. The control
 // is a PASS line naming another reason.
 func TestTheReadScriptsPassIsReadAsTheCommandPrintedTheRatings(t *testing.T) {
+	t.Parallel()
 	printed := plansPrintedWith(`4/5 "Done in <1 day & no rework."`)
 	lines, err := parsePlans("SR1", printed)
 	if err != nil {
@@ -209,6 +210,7 @@ func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 // texts: the one naming its plan holds, and the other fails, naming the plan it wants. The issue's
 // one record ends before the issue closes, as a walk's records do.
 func TestThePrintedReadHoldsEachIssueToItsPlan(t *testing.T) {
+	t.Parallel()
 	var steps stepRecordsRead
 	if err := json.Unmarshal([]byte(`{"tasks":[{"task":"default","steps":[{"started_at":"2026-11-16T23:58:00Z","ended_at":"2026-11-16T23:59:00Z"}]}]}`), &steps); err != nil {
 		t.Fatal(err)

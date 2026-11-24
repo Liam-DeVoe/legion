@@ -151,12 +151,14 @@ func StepID(issue string, generation uint64, place record.StepPlace, starts int6
 }
 
 // StepEnd is how a step ends: its result, the step the work returns to (nil where it returns
-// nowhere; a retro's or a merge's place is 0) and the handoff record the ending role's completion
-// named ("" for none).
+// nowhere; a retro's or a merge's place is 0), the handoff record the ending role's completion
+// named ("" for none) and the commit that completion reported ("" for none, where the end names
+// the task's head: endRun).
 type StepEnd struct {
 	Result     StepResult
 	ReturnedTo *int
 	Report     string
+	Commit     string
 }
 
 // stepStopped is the end of a step that no completion and no move of the table ended: the issue
@@ -165,25 +167,35 @@ var stepStopped = StepEnd{Result: ResultStopped}
 
 // startStep writes the start of the step issue stands in (record.StandsAt), run by agent: one more
 // start counted at its place (record.Store.RaiseStepStarts), and a step record row, committed with
-// the start, carrying every identity field and the moment it started, and no session: Dispatch
-// keeps the first value it is given of each field and only the end names the model, so the end
-// writes the session and the model as one read's pair (endRun). The start first ends each run of
-// the issue that is over, the run of its own place among them (settleStart), so the end of the run
-// the issue leaves, or that its place held, reaches Dispatch before this start. The record never
-// makes the start wait: the row reaches Dispatch on a lane of its own (record.LaneRecord). A phase
-// that runs no step and a record key that is no issue key are no step its callers find
-// (standingStep). fixCheck is the check a fix's run is of, which its record names, "" for a run of
-// no fix.
+// the start, carrying every identity field, the moment it started, and the commit it starts at:
+// the head of the task's open pull request (taskHead), none before the issue has one, since the
+// daemon reads no branch head at a start and the first implementation step opens the pull request.
+// It carries no session: Dispatch keeps the first value it is given of each field and only the end
+// names the model, so the end writes the session and the model as one read's pair (endRun). The
+// start first ends each run of the issue that is over, the run of its own place among them
+// (settleStart), so the end of the run the issue leaves, or that its place held, reaches Dispatch
+// before this start. The record never makes the start wait: the row reaches Dispatch on a lane of
+// its own (record.LaneRecord). A phase that runs no step and a record key that is no issue key are
+// no step its callers find (standingStep). fixCheck is the check a fix's run is of, which its
+// record names, "" for a run of no fix.
 func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token, fixCheck string) error {
 	if err := e.settleStart(ctx, tx, issue.Key, step.place); err != nil {
 		return err
 	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	_, head := taskHead(pr)
 	// The moment is the one the count of starts keeps, which PostgreSQL holds to the microsecond
 	// and the end reads back, so the start and the end write one moment (endRun).
 	now := e.now().Truncate(time.Microsecond)
 	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
 		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
 		write.StartedAt = new(now)
+		if head != "" {
+			write.StartCommit = new(head)
+		}
 		if fixCheck != "" {
 			write.FixCheck = new(fixCheck)
 		}
@@ -223,10 +235,20 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 // gives identity, which builds the record's identity from the start the end reads. One run gets one
 // end: endRun marks the run ended in the store, in its own transaction (record.Store.EndStepStart),
 // and an end of a run already marked writes nothing and answers false. The end carries that
-// identity, the moment the start wrote, the moment now, end's fields, and the session and the model
-// of one read of the start's agent now, the only write that names either (startStep).
+// identity, the moment the start wrote, the moment now, end's fields, the commit it ends at — the
+// one the ending completion reported, else the head of the task's open pull request (taskHead),
+// none where it has none — and the session and the model of one read of the start's agent now, the
+// only write that names either (startStep).
 func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place record.StepPlace, end StepEnd, identity func(start record.StepStart) record.StepRecord) (bool, error) {
-	start, ended, err := e.store.EndStepStart(ctx, tx, issue, place, "")
+	endCommit := end.Commit
+	if endCommit == "" {
+		pr, err := e.store.PullRequest(ctx, tx, issue)
+		if err != nil {
+			return false, err
+		}
+		_, endCommit = taskHead(pr)
+	}
+	start, ended, err := e.store.EndStepStart(ctx, tx, issue, place, endCommit)
 	if err != nil || !ended {
 		return false, err
 	}
@@ -237,6 +259,9 @@ func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place reco
 	write.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(string(end.Result)), end.ReturnedTo
 	if end.Report != "" {
 		write.Report = new(end.Report)
+	}
+	if endCommit != "" {
+		write.EndCommit = new(endCommit)
 	}
 	read := e.readAgent(ctx, tx, claim.Token(start.Agent))
 	if read.Session != "" {
@@ -438,7 +463,7 @@ func endOfTransition(w Walk, trigger TriggerKind, from, to phase.Phase, handoff 
 		end.ReturnedTo = new(into.Place)
 	}
 	if handoff.Role == phase.RoleFor(from) {
-		end.Report = handoff.HandoffRecord
+		end.Report, end.Commit = handoff.HandoffRecord, handoff.HandoffCommit
 	}
 	return end
 }

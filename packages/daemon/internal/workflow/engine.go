@@ -179,12 +179,13 @@ type Engine struct {
 	droppedSettlements *intake.RecentKeys[intake.SettlementIdentity]
 	// noFixRule takes the fix rule out of the tail of every fact (apply), everyRoleToldCI tells a
 	// CI settlement of a task that takes a fix to every role, as for any other task (tellChecks),
-	// and fixStartInLine writes a fix's start into the line of starts that wait for a slot, as
-	// every other start is written (started). Only a test sets any of them, as the control of the
-	// rule it takes out.
+	// fixStartInLine writes a fix's start into the line of starts that wait for a slot, as
+	// every other start is written (started), and noWayKept leaves the way a fix took unwritten
+	// (afterFix). Only a test sets any of them, as the control of the rule it takes out.
 	noFixRule       bool
 	everyRoleToldCI bool
 	fixStartInLine  bool
+	noWayKept       bool
 }
 
 var _ intake.Handler = (*Engine)(nil)
@@ -1082,8 +1083,21 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// issue has moved on without, the phase that role has left, which pastCompletion answers.
 	reported := phase.Of(fact.Role, issue.Phase)
 	current := reported == issue.Phase
+	// A fix's completion (fact.Fix) is of the step the fix runs again, of phase implementing,
+	// whatever phase the issue stands in: it ends the fix (fixCompleted), not the step of the
+	// issue's phase, and a completion of a fix that runs no more is refused before anything is
+	// written (runningFixOf).
+	var fixing *record.TaskFix
+	var fixWalk Walk
+	if fact.Fix > 0 {
+		var refusal *intake.Refusal
+		if fixWalk, fixing, refusal, err = e.runningFixOf(ctx, tx, *issue, fact.Fix); err != nil || refusal != nil {
+			return intake.Result{Refusal: refusal}, err
+		}
+		reported, current = phase.Implementing, false
+	}
 	var late *intake.Refusal
-	if !current {
+	if !current && fixing == nil {
 		var now *intake.Refusal
 		if now, late, err = e.pastCompletion(ctx, tx, *issue, fact, reported); err != nil || now != nil {
 			return intake.Result{Refusal: now}, err
@@ -1175,6 +1189,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// below.
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
+	}
+	if fixing != nil {
+		return intake.Result{}, e.fixCompleted(ctx, tx, *issue, fixWalk, fixing, fact, pr)
 	}
 	if !current {
 		return intake.Result{}, e.reportEndedStep(ctx, tx, *issue, reported, fact.HandoffRecord)
@@ -2373,6 +2390,12 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	// The implementer's move while it runs a fix names the fix (fact.Fix): it is the fix's report
+	// of a failure, which ends the fix and not the step of the issue's phase, so the rule that a
+	// move is the role running that phase is not its rule (fixMovedBack).
+	if fact.Fix > 0 && fact.Requester == claim.RoleImplementer {
+		return e.fixMovedBack(ctx, tx, *issue, fact)
+	}
 	// The table is the guard, and it reads four things: the move names a target, a backward row
 	// of the issue's phase serves that target - anything but an earlier phase has none - the
 	// caller is the role running that phase, and that role is not the tester in testing, whose
@@ -2521,6 +2544,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if stops {
 		return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, record.StandsAt(issue), "", handoff))
+	}
+	// A move of a task beside its fix, or after its fix ended while another step ran, waits for
+	// the way after the fix: besideFix takes the move in place of the row where it applies.
+	if took, err := e.besideFix(ctx, tx, issue, w, trigger, target, row, handoff, pr, reason); err != nil || took {
+		return err
 	}
 	// Two counters move here, and they count different things. Every move back to an earlier phase
 	// counts the task a pass: the tester's fail, a review's request for changes and a worker's

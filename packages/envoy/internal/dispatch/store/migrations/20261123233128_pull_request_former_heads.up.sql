@@ -1,4 +1,4 @@
--- 20261122071001_pull_request_former_heads.up.sql
+-- 20261123233128_pull_request_former_heads.up.sql
 --
 -- The former heads of each open pull request: each head the pull request had while it was open
 -- and has since left, which the check states settler computes a state at as it does at an open

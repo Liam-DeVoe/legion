@@ -71,7 +71,7 @@ func newFixStartRig(t *testing.T, stands func(*record.Issue)) *fixStartRig {
 	if err != nil {
 		t.Fatalf("claim token: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: fixStartIssue, Role: claim.RoleImplementer, Claim: token,
 			Entry: fixStartEntry, EntryTask: fixStartTask, EntryRaisedAt: time.Now().UTC()}); err != nil {
 			return err
@@ -115,9 +115,9 @@ func fixStartOf() record.SuperviseRequest {
 func (r *fixStartRig) queue(start record.SuperviseRequest) record.OutboxRow {
 	r.t.Helper()
 	row := mustOutboxRow(r.t, fixStartIssue, start, time.Now())
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		row.ID, err = r.records.EnqueueID(context.Background(), tx, row)
+		row.ID, err = r.records.EnqueueID(ctx, tx, row)
 		return err
 	}); err != nil {
 		r.t.Fatalf("queue the start: %v", err)
@@ -260,13 +260,13 @@ func TestAFixStartRunsWhileTheIssueIsInReviewing(t *testing.T) {
 	t.Run("control: fix 1's start once fix 1 ended", func(t *testing.T) {
 		t.Parallel()
 		rig := newFixStartRig(t, func(*record.Issue) {})
-		if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
-			fix, err := rig.records.RunningFix(context.Background(), tx, fixStartIssue, 1, "default")
+		if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+			fix, err := rig.records.RunningFix(ctx, tx, fixStartIssue, 1, "default")
 			if err != nil || fix == nil {
 				return fmt.Errorf("read the running fix: %+v, %w", fix, err)
 			}
 			fix.State, fix.Result = record.FixEnded, "passed"
-			return rig.records.UpdateFix(context.Background(), tx, *fix)
+			return rig.records.UpdateFix(ctx, tx, *fix)
 		}); err != nil {
 			t.Fatalf("end fix 1: %v", err)
 		}

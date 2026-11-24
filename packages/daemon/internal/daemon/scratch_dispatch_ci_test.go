@@ -105,7 +105,7 @@ func newScratchCIRig(t *testing.T, withApp bool) *scratchCIRig {
 	r := &scratchCIRig{t: t, natsURL: testnats.URL(t), github: githubtest.ServeChecks(t), logs: &syncBuffer{}}
 	options := scratchDispatchOptions{natsURL: r.natsURL}
 	if withApp {
-		options.github = r.github.URL
+		options.github = r.github
 	}
 	r.dispatch = startScratchDispatchOn(t, options)
 	var err error
@@ -322,13 +322,88 @@ func (r *scratchCIRig) failRun(head string, id int64) (githubtest.CheckRun, time
 }
 
 // publishSettlement publishes the listener's settlement of the rig's pull request at head, with
-// runs, and answers the moment before the publish.
-func (r *scratchCIRig) publishSettlement(head string, runs ...githubtest.CheckRun) time.Time {
+// statuses and runs, and answers the moment before the publish and the settlement's sequence on
+// the notification stream.
+func (r *scratchCIRig) publishSettlement(head string, statuses []githubtest.CommitStatus, runs ...githubtest.CheckRun) (time.Time, uint64) {
 	r.t.Helper()
 	published := time.Now()
-	githubtest.PublishChecksSettlement(r.t, r.natsURL, githubtest.ChecksSettlement{Repo: scratchCIRepo, Number: scratchCIPull, SHA: head, Runs: runs})
-	r.t.Logf("published the settlement of %s#%d at %s", scratchCIRepo, scratchCIPull, head)
-	return published
+	seq := githubtest.PublishChecksSettlement(r.t, r.natsURL, githubtest.ChecksSettlement{Repo: scratchCIRepo, Number: scratchCIPull, SHA: head,
+		Runs: runs, Statuses: statuses})
+	r.t.Logf("published the settlement of %s#%d at %s, sequence %d of the notification stream", scratchCIRepo, scratchCIPull, head, seq)
+	return published, seq
+}
+
+// scratchCIStatus is a commit status as a settlement's payload names it (cistore.Summary's
+// statuses): its context, its state and GitHub's created_at.
+type scratchCIStatus struct {
+	Context   string `json:"context"`
+	State     string `json:"state"`
+	CreatedAt string `json:"created_at"`
+}
+
+// settledStatuses is each commit status the settlement at seq of the notification stream names,
+// and whether its payload carries statuses at all.
+func (r *scratchCIRig) settledStatuses(seq uint64) ([]scratchCIStatus, bool) {
+	r.t.Helper()
+	js, err := jetstream.New(testnats.Connect(r.t, r.natsURL))
+	if err != nil {
+		r.t.Fatalf("open JetStream on %s: %v", r.natsURL, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "ENVOY_NOTIFICATIONS")
+	if err != nil {
+		r.t.Fatalf("open the notification stream: %v", err)
+	}
+	message, err := stream.GetMsg(ctx, seq)
+	if err != nil {
+		r.t.Fatalf("read sequence %d of the notification stream: %v", seq, err)
+	}
+	var envelope struct {
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal(message.Data, &envelope); err != nil {
+		r.t.Fatalf("decode the envelope at sequence %d of the notification stream: %v", seq, err)
+	}
+	var payload struct {
+		Statuses *[]scratchCIStatus `json:"statuses"`
+	}
+	if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
+		r.t.Fatalf("decode the settlement at sequence %d of the notification stream: %v", seq, err)
+	}
+	if payload.Statuses == nil {
+		return nil, false
+	}
+	return *payload.Statuses, true
+}
+
+// deliveryAcked reads Dispatch's delivery durable until scratchCIWithin from from, and answers
+// whether its ack floor reached the message at seq of the notification stream within that bound,
+// with the floor it read last: a message the intake handed back stays below the floor.
+func (r *scratchCIRig) deliveryAcked(seq uint64, from time.Time) (bool, string) {
+	r.t.Helper()
+	js, err := jetstream.New(testnats.Connect(r.t, r.natsURL))
+	if err != nil {
+		r.t.Fatalf("open JetStream on %s: %v", r.natsURL, err)
+	}
+	last := "unread"
+	acked := scratchCIPoll(time.Until(from.Add(scratchCIWithin)), func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		consumer, err := js.PushConsumer(ctx, "ENVOY_NOTIFICATIONS", githubtest.DispatchDeliveryDurable)
+		if err != nil {
+			last = err.Error()
+			return false
+		}
+		info, err := consumer.Info(ctx)
+		if err != nil {
+			last = err.Error()
+			return false
+		}
+		last = fmt.Sprintf("stream sequence %d, %d acknowledgements pending", info.AckFloor.Stream, info.NumAckPending)
+		return info.AckFloor.Stream >= seq
+	})
+	return acked, last
 }
 
 // failureWithin reads the daemon's state of the rig's check at head until scratchCIWithin from
@@ -355,8 +430,8 @@ func (r *scratchCIRig) resultsName(page string) (bool, string) {
 }
 
 // readout is what a read that judged nothing could read: each state the daemon holds of the issue,
-// each state Dispatch published of it, each request the fake GitHub answered 404, and the lines of
-// Dispatch's log and of the daemon's that name check states or the delivery intake.
+// each state Dispatch published of it, each request the fake GitHub answered 401 or 404, and the
+// lines of Dispatch's log and of the daemon's that name check states or the delivery intake.
 func (r *scratchCIRig) readout() string {
 	r.t.Helper()
 	ctx := context.Background()
@@ -394,8 +469,8 @@ func (r *scratchCIRig) readout() string {
 			daemonLines = append(daemonLines, line)
 		}
 	}
-	return fmt.Sprintf("the daemon holds of %s: [%s]; Dispatch published of it: [%s]; the fake GitHub answered 404 to: %v\nthe daemon's log of check states:\n%s\n%s",
-		r.issue, strings.Join(daemonRows, "; "), strings.Join(dispatchRows, "; "), r.github.Unanswered(),
+	return fmt.Sprintf("the daemon holds of %s: [%s]; Dispatch published of it: [%s]; the fake GitHub refused %v and answered 404 to %v\nthe daemon's log of check states:\n%s\n%s",
+		r.issue, strings.Join(daemonRows, "; "), strings.Join(dispatchRows, "; "), r.github.Refused(), r.github.Unanswered(),
 		strings.Join(scratchCILast(daemonLines, 20), "\n"), r.dispatchLog())
 }
 
@@ -454,7 +529,7 @@ func TestTheScratchDispatchPublishesACIStateFromTheSettlement(t *testing.T) {
 		head := scratchCIHead(r.issue, "x")
 		r.awaitFirstState(head, r.stageHead(head))
 		run, _ := r.failRun(head, 7001)
-		published := r.publishSettlement(head, run)
+		published, _ := r.publishSettlement(head, nil, run)
 		held, found, failed := r.failureWithin(head, published)
 		took := time.Since(published).Round(time.Millisecond)
 		switch {
@@ -524,7 +599,7 @@ func TestTheScratchDispatchPublishesACIStateFromTheSettlement(t *testing.T) {
 		head := scratchCIHead(r.issue, "x")
 		first := r.awaitFirstState(head, r.stageHead(head))
 		run, _ := r.failRun(head, 7001)
-		published := r.publishSettlement(head, run)
+		published, _ := r.publishSettlement(head, nil, run)
 		held, found, failed := r.failureWithin(head, published)
 		switch {
 		case !found:
@@ -541,4 +616,45 @@ func TestTheScratchDispatchPublishesACIStateFromTheSettlement(t *testing.T) {
 		t.Logf("with no delivery settings the daemon held %s at %s first as %s, and still holds %s %s after the settlement's publish, while Dispatch's read of the results names %s",
 			scratchCICheck, head, first, held, scratchCIWithin, run.HTMLURL)
 	})
+}
+
+// TestTheScratchDispatchTakesASettlementThatNamesACommitStatus drives a settlement that names a
+// commit status through the fixture. With the delivery settings and the head written and the
+// daemon holding the check's first state there, the listener's settlement of the pull request at
+// the head names the failed run of the check's job and one commit status. The notification stream
+// holds it with that status as the listener names one (cistore.Summary's statuses: its context,
+// its state and GitHub's created_at); Dispatch's delivery intake acknowledges it within
+// scratchCIWithin of its publish; and the daemon holds the check's state failure at the head
+// within scratchCIWithin of the publish. Dispatch reads no commit status for a check a CI job
+// proves (its results read lists the head's check runs alone), so the state is the run's, and the
+// status is the settlement's for its other readers, the daemon's intake among them. The same
+// order with no settlement, the control, is TestTheScratchDispatchPublishesACIStateFromTheSettlement's.
+func TestTheScratchDispatchTakesASettlementThatNamesACommitStatus(t *testing.T) {
+	t.Parallel()
+	r := newScratchCIRig(t, true)
+	r.writeDeliverySettings()
+	head := scratchCIHead(r.issue, "x")
+	r.awaitFirstState(head, r.stageHead(head))
+	run, _ := r.failRun(head, 7001)
+	status := githubtest.CommitStatus{Context: "deploy/preview", State: "failure", CreatedAt: time.Now().UTC().Truncate(time.Second)}
+	published, seq := r.publishSettlement(head, []githubtest.CommitStatus{status}, run)
+	want := []scratchCIStatus{{Context: status.Context, State: status.State, CreatedAt: status.CreatedAt.Format(time.RFC3339)}}
+	if got, named := r.settledStatuses(seq); !named || !slices.Equal(got, want) {
+		t.Fatalf("the settlement at sequence %d of the notification stream names the commit statuses %v (a statuses member: %t), want %v",
+			seq, got, named, want)
+	}
+	if acked, floor := r.deliveryAcked(seq, published); !acked {
+		t.Fatalf("Dispatch's delivery intake did not acknowledge the settlement at sequence %d within %s of its publish: its durable's ack floor is at %s; %s",
+			seq, scratchCIWithin, floor, r.readout())
+	}
+	held, found, failed := r.failureWithin(head, published)
+	switch {
+	case !found:
+		t.Fatalf("UNKNOWN: the daemon holds no state of %s at %s; %s", scratchCICheck, head, r.readout())
+	case !failed:
+		t.Fatalf("the daemon holds %s at %s %s, not ci_case %s, %s after the publish of a settlement that names a commit status; %s",
+			scratchCICheck, head, held, scratchCIFailure, scratchCIWithin, r.readout())
+	}
+	t.Logf("the settlement at sequence %d names %v, Dispatch's delivery intake acknowledged it, and the daemon holds %s at %s %s, %s after its publish",
+		seq, want, scratchCICheck, head, held, time.Since(published).Round(time.Millisecond))
 }

@@ -320,7 +320,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// state carries what each of them takes (narrowingState). This subtest does not catch a strip
 	// applied beside the loop, because it reads both its expectation and its answer from
 	// stateNarrowings; the subtests below, which name their lines as literals, are what catch that.
-	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+	t.Run("the repositories narrowing and each row above it write their own lines", func(t *testing.T) {
 		state := narrowingState(t)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",
 			podClaims(repositoriesLiveContract-1), repositoriesLiveContract-1)

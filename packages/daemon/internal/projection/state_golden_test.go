@@ -40,6 +40,13 @@ var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this 
 // waits in the same line on an issue of its own, and is in neither `blocked` nor any judgement:
 // a root carrying a run is work already under way.
 //
+// It carries the two holds before a retro that FixBesideReviewContract added, each on a root of
+// its own tree whose design gate stands open: LEGION-212, held while a fix of its task runs
+// (`holdReason: fix`), and LEGION-213, held until each check a CI job runs passes at its head
+// (`holdReason: ci`). Both stand from the retro, which keeps no slot, and no lifecycle of theirs is
+// open, so `active` and `trees` stay as above. The contract's own schema parses both reasons, and
+// the frozen schema of the contract before it refuses them (packages/contracts/src/legion-api.test.ts).
+//
 // It carries the trees too (dispatch://INFRA-980): LEGION-208's lifecycle stands open under the
 // workflow, and the two roots waiting in the line are live trees of their own, so `trees` names
 // three roots while one issue alone holds a slot — which is the reading `active` can no longer
@@ -58,12 +65,22 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 			{Key: "LEGION-209", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Status: "todo", Phase: phase.Admitted, Generation: 1},
 			{Key: "LEGION-210", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-210", Status: "todo", Phase: phase.Admitted, Generation: 1, Rank: "00010", HandedOver: true},
 			{Key: "LEGION-211", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-211", Status: "todo", Phase: phase.Implementing, Generation: 2, Rank: "00011", HandedOver: true, HandedOverFrom: "LEGION-200"},
+			{Key: "LEGION-212", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Status: "in_progress", Phase: phase.Held, Generation: 1, Rank: "00012", HandedOver: true,
+				Hold: &record.Hold{From: phase.Retro, Reason: record.HoldForFix}},
+			{Key: "LEGION-213", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-213", Status: "in_progress", Phase: phase.Held, Generation: 1, Rank: "00013", HandedOver: true,
+				Hold: &record.Hold{From: phase.Retro, Reason: record.HoldForCI}},
 		},
 		phases: map[string][]record.PhaseRow{issue: {{Issue: issue, Role: claim.RoleArchitect, Claim: architect}}},
 		slots:  []record.Slot{{Issue: issue, Index: 0, AdmittedAt: admitted}},
 		// The tree the architect runs stands open under the workflow, which is what makes it a
 		// live tree now that its slot no longer says so.
 		lifecycles: []string{issue},
+		// The two held roots' design gates stand open, so the held list reads neither of them
+		// under design_gate: each takes the row the ladder gives its hold.
+		gates: map[string]map[record.DesignStep]record.DesignGate{
+			"LEGION-212": openGate("LEGION-212", admitted.Add(-2*time.Hour)),
+			"LEGION-213": openGate("LEGION-213", admitted.Add(-2*time.Hour)),
+		},
 		mirror: []record.DispatchIssueRow{
 			{Key: issue, Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 4},
 			{Key: "LEGION-209", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-300"}, Seq: 5},

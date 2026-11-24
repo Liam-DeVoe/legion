@@ -9,7 +9,7 @@
 -- clock, which each later edit of the closed pull request moves, and a write that names none keeps
 -- an earlier one.
 --
--- The former heads install (migration 20261122071001) orders each result it finds, by when
+-- The former heads install (migration 20261123233128) orders each result it finds, by when
 -- Dispatch recorded it (created_at), against the close of each pull request closed when it runs,
 -- by this time alone: one clock, the database's. The time is the clock's at the row's write
 -- (clock_timestamp()), which comes after Dispatch read the close from GitHub, and so after the

@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -37,7 +38,7 @@ func TestTheStateNamesTheFixsDirectoryBesideTheRuntimesWorkspace(t *testing.T) {
 	}
 	key := cfg.Project + "-1"
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: key, Project: cfg.Project, Tree: key, Title: key,
 			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Phase: phase.Reviewing, Generation: 1, Status: "needs_review"}); err != nil {
@@ -85,16 +86,17 @@ func TestTheStateNamesTheFixsDirectoryBesideTheRuntimesWorkspace(t *testing.T) {
 			reports:      func() map[claim.Token]capabilities.Report { return nil },
 			workspaceDir: workspaceDir,
 		}
-		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-		if err != nil {
-			t.Fatalf("begin the state snapshot: %v", err)
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		state, _, err := view.State(ctx, tx)
-		if err != nil {
+		var fix *api.FixView
+		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			state, _, err := view.State(ctx, tx)
+			if err != nil {
+				return err
+			}
+			fix = state.Issues[key].Fix
+			return nil
+		}); err != nil {
 			t.Fatalf("State: %v", err)
 		}
-		fix := state.Issues[key].Fix
 		if fix == nil || fix.Task != "a" || fix.Check != "unit" || fix.Entry != 2 {
 			t.Fatalf("the state serves %s the fix %+v, want fix 1 of task a, for check unit, at entry 2", key, fix)
 		}

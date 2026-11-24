@@ -238,6 +238,13 @@ func planHold(issue record.Issue, stored bool) bool {
 	return stored && (record.HeldFor(issue, record.HoldTaskStopped) || record.HeldForChildren(issue))
 }
 
+// fixOrCIHold says whether issue is held for a fix of its task or for the CI of its head, whatever
+// its walk: holds no plan makes, so planHold never reads them, and the one move out of either is
+// moveFromHold.
+func fixOrCIHold(issue record.Issue) bool {
+	return record.HeldFor(issue, record.HoldForFix) || record.HeldFor(issue, record.HoldForCI)
+}
+
 // planHoldRefusal is the answer to a release of issue's hold — the architect's retry or
 // escalation (retryOrEscalate), the operator's restart (restartPhase) — where its plan holds it
 // (planHold), and nil for any other hold. A retry would start the role of the phase the hold is

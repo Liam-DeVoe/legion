@@ -272,8 +272,9 @@ type EnumeratedValue struct {
 // `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56,
 // `waitingLine.kind`, which gained `waiting_on_issue` at 132, `capabilities.*.source`, which
 // gained `caches` at dispatch://INFRA-4036's contract (cachesSourceContract), `holdReason`, which
-// gained `task-stopped` and `children` at OwnerPlanContract, and `admission.held.*.reason`, which
-// gained `children_before_retro` and `task_stopped` there, so every other list is recorded whole
+// gained `task-stopped` and `children` at OwnerPlanContract and `fix` and `ci` at
+// FixBesideReviewContract, and `admission.held.*.reason`, which gained `children_before_retro`
+// and `task_stopped` at OwnerPlanContract, so every other list is recorded whole
 // at its own field's arrival. (`suspendedBy` gained `released` at 48 and is no row here: the
 // operator claim answers carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
@@ -428,8 +429,9 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "admission.held.*.reason", Values: heldReasons},
 	// `holdReason` of a held issue, why it is held (api.Issue.HoldReason, record.HoldReason).
 	// Older than the floor, and read with a literal of its one value until OwnerPlanContract,
-	// which added `task-stopped` and `children`; an issue held for either is served without
-	// its `holdReason` below that contract (shaping.go's withoutUnadmittedHoldReason).
+	// which added `task-stopped` and `children`; FixBesideReviewContract added `fix` and `ci`. An
+	// issue held for a reason is served without its `holdReason` below the contract that reason
+	// arrived at (shaping.go's withoutUnadmittedHoldReason).
 	{Answer: AnswerState, KeyPath: "issues.*.holdReason", Values: holdReasons},
 }
 
@@ -564,10 +566,15 @@ var heldReasons = []EnumeratedValue{
 // holdReasons is every reason an issue's hold can carry (record.HoldReason). `escalated` is older
 // than the floor; `children`, a parent whose last step is not the owner's acceptance, waiting before its retro
 // for the issues beneath it, and `task-stopped`, a task its owner stopped, arrived at
-// OwnerPlanContract. Written out value by value, sorted by value, as waitAnswers is.
+// OwnerPlanContract; `fix`, an issue waiting before its retro for a fix of its task that runs,
+// and `ci`, one waiting before its retro until each check a CI job runs passes at its head,
+// arrived at FixBesideReviewContract. Written out value by value, sorted by value, as waitAnswers
+// is.
 var holdReasons = []EnumeratedValue{
 	{Value: string(record.HoldForChildren), Since: OwnerPlanContract},
+	{Value: string(record.HoldForCI), Since: FixBesideReviewContract},
 	{Value: string(record.HoldEscalated), Since: ServingFloor},
+	{Value: string(record.HoldForFix), Since: FixBesideReviewContract},
 	{Value: string(record.HoldTaskStopped), Since: OwnerPlanContract},
 }
 

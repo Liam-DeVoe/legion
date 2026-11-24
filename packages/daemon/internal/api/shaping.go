@@ -1484,12 +1484,13 @@ func withoutUnadmittedCapabilitySources(state State, restore int) (State, bool) 
 // withoutUnadmittedHoldReason is the issue with no `holdReason` where that reason is one
 // restore's reader does not admit. It follows the declared table (answers.go's holdReasons) and
 // takes any reason the table holds back from restore (fieldArrivals.heldBack says which reasons
-// and why): today the `task-stopped` and `children` of OwnerPlanContract, and tomorrow any reason
-// the table gives a later arrival. A reader below that contract reads the key with
-// `z.literal("escalated")` and refuses the whole body for another word, and reads it as optional,
-// so such an issue is served as a hold of no reason is: its `heldFrom` and every other field of
-// the hold stay, and so does every escalated hold. `holdReason` is `omitempty`, so the emptied
-// field writes no key.
+// and why): today the `task-stopped` and `children` of OwnerPlanContract and the `fix` and `ci`
+// of FixBesideReviewContract, and tomorrow any reason the table gives a later arrival. A reader
+// below OwnerPlanContract reads the key with `z.literal("escalated")`, and a reader from it up to
+// FixBesideReviewContract with a `z.enum` of the three reasons before; each refuses the whole body
+// for another word, and reads the key as optional, so such an issue is served as a hold of no
+// reason is: its `heldFrom` and every other field of the hold stay, and so does every escalated
+// hold. `holdReason` is `omitempty`, so the emptied field writes no key.
 //
 // The issue is a value of its own and the field a string of it, so the state the source answered
 // is left as it was. It reports whether it took the reason, which is what the log line of this

@@ -27,11 +27,12 @@ in your cluster, from one published worker image, and every agent of that issue 
 
 `legion.yaml` names no repository of the project. Each issue targets the repository Dispatch
 resolves for it: its own (the issue header's Repository picker, or `dispatch issue-update --repo
-owner/name`), else its nearest ancestor's, else the project's default repository, which is set in
-Dispatch. An issue may name any `owner/name`. The daemon records an issue on that repository as
-Dispatch resolved it when the daemon read the issue (its event, or a listing of the project), and
-its default branch as GitHub names it, when it first records the issue, and keeps both: a later
-change of the issue's repository in Dispatch is not applied, and the daemon says so on the issue.
+owner/name`), else its nearest ancestor's in its own project, else the project's default
+repository, which is set in Dispatch. An issue may name any `owner/name`. The daemon records an
+issue on that repository as Dispatch resolved it when the daemon read the issue (its event, or a
+listing of the project), and its default branch as GitHub names it, when it first records the
+issue, and keeps both: a later change of the issue's repository in Dispatch is not applied, and
+the daemon says so on the issue.
 A change that sends no event of the issue, as a move of the project's default repository does,
 and that lands between that read and the record, is such a later change, said on the issue at
 its next event or the next boot's listing. A change of the issue's own repository sends an event,
@@ -950,6 +951,8 @@ What each part is for:
   runs no ladder leaves the daemon nothing to wait for.
   `LEGION_STALL_CALL_GRACE_MS` is the grace over a deadline a call declared for itself, 300000
   (5 minutes). `LEGION_STALL_STEP_MS` is the gap between the ladder's steps, 120000 (2 minutes).
+  The worker checks its open calls every quarter of that gap, but never more often than once a
+  second and never less often than every 5 seconds, so the default gap gives a check every 5 seconds.
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
   reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),

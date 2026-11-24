@@ -196,9 +196,17 @@
       "types": "./test/keyed-layer.ts",
       "bun": "./test/keyed-layer.ts"
     },
+    "./test/nats-server": {
+      "types": "./test/nats-server.ts",
+      "bun": "./test/nats-server.ts"
+    },
     "./test/relay-socket-stand-in": {
       "types": "./test/relay-socket-stand-in.ts",
       "bun": "./test/relay-socket-stand-in.ts"
+    },
+    "./test/replay-grant-scenario": {
+      "types": "./test/replay-grant-scenario.ts",
+      "bun": "./test/replay-grant-scenario.ts"
     },
     "./test/route-answers": {
       "types": "./test/route-answers.ts",
