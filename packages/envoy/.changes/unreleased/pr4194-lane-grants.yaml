@@ -4,8 +4,10 @@ body: |-
   (`notifications.dispatch.>`), and only the user of the listener that receives GitHub's webhook
   may publish GitHub's lane (`notifications.github.>`). A hub user with `listenerMachineId` takes
   the new input `githubWebhook: true` to get that grant (`core.WebhookListenerHostPermissions`);
-  the input is refused beside any other user kind. The auth service's `BROKER_NATS_SERVICES`
-  takes the new kind `webhook-listener` for that listener (`natsgrant.WebhookListener`), and
+  the input is refused beside any other user kind. That grant is the new
+  `natsgrant.WebhookListenerHost(machineID)`: `natsgrant.ListenerHost` with GitHub's lane taken off
+  its publish deny. The auth service's `BROKER_NATS_SERVICES` takes the new kind `webhook-listener`
+  for that listener (`natsgrant.WebhookListener`), and
   answers a `listener` entry with both lanes denied. An edge listener's grant (`natsgrant.Edge`,
   `core.EdgePermissions`, the auth service's `edge-listener` kind) denies both lanes too. The hub's
   own listener, host users and listener users without the input are denied both lanes, and

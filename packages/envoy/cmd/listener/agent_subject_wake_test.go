@@ -10,8 +10,10 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -41,12 +43,42 @@ const (
 	aloneNoListener = "alone-absent"
 )
 
-// The log lines of the path that the change removed for an agent subject. No listener writes one
-// of them for a message on an agent subject.
-var aloneRemovedLines = []string{
-	"listener agent delivery deferred",
-	"listener agent delivery given up",
-	"listener agent delivery failed",
+// aloneEventLines are the lines a listener writes for a message on an agent subject: its delivery
+// handler's "listener received" for each delivery it takes, and the INFO of the wake it reported.
+// A row requires every line that names its message's event to be one of them
+// (requireEventLines), so any other line about the message, such as a retry, a give-up or a
+// failure, fails the row. Each row shows the wake line present where it expects one.
+var aloneEventLines = []string{"listener received", "listener agent wake reported"}
+
+// aloneWakeNotStored is the WARN a listener writes when the stream has stored no wake report of a
+// message by the message's last delivery.
+const aloneWakeNotStored = "listener agent wake not stored"
+
+// eventLineNames is the sorted set of the msg names of the JSON lines in logs that name the event
+// eventID.
+func eventLineNames(logs, eventID string) []string {
+	names := map[string]bool{}
+	for line := range strings.SplitSeq(logs, "\n") {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) != nil || record["event_id"] != eventID {
+			continue
+		}
+		if name, ok := record["msg"].(string); ok {
+			names[name] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(names))
+}
+
+// requireEventLines fails the test when logs, which what wrote, hold a line that names the event
+// eventID and whose msg is none of allowed.
+func requireEventLines(t *testing.T, what, logs, eventID string, allowed ...string) {
+	t.Helper()
+	for _, name := range eventLineNames(logs, eventID) {
+		if !slices.Contains(allowed, name) {
+			t.Errorf("%s logged %q for event %s, want only lines among %q", what, name, eventID, allowed)
+		}
+	}
 }
 
 // aloneWake is one agent wake report the stream stored: the session it names and when the stream
@@ -115,6 +147,18 @@ func startAloneRig(t *testing.T) *aloneRig {
 	if err := rig.publisher.Conn.Flush(); err != nil {
 		t.Fatalf("flush the readers: %v", err)
 	}
+	// The exception reader's control: an exception published on a session's agent subject lane
+	// reaches it, so a row that reads none on its own lane reads the listeners' silence.
+	control := listenerTestEnvelope(contracts.LegacyAgentSubject("ses_l1_exception_control"), "l1-exception-control")
+	if err := publishDeliveryException(rig.publisher, control, "delivery_failed", ""); err != nil {
+		t.Fatalf("control: publish an exception on %s's lane: %v", control.Topic, err)
+	}
+	lane := bus.ExceptionTopicPrefix + control.Topic
+	waitFor(t, 5*time.Second, "control: the exception reader to read the exception published on "+lane, func() bool {
+		rig.mu.Lock()
+		defer rig.mu.Unlock()
+		return slices.Contains(rig.exceptions, lane)
+	})
 	return rig
 }
 
@@ -188,18 +232,16 @@ func (r *aloneRig) requireNoWakeUntil(t *testing.T, sessionID string, stored tim
 	}
 }
 
-// requireQuiet fails the test when either listener wrote a line of the removed path for
-// sessionID, or when an exception was published on its agent subject's lane.
-func (r *aloneRig) requireQuiet(t *testing.T, sessionID string) {
+// requireQuiet fails the test when either listener wrote a line that names item's event and is
+// none of aloneEventLines and also, or when an exception was published on item's agent subject
+// lane.
+func (r *aloneRig) requireQuiet(t *testing.T, item contracts.Envelope, also ...string) {
 	t.Helper()
+	allowed := append(slices.Clone(aloneEventLines), also...)
 	for name, listener := range map[string]*listenerProcess{"A": r.a, "B": r.b} {
-		for _, line := range aloneRemovedLines {
-			if got := aloneLines(listener, line, sessionID, ""); got != 0 {
-				t.Errorf("listener %s logged %q %d times for %s, want never", name, line, got, sessionID)
-			}
-		}
+		requireEventLines(t, "listener "+name, listener.Output.String(), item.EventID, allowed...)
 	}
-	lane := bus.ExceptionTopicPrefix + contracts.LegacyAgentSubject(sessionID)
+	lane := bus.ExceptionTopicPrefix + item.Topic
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, subject := range r.exceptions {
@@ -379,9 +421,9 @@ func sessionReadDenied() string {
 //
 // Rows a to f and i run on two listener processes A and B, built from this tree, with a wait of
 // 2 s, on a NATS server of their own. Rows g and j change what the server lets the listener's user
-// do between two deliveries of one message, so they run the listener's own durable handler in this
-// process, where the test sees each delivery: a process rig cannot say which delivery of a message
-// a grant change came between.
+// do between two deliveries of one message, and row h sends back each delivery but the last, so
+// they run the listener's own durable handler in this process, where the test sees each delivery:
+// a process rig cannot say which delivery of a message a grant change came between.
 //
 // Rows a, b and i end with a watch of 30 s or 10 s. That watch runs in parallel with the other
 // rows' watches, once every row has run its first part.
@@ -402,7 +444,7 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 		if got := aloneLines(rig.b, "listener agent wake reported", sessionID, ""); got != 0 {
 			t.Errorf("listener B, whose row names A, reported the wake of %s %d times, want never", sessionID, got)
 		}
-		rig.requireQuiet(t, sessionID)
+		rig.requireQuiet(t, item)
 		if t.Failed() {
 			return
 		}
@@ -440,7 +482,7 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 		requireWakes(t, rig.awaitWakes(sessionID, 2, stored), 2, stored)
 		requireOneWakeLine(t, "A", rig.a, item, sessionID)
 		requireOneWakeLine(t, "B", rig.b, item, sessionID)
-		rig.requireQuiet(t, sessionID)
+		rig.requireQuiet(t, item)
 		if t.Failed() {
 			return
 		}
@@ -490,7 +532,7 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 
 		requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
 		rig.requireNoWakeUntil(t, sessionID, stored)
-		rig.requireQuiet(t, sessionID)
+		rig.requireQuiet(t, item)
 		rig.requireAcknowledged(t, seq)
 		standIn.none(t, time.Second)
 	})
@@ -516,13 +558,16 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 		rig.b.awaitSessionMachine(t, later, aloneNoListener)
 
 		liveItem, _, stored := rig.store(t, live)
-		rig.store(t, unresponsive)
-		_, seq, _ := rig.store(t, later)
+		unresponsiveItem, _, _ := rig.store(t, unresponsive)
+		laterItem, seq, _ := rig.store(t, later)
 
 		requireFrames(t, standIn.collect(t, 1, 15*time.Second), liveItem)
-		for _, sessionID := range []string{live, unresponsive, later} {
-			rig.requireNoWakeUntil(t, sessionID, stored)
-			rig.requireQuiet(t, sessionID)
+		for _, row := range []struct {
+			sessionID string
+			item      contracts.Envelope
+		}{{live, liveItem}, {unresponsive, unresponsiveItem}, {later, laterItem}} {
+			rig.requireNoWakeUntil(t, row.sessionID, stored)
+			rig.requireQuiet(t, row.item)
 		}
 		rig.requireAcknowledged(t, seq)
 		standIn.none(t, time.Second)
@@ -577,7 +622,8 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 		if got := aloneLines(rig.b, "listener agent wake reported", sessionID, ""); got != 0 {
 			t.Errorf("listener B, whose row names A, reported the wake of %s %d times, want never", sessionID, got)
 		}
-		rig.requireQuiet(t, sessionID)
+		// The send route's own line names the event it sent.
+		rig.requireQuiet(t, item, "listener send")
 		if got := aloneReceived(rig.a, item.EventID); got != 2 {
 			t.Errorf("listener A's durable delivered the message %d times, want 2: the first, which waited, and the one that reported the wake", got)
 		}
@@ -656,11 +702,52 @@ func TestAnAgentMessageIsTheSessionConsumersAlone(t *testing.T) {
 		if reports := deliveryRecords(t, logs, "listener agent wake reported"); len(reports) != 1 || reports[0].SessionID != sessionID || reports[0].EventID != run.item.EventID {
 			t.Errorf("want one wake line naming %s and event %s, got %+v", sessionID, run.item.EventID, reports)
 		}
-		if got := deliveryRecords(t, logs, "listener agent wake not stored"); len(got) != 0 {
+		if got := deliveryRecords(t, logs, aloneWakeNotStored); len(got) != 0 {
 			t.Errorf("%d lines say a report was not stored, want none below the stream's last delivery", len(got))
 		}
 		if message, err := run.exceptions.NextMsg(500 * time.Millisecond); err == nil {
 			t.Errorf("a delivery exception was published: %s", message.Data)
+		}
+		awaitDurableState(t, client, run.consumer, 0, seq)
+	})
+
+	// Row h: the server refuses every report, so the stream stores none by the message's last
+	// delivery. The listener then writes one WARN that the report was not stored, and acknowledges
+	// the message. It is row g's control: row g requires none of that WARN below the last delivery.
+	t.Run("h: a wake report the stream never stored is logged once at the stream's last delivery", func(t *testing.T) {
+		t.Parallel()
+		_, uri := testnats.StartConfig(t, listenerGrant(bus.LegionWakeTopic), []string{"-js"}, false)
+		uri = asListenerUser(t, uri)
+		client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("connect the listener's user: %v", err)
+		}
+		t.Cleanup(client.Close)
+		harness := newListenerDeliveryHarnessOn(t, client)
+		sessionID := "ses_l1_h_" + id.New()
+		// Every delivery before the last is sent back at once, so the handler's one sight of the
+		// message is the stream's last delivery, which reports the wake at once.
+		run, seen := startAloneDelivery(t, harness, sessionID, func(msg *natsgo.Msg, meta *natsgo.MsgMetadata) bool {
+			if meta.NumDelivered < consumerMaxDeliver {
+				if err := msg.Nak(); err != nil {
+					t.Errorf("send back an early delivery of %s: %v", sessionID, err)
+				}
+				return false
+			}
+			return true
+		}, nil)
+		seen.awaitSeen(t, 1, 45*time.Second)
+
+		count, _, seq := seen.seen()
+		if len(count) != 1 || count[0] != consumerMaxDeliver {
+			t.Errorf("the handler saw deliveries %v, want only the stream's last, %d", count, consumerMaxDeliver)
+		}
+		if got := storedWakeCount(t, client); got != 0 {
+			t.Errorf("the stream holds %d wake reports while the grant leaves the wake subject out, want none", got)
+		}
+		lines := deliveryRecords(t, harness.logs.String(), aloneWakeNotStored)
+		if len(lines) != 1 || lines[0].Level != "WARN" || lines[0].SessionID != sessionID || lines[0].EventID != run.item.EventID || lines[0].Error == "" {
+			t.Errorf("want one WARN %q naming %s, event %s and the publish's error, got %+v", aloneWakeNotStored, sessionID, run.item.EventID, lines)
 		}
 		awaitDurableState(t, client, run.consumer, 0, seq)
 	})

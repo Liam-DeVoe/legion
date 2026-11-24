@@ -27,6 +27,10 @@ import (
 // refusedMaxPayload is the maximum payload refusingPublisher names when it refuses an envelope.
 const refusedMaxPayload = 1 << 20
 
+// standInOutLine is the WARN the outbox writes once NATS takes an event's stand-in: the refused
+// row requires none of it, and TestAStandInIsAlwaysMade one for each event.
+const standInOutLine = "dispatch outbox: a stand-in went out with the payload left out"
+
 // refusingPublisher refuses one topic as NATS refuses an envelope past its maximum payload,
 // whatever the envelope carries, and answers fail on another topic with failure until allow is
 // called. It publishes every other envelope, and counts every attempt by topic.
@@ -209,7 +213,7 @@ func TestARefusedDestinationIsRecordedAsFailed(t *testing.T) {
 		eventAttr, topicAttr := fmt.Sprintf("event_id=%d", event.ID), "topic="+issueTopic
 		refusals := loggedLines(&logged, "ERROR", "dispatch outbox: destination refused", eventAttr, topicAttr, "error=")
 		standInRefusals := loggedLines(&logged, "ERROR", "dispatch outbox: the stand-in was refused too", eventAttr, topicAttr, "error=")
-		standInsOut := loggedLines(&logged, "WARN", "dispatch outbox: a stand-in went out with the payload left out", eventAttr)
+		standInsOut := loggedLines(&logged, "WARN", standInOutLine, eventAttr)
 		if refusals != 1 || standInRefusals != 1 || standInsOut != 0 {
 			t.Errorf("logged %d refusal lines, %d stand-in refusal lines and %d stand-in-went-out lines naming the event and its topic, want one, one and none:\n%s",
 				refusals, standInRefusals, standInsOut, logged.String())
@@ -351,6 +355,27 @@ func TestARefusedDestinationIsRecordedAsFailed(t *testing.T) {
 			t.Errorf("the refused copy was attempted %d times over two passes, want once: a settled row is not claimed again", attempts[sessionTopic])
 		}
 	})
+
+	// The control of the refused copy's row: a copy that fails, and is not refused, counts its
+	// attempt and is left unsettled, so the refused row's count of none is the refusal's.
+	t.Run("control: a failed fallback copy counts its attempt and stays to be claimed again", func(t *testing.T) {
+		const sessionTopic = "notifications.agent.s1"
+		ctx := store.WithTransactionTracking(context.Background())
+		database := storetest.Open(t)
+		publisher := &refusingPublisher{fail: sessionTopic, failure: errors.New("the server answered with an error"), attempts: map[string]int{}}
+		deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
+		commentID := seedHeldFallbackCopy(ctx, t, deps)
+
+		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, database))
+
+		if attempts, _ := publisher.snapshot(); attempts[sessionTopic] != 1 {
+			t.Fatalf("the failing copy was attempted %d times, want once", attempts[sessionTopic])
+		}
+		if row := readHeldCopy(t, database, commentID, sessionTopic); row.settled || row.published || row.attempts != 1 {
+			t.Errorf("the failed copy's row has settled=%v published=%v attempts=%d, want it unsettled, unpublished, with one attempt counted",
+				row.settled, row.published, row.attempts)
+		}
+	})
 }
 
 // standInRecorder refuses the first envelope of each event as NATS refuses one past its maximum
@@ -386,11 +411,14 @@ func (p *standInRecorder) sent(eventID string) (contracts.Envelope, []contracts.
 }
 
 // Every event NATS refuses gets a stand-in, whatever its payload is. A payload that is not a JSON
-// object has no field to keep, so its stand-in's payload is {"payload_omitted":true}; before, such
-// an event got no stand-in at all and its readers heard nothing. The stand-in keeps the refused
-// envelope's topic, event id and payload_summary, and an object payload keeps its short fields.
+// object has no field to keep, so its stand-in's payload is {"payload_omitted":true}; without
+// that, such an event would get no stand-in at all and its readers would hear nothing. The
+// stand-in keeps the refused envelope's topic, event id and payload_summary, and an object payload
+// keeps its short fields. The outbox logs one standInOutLine for each stand-in NATS takes.
 func TestAStandInIsAlwaysMade(t *testing.T) {
 	const issueTopic = "notifications.dispatch.issue.T-1.issue.updated"
+	var logged lockedBuffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
@@ -411,11 +439,13 @@ func TestAStandInIsAlwaysMade(t *testing.T) {
 		},
 	}
 	ids := make([]string, len(cases))
+	rows := make([]int64, len(cases))
 	for index, tc := range cases {
 		event := appendEvent(t, database, broker, model.Event{
 			IssueKey: new("T-1"), Type: "issue.updated", Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: tc.payload,
 		})
 		ids[index] = "dispatch-" + strconv.FormatInt(event.ID, 10)
+		rows[index] = event.ID
 	}
 	publisher := &standInRecorder{refused: map[string]contracts.Envelope{}, standIns: map[string][]contracts.Envelope{}}
 
@@ -443,6 +473,9 @@ func TestAStandInIsAlwaysMade(t *testing.T) {
 			}
 			if !reflect.DeepEqual(carried.Payload, tc.want) {
 				t.Errorf("the stand-in's payload is %v, want %v", carried.Payload, tc.want)
+			}
+			if n := loggedLines(&logged, "WARN", standInOutLine, fmt.Sprintf("event_id=%d topic=%s", rows[index], issueTopic)); n != 1 {
+				t.Errorf("logged %d %q lines naming event %d and its topic, want one:\n%s", n, standInOutLine, rows[index], logged.String())
 			}
 		})
 	}

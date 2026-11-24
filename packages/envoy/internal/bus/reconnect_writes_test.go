@@ -16,20 +16,26 @@ import (
 
 // A write while the client's connection is reconnecting fails by name, and is never sent: the
 // client keeps no reconnect buffer, so nats.go refuses every send then with its own
-// "nats: outbound buffer limit exceeded", which names a buffer and not the reconnect. A KV write,
-// which takes no deadline, fails at once with an error that says NATS is reconnecting; a publish
-// waits for the connection within its deadline, and one whose deadline ends first fails with that
-// same error. Neither is in the bucket or the stream once the server is back.
+// nats.ErrReconnectBufExceeded, "nats: outbound buffer limit exceeded", which names a buffer and
+// not the reconnect. A KV write, which takes no deadline, fails at once with an error that says
+// NATS is reconnecting and carries nats.go's refusal; a publish waits for the connection within
+// its deadline, and one whose deadline ends first fails with that same name. Neither is in the
+// bucket or the stream once the server is back.
+//
+// The controls: a send on the client's own connection during the outage fails with nats.go's
+// refusal, whose text the two writes' errors must not hold; and once the server is back, the same
+// key and the same publish, sent again, are read by the row's observer, so the observer would read
+// either write had it reached the server.
 //
 // A KV write whose caller holds a deadline waits for the connection within it (bus.Bounded); the
 // listener's TestAWriteThroughANATSReconnectWaitsOrFailsByName drives that through its routes.
 func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 	const (
 		reconnecting    = "NATS is reconnecting"
-		bufferRefusal   = "outbound buffer limit exceeded"
 		key             = "written-while-reconnecting"
 		publishDeadline = 500 * time.Millisecond
 	)
+	bufferRefusal := natsgo.ErrReconnectBufExceeded.Error()
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -54,6 +60,13 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 	srv.Stop(t)
 	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 
+	t.Run("control: a send on the client's own connection while reconnecting is nats.go's buffer refusal", func(t *testing.T) {
+		err := client.Conn.Publish("reconnect-writes.raw", []byte("{}"))
+		if !errors.Is(err, natsgo.ErrReconnectBufExceeded) || !strings.Contains(err.Error(), bufferRefusal) {
+			t.Fatalf("a send on the client's own connection while reconnecting answered %v, want nats.go's %q", err, bufferRefusal)
+		}
+	})
+
 	t.Run("a KV write while reconnecting fails at once by name", func(t *testing.T) {
 		began := time.Now()
 		_, err := kv.Put(key, []byte("never sent"))
@@ -62,6 +75,9 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), reconnecting) || strings.Contains(err.Error(), bufferRefusal) {
 			t.Errorf("a KV write while reconnecting failed with %q, want an error naming %q and not %q", err, reconnecting, bufferRefusal)
+		}
+		if !errors.Is(err, natsgo.ErrReconnectBufExceeded) {
+			t.Errorf("a KV write while reconnecting failed with %q, which does not carry nats.go's refusal %q", err, bufferRefusal)
 		}
 		if took := time.Since(began); took > time.Second {
 			t.Errorf("a KV write while reconnecting took %s to fail; with no deadline to wait within it fails at once", took)
@@ -103,6 +119,22 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		}
 		if message, err := js.GetLastMsg(bus.Stream, item.Topic); !errors.Is(err, natsgo.ErrMsgNotFound) {
 			t.Errorf("the publish that failed while reconnecting is in the stream: %v, %v", message, err)
+		}
+
+		// The control: the same two writes, sent now, are what the observer reads.
+		if _, err := kv.Put(key, []byte("sent once the server is back")); err != nil {
+			t.Fatalf("control: the KV write once the server is back: %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.PublishWithin(ctx, item); err != nil {
+			t.Fatalf("control: the publish once the server is back: %v", err)
+		}
+		if _, err := bucket.Get(key); err != nil {
+			t.Errorf("control: the observer did not read the KV write sent once the server was back: %v", err)
+		}
+		if _, err := js.GetLastMsg(bus.Stream, item.Topic); err != nil {
+			t.Errorf("control: the observer did not read the publish sent once the server was back: %v", err)
 		}
 	})
 }

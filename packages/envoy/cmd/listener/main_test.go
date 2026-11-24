@@ -3761,6 +3761,8 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 // skipped. On the session's agent subject the same entry is a record, and a message there is the
 // session's own consumer's whatever that consumer holds now: the consumer the session's next
 // registration starts delivers it. So the agent subject counts it skipped, and reports no wake.
+// The control: the same message on the agent subject of a session with no record counts one
+// wake_reported, the series the rows above must not write.
 func TestListenerDeliveryHandler_PortlessSelfSubscribedEntryIsSkippedOnlyOnItsAgentSubject(t *testing.T) {
 	for _, tc := range []struct {
 		topic string
@@ -3793,12 +3795,20 @@ func TestListenerDeliveryHandler_PortlessSelfSubscribedEntryIsSkippedOnlyOnItsAg
 				t.Fatalf("%s = %d, want %d; metrics %s", deliveredSeries("skipped"), got, tc.skipped, body)
 			}
 			for _, status := range []string{"delivered", "wake_reported"} {
-				if strings.Contains(body, `test_messages_delivered{delivery_status="`+status+`"}`) {
-					t.Fatalf("expected no %s metric for a session on no consumer, got %s", status, body)
+				if got := counterValue(t, body, deliveredSeries(status)); got != -1 {
+					t.Fatalf("%s = %d, want no series for a session on no consumer; metrics %s", deliveredSeries(status), got, body)
 				}
 			}
 		})
 	}
+	t.Run("control: a session with no record", func(t *testing.T) {
+		harness := newListenerDeliveryHarness(t)
+		item := listenerTestEnvelope(contracts.LegacyAgentSubject("ses_no_record"), "no-record-wake")
+		harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+		if body := deliveredMetrics(t, harness); counterValue(t, body, deliveredSeries("wake_reported")) != 1 {
+			t.Fatalf("%s is not 1 for a message to a session with no record; metrics %s", deliveredSeries("wake_reported"), body)
+		}
+	})
 }
 
 // A delivery that fails on a non-control topic raises no exception: only control topics get one.

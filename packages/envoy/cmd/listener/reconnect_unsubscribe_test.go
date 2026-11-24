@@ -141,8 +141,8 @@ func (rig *consumerCallCutRig) serve(method, path, body string) *httptest.Respon
 // through a proxy, which the test cuts after the update read the row and before it sends the
 // call, so the bucket keeps answering.
 //
-// Before the route's budget bounded it, the update waited out sessionConsumerCallTimeout (5 s)
-// from its own start and was only logged, and the route answered 200 after the client's attempt.
+// An update the route's budget did not bound would wait out sessionConsumerCallTimeout (5 s) from
+// its own start and only be logged, and the route would answer 200 after the client's attempt.
 func TestAnUnsubscribeWhoseConsumerCallMeetsANATSReconnectFailsByName(t *testing.T) {
 	const (
 		sessionID = "ses_unsubscribe_consumer_call"
@@ -177,8 +177,8 @@ func TestAnUnsubscribeWhoseConsumerCallMeetsANATSReconnectFailsByName(t *testing
 // removes nothing and is no error, so the route answers 200. Its removed list is empty, since no
 // topic left a record in that request.
 //
-// Before the store read an absent record as nothing to remove, the retry answered
-// 500 `nats: key not found` for a removal that did happen.
+// A store that read an absent record as an error would answer the retry 500 `nats: key not found`
+// for a removal that did happen.
 func TestTheRetryOfAnUnsubscribeThatEmptiedTheRecordAnswers200(t *testing.T) {
 	const (
 		sessionID = "ses_unsubscribe_emptied_record"

@@ -203,14 +203,19 @@ func (rig *inProcessRig) hear(t *testing.T, subject string) *natsgo.Subscription
 	return heard
 }
 
-// awaitHanded waits until the leader has been handed n publishes on heard's subject.
-func awaitHanded(t *testing.T, heard *natsgo.Subscription, n int) {
+// awaitHanded waits until the leader has been handed n publishes on heard's subject, and returns
+// them in the order the leader was handed them.
+func awaitHanded(t *testing.T, heard *natsgo.Subscription, n int) []*natsgo.Msg {
 	t.Helper()
+	handed := make([]*natsgo.Msg, 0, n)
 	for i := range n {
-		if _, err := heard.NextMsg(10 * time.Second); err != nil {
+		msg, err := heard.NextMsg(10 * time.Second)
+		if err != nil {
 			t.Fatalf("the leader was handed %d of the %d publishes: %v", i, n, err)
 		}
+		handed = append(handed, msg)
 	}
+	return handed
 }
 
 // serve sends body to route, the publish route or the send route, under ctx, and returns its
@@ -309,6 +314,11 @@ func (rig *inProcessRig) forwardAttempts(key string) []float64 {
 // every confirmed forward, a duplicate's too (sendToRole), and the refused forward is sent again
 // inside that one forward, so each role send makes one attempt, where a refused forward counted
 // as one that failed makes a second.
+//
+// Both attempts the leader is handed carry one Nats-Msg-Id, which is what makes the stream refuse
+// the second as in process. That is the control of the delivery exception's row below
+// (TestADeliveryExceptionIsNeverRefusedAsInProcessAndItsFailureIsLoggedOnce), which requires
+// the header absent on what the leader is handed.
 func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsStored(t *testing.T) {
 	rig := newInProcessRig(t)
 	const target, holder = "ses_in_process_target", "ses_in_process_holder"
@@ -329,7 +339,10 @@ func TestAResendWhoseEarlierAttemptIsStillInProcessIsAnsweredOnceThatAttemptIsSt
 				rig.attempt(context.Background(), path.route, body),
 				rig.attempt(context.Background(), path.route, body),
 			}
-			awaitHanded(t, heard, 2)
+			handed := awaitHanded(t, heard, 2)
+			if first, second := handed[0].Header.Get(natsgo.MsgIdHdr), handed[1].Header.Get(natsgo.MsgIdHdr); first == "" || first != second {
+				t.Errorf("the leader was handed the two attempts under Nats-Msg-Id %q and %q, want one id on both", first, second)
+			}
 			thaw()
 			for _, answer := range answers {
 				if answer := <-answer; answer.Code != http.StatusOK {

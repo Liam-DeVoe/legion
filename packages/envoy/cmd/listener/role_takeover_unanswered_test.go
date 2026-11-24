@@ -19,6 +19,10 @@ import (
 // every publish on the takeover lane (bus.TakeoverSubjectPrefix), so the server never sees the
 // record's write and nothing answers it, while every other call of the claim is answered. The
 // previous holder keeps the role, and the stream holds no record of it.
+//
+// The control: before the relay stalls the lane, a takeover of a second role through the same
+// relay is granted, and the stream holds its one record, so the row's read of the records would
+// see one that the server stored.
 func TestATakeoverRecordWriteTheBusDidNotAnswerIsAnsweredAsTheBusUnanswered(t *testing.T) {
 	url := testnats.URL(t)
 	relay := startSubjectStallRelay(t, url)
@@ -32,6 +36,13 @@ func TestATakeoverRecordWriteTheBusDidNotAnswerIsAnsweredAsTheBusUnanswered(t *t
 	rig.subscribe(t, consumerRegistration(previous, "epoch-1"))
 	rig.subscribe(t, consumerRegistration(claimant, "epoch-1"))
 	grantRoleClaim(t, rig.mux, previous, role, "", false)
+
+	const recorded = "unanswered-record-control"
+	grantRoleClaim(t, rig.mux, previous, recorded, "", false)
+	grantRoleClaim(t, rig.mux, claimant, recorded, "", false)
+	if records, err := rig.harness.client.TakeoverRecords(context.Background(), recorded); err != nil || len(records) != 1 {
+		t.Fatalf("control: the stream holds %d takeover records of %s (%v), want the one its takeover through the relay wrote", len(records), recorded, err)
+	}
 
 	relay.stall(bus.TakeoverSubjectPrefix)
 	recorder := postRoleClaim(rig.mux, claimant, role, "", false)

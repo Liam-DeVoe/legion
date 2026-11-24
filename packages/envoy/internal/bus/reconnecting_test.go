@@ -22,10 +22,10 @@ import (
 // buffer limit exceeded", since the client keeps no reconnect buffer. A KV bucket's lookup it
 // refuses before it sends, with "nats: key-value requires at least server version 2.6.2", since a
 // reconnecting connection reports no server version; the context names that from the
-// connection's state. EnsureKeyValue's create of a bucket's stream (createBucket, since the merge
-// of main 51d1a21f brought in #4789's createBucketStream) makes nats.go's requests one at a time:
-// its account read is a request of the context, and its own check of the server's version refuses
-// as nats.go's does, which the step names from the connection's state too.
+// connection's state. EnsureKeyValue's create of a bucket's stream (createBucket, over
+// createBucketStream) makes nats.go's requests one at a time: its account read is a request of
+// the context, and its own check of the server's version refuses as nats.go's does, which the
+// step names from the connection's state too.
 func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 	const (
 		named   = "bus: NATS is reconnecting"
@@ -140,8 +140,11 @@ func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 // `bus: NATS is reconnecting: context deadline exceeded`, as for a ctx that ends in the call's
 // wait for the connection (Bounded). While the connection is up, the error is ctx's own. The
 // listener's routes answer such an error, and its session filter fence logs it
-// (cmd/listener/session_filter_fence.go): before the name, that line read
-// `context deadline exceeded` once in each outage and named no reconnect.
+// (cmd/listener/session_filter_fence.go). With ctx's own error, that line would read `context
+// deadline exceeded` once in each outage and name no reconnect.
+//
+// The control: while the connection is up, the same call under a live ctx starts and is answered,
+// so a call that started under an ended ctx would be seen.
 func TestABucketCallWhoseContextEndedWhileNATSReconnectsFailsByName(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	client, err := ConnectOwningStream([]string{uri})
@@ -184,6 +187,16 @@ func TestABucketCallWhoseContextEndedWhileNATSReconnectsFailsByName(t *testing.T
 
 	for _, end := range ends {
 		t.Run("connected, "+end.what, func(t *testing.T) {
+			live, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			started := false
+			_, answered, err := Bounded(live, conn, func() (struct{}, error) {
+				started = true
+				return struct{}{}, nil
+			})
+			if !started || !answered || err != nil {
+				t.Fatalf("control: the call under a live ctx started (%t) and was answered (%t) with %v, want it started and answered nil", started, answered, err)
+			}
 			if err := bounded(t, end.ctx); err != end.err {
 				t.Fatalf("the call while connected failed with %q (ErrReconnecting %t), want ctx's own error %q", err, errors.Is(err, ErrReconnecting), end.err)
 			}

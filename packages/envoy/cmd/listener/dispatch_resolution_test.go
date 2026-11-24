@@ -740,9 +740,9 @@ func recordsFor(records []deliveryRecord, sessionID string) []deliveryRecord {
 // silence, and it logs no deferral, give-up or failure. The session that registers again under
 // that id is then handed the copy by its consumer. Two sessions take that path here: a released
 // Legion role's, whose interest row still names the listener it registered through until the
-// reaper's pass, and one that no interest row names. Before #4088 the attempt failed "no live
-// session", nothing was stored or woken, and the person had to send the message again once the
-// pod was back.
+// reaper's pass, and one that no interest row names. An attempt that failed "no live session"
+// would store nothing and wake nothing, and the person would have to send the message again once
+// the pod is back (#4088).
 func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 	rig := newDispatchRig(t)
 	wakes, err := rig.warm.client.Conn.SubscribeSync(bus.LegionWakeTopic)
@@ -814,11 +814,7 @@ func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
 			reports[0].Level != "INFO" || reports[0].EventID != queued.EventID || reports[0].Topic != subject {
 			t.Fatalf("want one INFO wake line for the queued copy %s on %s, got %#v:\n%s", queued.EventID, subject, reports, logs)
 		}
-		for _, line := range aloneRemovedLines {
-			if got := len(recordsFor(deliveryRecords(t, logs, line), tc.session)); got != 0 {
-				t.Errorf("%d %q lines for the queued copy of %s, want none:\n%s", got, line, tc.session, logs)
-			}
-		}
+		requireEventLines(t, "the listener's delivery log", logs, queued.EventID, aloneEventLines...)
 		if got := agentWakesFor(t, wakes, tc.session, 5*time.Second, time.Second); got != 1 {
 			t.Fatalf("%d agent wake reports for %s, want one:\n%s", got, tc.session, logs)
 		}

@@ -16,14 +16,15 @@ import (
 // A registration whose store work before its known-session record spent the whole store budget
 // still writes that record before it answers 200 (answerRegistration): the write is bounded on its
 // own, so a send to the session once it has stopped is stored on the record rather than refused
-// 404. On a box under 32 busy loops that work took the budget, the write was never sent, and the
-// registration was answered 200 with no record (dispatch://INFRA-3149); here the spent budget is
-// made, not waited for. The routes run on a fake clock (stillClock), and the registration's own
-// repair of the session's consumer, which runs after its entry is written and before the renewal
-// and the record (confirmRegistered, beforeRepairPlan), moves that clock past sendRequestBudget: from
-// there on every bucket call the budget bounds is a context that has ended, which is what the
-// loaded box left the record write with. The repair itself runs on a bound of the real clock, so
-// it is unchanged.
+// 404. On a box under 32 busy loops that work can take the budget, and a write that shared it
+// would then never be sent, so the registration would be answered 200 with no record
+// (dispatch://INFRA-3149). Here the spent budget is made, not waited for. The routes run on a fake
+// clock (stillClock), and the registration's own repair of the session's consumer, which runs
+// after its entry is written and before the renewal and the record (confirmRegistered,
+// beforeRepairPlan), moves that clock past sendRequestBudget: from there on every bucket call the
+// budget bounds is a context that has ended, which is what a loaded box leaves the record write
+// with. The repair itself runs on a bound of the real clock, so the clock's move does not change
+// it.
 //
 // The answer is read as the client reads it: a 200 must leave the record in the bucket, read
 // there rather than from the listener's copy, and the send after the session's clean stop must be
@@ -69,8 +70,7 @@ func TestARegistrationWhoseBudgetTheStepsBeforeItsRecordSpentStillWritesTheRecor
 // for once it stops. The listener's bus runs through a relay that swallows the record's write and
 // everything after it, so the write is sent and never answered; the routes run on a fake clock,
 // which this moves past the store budget once the write has been swallowed, past the write's own
-// bound with it. Before the fix the write shared that budget and its failure was a WARN beside a
-// 200.
+// bound with it. A write that shared that budget would fail as a WARN beside a 200.
 func TestARegistrationWhoseKnownSessionRecordIsNotWrittenIsRefusedForItsClientToRetry(t *testing.T) {
 	url := testnats.URL(t)
 	relay := startListenerRelay(t, url)

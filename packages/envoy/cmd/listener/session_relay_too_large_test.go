@@ -15,6 +15,22 @@ import (
 // that has no such line.
 const relayTooLargeLine = "session relay acknowledged a message too large to relay; the session does not receive it"
 
+// relayPausedPrefix begins the line a relay writes when it pauses a session that answered no
+// frame within the receipt wait.
+const relayPausedPrefix = "session relay paused: the session answered no frame"
+
+// relayPausedLines counts the lines of relayPausedPrefix the rig's listener wrote for sessionID.
+func relayPausedLines(rig *relayRig, sessionID string) int {
+	count := 0
+	for line := range strings.SplitSeq(rig.harness.logs.String(), "\n") {
+		var record relayTooLargeRecord
+		if json.Unmarshal([]byte(line), &record) == nil && record.SessionID == sessionID && strings.HasPrefix(record.Msg, relayPausedPrefix) {
+			count++
+		}
+	}
+	return count
+}
+
 // relayTooLargeRecord is what a row reads of a log record.
 type relayTooLargeRecord struct {
 	Level     string `json:"level"`
@@ -65,12 +81,13 @@ func storeEnvelopeOfSize(t *testing.T, rig *relayRig, subject string, size int) 
 // A stored message can fit the server's max payload while its relay frame, the same bytes with
 // the relay's headers, does not, and NATS refuses that frame however often it is sent. The relay
 // acknowledges such a message, writes one WARN naming the session, the event and the stream
-// sequence, and goes on, so the session's next message arrives. Before, the relay restarted at
-// the ack floor at each refusal, and the session received nothing after that message until the
-// stream's retention took it (dispatch://INFRA-3918). The refused frame never went out, so the
-// relay waits for no receipt of it: under a receipt wait shorter than the row's own wait, the
-// relay does not pause the session. The control: a message half the limit is relayed as any
-// other, with no WARN.
+// sequence, and goes on, so the session's next message arrives. A relay that restarted at the ack
+// floor at each refusal would deliver the session nothing after that message until the stream's
+// retention took it (dispatch://INFRA-3918). The refused frame never went out, so the relay waits
+// for no receipt of it: under a receipt wait shorter than the row's own wait, the relay does not
+// pause the session. The controls: a message half the limit is relayed as any other, with no
+// WARN; and a session that answers no frame is paused once its receipt wait has passed, with one
+// line.
 func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 500*time.Millisecond)
 	limit := int(rig.harness.client.Conn.MaxPayload())
@@ -90,15 +107,8 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		if len(warnings) != 1 || warnings[0].EventID != large.EventID || warnings[0].StreamSeq != largeSeq {
 			t.Fatalf("the relay wrote %+v, want one WARN %q naming event %s at stream sequence %d", warnings, relayTooLargeLine, large.EventID, largeSeq)
 		}
-		if line := "session relay could not publish a frame"; strings.Contains(rig.harness.logs.String(), line) {
-			t.Fatalf("the relay logged %q, want the message acknowledged rather than sent again", line)
-		}
-		for line := range strings.SplitSeq(rig.harness.logs.String(), "\n") {
-			var record relayTooLargeRecord
-			if json.Unmarshal([]byte(line), &record) == nil && record.SessionID == sessionID &&
-				strings.HasPrefix(record.Msg, "session relay paused: the session answered no frame") {
-				t.Fatalf("the relay paused the session: %s; want no receipt wait for a frame that never went out", line)
-			}
+		if n := relayPausedLines(rig, sessionID); n != 0 {
+			t.Fatalf("the relay paused the session %d times; want no receipt wait for a frame that never went out:\n%s", n, rig.harness.logs.String())
 		}
 	})
 
@@ -114,6 +124,21 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		awaitAcked(t, rig.consumers, sessionID, markerSeq)
 		if warnings := relayTooLargeWarnings(rig, sessionID); len(warnings) != 0 {
 			t.Fatalf("the relay wrote %+v for a message half the limit, want no WARN", warnings)
+		}
+	})
+
+	t.Run("control: a session that answers no frame is paused, with one line", func(t *testing.T) {
+		const sessionID = "ses_near_limit_silent"
+		agent := contracts.LegacyAgentSubject(sessionID)
+		// A nil answer leaves the stand-in silent, so the frame it is sent stays unanswered.
+		standIn := startSessionStandIn(t, rig.url, sessionID, nil)
+		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+		marker, _ := rig.storeEvent(t, agent)
+
+		requireFrames(t, standIn.collect(t, 1, 15*time.Second), marker)
+		waitFor(t, 15*time.Second, "the relay to pause the silent session", func() bool { return relayPausedLines(rig, sessionID) > 0 })
+		if n := relayPausedLines(rig, sessionID); n != 1 {
+			t.Fatalf("the relay paused the silent session %d times, want once:\n%s", n, rig.harness.logs.String())
 		}
 	})
 }

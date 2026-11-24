@@ -234,16 +234,24 @@ func startDeliveryThrough(t *testing.T, harness listenerDeliveryHarness, handler
 
 // startEnvelopeDeliveryThrough is startDeliveryThrough with the envelope given whole, for a run
 // whose envelope must carry something the default one does not; item.Topic is target's subject.
+// Its exception probe's control: an exception published on the envelope's own lane before the
+// run reaches the probe, so a run that reads none there reads the listener's silence.
 func startEnvelopeDeliveryThrough(t *testing.T, harness listenerDeliveryHarness, handler natsgo.MsgHandler, target string, item contracts.Envelope, soak time.Duration) unplaceableDeliveryRun {
 	t.Helper()
 	subject := item.Topic
-	exceptions, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + subject)
+	exceptions, err := harness.client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + subject)
 	if err != nil {
 		t.Fatalf("subscribe the exception probe for %s: %v", subject, err)
 	}
 	t.Cleanup(func() { _ = exceptions.Unsubscribe() })
 	if err := harness.client.Conn.Flush(); err != nil {
 		t.Fatalf("flush the exception probe: %v", err)
+	}
+	if err := publishDeliveryException(harness.client, item, "delivery_failed", ""); err != nil {
+		t.Fatalf("control: publish an exception on %s's lane: %v", subject, err)
+	}
+	if _, err := exceptions.NextMsg(5 * time.Second); err != nil {
+		t.Fatalf("control: the exception probe for %s did not read the exception published on its lane: %v", subject, err)
 	}
 	if err := harness.client.Publish(item); err != nil {
 		t.Fatalf("publish %s to %s: %v", item.EventID, subject, err)
@@ -303,9 +311,9 @@ func agentWakesFor(t *testing.T, subscription *natsgo.Subscription, sessionID st
 // later. A copy on its agent subject - a person's answer Dispatch routes to it, say - then takes
 // the path of a session with no record: it waits once for the agent wait, and then this listener
 // reports one wake, which brings the pod back. It is never acknowledged in silence, as a copy
-// whose row names another listener is, and it is never NAKed as a failed delivery. Before #4088
-// the interest path failed such a copy as delivery_failed on every redelivery and reported no
-// wake, so the pod stayed released and the message never reached it.
+// whose row names another listener is, and it is never NAKed as a failed delivery. An interest
+// path that failed such a copy as delivery_failed on every redelivery would report no wake, so the
+// pod would stay released and the message would never reach it (#4088).
 //
 // The negative control is the second subtest: the same interest row over a record, one that names
 // no way of receiving, is acknowledged as a skip, with no wait and no wake. So the rig takes the
@@ -334,16 +342,13 @@ func TestACopyForASessionWithNoRecordWaitsOnceAndWakesEvenWhenItsInterestNamesTh
 		cfg.deferredUnplaceable = newUnplaceableDeferrals(window)
 		return startUnplaceableDelivery(t, harness, cfg, target, 0), wakes
 	}
-	// settled fails the test unless the run's message was acknowledged with no line of the
-	// removed path, no delivery exception and no failed delivery.
+	// settled fails the test unless the run's message was acknowledged with no line about it but
+	// the ones a message on an agent subject takes (aloneEventLines), no delivery exception and no
+	// failed delivery.
 	settled := func(t *testing.T, run unplaceableDeliveryRun) {
 		t.Helper()
 		logs := run.harness.logs.String()
-		for _, line := range aloneRemovedLines {
-			if got := len(deliveryRecords(t, logs, line)); got != 0 {
-				t.Errorf("%d %q lines, want none - no listener retries, gives up or fails an agent message:\n%s", got, line, logs)
-			}
-		}
+		requireEventLines(t, "the listener", logs, run.item.EventID, aloneEventLines...)
 		if got := counterValue(t, metricsBody(t, run.harness), deliveredSeries("failed")); got != -1 {
 			t.Errorf("%s = %d, want no series at all - the message was never failed", deliveredSeries("failed"), got)
 		}
@@ -410,6 +415,21 @@ func TestACopyForASessionWithNoRecordWaitsOnceAndWakesEvenWhenItsInterestNamesTh
 			t.Fatalf("%s = %d, want no series at all - a session with a record is not waited for", nakedCounter, got)
 		}
 		settled(t, run)
+	})
+
+	// The failed series' control: a followed topic of a session with no record fails its one
+	// delivery, so the series settled requires none of is the one a failed delivery writes.
+	t.Run("control: a followed topic of a session with no record counts one failed delivery", func(t *testing.T) {
+		harness := newListenerDeliveryHarness(t)
+		const target = "ses_interest_no_record_followed"
+		item := listenerTestEnvelope("notifications.github.owner.repo.issue.1", "no-record-followed-topic")
+		if _, err := harness.registry.Upsert(store.Interest{SessionID: target, MachineID: harness.config.machineID}, []string{item.Topic}); err != nil {
+			t.Fatalf("register %s's interest in %s: %v", target, item.Topic, err)
+		}
+		harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+		if body := metricsBody(t, harness); counterValue(t, body, deliveredSeries("failed")) != 1 {
+			t.Fatalf("%s is not 1 for a followed topic of a session with no record:\n%s", deliveredSeries("failed"), body)
+		}
 	})
 }
 

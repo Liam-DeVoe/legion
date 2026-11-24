@@ -723,7 +723,7 @@ func noConsumerRemedy(body listenerwire.SubscribeRequest) string {
 // packages/envoy-client/src/consumer-delivery.ts). The builds from 14.1.0 to 17.7.0 ask only
 // while that subject is open, and those from 16.2.1 on only while no cursor of their replay
 // engine is marked from_start. A pass that cannot reach NATS sets that mark, and only an answer of
-// POST /v1/replay clears it, a route this listener no longer serves. Refused, such a session would
+// POST /v1/replay clears it, a route this listener does not serve. Refused, such a session would
 // never register (dispatch://INFRA-3589, R21).
 //
 // Such a registration is given its consumer as if it had asked, with no epoch and no resume point.

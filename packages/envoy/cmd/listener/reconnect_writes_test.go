@@ -23,10 +23,11 @@ import (
 )
 
 // reconnectBufferRefusal is the text of nats.go's refusal of a send while it reconnects with the
-// reconnect buffer off (nats.ErrReconnectBufExceeded). A standing session's role claim refresh
-// answered it during the hub's NATS restart on 2026-11-16, as a 503 that named a buffer and no
-// reconnect.
-const reconnectBufferRefusal = "outbound buffer limit exceeded"
+// reconnect buffer off (nats.ErrReconnectBufExceeded), without nats.go's "nats: " prefix. A
+// standing session's role claim refresh answered it during the hub's NATS restart on 2026-11-16,
+// as a 503 that named a buffer and no reconnect. TestAWriteThroughANATSReconnectWaitsOrFailsByName
+// shows a send in an outage holds it.
+var reconnectBufferRefusal = strings.TrimPrefix(natsgo.ErrReconnectBufExceeded.Error(), "nats: ")
 
 // reconnectingReason is what a 503 says when the bus is reconnecting (bus.ErrReconnecting).
 const reconnectingReason = "NATS is reconnecting"
@@ -89,6 +90,11 @@ func reconnectWritesCallWritten(port int, path, body string, timeout time.Durati
 // it reconnects. And once the server is back, nothing of such a write reaches it: a role claim
 // refresh and a publish answered 503 in an outage land nothing, the session record the claim
 // refresh writes does not move, and a publish the caller gave up on lands nothing.
+//
+// The controls: before the outages, a role claim refresh of a new role is stored and moves the
+// session record, so the second outage's checks would see a claim that landed; and in that
+// outage, a send on a bus connection of the test's own fails with nats.go's refusal, whose text
+// no answer and no line may hold.
 //
 // The server is stopped three times. The first outage is shorter than the routes' deadline, so
 // each write may wait for the server and land. The second is longer, so each must fail by name and
@@ -153,6 +159,23 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 			t.Fatalf("open the %s bucket: %v", name, err)
 		}
 		return kv
+	}
+	// The claim refresh's control: a refresh of a new role before the outages is stored, and
+	// moves the session record it writes.
+	{
+		const role = "reconnect-writes-control"
+		js := observe(t)
+		before, err := bucket(t, js, bus.SessionBucket).Get(sessionID)
+		if err != nil {
+			t.Fatalf("control: read the session record before the claim refresh: %v", err)
+		}
+		postListener(t, listener.port, "/v1/roles/set", claim(role))
+		if _, err := bucket(t, js, bus.RoleClaimBucket).Get(role); err != nil {
+			t.Fatalf("control: role %s's claim, refreshed before the outages, is not in the role bucket: %v", role, err)
+		}
+		if after, err := bucket(t, js, bus.SessionBucket).Get(sessionID); err != nil || after.Revision() == before.Revision() {
+			t.Fatalf("control: the session record the claim refresh writes stayed at revision %d: %v, %v", before.Revision(), after, err)
+		}
 	}
 	// answers is every answer a call below had, which the end of the test reads.
 	var answers []reconnectWritesAnswer
@@ -235,7 +258,14 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 			t.Fatalf("read the session record before the outage: %v", err)
 		}
 		reconnects := lines("reconnected")
+		// The buffer refusal's control: a bus connection of the test's own, which keeps no
+		// reconnect buffer as the listener's do, has its send in this outage refused with it.
+		probe := connectPublisher(t, uri)
 		stop(t)
+		waitFor(t, 15*time.Second, "control: the test's own bus connection to start reconnecting", probe.Conn.IsReconnecting)
+		if err := probe.Conn.Publish("reconnect-writes.control", []byte("{}")); err == nil || !strings.Contains(err.Error(), reconnectBufferRefusal) {
+			t.Fatalf("control: a send on the test's own bus connection in the outage answered %v, want nats.go's %q", err, reconnectBufferRefusal)
+		}
 		got := call(
 			func() reconnectWritesAnswer {
 				return reconnectWritesCall(listener.port, "/v1/roles/set", claim(role), answerWithin)
@@ -336,8 +366,10 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 
 // A session relay run through two NATS outages writes no line that holds nats.go's "outbound
 // buffer limit exceeded", and each send it makes in an outage that nats.go refuses names the
-// reconnect. Nothing nats.go refused is sent once the bus is back: the relay that takes the
-// session again is delivered both of its messages again.
+// reconnect. The ack nats.go refused is not sent once the bus is back: the relay that takes the
+// session again restarts at the ack floor, which is still below the first message, so the session
+// is delivered both messages again. That restart sends the second message whether or not its nak
+// reached the server, so the row shows the nak only by its line, which names the reconnect.
 //
 // In the first outage the listener's connections are cut while the server runs on, as a network
 // that drops them does, so the relay still holds its two frames. The session answers one of them
@@ -409,14 +441,18 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing
 		proxy.Restore()
 		reconnected(t)
 		rig.relays.setOwned(true)
-		// Neither the refused ack nor the refused nak reached the server: both messages still
-		// await an ack, so the relay that takes the session again delivers both.
+		// The refused ack did not reach the server: the ack floor is still below the first
+		// message, so the relay that takes the session again, which restarts at that floor,
+		// delivers both. The second comes back at the floor whether or not its nak reached the
+		// server.
 		requireFrames(t, standIn.collect(t, 2, 20*time.Second), first, second)
 	}) {
 		return
 	}
 
+	pulledBefore := 0
 	if !t.Run("a relay through a NATS stop and start delivers its messages again", func(t *testing.T) {
+		pulledBefore = len(rig.harness.logs.String())
 		server.Stop(t)
 		reconnecting(t)
 		// The relay stops until the session's stand-in is back on the server, so no frame goes
@@ -453,6 +489,11 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing
 				t.Errorf("the relay logged %q with error %q, want it naming %q or the server's %q", message, failure, reconnectingReason, serverShutdown)
 			}
 		}
+	}
+	// The pull line's control: the second outage ends the relay's pull request, so at least one
+	// such line comes after its start, and the error check above reads a line that is there.
+	if pulled := len(linesIn(logs[pulledBefore:], pullEnded, map[string]any{"session_id": sessionID})); pulled == 0 {
+		t.Errorf("the relay logged no %q for %s after the second outage began", pullEnded, sessionID)
 	}
 	if written[answerFailed] != 1 {
 		t.Errorf("the relay logged %q %d times, want once, for the one frame the session answered while the connection was cut", answerFailed, written[answerFailed])

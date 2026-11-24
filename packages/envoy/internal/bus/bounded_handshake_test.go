@@ -84,8 +84,9 @@ func releaseUntilConnected(t *testing.T, hold *testnats.HandshakeHold, conn *nat
 
 // A bucket call that its caller bounds by ctx answers at that bound while nats.go holds its
 // connection lock through a reconnect's handshake, and the call never starts. Bounded reads the
-// connection's state before it starts the call, and each read waits for that lock. A read made on
-// the caller's goroutine held the caller until the handshake attempt ended, at the client's
+// connection's state before it starts the call, and each read waits for that lock. So Bounded
+// makes each read on a goroutine of its own and waits for it within ctx (readWithin). A read made
+// on the caller's goroutine would hold the caller until the handshake attempt ends, at the client's
 // connect timeout (connectTimeout, 5 s), long past the caller's bound. The row runs three calls at
 // once while one handshake is held, each with a call that counts its starts:
 //   - Bounded under a ctx bounded at 300 ms, which answers once that bound has passed, and not
@@ -100,8 +101,8 @@ func releaseUntilConnected(t *testing.T, hold *testnats.HandshakeHold, conn *nat
 //
 // The controls: a call bounded at 300 ms starts and answers before the hold, and again once the
 // hold is released and the connection is back, so the answers are the hold's. Every answer comes
-// within the handshake attempt held when the calls began. The negative control is Bounded's reads
-// as they were, on the caller's goroutine: no call answers within the bound and the margin.
+// within the handshake attempt held when the calls began. The negative control makes Bounded's
+// reads on the caller's goroutine: then no call answers within the bound and the margin.
 func TestABoundedCallAnswersAtItsBoundDuringAHeldHandshake(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
@@ -154,11 +155,12 @@ func TestABoundedCallAnswersAtItsBoundDuringAHeldHandshake(t *testing.T) {
 
 // A client's wait for its connection answers at its caller's bound while nats.go holds its
 // connection lock through a reconnect's handshake, and so does each read of the connection's state
-// that a request or a core publish makes. Each read waits for that lock, and a read made on the
-// caller's goroutine held the caller until the handshake attempt ended, at the client's connect
-// timeout (connectTimeout, 5 s): a registration's session consumer requests answered seconds past
-// their budget. The row runs four calls at once while one handshake is held, each under a ctx
-// bounded at 300 ms:
+// that a request or a core publish makes. Each read waits for that lock, so each is made on a
+// goroutine of its own and waited for within ctx. A read made on the caller's goroutine would hold
+// the caller until the handshake attempt ends, at the client's connect timeout (connectTimeout,
+// 5 s), and a registration's session consumer requests would answer seconds past their budget.
+// The row runs four calls at once while one handshake is held, each under a ctx bounded at
+// 300 ms:
 //   - ensureConnWithContext, the wait every send of the client makes first;
 //   - LastStoredMessage, a public request through requestConfirmed, whose wait it is;
 //   - publishConfirmed, a core publish, whose read of the connection's state before its send waits
@@ -174,8 +176,8 @@ func TestABoundedCallAnswersAtItsBoundDuringAHeldHandshake(t *testing.T) {
 // The controls: before the hold and once it is released and the connection is back, the wait
 // answers nil, the read of a subject the stream holds nothing on answers nats.ErrMsgNotFound, the
 // publish is confirmed, and the stream read answers. Every answer during the hold comes within the
-// handshake attempt held when the calls began. The negative control is the reads as they were, on
-// the caller's goroutine: no call answers within the bound and the margin.
+// handshake attempt held when the calls began. The negative control makes the reads on the
+// caller's goroutine: then no call answers within the bound and the margin.
 func TestAClientsWaitForItsConnectionAnswersAtItsBoundDuringAHeldHandshake(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
@@ -234,10 +236,11 @@ func TestAClientsWaitForItsConnectionAnswersAtItsBoundDuringAHeldHandshake(t *te
 // A read of the client's connection state holds no lock of the client's while it waits for
 // nats.go's connection lock, so a bounded send made beside it during a reconnect's handshake
 // answers at its bound. Client.Connected, SubOK and a recovery's subscriptionsHealthy each read the
-// connection's status, which waits for nats.go's lock, and each held the client's lock across that
+// connection's status, which waits for nats.go's lock, and none holds the client's lock across that
 // read. Every send takes the client's lock to read its connection (ensureConnWithContext,
-// Connection), so a keeper pass, a /healthz read or a recovery made during a handshake held every
-// bounded send until the attempt ended, at the client's connect timeout (connectTimeout, 5 s).
+// Connection). A read that held the client's lock across the status read would make a keeper pass,
+// a /healthz read or a recovery during a handshake hold every bounded send until the attempt ends,
+// at the client's connect timeout (connectTimeout, 5 s).
 //
 // The row starts the three reads while one handshake is held. Once they have been kept waiting for
 // nats.go's lock (testnats.RequireLockHeld), it makes three bounded sends at once, each under a ctx
@@ -248,8 +251,8 @@ func TestAClientsWaitForItsConnectionAnswersAtItsBoundDuringAHeldHandshake(t *te
 //
 // The controls: before the hold the client reads its connection as connected; the three reads are
 // still waiting when the sends have answered, so the sends answered beside them; and each read
-// answers once the hold is released. The negative control is the three reads as they were, with
-// the client's lock held across the status read: no send answers within the bound and the margin.
+// answers once the hold is released. The negative control holds the client's lock across the
+// status read of each of the three reads: then no send answers within the bound and the margin.
 func TestAClientsStateReadsHoldNoLockOfItsOwnDuringAHeldHandshake(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
@@ -321,12 +324,13 @@ func TestAClientsStateReadsHoldNoLockOfItsOwnDuringAHeldHandshake(t *testing.T) 
 // A legacy JetStream request whose nats.Context had ended names its error within that context
 // during a reconnect's handshake. nats.go answers such a request with ctx's error at once, before
 // it takes its connection lock, and the name of that error reads the connection's status (namedOn),
-// which waits for that lock. The read was made at once on the caller's goroutine, so the request
-// answered only when the handshake attempt ended, at the client's connect timeout
-// (connectTimeout, 5 s). A caller whose budget earlier steps spent makes such a request: the
-// listener's /healthz read of its durable, a durable's bind wait, and the stream ensure under a run's
-// context that the drop ended (requestsUnder). The row makes three at once while one handshake is
-// held, each under a ctx that had ended before the call:
+// which waits for that lock. namedOn makes that read within the request's context (readWithin). A
+// read made at once on the caller's goroutine would answer the request only when the handshake
+// attempt ends, at the client's connect timeout (connectTimeout, 5 s). A caller whose budget
+// earlier steps spent makes such a request: the listener's /healthz read of its durable, a
+// durable's bind wait, and the stream ensure under a run's context that the drop ended
+// (requestsUnder). The row makes three at once while one handshake is held, each under a ctx that
+// had ended before the call:
 //   - StreamInfo through the client's JetStream context with nats.Context, the shape of those
 //     callers;
 //   - StreamInfo through requestsUnder over that context, which adds the nats.Context itself;
@@ -337,9 +341,9 @@ func TestAClientsStateReadsHoldNoLockOfItsOwnDuringAHeldHandshake(t *testing.T) 
 //
 // The controls: the same three calls under the same ended ctx answer ctx's bare error, which names
 // no reconnect, before the hold and once it is released and the connection is back; and the leader
-// read under a live ctx answers that the key is not there. The negative control is the name read as
-// it was, at once on the caller's goroutine whatever the request's context: no call answers within
-// the bound and the margin.
+// read under a live ctx answers that the key is not there. The negative control makes the name's
+// read at once on the caller's goroutine, whatever the request's context: then no call answers
+// within the bound and the margin.
 func TestARequestWhoseContextEndedIsNamedWithinItDuringAHeldHandshake(t *testing.T) {
 	const key = "never-written"
 	client, hold := heldHandshakeClient(t)
@@ -389,12 +393,12 @@ func TestARequestWhoseContextEndedIsNamedWithinItDuringAHeldHandshake(t *testing
 
 // A request already waiting for its reply when nats.go begins a reconnect's handshake answers at
 // its own bound. Its reply inbox ends with the wait, and an unsubscribe waits for nats.go's
-// connection lock, which nats.go holds through the handshake. A wait that ended without a reply
-// unsubscribed on the caller's goroutine, so the request answered only when the handshake attempt
-// ended, at the client's connect timeout (connectTimeout, 5 s): the listener's connection probe
-// (RequestCore), a session consumer's request (requestConfirmed) and a role forward's wait for the
-// stream (PendingForward.Wait) each answered past its bound. Such a wait now unsubscribes on a
-// goroutine of its own (endReplies).
+// connection lock, which nats.go holds through the handshake. A wait that ends without a reply
+// unsubscribes on a goroutine of its own (endReplies). An unsubscribe on the caller's goroutine
+// would answer the request only when the handshake attempt ends, at the client's connect timeout
+// (connectTimeout, 5 s): the listener's connection probe (RequestCore), a session consumer's
+// request (requestConfirmed) and a role forward's wait for the stream (PendingForward.Wait) would
+// each answer past its bound.
 //
 // The row sends the three requests to a subject a silent subscriber takes and never answers, so no
 // reply and no no-responders answer comes. Once each has reached the subscriber, and the probe and
@@ -408,8 +412,8 @@ func TestARequestWhoseContextEndedIsNamedWithinItDuringAHeldHandshake(t *testing
 //
 // The controls: no request answers before its end, so each was waiting for its reply when the hold
 // began; and once the hold is released, the connection holds as many subscriptions as before the
-// requests, so every unsubscribe left running has landed. The negative control is the unsubscribe
-// as it was, on the caller's goroutine: no request answers within 1 s of its end.
+// requests, so every unsubscribe left running has landed. The negative control unsubscribes on the
+// caller's goroutine: then no request answers within 1 s of its end.
 func TestARequestWaitingForItsReplyAnswersAtItsBoundWhenAHandshakeIsHeldUnderIt(t *testing.T) {
 	const forwardWindow = 4 * time.Second
 	client, hold := heldHandshakeClient(t)
@@ -542,9 +546,9 @@ func (d *doneWatch) Done() <-chan struct{} {
 
 // A core publish whose ctx ends while its read of the connection's state waits for nats.go's lock
 // publishes nothing, even when that read then answers: readWithin gives a read ConnLockWait however
-// soon ctx ends, so its answer can come after ctx ended, and the publish read ctx only before the
-// read. Its subscribers then received a message its caller was told failed, and the caller's retry
-// delivered it twice.
+// soon ctx ends, so its answer can come after ctx ended. So publishConfirmed reads ctx again once
+// the read has answered. A publish that read ctx only before the read would send its subscribers a
+// message its caller is told failed, and the caller's retry would deliver it twice.
 //
 // The row holds a reconnect's handshake, so the read waits for nats.go's lock. It starts the
 // publish under a ctx that reports the read's start (doneWatch), cancels ctx, then releases the
@@ -557,7 +561,7 @@ func (d *doneWatch) Done() <-chan struct{} {
 // The controls: a publish with a live ctx before the hold and once the connection is back is
 // confirmed and calls its publish once each; and the answer is not ErrReconnecting, so the read
 // answered after ctx ended rather than leaving the publish unsent at the floor. The negative
-// control is publishConfirmed as it was, reading ctx only before the read: it publishes.
+// control has publishConfirmed read ctx only before the read: then it publishes.
 func TestAPublishWhoseContextEndsInItsLockWaitPublishesNothing(t *testing.T) {
 	const raisedFloor = 3 * time.Second
 	floor := readFloor.Swap(int64(raisedFloor))
@@ -621,10 +625,10 @@ func TestAPublishWhoseContextEndsInItsLockWaitPublishesNothing(t *testing.T) {
 
 // A window's request whose read of the connection's state, before its send, meets a reconnect's
 // handshake answers at its deadline and sends nothing. The read (observe) takes nats.go's
-// connection lock, which nats.go holds through the handshake, and it was made on the caller's
-// goroutine with no bound: the request answered only when the attempt ended, at the client's
-// connect timeout (connectTimeout, 5 s), whatever its own timeout. Now the read is waited for
-// until the request's deadline (window.observeToSend).
+// connection lock, which nats.go holds through the handshake, so the request waits for the read
+// only until its deadline (window.observeToSend). A read made on the caller's goroutine with no
+// bound would answer the request only when the attempt ends, at the client's connect timeout
+// (connectTimeout, 5 s), whatever its own timeout.
 //
 // The window's pin reads no state of nats.go's, and the inbox's subscribe before the read takes the
 // lock too, so a handshake reaches the read only when it begins between the two. The row holds it
@@ -636,8 +640,8 @@ func TestAPublishWhoseContextEndsInItsLockWaitPublishesNothing(t *testing.T) {
 //
 // The controls: before the hold, a request of the same window reaches the subscriber; the lock is
 // still held, and no later attempt has reached the hold, when the request answers. The negative
-// control is the read as it was, observe on the caller's goroutine (with the seam kept): the
-// request answers only when the attempt ends.
+// control calls observe on the caller's goroutine (with the seam kept): then the request answers
+// only when the attempt ends.
 func TestAWindowRequestAnswersAtItsDeadlineWhenAHandshakeIsHeldBeforeItsSend(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
@@ -714,12 +718,12 @@ func TestAWindowRequestAnswersAtItsDeadlineWhenAHandshakeIsHeldBeforeItsSend(t *
 }
 
 // A window's request whose answer is waiting in its inbox when nats.go begins a reconnect's
-// handshake answers at once, and its inbox ends off its goroutine. The wait took any answer it
-// read, also one found waiting once the connection changed (drained), for a reply over a live link
-// and unsubscribed on its own goroutine, which waits for nats.go's connection lock, so the request
-// answered only when the attempt ended, at the client's connect timeout (connectTimeout, 5 s). Now
-// it unsubscribes there only for a reply it took as the reply arrived, while the window's
-// connection is still current (window.request, endReplies).
+// handshake answers at once, and its inbox ends off its goroutine. The wait unsubscribes on its own
+// goroutine only for a reply it took as the reply arrived, while the window's connection is still
+// current (window.request, endReplies). A wait that took any answer it read for a reply over a
+// live link, also one found waiting once the connection changed (drained), would unsubscribe on its
+// own goroutine, which waits for nats.go's connection lock. The request would then answer only when
+// the attempt ends, at the client's connect timeout (connectTimeout, 5 s).
 //
 // The row sends a request the stream acknowledges, on a subject the stream captures. As the
 // request's wait begins (the window's requestWaitBegins seam), the row waits until the stream's
@@ -729,8 +733,8 @@ func TestAWindowRequestAnswersAtItsDeadlineWhenAHandshakeIsHeldBeforeItsSend(t *
 // the hold is released.
 //
 // The controls: the lock is still held, and no later attempt has reached the hold, when the
-// request answers. The negative control is the wait as it was, which took every answer for a reply
-// over a live link: it answers only when the attempt ends.
+// request answers. The negative control takes every answer the wait reads for a reply over a live
+// link: then the request answers only when the attempt ends.
 func TestAWindowRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
@@ -780,14 +784,14 @@ func TestAWindowRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t *
 }
 
 // A request of the client's own whose reply is waiting in its inbox when nats.go begins a
-// reconnect's handshake answers at once, and its inbox ends off its goroutine. The wait counted any
-// reply it took as one over a live link, also one it took from the inbox once the connection had
-// changed. So it unsubscribed on its own goroutine, which waits for nats.go's connection lock, and
-// the request answered only when the attempt ended, at the client's connect timeout
-// (connectTimeout, 5 s). Now each unsubscribes there only for a reply it took while the connection
-// was still in the life its inbox was subscribed in (endReplies): the probe's request
-// (RequestCore), a session consumer's request (requestConfirmed) and a role forward's wait for the
-// stream (PendingForward.Wait).
+// reconnect's handshake answers at once, and its inbox ends off its goroutine. Each of these
+// requests unsubscribes on its own goroutine only for a reply it took while the connection is still
+// in the life its inbox was subscribed in (endReplies): the probe's request (RequestCore), a
+// session consumer's request (requestConfirmed) and a role forward's wait for the stream
+// (PendingForward.Wait). A wait that counted any reply it took as one over a live link, also one it
+// took from the inbox once the connection changed, would unsubscribe on its own goroutine, which
+// waits for nats.go's connection lock. The request would then answer only when the attempt ends,
+// at the client's connect timeout (connectTimeout, 5 s).
 //
 // The row sends the probe and the consumer request to a subject a responder answers, and the
 // forward to a subject the stream captures. The probe and the consumer request each stop as their
@@ -800,8 +804,8 @@ func TestAWindowRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t *
 // released.
 //
 // The controls: the lock is still held, and no later attempt has reached the hold, when the three
-// have answered. The negative controls are the waits as they were, which counted every reply as one
-// over a live link: with stored.go's, the probe and the consumer request answer only when the
+// have answered. The negative controls make the waits count every reply as one over a live link:
+// with stored.go's waits so changed, the probe and the consumer request answer only when the
 // attempt ends; with nats.go's, the forward does.
 func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
@@ -926,8 +930,8 @@ func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t 
 
 // A forward whose stream answers it over a live link as a duplicate with no sequence
 // (ErrDuplicateWithoutSequence) ends its inbox on Wait's own goroutine, as every reply taken over a
-// live link does (endReplies). Wait's return for that answer set no replied, so Wait unsubscribed
-// on a goroutine of its own and answered with its inbox still subscribed.
+// live link does (endReplies). A return for that answer that set no replied would have Wait
+// unsubscribe on a goroutine of its own and answer with its inbox still subscribed.
 //
 // The row forwards to a subject a responder answers with a duplicate that names no sequence, as
 // nats-server v2.10.29 answered an id it had staged at 0. Once that answer is in the forward's
@@ -937,9 +941,9 @@ func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t 
 // wrapping ErrDuplicateWithoutSequence, and its inbox is gone.
 //
 // The controls: the lock is still held (RequireLockHeld), and the connection is still in the life
-// the inbox was subscribed in, when the row stops its wait for an answer. The negative control is
-// the return as it was, with no replied: Wait answers while the write holds the lock, and its
-// inbox is still subscribed.
+// the inbox was subscribed in, when the row stops its wait for an answer. The negative control
+// returns for that answer with no replied: then Wait answers while the write holds the lock, and
+// its inbox is still subscribed.
 func TestAForwardAnsweredADuplicateWithNoSequenceEndsItsInboxOnItsGoroutine(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()

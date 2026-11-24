@@ -19,10 +19,10 @@ import (
 // whose envoy-client gives one attempt contracts.ListenerCallTimeout (LISTENER_CALL_TIMEOUT_MS,
 // 5 s): an answer that comes later reaches nobody, and the plugin reads its own timeout instead.
 //
-// At 6eda53b5 the listener waits out sessionConsumerCallTimeout (5 s) on the consumer read, logs
-// "session consumer call failed; the registration is refused" with the error "context deadline
-// exceeded", and answers 503 "the session consumer of <id> could not be read or created", which
-// names no reconnect, 5.0 s after the request.
+// A consumer read bounded only by sessionConsumerCallTimeout (5 s) would wait it out, log "session
+// consumer call failed; the registration is refused" with the error "context deadline exceeded",
+// and answer 503 "the session consumer of <id> could not be read or created", which names no
+// reconnect, 5 s after the request.
 func TestARegistrationThroughANATSReconnectFailsByName(t *testing.T) {
 	const (
 		machineID = "reconnect-registration"

@@ -57,8 +57,9 @@ func TestAnEdgeListenerGrantRefusesAListThatIsNoListOfProjectKeys(t *testing.T) 
 // (natsgrant.Edge): a message on the agent subject of a session with no record is acknowledged
 // with no publish, logged and counted delivery_status="wake_left_to_shared". The core handler
 // delivers with no metadata, so the message takes no wait first. The same message through a
-// listener without the edge's grant reports the wake, which shows the probe sees a report when one
-// is made.
+// listener without the edge's grant reports the wake and counts delivery_status="wake_reported"
+// once, which shows the probe sees a report when one is made and the series the edge must not
+// write is the one a report writes.
 func TestAnEdgeListenerLeavesTheAgentWakeToTheSharedListeners(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	wakes := agentWakeProbe(t, harness)
@@ -85,6 +86,9 @@ func TestAnEdgeListenerLeavesTheAgentWakeToTheSharedListeners(t *testing.T) {
 	shared := listenerTestEnvelope(contracts.LegacyAgentSubject(absent), "shared-wake-"+id.New())
 	harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, shared)})
 	awaitWake(t, wakes, wakeKindAgent, absent)
+	if body := metricsBody(t, harness); counterValue(t, body, deliveredSeries("wake_reported")) != 1 {
+		t.Fatalf("%s is not 1 once the listener without the edge's grant reported the wake\n%s", deliveredSeries("wake_reported"), body)
+	}
 }
 
 // An edge listener's grant publishes no kept role lane, so the edge keeps no role message and

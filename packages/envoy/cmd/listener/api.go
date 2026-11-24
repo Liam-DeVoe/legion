@@ -3673,9 +3673,10 @@ const knownRecordWriteTimeout = 1 * time.Second
 // route's `200 stopped` with `recipient_state: gone`, sendHandler). A registration answered 200 that
 // left no record would make the next such send the 404 of a session no store knows, and a session
 // whose pod is released before its next heartbeat - which would write the record, since this
-// listener's copy holds none - is then not stored for at all: under 32 busy loops the store work
-// before this write spent the whole budget, the write was never sent (bus.Bounded starts no call on
-// a context that has ended), and the registration was answered 200 (dispatch://INFRA-3149).
+// listener's copy holds none - is then not stored for at all. Under 32 busy loops the store work
+// before this write can spend the whole budget, and a write that shared it would then never be
+// sent (bus.Bounded starts no call on a context that has ended) while the registration is answered
+// 200 (dispatch://INFRA-3149).
 //
 // So the write is bounded on its own (knownRecordWriteTimeout), and a write that does not land in
 // that bound is answered as the store error it is (writeStoreError): the bus-unavailable 503 with
