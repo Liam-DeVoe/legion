@@ -2425,7 +2425,6 @@ commit;
 
 Each deleted `conflict_confirm` row costs one second read: the earlier release reads mergeability its own way and acts on a conflict at its first read.
 Each deleted `merge_forward` row is a message that nobody delivers.
-The header of `20261119003157_conflict_reads_and_merge_forward.up.sql` gives the same way back over every project's rows, for a database whose every daemon rolls back at once; the statements here take one project's.
 
 The kind check keeps `phase_ended` and both new names after the rollback, so it refuses nothing the earlier release writes.
 That release queues `phase_ended` rows again when a conflict sends an issue back, and the migration that deletes them does not run a second time, since the database still records its version.
@@ -2436,7 +2435,7 @@ So run this once more with the earlier release of that project stopped, before t
 delete from outbox where kind = 'phase_ended' and split_part(issue, '-', 1) = '<PROJECT>';
 ```
 
-The header of `20261119003157_conflict_reads_and_merge_forward.up.sql` gives this statement over every project's rows, for a database whose every daemon rolls forward at once; the statement here takes one project's.
+The header of `20261119003157_conflict_reads_and_merge_forward.up.sql` gives the way back and this roll-forward statement over every project's rows, for a database whose every daemon moves at once; the statements here take one project's.
 
 The outbox and `pull_requests` are shared by every project's daemon on the database, so each statement of this section takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), and a project that stays on this release keeps its second reads and its merge-forward messages.
 
@@ -3648,7 +3647,7 @@ The two blocks below drop columns of `phases`, `claims` and `pending_task_delive
 So a daemon left on this release while another rolls back fails each read of a dropped column or table, and one that boots on the database again runs the deleted migrations under the daemons that rolled back (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
 Stop every daemon of one database, run each block once, and pin the earlier image for all of them in the same change.
 Each step or statement of another section that this section sends you to and that takes `<PROJECT>` or `<KEY>` runs once for each project of the database, with that project's key, since a step or a statement taken for one project alone leaves the other projects' rows and held pods, which the earlier release then fails to decode on every attempt or deletes with their disks.
-Those are #4115's first two steps and its three statements, #4464's block and its `phase_ended` statement before a roll forward, #4573's statement, the two of [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan), the `memory-guard-kill` delete of [Rolling back below the release that guards the controller's pod's memory](#rolling-back-below-the-release-that-guards-the-controllers-pods-memory), the block of [Rolling back the release that tells the merger of a merge-queue removal](#rolling-back-the-release-that-tells-the-merger-of-a-merge-queue-removal) and the block of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages); the block of the owner's plan says so itself.
+Those are #4115's first two steps and its three statements, #4464's block and its `phase_ended` statement before a roll forward, #4573's statement, the two of [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan), the `memory-guard-kill` delete of [Rolling back below the release that guards the controller's pod's memory](#rolling-back-below-the-release-that-guards-the-controllers-pods-memory), the block of [Rolling back the release that tells the merger of a merge-queue removal](#rolling-back-the-release-that-tells-the-merger-of-a-merge-queue-removal) and the block of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages); the block of the owner's plan and the statements of [Rolling back the release that carries a person's words in the daemon's texts](#rolling-back-the-release-that-carries-a-persons-words-in-the-daemons-texts) say so themselves.
 
 To roll a release at contract 146 back to contract 87, stop every daemon of the database and run two blocks in this order: the block below, then the phase entry's block after it.
 A rollback from a release above contract 146 takes first the steps of each release it crosses above 146: "Rolling back below the release that guards the controller's pod's memory" above gives those of the release whose `version.go` carries the entry for `dispatch://INFRA-3531`, which are to take `controller_pod` out of `legion.yaml` and to delete the unsent `memory-guard-kill` notices.
