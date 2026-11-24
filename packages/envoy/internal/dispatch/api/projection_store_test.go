@@ -897,8 +897,8 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 // batches of comments, each beside the nodes the batch's rows project, and the comment write of
 // the backfill and of the block-index tick (c-projection-write, Verification v108).
 var commentsRowWriters = []string{
-	"packages/envoy/internal/dispatch/api/comment_create.go#api.*server.createCommentFor",
-	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
+	"packages/envoy/internal/dispatch/api/comment_create.go#api.*server.writeComment",
+	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.answerCommentDelivery",
 	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
 	"packages/envoy/internal/dispatch/refs/comment_nodes.go#refs.CommentWrite.Queue",
 }

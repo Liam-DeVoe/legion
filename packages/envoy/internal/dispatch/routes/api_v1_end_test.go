@@ -18,14 +18,14 @@ import (
 func apiV1EndRouter(t *testing.T, end time.Time, now *time.Time) http.Handler {
 	t.Helper()
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:       testSigningKey,
 		People:           people,
 		Identity:         identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:         t.Context(),
 		TestHooksEnabled: true,
 		APIV1End:         end,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

@@ -55,7 +55,7 @@ func (r *signInRig) rebuilt(t *testing.T, change func(*AppContextOptions)) http.
 	t.Helper()
 	options := r.options
 	change(&options)
-	ctx, err := BuildAppContext(options)
+	ctx, err := BuildAppContext(withDocuments(t, options))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -130,13 +130,13 @@ func TestAuthAndOriginRefusalsCarryACode(t *testing.T) {
 			t.Fatalf("record sign-in: %v", err)
 		}
 		sessions := failingSessions{&memorySessionStore{generations: map[string]int64{"sami@d.example": 0}}}
-		ctx, err := BuildAppContext(AppContextOptions{
+		ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 			SigningKey: testSigningKey,
 			People:     people,
 			Sessions:   sessions,
 			Identity:   identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions},
 			Lifetime:   t.Context(),
-		})
+		}))
 		if err != nil {
 			t.Fatalf("build context: %v", err)
 		}

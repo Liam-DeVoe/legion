@@ -32,7 +32,7 @@ var storeWriteCallSites = map[string]string{
 	// their own event instead, which it states in its own statement.
 	"asks/followers.go#queueFollow":    "asks#TestAFollowTakesTheStoreLockOrder",
 	"api/server.go#appendCausingEvent": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/asks.go#createAskFor":         "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/asks.go#openAsk":              "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/reviews.go#renewApprovalAsk":  "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/settlement.go#appendEvents":  "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
 	// The block index's cause: each site that appends what a version's index pass stated under
@@ -42,20 +42,20 @@ var storeWriteCallSites = map[string]string{
 	// version states it right after its event (appendEvents, above).
 	"api/artifacts.go#commitArtifactVersionEvent":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/artifacts.go#storeArtifact":                "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/issue_create.go#createIssue":               "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/issue_create.go#createIssueFrom":           "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
 	// The comment path: the comment's node before the comments row that names it, then its
 	// tuples and its cause under the event appended after both, and who wrote it
 	// (graphstore.QueueNodes, QueueCaused and QueueAuthored, each called by the path itself).
-	"api/comment_create.go#createCommentFor": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/comment_create.go#writeComment": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A delivery's reply and the settle of a delivery attempt, which records the session the
 	// attempt reached, and the one record both replies share of what their answer makes of the
 	// attempt they answer: an attempt the answer flips to sent is one the listener took, and
 	// its session is owed a node (queueAnsweredDelivery, which the reply's driver runs last).
 	"api/comment_delivery.go#completeCommentDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_delivery.go#queueAnsweredDelivery":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/comment_delivery.go#replyComment":            "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/comment_delivery.go#answerCommentDelivery":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, and the session
