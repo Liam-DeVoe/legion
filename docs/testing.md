@@ -37,8 +37,10 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 
 - A test in which a real Dispatch reads the check runs of a commit takes its GitHub from `githubtest.ServeChecks`, the one fake GitHub whose state is the package's.
   It answers what Dispatch's App client asks first, the App's installation, an installation token and the repository, and then the check runs a test set on the commit with `SetCheckRun`; it answers every other request 404 and keeps it for `Unanswered`.
-  `githubtest.PublishChecksSettlement` publishes on the notification stream the settlement of a pull request's checks that the listener's CI summary loop publishes, so the test drives Dispatch's check states by the trigger production uses.
-  The daemon's `internal/daemon` holds the rig over both: a scratch Dispatch with a throwaway App on the fake (`scratchDispatchOptions.github`), its delivery settings written (`writeDeliverySettings`), and the self-test `TestTheScratchDispatchPublishesACIStateFromTheSettlement`.
+  It checks each credential as GitHub does: the installation and the mint take only a JWT its own `App` signed, the reads only a token it minted, and it answers each other request 401 and keeps it for `Refused`.
+  `githubtest.PublishChecksSettlement` publishes on the notification stream the settlement of a pull request's checks that the listener's CI summary loop publishes, commit statuses included, so the test drives Dispatch's check states by the trigger production uses.
+  The fake copies Envoy's settlement, subject segment and delivery durable by hand, and `packages/contracts/fixtures/checks-settlement/published.json` holds what Envoy's own code makes of each: a test in each module reads it, so a copy that drifts fails one of the two.
+  The daemon's `internal/daemon` holds the rig over both: a scratch Dispatch that holds the fake's App (`scratchDispatchOptions.github`), its delivery settings written (`writeDeliverySettings`), and the self-test `TestTheScratchDispatchPublishesACIStateFromTheSettlement`.
 
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
