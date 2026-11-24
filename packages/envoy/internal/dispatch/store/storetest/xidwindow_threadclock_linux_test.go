@@ -3,7 +3,10 @@
 package storetest
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"math/bits"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -14,8 +17,6 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
-
-	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // The rig reads a thread's clocks at both ends of every gap, and while the collector is held off
@@ -58,12 +59,12 @@ func TestReadingAThreadsClocksAllocatesNothing(t *testing.T) {
 // show. Where NUMA balancing runs and the hold answers not held, the test asks the kernel itself
 // (xidMempolicyRefusal): where it refuses the hold's calls, the rig holds no thread and judges no
 // gap, and the test stops as the rig's self-tests do (RequireXidGapJudgment); where it permits
-// them, the hold is at fault, and the test fails in every build - but on a kernel before Linux 3.8,
-// which takes no MPOL_LOCAL in set_mempolicy, where it stops naming that (xidKernelBefore).
+// them, the hold is at fault, and the test fails in every build.
 //
 // The policy itself is compared in subtests. A machine that refuses the read of a thread's
 // policy, with NUMA balancing off, has no policy to compare and nothing the hold could change, so
-// they skip there, saying so (threadMempolicy).
+// they skip there, saying so (threadMempolicy). Where NUMA balancing runs, the held policy must be
+// MPOL_LOCAL as this kernel reports it, read back off the test's own thread (xidLocalPolicy).
 func TestHoldingAThreadKeepsNUMABalancingOffItUntilItIsLetGo(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -75,9 +76,6 @@ func TestHoldingAThreadKeepsNUMABalancingOffItUntilItIsLetGo(t *testing.T) {
 	}
 	if !held {
 		refused, answer := xidMempolicyRefusal()
-		if !refused && xidKernelBefore(3, 8) {
-			testdb.SkipOutsideCI(t, "Linux %s takes no MPOL_LOCAL in set_mempolicy, so the hold cannot be made here: its modes end at MPOL_INTERLEAVE, and set_mempolicy answers EINVAL to mode 4, at MPOL_MAX, until Linux 3.8 makes MPOL_LOCAL a policy (%s)", xidKernelRelease(), answer)
-		}
 		if !refused {
 			t.Fatalf("the rig could not hold this thread out of NUMA balancing, though the kernel refuses neither of the hold's calls (%s): the hold is at fault", answer)
 		}
@@ -96,88 +94,241 @@ func TestHoldingAThreadKeepsNUMABalancingOffItUntilItIsLetGo(t *testing.T) {
 		}
 		during := threadMempolicy(t)
 		release()
-		after := threadMempolicy(t)
-		if after != before {
-			t.Errorf("a thread let go has memory policy mode %d, want the %d it had", after, before)
+		if after := threadMempolicy(t); after != before {
+			t.Errorf("a thread let go has memory policy %s, want the %s it had", after, before)
 		}
 		want := before
 		if xidNUMABalancing() {
-			if xidKernelBefore(5, 14) {
-				testdb.SkipOutsideCI(t, "Linux %s reports a thread's MPOL_LOCAL as MPOL_PREFERRED: until Linux 5.14 MPOL_LOCAL is MPOL_PREFERRED with the internal MPOL_F_LOCAL flag, so the held policy, mode %d, cannot be told from it here", xidKernelRelease(), during)
-			}
-			want = xidMempolicyLocal
+			want = xidLocalPolicy(t)
 		}
 		if during != want {
-			t.Errorf("a held thread's memory policy is mode %d, want %d", during, want)
+			t.Errorf("a held thread's memory policy is %s, want %s", during, want)
 		}
 	})
 	// The let-go puts back a policy that is not the default by its own call (xidHoldThread's
 	// release), which runs only where NUMA balancing runs and the kernel permits the calls: a thread
-	// that starts at the default never reaches it. So here the thread starts at MPOL_PREFERRED.
+	// that starts at the default never reaches it. So here the thread starts at MPOL_PREFERRED, on a
+	// node the kernel takes for it (xidPreferredNode), and gets the policy it had back at the end.
 	t.Run("a policy that is not the default is put back when it is let go", func(t *testing.T) {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
-		node := xidFirstOnlineNode()
-		var mask [16]uint64
-		mask[node/64] |= 1 << (node % 64)
-		_, _, errno := unix.Syscall(unix.SYS_SET_MEMPOLICY, xidMempolicyPreferred, uintptr(unsafe.Pointer(&mask[0])), uintptr(len(mask)*64))
+		allowed, errno := xidGetPolicy(nil, xidMempolicyMemsAllowed)
+		if (errno == unix.EPERM || errno == unix.ENOSYS) && !xidNUMABalancing() {
+			t.Skipf("NUMA balancing moves no page on this machine, so the hold makes no memory-policy call and changes nothing, and the nodes this thread may use cannot be read here to choose one (get_mempolicy MPOL_F_MEMS_ALLOWED: %v)", errno)
+		}
+		if errno != 0 {
+			t.Fatalf("read the nodes this thread may use (get_mempolicy MPOL_F_MEMS_ALLOWED): %v", errno)
+		}
+		text, err := os.ReadFile(xidHasMemoryPath)
+		hasMemory, absent, err := xidNodesWithMemory(allowed.nodes, text, err)
+		if err != nil {
+			t.Fatalf("read the nodes with memory: %v", err)
+		}
+		if absent {
+			t.Logf("%s could not be read, as it does not exist, so the node comes from the nodes this thread may use alone, %s", xidHasMemoryPath, xidNodesText(allowed.nodes))
+		}
+		node, ok := xidPreferredNode(allowed.nodes, hasMemory)
+		if !ok {
+			t.Skipf("no node this thread may use has memory, so the kernel takes no node to prefer: the thread may use nodes %s (get_mempolicy MPOL_F_MEMS_ALLOWED), and nodes %s have memory (%s)", xidNodesText(allowed.nodes), xidNodesText(hasMemory), xidHasMemoryPath)
+		}
+		before := threadMempolicy(t)
+		preferred := xidPolicy{mode: xidMempolicyPreferred}
+		preferred.nodes[node/64] |= 1 << (node % 64)
+		errno = preferred.set()
 		if (errno == unix.EPERM || errno == unix.ENOSYS) && !xidNUMABalancing() {
 			t.Skipf("NUMA balancing moves no page on this machine, so the hold makes no memory-policy call and changes nothing, and this thread's memory policy cannot be set here to compare (set_mempolicy: %v)", errno)
 		}
 		if errno != 0 {
 			t.Fatalf("set this thread's memory policy to MPOL_PREFERRED on node %d: %v", node, errno)
 		}
-		defer unix.Syscall(unix.SYS_SET_MEMPOLICY, xidMempolicyDefault, 0, 0)
+		defer func() {
+			if errno := before.set(); errno != 0 {
+				t.Errorf("put back this thread's memory policy, %s: %v", before, errno)
+			}
+		}()
 		release, held := xidHoldThread()
 		if !held {
 			t.Fatal("the rig could not hold this thread out of NUMA balancing")
 		}
 		release()
-		if after := threadMempolicy(t); after != xidMempolicyPreferred {
-			t.Errorf("a thread let go has memory policy mode %d, want the MPOL_PREFERRED (%d) it had", after, xidMempolicyPreferred)
+		if after := threadMempolicy(t); after != preferred {
+			t.Errorf("a thread let go has memory policy %s, want the %s it had", after, preferred)
 		}
 	})
 }
 
-// xidMempolicyPreferred is MPOL_PREFERRED (linux/mempolicy.h).
-const xidMempolicyPreferred = 1
-
-// xidFirstOnlineNode is the first NUMA node /sys/devices/system/node/online names, or 0 where it
-// cannot be read.
-func xidFirstOnlineNode() int {
-	online, err := os.ReadFile("/sys/devices/system/node/online")
-	if err != nil {
-		return 0
+// The restore subtest starts the thread at MPOL_PREFERRED on a node the kernel takes for it: one
+// the thread may use that has memory, since set_mempolicy answers EINVAL to a preferred node
+// outside the thread's cpuset or without memory (mpol_set_nodemask). The nodes with memory are
+// read off /sys/devices/system/node/has_memory; where that file does not exist, as under gVisor,
+// the node comes from the nodes the thread may use alone (xidNodesWithMemory, xidPreferredNode).
+func TestTheRestoreSubtestPrefersANodeTheThreadMayUseThatHasMemory(t *testing.T) {
+	nodes := func(list ...int) (mask [16]uint64) {
+		for _, node := range list {
+			mask[node/64] |= 1 << (node % 64)
+		}
+		return mask
 	}
-	digits := strings.TrimSpace(string(online))
-	if end := strings.IndexAny(digits, "-,"); end >= 0 {
-		digits = digits[:end]
+	absent := &fs.PathError{Op: "open", Path: xidHasMemoryPath, Err: unix.ENOENT}
+	for _, c := range []struct {
+		name      string
+		allowed   [16]uint64
+		hasMemory string
+		readErr   error
+		node      int
+		ok        bool
+	}{
+		{"the thread may use node 1 alone", nodes(1), "0-1\n", nil, 1, true},
+		{"node 1 alone has memory", nodes(0, 1), "1\n", nil, 1, true},
+		{"no node the thread may use has memory", nodes(0), "1\n", nil, 0, false},
+		{"no has_memory file", nodes(0), "", absent, 0, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			hasMemory, _, err := xidNodesWithMemory(c.allowed, []byte(c.hasMemory), c.readErr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if node, ok := xidPreferredNode(c.allowed, hasMemory); node != c.node || ok != c.ok {
+				t.Errorf("the choice is node %d (found %v), want node %d (found %v)", node, ok, c.node, c.ok)
+			}
+		})
 	}
-	node, err := strconv.Atoi(digits)
-	if err != nil || node < 0 || node >= 16*64 {
-		return 0
+	if _, _, err := xidNodesWithMemory(nodes(0), []byte("0-x\n"), nil); err == nil {
+		t.Error("a has_memory file that is not a list of nodes was read as one")
 	}
-	return node
 }
 
-// xidKernelRelease is the running kernel's release, as uname reports it. A variable, so that a
-// forced run can stand in an older kernel.
-var xidKernelRelease = func() string {
-	var name unix.Utsname
-	if err := unix.Uname(&name); err != nil {
-		return ""
-	}
-	return unix.ByteSliceToString(name.Release[:])
+// The memory policy modes and the flag the NUMA tests use beside the rig's (linux/mempolicy.h).
+const (
+	xidMempolicyPreferred   = 1
+	xidMempolicyMemsAllowed = 1 << 2
+)
+
+// xidHasMemoryPath lists the NUMA nodes with memory.
+const xidHasMemoryPath = "/sys/devices/system/node/has_memory"
+
+// xidPolicy is a memory policy as get_mempolicy reports it: its mode and its nodes.
+type xidPolicy struct {
+	mode  int
+	nodes [16]uint64
 }
 
-// xidKernelBefore reports whether the running kernel's release is older than major.minor. A
-// release it cannot read is not older.
-func xidKernelBefore(major, minor int) bool {
-	var gotMajor, gotMinor int
-	if _, err := fmt.Sscanf(xidKernelRelease(), "%d.%d", &gotMajor, &gotMinor); err != nil {
-		return false
+// set makes p the calling thread's memory policy (set_mempolicy).
+func (p xidPolicy) set() unix.Errno {
+	if p.mode == xidMempolicyDefault {
+		_, _, errno := unix.Syscall(unix.SYS_SET_MEMPOLICY, xidMempolicyDefault, 0, 0)
+		return errno
 	}
-	return gotMajor < major || (gotMajor == major && gotMinor < minor)
+	_, _, errno := unix.Syscall(unix.SYS_SET_MEMPOLICY, uintptr(p.mode), uintptr(unsafe.Pointer(&p.nodes[0])), uintptr(len(p.nodes)*64))
+	return errno
+}
+
+func (p xidPolicy) String() string {
+	return fmt.Sprintf("mode %d with nodes %s", p.mode, xidNodesText(p.nodes))
+}
+
+// xidGetPolicy is the memory policy get_mempolicy reports with flags: the calling thread's, the
+// mapping address lies in with MPOL_F_ADDR, or the nodes the thread may use, in nodes, with
+// MPOL_F_MEMS_ALLOWED.
+func xidGetPolicy(address unsafe.Pointer, flags uintptr) (p xidPolicy, errno unix.Errno) {
+	_, _, errno = unix.Syscall6(unix.SYS_GET_MEMPOLICY, uintptr(unsafe.Pointer(&p.mode)),
+		uintptr(unsafe.Pointer(&p.nodes[0])), uintptr(len(p.nodes)*64), uintptr(address), flags, 0)
+	return p, errno
+}
+
+// xidLocalPolicy is MPOL_LOCAL as this kernel reports it, read off the calling goroutine's own
+// thread: it sets MPOL_LOCAL, reads back the mode and the nodes get_mempolicy gives, and puts back
+// the policy the thread had. A held thread's policy, and a held mapping's, must read the same.
+// Linux 3.8 to 5.13 store MPOL_LOCAL as MPOL_PREFERRED and report it as that mode with no node
+// (mm/mempolicy.c: mpol_new at v3.8, get_policy_nodemask at v5.13); from 5.14 it is a mode of its
+// own (mpol_ops[MPOL_LOCAL] at v5.14); gVisor reports mode 4. So the test hard-codes neither. It
+// is read only where NUMA balancing runs, which Linux offers from 3.14 (kernel.numa_balancing,
+// kernel/sysctl.c at v3.14; v3.13 has no such setting), and every such kernel takes MPOL_LOCAL, a
+// mode since 3.8 (include/uapi/linux/mempolicy.h at v3.8). So any answer but a refusal fails the
+// test, EINVAL too; a refusal (EPERM, ENOSYS) stops it as the rig's self-tests do
+// (RequireXidGapJudgment).
+func xidLocalPolicy(t *testing.T) xidPolicy {
+	t.Helper()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	failed := func(call string, errno unix.Errno) {
+		t.Helper()
+		if errno == unix.EPERM || errno == unix.ENOSYS {
+			t.Logf("the kernel refused the test's own %s (%v), so the rig judges no gap", call, errno)
+			RequireXidGapJudgment(t)
+		}
+		t.Fatalf("%s: %v", call, errno)
+	}
+	had, errno := xidGetPolicy(nil, 0)
+	if errno != 0 {
+		failed("read of this thread's memory policy, to put it back", errno)
+	}
+	if errno := (xidPolicy{mode: xidMempolicyLocal}).set(); errno != 0 {
+		failed("set_mempolicy MPOL_LOCAL", errno)
+	}
+	local, readErrno := xidGetPolicy(nil, 0)
+	putErrno := had.set()
+	if readErrno != 0 {
+		failed("read back of MPOL_LOCAL", readErrno)
+	}
+	if putErrno != 0 {
+		failed(fmt.Sprintf("set_mempolicy putting back %s", had), putErrno)
+	}
+	return local
+}
+
+// xidPreferredNode is the lowest node both in allowed, the nodes the thread may use, and in
+// hasMemory, the nodes with memory: set_mempolicy takes a preferred node only from both. found is
+// false where no node is in both.
+func xidPreferredNode(allowed, hasMemory [16]uint64) (node int, found bool) {
+	for word := range allowed {
+		if both := allowed[word] & hasMemory[word]; both != 0 {
+			return word*64 + bits.TrailingZeros64(both), true
+		}
+	}
+	return 0, false
+}
+
+// xidNodesWithMemory is the set of nodes with memory, from what reading xidHasMemoryPath gave: its
+// text and its error. Where the file does not exist (gVisor has no /sys/devices/system/node), it
+// is allowed, the nodes the thread may use, and absent says so. A file that is there but cannot be
+// read, or is not a list of nodes, is an error.
+func xidNodesWithMemory(allowed [16]uint64, text []byte, readErr error) (hasMemory [16]uint64, absent bool, err error) {
+	if errors.Is(readErr, fs.ErrNotExist) {
+		return allowed, true, nil
+	}
+	if readErr != nil {
+		return hasMemory, false, readErr
+	}
+	for _, part := range strings.Split(strings.TrimSpace(string(text)), ",") {
+		if part == "" {
+			continue
+		}
+		first, last, isRange := strings.Cut(part, "-")
+		from, err := strconv.Atoi(first)
+		to := from
+		if err == nil && isRange {
+			to, err = strconv.Atoi(last)
+		}
+		if err != nil || from < 0 || to < from || to >= len(hasMemory)*64 {
+			return hasMemory, false, fmt.Errorf("read %s, %q, as a list of nodes", xidHasMemoryPath, text)
+		}
+		for node := from; node <= to; node++ {
+			hasMemory[node/64] |= 1 << (node % 64)
+		}
+	}
+	return hasMemory, false, nil
+}
+
+// xidNodesText names the nodes of a mask, as "{0,2}".
+func xidNodesText(mask [16]uint64) string {
+	var named []string
+	for node := range len(mask) * 64 {
+		if mask[node/64]&(1<<(node%64)) != 0 {
+			named = append(named, strconv.Itoa(node))
+		}
+	}
+	return "{" + strings.Join(named, ",") + "}"
 }
 
 // xidNUMABalancingFromFiles reads whether the kernel balances memory across NUMA nodes apart from
@@ -238,25 +389,22 @@ func xidMempolicyRefusal() (refused bool, answer string) {
 	return false, "get_mempolicy and set_mempolicy both succeeded"
 }
 
-// threadMempolicy is the calling thread's memory policy mode. A kernel that refuses the read -
-// a seccomp profile that refuses the memory-policy calls answers EPERM, and a kernel built without
+// threadMempolicy is the calling thread's memory policy. A kernel that refuses the read - a
+// seccomp profile that refuses the memory-policy calls answers EPERM, and a kernel built without
 // NUMA answers ENOSYS - on a machine NUMA balancing leaves alone skips the test, saying why: the
 // hold makes no such call there and changes nothing, so there is no policy to compare. With NUMA
 // balancing on, the hold makes the same call, and the test that held the thread has stopped on
 // its refusal already, so a refusal here fails.
-func threadMempolicy(t *testing.T) int {
+func threadMempolicy(t *testing.T) xidPolicy {
 	t.Helper()
-	var mode int
-	var nodes [16]uint64
-	_, _, errno := unix.Syscall6(unix.SYS_GET_MEMPOLICY, uintptr(unsafe.Pointer(&mode)),
-		uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64), 0, 0, 0)
+	policy, errno := xidGetPolicy(nil, 0)
 	if (errno == unix.EPERM || errno == unix.ENOSYS) && !xidNUMABalancing() {
 		t.Skipf("NUMA balancing moves no page on this machine, so the hold makes no memory-policy call and changes nothing, and this thread's memory policy cannot be read here to compare (get_mempolicy: %v)", errno)
 	}
 	if errno != 0 {
 		t.Fatalf("read this thread's memory policy: %v", errno)
 	}
-	return mode
+	return policy
 }
 
 // On a machine NUMA balancing runs on, the window's memory is held out of it (xidHoldMemory): every
@@ -269,7 +417,8 @@ func threadMempolicy(t *testing.T) int {
 // Where NUMA balancing runs and the hold answers not held, the test asks the kernel itself: where
 // it refuses mbind, the rig holds nothing and judges no gap, and the test stops as the rig's
 // self-tests do (RequireXidGapJudgment); an unreadable /proc/self/maps, or an mbind the kernel
-// permits, fails it by name.
+// permits, fails it by name. The mappings' policy must be MPOL_LOCAL as this kernel reports it
+// (xidLocalPolicy).
 func TestHoldingTheMemoryKeepsNUMABalancingOffItsMappings(t *testing.T) {
 	xidRequireBalancingDetector(t)
 	object := new([4096]byte)
@@ -295,26 +444,24 @@ func TestHoldingTheMemoryKeepsNUMABalancingOffItsMappings(t *testing.T) {
 		RequireXidGapJudgment(t)
 		t.Fatal("the kernel refused the memory hold's mbind, yet the rig judges gaps")
 	}
+	want := xidLocalPolicy(t)
 	for _, address := range []struct {
 		name string
 		at   unsafe.Pointer
 	}{{"a heap object", unsafe.Pointer(object)}, {"this goroutine's stack", unsafe.Pointer(&onStack)}} {
-		if mode := mappingMempolicy(t, address.at); mode != xidMempolicyLocal {
-			t.Errorf("the mapping of %s has memory policy mode %d after the hold, want %d (MPOL_LOCAL)", address.name, mode, xidMempolicyLocal)
+		if got := mappingMempolicy(t, address.at); got != want {
+			t.Errorf("the mapping of %s has memory policy %s after the hold, want %s, MPOL_LOCAL as this kernel reports it", address.name, got, want)
 		}
 	}
 }
 
-// mappingMempolicy is the memory policy mode of the mapping address lies in (MPOL_F_ADDR). A
-// kernel that refuses the read (EPERM, ENOSYS) refuses the thread hold's get_mempolicy too, so the
-// rig judges no gap, and the test stops as the rig's self-tests do (RequireXidGapJudgment).
-func mappingMempolicy(t *testing.T, address unsafe.Pointer) int {
+// mappingMempolicy is the memory policy of the mapping address lies in (MPOL_F_ADDR). A kernel
+// that refuses the read (EPERM, ENOSYS) refuses the thread hold's get_mempolicy too, so the rig
+// judges no gap, and the test stops as the rig's self-tests do (RequireXidGapJudgment).
+func mappingMempolicy(t *testing.T, address unsafe.Pointer) xidPolicy {
 	t.Helper()
 	const byAddress = 1 << 1
-	var mode int
-	var nodes [16]uint64
-	_, _, errno := unix.Syscall6(unix.SYS_GET_MEMPOLICY, uintptr(unsafe.Pointer(&mode)),
-		uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64), uintptr(address), byAddress, 0)
+	policy, errno := xidGetPolicy(address, byAddress)
 	if errno == unix.EPERM || errno == unix.ENOSYS {
 		t.Logf("the kernel refused get_mempolicy of the mapping at %p (%v), as it refuses the thread hold's, so the rig judges no gap", address, errno)
 		RequireXidGapJudgment(t)
@@ -322,7 +469,7 @@ func mappingMempolicy(t *testing.T, address unsafe.Pointer) int {
 	if errno != 0 {
 		t.Fatalf("read the memory policy at %p: %v", address, errno)
 	}
-	return mode
+	return policy
 }
 
 // A /proc/self/maps address range is read as the addresses mbind takes, each parsed at the
