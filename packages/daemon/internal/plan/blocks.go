@@ -36,9 +36,9 @@ type Block struct {
 // block is a task and each `plan_role` block a role the plan defines, in the document's order, and
 // every other block is skipped. Places says where each task block stands: a task at the top, a
 // part of a task, which is a task of the plan with that task in its PartOf, or an element of a
-// task, which is no task of the plan and is kept in Elements for Validate. Each task keeps who its
-// parent is, its `parent` whole, in ParentRef. A task block whose Parent names an id that no block
-// of blocks holds stands at the top with that id in Task.MissingParent, which Validate refuses.
+// task, which is no task of the plan and is kept in Elements for Validate. A task block whose
+// Parent names an id that no block of blocks holds stands at the top with that id in
+// Task.MissingParent, which Validate refuses.
 // Each task's needs are the ids of the tasks they name, read against issue (resolveNeeds), so no
 // plan holds a need as a word. A document with no task block is read as a plan with no task, which
 // Validate refuses. It answers an error only for a block it cannot read at all: a task or a role
@@ -94,11 +94,11 @@ func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, er
 }
 
 // taskOf is one `plan_task` block as a task, before Places says where it stands. `needs` is its
-// words, each kept whole; `parent` is kept whole as ParentRef; `merges` is read by its presence,
-// and only the word false says the task does not merge.
+// words, each kept whole; `merges` is read by its presence, and only the word false says the task
+// does not merge.
 func taskOf(block Block) (Task, error) {
 	attributes := block.Attributes
-	task := Task{ID: block.ID, Owner: attributes["owner"], ParentRef: strings.TrimSpace(attributes["parent"]), Text: block.Text}
+	task := Task{ID: block.ID, Owner: attributes["owner"], Text: block.Text}
 	if needs := strings.Fields(attributes["needs"]); len(needs) > 0 {
 		task.Needs = needs
 	}
@@ -260,16 +260,19 @@ func ChangedTasks(held, next Plan) []string {
 	return changed
 }
 
-// OwnershipRefusals is why giver may not give next over held: one reason for each task next
-// changes (ChangedTasks) whose writer (WriterOf) is not giver, in held where held has the task or
-// in next where next has it, in the order of the ids, and none when giver writes each. The owner
-// of the issue writes the tasks of the top level, and the sub-owner of a task writes its parts,
-// so the owner's reason says what it can do instead. A first version is compared with an empty
-// held plan, so the owner's first version that writes a part is refused as a later one is. A task
-// that next removes together with the task it is a part of, directly or through its tasks, is no
-// change of that task's parts but goes with it, since a part cannot outlive its task, so it is
-// refused nothing.
-func OwnershipRefusals(held, next Plan, giver Giver) []Refusal {
+// OwnershipRefusals is why giver may not give next over held: one reason for each task of changed,
+// the tasks next changes over held (ChangedTasks, which the caller computes once for its own
+// rules too), whose writer (WriterOf) is not giver, in held where held has the task or in next
+// where next has it, in the order of the ids, and none when giver writes each. The owner of the
+// issue writes the tasks of the top level, and the sub-owner of a task writes its parts. A reason
+// names the task's writer: a part, of a part among them, is its own task's sub-owner's, and the
+// owner's reason says what the owner can do instead; a task of the top level is the owner's, which
+// a sub-owner's reason says by naming the task it writes the parts of. A first version is compared
+// with an empty held plan, so the owner's first version that writes a part is refused as a later
+// one is. A task that next removes together with the task it is a part of, directly or through its
+// tasks, is no change of that task's parts but goes with it, since a part cannot outlive its task,
+// so it is refused nothing.
+func OwnershipRefusals(held, next Plan, changed []string, giver Giver) []Refusal {
 	before := make(map[string]Task, len(held.Tasks))
 	for _, task := range held.Tasks {
 		before[task.ID] = task
@@ -279,7 +282,7 @@ func OwnershipRefusals(held, next Plan, giver Giver) []Refusal {
 		after[task.ID] = true
 	}
 	var refusals []Refusal
-	for _, id := range ChangedTasks(held, next) {
+	for _, id := range changed {
 		task, inHeld := before[id]
 		if !after[id] && removedWithItsTask(task, before, after) {
 			continue
@@ -295,11 +298,13 @@ func OwnershipRefusals(held, next Plan, giver Giver) []Refusal {
 			if writer == string(giver) {
 				continue
 			}
-			reason := fmt.Sprintf("task %s is not a part of task %s, and the sub-owner of task %s changes only the parts of %s.", id, giver, giver, giver)
-			if giver == "" {
-				reason = fmt.Sprintf("task %s is a part of task %s, and only the sub-owner of task %s changes the parts of %s. "+
-					"Leave the parts of %s to its sub-owner, which writes them, or write this work as tasks of your own, with needs, outside task %s.",
-					id, writer, writer, writer, writer, writer)
+			reason := fmt.Sprintf("task %s is a part of task %s, and only the sub-owner of task %s changes the parts of %s.", id, writer, writer, writer)
+			switch {
+			case writer == "":
+				reason = fmt.Sprintf("task %s is not a part of task %s, and the sub-owner of task %s changes only the parts of %s.", id, giver, giver, giver)
+			case giver == "":
+				reason += fmt.Sprintf(" Leave the parts of %s to its sub-owner, which writes them, or write this work as tasks of your own, with needs, outside task %s.",
+					writer, writer)
 			}
 			refusals = append(refusals, Refusal{Task: id, Reason: reason})
 			break

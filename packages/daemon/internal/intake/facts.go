@@ -1223,7 +1223,8 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
 // issue and its first step took a plan. A sub-owner's version is no architect's request (Request):
 // the workflow reads the task the sub-owner gives for from the plan in force, and refuses one of
-// no task of it (NoSubOwnedTask). It holds each version to the tasks its giver writes
+// no task of it (NoSubOwnedTask), and one of a task that is done or left the workflow
+// (FinishedTask), whose parts could never start. It holds each version to the tasks its giver writes
 // (plan.OwnershipRefusals): the owner of the issue the tasks of the top level, and the sub-owner
 // of a task its parts. It stores the plan (workflow's planGiven) where its task has not started,
 // and applies the rules of a later version. It answers PLAN_REFUSED (NoSubOwnedTask; the reasons of
@@ -2062,7 +2063,8 @@ func (act TaskAct) words() (does, call string) {
 // has nothing of it left, and one that left the workflow with its issue before it was done is
 // never moved again, so each refuses every act with the one code, the code of a stop of a done
 // task. Every refusal of a finished task is made here, so the workflow judges the state once for
-// each act: a version of the plan (versionRefusal) and the owner's stop (taskStopped).
+// each act: a version of the plan that changes the task (versionRefusal), a version given by the
+// task's sub-owner, which changes its parts (giverOf), and the owner's stop (taskStopped).
 func FinishedTask(issue, task string, state record.TaskState, act TaskAct) *Refusal {
 	var stands string
 	switch state {

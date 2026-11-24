@@ -1,8 +1,6 @@
 package record
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"slices"
 	"strings"
 
@@ -11,25 +9,20 @@ import (
 )
 
 // maxAgentName is the longest name of an agent, in bytes: the bound of the agent grammar
-// (claim.AgentToken).
-const maxAgentName = 32
+// (claim.AgentToken), as the plan states it.
+const maxAgentName = plan.MaxAgentName
 
 // subOwnerPrefix begins the name of each sub-owner's agent (SubOwnerAgent): the claim role of a
 // sub-owner and a dash.
 const subOwnerPrefix = string(claim.RoleSubOwner) + "-"
 
-// SubOwnerAgent is the name of the agent of task's sub-owner, the last part of its claim token:
-// `sub-owner-` and the task's slug (plan.TaskSlug) where that is at most maxAgentName bytes, else
-// `sub-owner-t-` and the first 12 lower-case hexadecimal characters of the SHA-256 of the id, 24
-// bytes, as TaskSlug hashes an id. So the sub-owner of one task has one claim token for every
-// version and generation of its issue. The name is derived, never stored, and no step's agent has
-// such a name (IsSubOwnerAgent).
+// SubOwnerAgent is the name of the agent of task's sub-owner, the last part of its claim token
+// (plan.SubOwnerAgent, the one statement of the name, which Validate holds unique among the tasks
+// of a plan). So the sub-owner of one task has one claim token for every version and generation of
+// its issue. The name is derived, never stored, and no step's agent has such a name
+// (IsSubOwnerAgent).
 func SubOwnerAgent(task string) claim.Agent {
-	if name := subOwnerPrefix + plan.TaskSlug(task); len(name) <= maxAgentName {
-		return claim.Agent(name)
-	}
-	sum := sha256.Sum256([]byte(task))
-	return claim.Agent(subOwnerPrefix + "t-" + hex.EncodeToString(sum[:6]))
+	return plan.SubOwnerAgent(task)
 }
 
 // IsSubOwnerAgent reports whether agent is the agent of a task's sub-owner (SubOwnerAgent): a name

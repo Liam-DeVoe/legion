@@ -58,14 +58,17 @@ func TestThePartsOfATaskAndTheWriterOfEach(t *testing.T) {
 // Each task that a version changes is its writer's to change, in the plan held and in the
 // version: the owner of the issue changes the tasks of the top level, and the sub-owner of a task
 // changes its parts. A version that changes another writer's task is refused, one reason for each
-// such task in the order of the ids, and the owner's reason says what the owner can do instead.
+// such task in the order of the ids. The reason names the task's writer, so a part of a part is
+// named as its own task's, and the owner's reason says what the owner can do instead.
 // A first version is compared with an empty plan, so an owner's first version that writes a part
 // is refused as a later one is. A task that the version removes takes its parts with it, so the
 // owner removes a task with its parts and is refused nothing for the parts.
 func TestEachTaskIsItsWritersToChange(t *testing.T) {
+	partsReason := func(id, task string) string {
+		return "task " + id + " is a part of task " + task + ", and only the sub-owner of task " + task + " changes the parts of " + task + "."
+	}
 	ownersReason := func(id, task string) string {
-		return "task " + id + " is a part of task " + task + ", and only the sub-owner of task " + task + " changes the parts of " + task +
-			". Leave the parts of " + task + " to its sub-owner, which writes them, or write this work as tasks of your own, with needs, outside task " + task + "."
+		return partsReason(id, task) + " Leave the parts of " + task + " to its sub-owner, which writes them, or write this work as tasks of your own, with needs, outside task " + task + "."
 	}
 	subOwnersReason := func(id, task string) string {
 		return "task " + id + " is not a part of task " + task + ", and the sub-owner of task " + task + " changes only the parts of " + task + "."
@@ -97,7 +100,7 @@ func TestEachTaskIsItsWritersToChange(t *testing.T) {
 			next: edited(held, nil, []string{"f", "f1", "f2"})},
 		{name: "the sub-owner moves a part to another task", giver: "f",
 			next: edited(held, map[string]func(*Task){"f2": func(task *Task) { task.PartOf = "g" }}, nil),
-			want: []Refusal{{Task: "f2", Reason: subOwnersReason("f2", "f")}}},
+			want: []Refusal{{Task: "f2", Reason: partsReason("f2", "g")}}},
 		{name: "the owner moves a part to the top level", giver: "",
 			next: edited(held, map[string]func(*Task){"f2": func(task *Task) { task.PartOf = "" }}, nil),
 			want: []Refusal{{Task: "f2", Reason: ownersReason("f2", "f")}}},
@@ -113,14 +116,17 @@ func TestEachTaskIsItsWritersToChange(t *testing.T) {
 			next: edited(twoLevels, nil, []string{"f1a"})},
 		{name: "the sub-owner of a task changes a part of its part", giver: "f", held: &twoLevels,
 			next: edited(twoLevels, map[string]func(*Task){"f1a": func(task *Task) { task.Text = "Smaller." }}, nil),
-			want: []Refusal{{Task: "f1a", Reason: subOwnersReason("f1a", "f")}}},
+			want: []Refusal{{Task: "f1a", Reason: partsReason("f1a", "f1")}}},
+		{name: "the sub-owner of a part changes its sibling", giver: "f1", held: &twoLevels,
+			next: edited(twoLevels, map[string]func(*Task){"f2": func(task *Task) { task.Text = "Smaller." }}, nil),
+			want: []Refusal{{Task: "f2", Reason: partsReason("f2", "f")}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := held
 			if tc.held != nil {
 				before = *tc.held
 			}
-			if got := OwnershipRefusals(before, tc.next, tc.giver); !reflect.DeepEqual(got, tc.want) {
+			if got := OwnershipRefusals(before, tc.next, ChangedTasks(before, tc.next), tc.giver); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("OwnershipRefusals(giver %q) = %#v, want %#v", tc.giver, got, tc.want)
 			}
 		})

@@ -2,8 +2,11 @@ package plan
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // The two checks a plan passes before Legion takes it. Both run on every plan, and each gives one
@@ -27,10 +30,9 @@ const notYet = " This release of Legion does not carry it out yet."
 // issue, in the block's order (Task.OutsideIssue), one into another issue naming that issue and one
 // that starts with no issue key as naming none, and each step that names a role neither d nor the
 // plan's own role blocks define, refused once for each role at the first step that names it; then
-// each cycle of needs (cycles), named by its first task in id order with the chain from that task.
-// It refuses no plan for a step the plan lacks. The other refusals of a plan no release carries out
-// need an attribute or a block that Supported refuses in this release, so the release that lifts
-// that refusal adds them here.
+// each cycle of needs (cycles), named by its first task in id order with the chain from that task;
+// then the causes of the tasks with a sub-owner and their parts (partRefusals). It refuses no plan
+// for a step the plan lacks.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
@@ -96,7 +98,252 @@ func Validate(p Plan, d Deployment) []Refusal {
 		}
 		refusals = append(refusals, Refusal{Task: cycle[0], Reason: fmt.Sprintf("task %s needs itself: %s.", cycle[0], strings.Join(chain, ", "))})
 	}
+	return append(refusals, partRefusals(p.Tasks)...)
+}
+
+// partRefusals is Validate's causes of the tasks with a sub-owner and their parts, in task id
+// order, a task's own causes together, one for each cause:
+//   - a task that names both steps and a sub-owner, whose work is its parts;
+//   - for each of its needs, in its block's order, a need of a part of a task it stands outside
+//     (R14): it needs the whole task, and no part of it. The task it stands outside is the
+//     outermost task above the part that does not hold it, so a part may need its siblings and
+//     the parts of a task above it, and a task of the top level the whole task alone;
+//   - for each of its needs, a need that is done only after the task itself starts, so the task
+//     never starts and the tasks above it are never done (neverStarted);
+//   - a task whose sub-owner's agent takes the name (SubOwnerAgent) of the agent of a task before
+//     it in id order: one claim cannot be two sub-owners.
+//
+// A part may need a task of the top level that does not wait for its own task, which Legion
+// carries out.
+func partRefusals(tasks []Task) []Refusal {
+	w := newWaits(tasks)
+	refused := w.neverStarted()
+	ids := slices.Sorted(maps.Keys(w.task))
+	named := map[claim.Agent]string{}
+	var refusals []Refusal
+	for _, id := range ids {
+		task := w.task[id]
+		if task.Owner != "" && task.NamesSteps() {
+			refusals = append(refusals, Refusal{Task: id, Reason: fmt.Sprintf(
+				"task %s names both steps and the sub-owner %s, and a task with a sub-owner has no steps: its work is its parts.", id, task.Owner)})
+		}
+		for _, need := range task.Needs {
+			if outside, ok := w.outsideOf(id, need); ok {
+				refusals = append(refusals, Refusal{Task: id, Reason: fmt.Sprintf(
+					"task %s needs %s, a part of task %s: a task outside %s needs the whole task %s, and no part of it.", id, need, outside, outside, outside)})
+			}
+			if reason, ok := refused[[2]string{id, need}]; ok {
+				refusals = append(refusals, Refusal{Task: id, Reason: reason})
+			}
+		}
+		if task.Owner == "" {
+			continue
+		}
+		agent := SubOwnerAgent(id)
+		if first, taken := named[agent]; taken {
+			refusals = append(refusals, Refusal{Task: id, Reason: fmt.Sprintf(
+				"task %s names a sub-owner, and its agent takes the name %s, which the agent of the sub-owner of task %s takes too: give one of the two tasks another id.",
+				id, agent, first)})
+			continue
+		}
+		named[agent] = id
+	}
 	return refusals
+}
+
+// waits is the tasks of a plan as the rule of a task's start and end reads them: a task starts once
+// each task it needs is done and, for a part, once its task has started (it stands at its parts),
+// and a task is done only after it started and each of its parts is done. A need is a task id
+// (FromBlocks); one that names no task of the plan is Validate's to refuse, and waits on nothing.
+type waits struct {
+	tasks []Task
+	task  map[string]Task
+	parts map[string][]string
+}
+
+// newWaits is the waits of tasks, each task's parts in id order.
+func newWaits(tasks []Task) waits {
+	w := waits{tasks: tasks, task: make(map[string]Task, len(tasks)), parts: map[string][]string{}}
+	for _, task := range tasks {
+		w.task[task.ID] = task
+		if task.PartOf != "" {
+			w.parts[task.PartOf] = append(w.parts[task.PartOf], task.ID)
+		}
+	}
+	for _, parts := range w.parts {
+		slices.Sort(parts)
+	}
+	return w
+}
+
+// above is each task that id is a part of, the nearest first. Places refuses parents in a cycle, and
+// the walk stops at a task it has passed, so it ends for any plan.
+func (w waits) above(id string) []string {
+	var tasks []string
+	seen := map[string]bool{id: true}
+	for at := w.task[id].PartOf; at != "" && !seen[at]; at = w.task[at].PartOf {
+		seen[at] = true
+		tasks = append(tasks, at)
+	}
+	return tasks
+}
+
+// holds says whether task holds id: id is task, or a part of it, directly or through its tasks.
+func (w waits) holds(task, id string) bool {
+	return id == task || slices.Contains(w.above(id), task)
+}
+
+// outsideOf is the task that id stands outside where its need need is a part of it (R14): the
+// outermost task above need that does not hold id. ok is false where need is no part, or where each
+// task above need holds id: a part's sibling, and a part of a task above it.
+func (w waits) outsideOf(id, need string) (string, bool) {
+	outside := ""
+	for _, above := range w.above(need) {
+		if w.holds(above, id) {
+			break
+		}
+		outside = above
+	}
+	return outside, outside != ""
+}
+
+// waitNode is one moment of a task the rule of its start and end reads: its start, or its end.
+type waitNode struct {
+	task  string
+	start bool
+}
+
+// waitEdge is one need of a plan: the task, and the task it needs.
+type waitEdge = [2]string
+
+// next is each moment node waits for, with the words that say why, as a reason writes them, and
+// none for an end's wait for its own start, which a reason does not need to say. cut are the needs
+// left out, each refused by another cause. The end of a task waits for its start and for the end
+// of each of its parts, in id order; the start of a task waits for the end of each task it needs,
+// in its block's order, and the start of a part for the start of its task.
+func (w waits) next(node waitNode, cut map[waitEdge]bool) ([]waitNode, []string) {
+	var nodes []waitNode
+	var words []string
+	if !node.start {
+		nodes, words = append(nodes, waitNode{node.task, true}), append(words, "")
+		for _, part := range w.parts[node.task] {
+			nodes = append(nodes, waitNode{part, false})
+			words = append(words, fmt.Sprintf("%s is done only after its part %s", node.task, part))
+		}
+		return nodes, words
+	}
+	for _, need := range w.task[node.task].Needs {
+		if _, known := w.task[need]; known && !cut[waitEdge{node.task, need}] {
+			nodes = append(nodes, waitNode{need, false})
+			words = append(words, fmt.Sprintf("%s needs %s", node.task, need))
+		}
+	}
+	if of := w.task[node.task].PartOf; of != "" {
+		nodes = append(nodes, waitNode{of, true})
+		words = append(words, fmt.Sprintf("%s, a part of %s, starts only once %s has started", node.task, of, of))
+	}
+	return nodes, words
+}
+
+// waitPath is the fewest waits from from to to, each as the words that say it, the words of an
+// end's wait for its own start left out, and ok false where to is not reached.
+func (w waits) waitPath(from, to waitNode, cut map[waitEdge]bool) ([]string, bool) {
+	type step struct {
+		from  waitNode
+		words string
+	}
+	reached := map[waitNode]step{from: {}}
+	for queue := []waitNode{from}; len(queue) > 0; queue = queue[1:] {
+		at := queue[0]
+		if at == to {
+			var words []string
+			for at != from {
+				if s := reached[at]; s.words != "" {
+					words = append(words, s.words)
+				}
+				at = reached[at].from
+			}
+			slices.Reverse(words)
+			return words, true
+		}
+		nodes, words := w.next(at, cut)
+		for i, node := range nodes {
+			if _, seen := reached[node]; !seen {
+				reached[node] = step{from: at, words: words[i]}
+				queue = append(queue, node)
+			}
+		}
+	}
+	return nil, false
+}
+
+// neverStarted is the reason of each need of a task that is done only after that task itself
+// starts, keyed by the task and the need, so the task never starts and the tasks above it are never
+// done. A need that a cycle of needs alone closes is left to cycles, and a need of a part of a task
+// its task stands outside to R14 (outsideOf). The need that causes the wait is named, not each
+// need the wait then holds back, in two passes over the needs, each in task id order and each
+// task's needs in its block's order:
+//  1. A part's need of a task it is a part of, directly or through its tasks; a part's need of a
+//     task outside a task above it whose end waits for that task's end; and a task's need of a part
+//     of its own, which starts only once the task has started.
+//  2. Each other need still done only after its task starts, with the needs the first pass named
+//     left out, so a plan this function answers nothing for holds no task that never starts.
+//
+// A need of a task it is a part of takes the reason of S3: the task is done only after each of its
+// parts. Each other reason names the need and the waits from its end to the task's start.
+func (w waits) neverStarted() map[waitEdge]string {
+	cut := map[waitEdge]bool{}
+	for _, cycle := range cycles(w.tasks) {
+		for i, id := range cycle {
+			cut[waitEdge{id, cycle[(i+1)%len(cycle)]}] = true
+		}
+	}
+	ids := slices.Sorted(maps.Keys(w.task))
+	for _, id := range ids {
+		for _, need := range w.task[id].Needs {
+			if _, ok := w.outsideOf(id, need); ok {
+				cut[waitEdge{id, need}] = true
+			}
+		}
+	}
+	reasons := map[waitEdge]string{}
+	refuse := func(id, need string) {
+		edge := waitEdge{id, need}
+		if slices.Contains(w.above(id), need) {
+			reasons[edge] = fmt.Sprintf("task %s needs %s, which it is a part of, and %s is done only after each of its parts.", id, need, need)
+		} else {
+			words, _ := w.waitPath(waitNode{need, false}, waitNode{id, true}, cut)
+			reasons[edge] = fmt.Sprintf("task %s needs %s, which is done only after %s starts: %s.", id, need, id, wordList(words))
+		}
+		cut[edge] = true
+	}
+	causes := func(id, need string) bool {
+		if w.holds(id, need) {
+			return need != id
+		}
+		for _, above := range w.above(id) {
+			if need == above {
+				return true
+			}
+			if _, ends := w.waitPath(waitNode{need, false}, waitNode{above, false}, cut); ends && !w.holds(above, need) {
+				return true
+			}
+		}
+		return false
+	}
+	for pass := 1; pass <= 2; pass++ {
+		for _, id := range ids {
+			for _, need := range w.task[id].Needs {
+				if _, known := w.task[need]; !known || cut[waitEdge{id, need}] {
+					continue
+				}
+				if _, never := w.waitPath(waitNode{need, false}, waitNode{id, true}, cut); never && (pass == 2 || causes(id, need)) {
+					refuse(id, need)
+				}
+			}
+		}
+	}
+	return reasons
 }
 
 // wordList is words joined as a sentence lists them: "a", "a and b", "a, b and c".

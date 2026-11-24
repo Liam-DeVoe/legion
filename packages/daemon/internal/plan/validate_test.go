@@ -1,7 +1,10 @@
 package plan
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -262,6 +265,125 @@ func TestValidateRefusesWhatAnElementCannotBe(t *testing.T) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// partBlock is the task block id under the block parent, with the attributes named in pairs, as
+// TestValidateRefusesWhatAnElementCannotBe writes them.
+func partBlock(id, parent string, attributes ...string) Block {
+	named := map[string]string{}
+	for i := 0; i+1 < len(attributes); i += 2 {
+		named[attributes[i]] = attributes[i+1]
+	}
+	return Block{ID: id, Type: TaskBlockType, Parent: parent, Attributes: named, Text: "What block " + id + " says."}
+}
+
+// A task with a sub-owner has no steps: its work is its parts. Validate refuses a task block that
+// names both, with the role of its sub-owner, and takes the same task with its sub-owner alone.
+//
+// The fault it catches is a task with a sub-owner that walks the steps of its block as well (its
+// control: Validate with no such refusal answers nothing for the first plan).
+func TestATaskWithASubOwnerNamesNoSteps(t *testing.T) {
+	both := planOf(t, 1, partBlock("f", "", "owner", "architect", "steps", "planner implementer"), partBlock("f1", "f", "steps", "implementer"))
+	want := []Refusal{{Task: "f", Reason: "task f names both steps and the sub-owner architect, and a task with a sub-owner has no steps: its work is its parts."}}
+	if got := Validate(both, builtin); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Validate(f with steps and a sub-owner) =\n%+v\nwant\n%+v", got, want)
+	}
+	if got := Validate(planOf(t, 1, partBlock("f", "", "owner", "architect"), partBlock("f1", "f", "steps", "implementer")), builtin); got != nil {
+		t.Fatalf("Validate(f with its sub-owner alone) = %+v, want none", got)
+	}
+}
+
+// Validate refuses a plan in which a task can never start, so the task it is a part of can never be
+// done: a task starts once each task it needs is done and, for a part, once its task has started,
+// and a task is done only after each of its parts. Each such need is named once, at the need that
+// causes the wait, and not at the needs the wait then holds back:
+//   - a part that needs its own task, directly or through its tasks, with S3's reason;
+//   - a part that needs a task whose needs reach its own task, with the chain to that task;
+//   - a task that needs a part of its own, which starts only once the task has started;
+//   - a task that needs a part of a task it stands outside (R14), with S3's reason, named at the
+//     outermost task above the part that does not hold it.
+//
+// It takes a part that needs its sibling, a part of a part that needs a part of the task above it,
+// and a part that needs a task of the top level that does not wait for its own task.
+//
+// The fault it catches is a plan whose part never starts taken (its controls: Validate with no
+// refusal of the parts answers nothing for each refused plan; neverStarted with its first pass
+// alone misses no row, and with its second pass alone names h's need of f as well in the row of the
+// chain; R14 read as S3 writes it, a part of another task's PartOf than the task's own, refuses the
+// part of a part that needs a part of the task above it).
+func TestAPlanWhosePartNeverStartsIsRefused(t *testing.T) {
+	f, f1 := partBlock("f", "", "owner", "architect"), partBlock("f1", "f", "steps", "implementer")
+	needing := func(id, parent string, needs ...string) Block {
+		words := make([]string, len(needs))
+		for i, need := range needs {
+			words[i] = needWord(need)
+		}
+		return partBlock(id, parent, "steps", "implementer", "needs", strings.Join(words, " "))
+	}
+	for _, tc := range []struct {
+		name   string
+		blocks []Block
+		want   []Refusal
+	}{
+		{name: "a part that needs its task", blocks: []Block{f, needing("f1", "f", "f")},
+			want: []Refusal{{Task: "f1", Reason: "task f1 needs f, which it is a part of, and f is done only after each of its parts."}}},
+		{name: "a part of a part that needs the task above its task",
+			blocks: []Block{f, partBlock("f1", "f", "owner", "architect"), needing("f1a", "f1", "f")},
+			want:   []Refusal{{Task: "f1a", Reason: "task f1a needs f, which it is a part of, and f is done only after each of its parts."}}},
+		{name: "a part that needs a task that needs its task", blocks: []Block{f, needing("f1", "f", "h"), needing("h", "", "f")},
+			want: []Refusal{{Task: "f1", Reason: "task f1 needs h, which is done only after f1 starts: h needs f and f is done only after its part f1."}}},
+		{name: "the chain held back at a sibling is named at its cause",
+			blocks: []Block{f, needing("f1", "f", "h"), needing("f2", "f", "f1"), needing("h", "", "f")},
+			want:   []Refusal{{Task: "f1", Reason: "task f1 needs h, which is done only after f1 starts: h needs f and f is done only after its part f1."}}},
+		{name: "a part of a part that needs a task that needs the task above",
+			blocks: []Block{f, partBlock("f1", "f", "owner", "architect"), needing("f1a", "f1", "h"), needing("h", "", "f")},
+			want: []Refusal{{Task: "f1a", Reason: "task f1a needs h, which is done only after f1a starts: " +
+				"h needs f, f is done only after its part f1 and f1 is done only after its part f1a."}}},
+		{name: "a task that needs a part of its own", blocks: []Block{needing("f", "", "f1"), f1},
+			want: []Refusal{{Task: "f", Reason: "task f needs f1, which is done only after f starts: f1, a part of f, starts only once f has started."}}},
+		{name: "a task outside a task that needs its part", blocks: []Block{f, f1, needing("h", "", "f1")},
+			want: []Refusal{{Task: "h", Reason: "task h needs f1, a part of task f: a task outside f needs the whole task f, and no part of it."}}},
+		{name: "a task outside a task that needs a part of its part",
+			blocks: []Block{f, partBlock("f1", "f", "owner", "architect"), partBlock("f1a", "f1", "steps", "implementer"), needing("h", "", "f1a")},
+			want:   []Refusal{{Task: "h", Reason: "task h needs f1a, a part of task f: a task outside f needs the whole task f, and no part of it."}}},
+		{name: "a part that needs a sibling", blocks: []Block{f, f1, needing("f2", "f", "f1")}},
+		{name: "a part of a part that needs a part of the task above",
+			blocks: []Block{f, partBlock("f1", "f", "owner", "architect"), partBlock("f2", "f", "steps", "implementer"), needing("f1a", "f1", "f2")}},
+		{name: "a part that needs a task of the top level", blocks: []Block{partBlock("g", "", "steps", "implementer"), f, needing("f1", "f", "g")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Validate(planOf(t, 1, tc.blocks...), builtin); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Two tasks with a sub-owner whose sub-owners' agents take one name (SubOwnerAgent) are refused at
+// the second in id order: a short id `t-<12 hex>` and a long id whose SHA-256 starts with those 12
+// hex give one name, and one claim cannot be two sub-owners. Each alone is taken.
+//
+// The fault it catches is the sub-owner of one task taken for the sub-owner of another (its
+// control: Validate with no test of the names answers nothing for the two).
+func TestTwoSubOwnersOfOneAgentNameAreRefused(t *testing.T) {
+	const long = "the-whole-task-of-many-words"
+	sum := sha256.Sum256([]byte(long))
+	short := "t-" + hex.EncodeToString(sum[:6])
+	if SubOwnerAgent(short) != SubOwnerAgent(long) {
+		t.Fatalf("SubOwnerAgent(%s) = %s and SubOwnerAgent(%s) = %s, want one name", short, SubOwnerAgent(short), long, SubOwnerAgent(long))
+	}
+	two := planOf(t, 1, partBlock(short, "", "owner", "architect"), partBlock(long, "", "owner", "architect"))
+	// `t-` sorts before `th`, so the long id is the second in id order.
+	want := []Refusal{{Task: long, Reason: "task " + long + " names a sub-owner, and its agent takes the name " + string(SubOwnerAgent(long)) +
+		", which the agent of the sub-owner of task " + short + " takes too: give one of the two tasks another id."}}
+	if got := Validate(two, builtin); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Validate(two sub-owners of one name) =\n%+v\nwant\n%+v", got, want)
+	}
+	for _, id := range []string{short, long} {
+		if got := Validate(planOf(t, 1, partBlock(id, "", "owner", "architect")), builtin); got != nil {
+			t.Fatalf("Validate(%s alone) = %+v, want none", id, got)
+		}
 	}
 }
 

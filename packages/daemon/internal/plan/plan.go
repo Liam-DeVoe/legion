@@ -11,11 +11,14 @@
 package plan
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -96,11 +99,6 @@ type Task struct {
 	// PartOf is the task this task is a part of, "" for a task at the top (Places): what Legion
 	// carries out. Owner is `owner` as the block writes it, "" when unset.
 	PartOf, Owner string
-	// ParentRef is who the block's parent is, as the read gave it at the version: before
-	// Dispatch serves the tree, the reference its `parent` writes, whole, "" for none. It names a
-	// parent of any document, so it tells two parents apart where PartOf is "" for both, such as
-	// two requirements. Nothing compares or stores it yet.
-	ParentRef string
 	// MissingParent is the block's Parent where no block of the version holds that id, as
 	// FromBlocks leaves it: a block of the plan's document that the version lacks, or a heading's,
 	// which the version Dispatch gives holds no id of. The block is then a task at the top, and
@@ -188,6 +186,25 @@ type Deployment struct{ Roles map[string]RoleDef }
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
 // whole plan, and the reason as the owner reads it.
 type Refusal struct{ Task, Reason string }
+
+// MaxAgentName is the longest name of an agent, in bytes: the bound of the agent grammar
+// (claim.AgentToken).
+const MaxAgentName = 32
+
+// SubOwnerAgent is the name of the agent of task's sub-owner, the last part of its claim token:
+// `sub-owner-` and the task's slug (TaskSlug) where that is at most MaxAgentName bytes, else
+// `sub-owner-t-` and the first 12 lower-case hexadecimal characters of the SHA-256 of the id, 24
+// bytes, as TaskSlug hashes an id. It is the one statement of the name: record.SubOwnerAgent, which
+// the workflow and the route read, answers it, and Validate refuses two tasks with a sub-owner
+// whose agents it gives one name (a short id `t-<12 hex>`, and an id whose hash starts so).
+func SubOwnerAgent(task string) claim.Agent {
+	prefix := string(claim.RoleSubOwner) + "-"
+	if name := prefix + TaskSlug(task); len(name) <= MaxAgentName {
+		return claim.Agent(name)
+	}
+	sum := sha256.Sum256([]byte(task))
+	return claim.Agent(prefix + "t-" + hex.EncodeToString(sum[:6]))
+}
 
 // Element is a `plan_task` block that stands under a task with no sub-owner, or under an element
 // (Places). A planner writes it as the guide of the steps after it, and Legion does not carry it
