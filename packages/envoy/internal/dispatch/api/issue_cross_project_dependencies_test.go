@@ -773,15 +773,12 @@ func TestAParentWriteTakesTheParentsProjectLock(t *testing.T) {
 	}
 }
 
-// TestAProjectScopedCallerIsRefusedAParentOfAnotherProject: a credential that may write one
-// project is refused a parent outside it, though the issue it writes is of its own project: 403
-// PROJECT_SCOPE naming the parent and its project, with nothing written. An unforced create that
-// the near-copy gate would refuse is refused for its parent first, so the gate writes no
-// near_copy_checks row for a create the credential may not make, and a PATCH that also closes the
-// issue is refused before the close settles its documents, so it writes no version. A parent of
-// its own project is the control, and so is the same near copy under its own project's parent,
-// which the gate refuses.
-func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
+// TestAProjectScopedCallerPutsAnIssueUnderAnotherProjectsIssue: a credential that names one
+// project names a parent of another project as a credential that names no project does
+// (INFRA-4799): a create under it is made, an unforced near copy under it reaches the near-copy
+// gate, which refuses the copy and records the refusal, a move under it is taken, and a close
+// that also moves the issue under it settles the issue's documents first and closes the issue.
+func TestAProjectScopedCallerPutsAnIssueUnderAnotherProjectsIssue(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t), settle: time.Hour})
 	caller := newBrokerCaller(t)
@@ -798,19 +795,10 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 	}
 	approved := createIssue("ALPHA", "Another project's approved issue")
 	own := createIssue("BETA", "Its own project's issue")
-	sibling := createIssue("BETA", "Another issue of its own project")
 	const token = "a-token-scoped-to-beta"
 	answer := liveNamedToken(caller.jkt)
 	answer.Projects = []string{"BETA"}
 	rig.broker.Says(token, answer)
-	betaIssues := func() int {
-		t.Helper()
-		var count int
-		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from issues where project_key = 'BETA'`).Scan(&count); err != nil {
-			t.Fatalf("count BETA's issues: %v", err)
-		}
-		return count
-	}
 	nearCopyChecks := func() int {
 		t.Helper()
 		var count int
@@ -819,92 +807,61 @@ func TestAProjectScopedCallerIsRefusedAParentOfAnotherProject(t *testing.T) {
 		}
 		return count
 	}
-	// An open BETA issue the scoped creates below copy word for word, unforced.
+
+	filed := createdIssue(t, "a scoped create under a parent of another project", rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "BETA", "title": "Filed under another project's issue", "spec": "# Spec", "parent": approved, "force": true,
+	})))
+	if filed.Project != "BETA" || filed.Parent == nil || *filed.Parent != approved {
+		t.Fatalf("the scoped create made %s of project %s under %s, want an issue of BETA under %s", filed.Key, filed.Project, valueOrNone(filed.Parent), approved)
+	}
+	// An unforced copy of an open BETA issue under a parent of another project reaches the
+	// near-copy gate, which refuses it and records the refusal.
 	createdIssue(t, "the issue a near copy copies", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe,
 	}))
-
-	before, checksBefore := betaIssues(), nearCopyChecks()
-	refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
-		"project": "BETA", "title": "Filed under another project's issue", "spec": "# Spec", "parent": approved, "force": true,
-	}))
-	expectRefusal(t, "a scoped create under a parent of another project", refused, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
+	checksBefore := nearCopyChecks()
 	nearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, "parent": approved,
 	}))
-	expectRefusal(t, "an unforced scoped near copy under a parent of another project", nearCopy, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
-	if after := betaIssues(); after != before {
-		t.Fatalf("the refused creates took BETA from %d issues to %d, want none written", before, after)
-	}
-	if after := nearCopyChecks(); after != checksBefore {
-		t.Fatalf("the refused creates took near_copy_checks from %d rows to %d, want none written", checksBefore, after)
-	}
-	// The control: the same near copy under its own project's parent meets the gate, which
-	// refuses it and records the refusal.
-	ownNearCopy := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
-		"project": "BETA", "title": "Astrolabe calibration drifts after a reseat", "spec": duplicateSpecAstrolabe, "parent": sibling,
-	}))
-	requireDuplicateRefusal(t, ownNearCopy)
+	requireDuplicateRefusal(t, nearCopy)
 	if after := nearCopyChecks(); after != checksBefore+1 {
 		t.Fatalf("the gate's refusal took near_copy_checks from %d rows to %d, want one more", checksBefore, after)
 	}
 
 	moved := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"parent": approved}))
-	expectRefusal(t, "a scoped move under a parent of another project", moved, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
-	if parent := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)).Parent; parent != nil {
-		t.Fatalf("the refused move left %s under %s, want no parent", own, *parent)
+	if moved.Code != http.StatusOK {
+		t.Fatalf("a scoped move under a parent of another project: status=%d body=%s, want 200", moved.Code, moved.Body.String())
 	}
-	// A move under another project's issue that also closes the issue is refused before the
-	// close settles the issue's documents (settleIssueBeforeClose), so the refusal indexes no ask
-	// and writes no version of the spec, and the issue stays open. The issue is new, its spec holds
-	// a decision block, and the rig settles a document only after an hour, so the spec still owes
-	// the settlement that would open the block's ask and write a version.
+	if parent := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)).Parent; parent == nil || *parent != approved {
+		t.Fatalf("the scoped move left %s under %s, want %s", own, valueOrNone(parent), approved)
+	}
+	// A close that also moves the issue under another project's issue settles the issue's
+	// documents first (settleIssueBeforeClose), which opens the spec's decision block's ask, and
+	// closes the issue. The rig settles a document only after an hour, so the spec still owes that
+	// settlement when the close arrives.
 	closer := createdIssue(t, "create the issue a scoped caller closes", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "BETA", "title": "An issue a scoped caller closes", "spec": closeDecision, "force": true,
 	}))
-	settled := func() (versions, asks int) {
+	asks := func() int {
 		t.Helper()
-		if err := rig.database.Pool.QueryRow(context.Background(), `
-			select (select count(*) from artifact_versions where artifact_id = $1::uuid),
-			       (select count(*) from asks where issue_key = $2)
-		`, closer.PrimaryArtifactID, closer.Key).Scan(&versions, &asks); err != nil {
-			t.Fatalf("count the versions of %s's spec and its asks: %v", closer.Key, err)
+		var count int
+		if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from asks where issue_key = $1`, closer.Key).Scan(&count); err != nil {
+			t.Fatalf("count %s's asks: %v", closer.Key, err)
 		}
-		return versions, asks
+		return count
 	}
-	versionsBefore, asksBefore := settled()
-	closing := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
+	asksBefore := asks()
+	closed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
 		"parent": approved, "status": "done",
 	}))
-	expectRefusal(t, "a scoped close under a parent of another project", closing, http.StatusForbidden, codeProjectScope, approved, "ALPHA", "BETA")
-	if versions, asks := settled(); versions != versionsBefore || asks != asksBefore {
-		t.Fatalf("the refused close took %s from %d spec versions and %d asks to %d and %d, want no settlement",
-			closer.Key, versionsBefore, asksBefore, versions, asks)
-	}
-	if status := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+closer.Key, nil)).Status; status == "done" {
-		t.Fatalf("the refused close left %s done", closer.Key)
-	}
-	// The control: the same close under a parent of the credential's own project is taken, and
-	// the settlement it runs first opens the decision block's ask, which the close withdraws.
-	closed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+closer.Key, token, map[string]any{
-		"parent": sibling, "status": "done",
-	}))
 	if closed.Code != http.StatusOK {
-		t.Fatalf("a scoped close under its own project's issue: status=%d body=%s, want 200", closed.Code, closed.Body.String())
+		t.Fatalf("a scoped close under a parent of another project: status=%d body=%s, want 200", closed.Code, closed.Body.String())
 	}
-	if status := decodeBody[model.Issue](t, closed).Status; status != "done" {
-		t.Fatalf("the taken close left %s %s, want done", closer.Key, status)
+	if issue := decodeBody[model.Issue](t, closed); issue.Status != "done" || issue.Parent == nil || *issue.Parent != approved {
+		t.Fatalf("the close left %s %s under %s, want done under %s", closer.Key, issue.Status, valueOrNone(issue.Parent), approved)
 	}
-	if _, asks := settled(); asks != asksBefore+1 {
-		t.Fatalf("the taken close left %s with %d asks, want the %d its settlement opens", closer.Key, asks, asksBefore+1)
-	}
-
-	allowed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{"parent": sibling}))
-	if allowed.Code != http.StatusOK {
-		t.Fatalf("a scoped move under its own project's issue: status=%d body=%s, want 200", allowed.Code, allowed.Body.String())
-	}
-	if parent := decodeBody[model.Issue](t, allowed).Parent; parent == nil || *parent != sibling {
-		t.Fatalf("%s's parent = %v, want %s", own, parent, sibling)
+	if after := asks(); after != asksBefore+1 {
+		t.Fatalf("the close left %s with %d asks, want the %d its settlement opens", closer.Key, after, asksBefore+1)
 	}
 }
 

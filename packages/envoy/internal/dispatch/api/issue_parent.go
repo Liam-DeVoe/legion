@@ -204,18 +204,17 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // created between that read and the lock is still refused by the write's own read inside the
 // transaction (writeBlockedBy's, validateIssueParent's and the create's read of its parent).
 //
-// A caller whose credential names one project links a target of every project that
-// access.CredentialCovers covers, the one exception a private project it does not name, and is
-// refused a parent outside its own project. This step asks about each target and the parent of
-// another project before any lock is taken (foreignDependencyTargets). The pre-handler check
+// A caller whose credential names one project links a target, and puts its issue under a parent,
+// of every project that access.CredentialCovers covers. The one exception is a private project
+// it does not name. This step asks about each target and the parent of another project before
+// any lock is taken (foreignDependencyTargets). The pre-handler check
 // reads the project of the object the path names and no key of the body (project_scope.go), so
 // this is the first point at which a target's or the parent's project is known, and a caller that
 // may not write the link would otherwise take the deployment-wide lock first. A create asks the
 // same earlier still, before its near-copy gate writes anything (createIssue), and a PATCH before
 // a close settles the issue's documents (patchIssue). The write asks again under the locks, which
 // is the authoritative refusal: writeBlockedBy for a target, and validateIssueParent or the
-// create's own read for the parent. Each pair words its refusal through one function,
-// refuseUncoveredProject and refuseParentOutsideCallerProject.
+// create's own read for the parent. Every step words its refusal through refuseUncoveredProject.
 func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string, parent string) error {
 	foreign, err := foreignDependencyTargets(ctx, tx, project, caller, targets, parent)
 	if err != nil {
@@ -241,9 +240,9 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 // foreignDependencyTargets is every blocked_by target of targets and the parent ("" for none)
 // that belongs to a project other than project, the issue's own, targets first, read with no
 // lock held. caller is the one project the request's credential names, empty for a credential
-// that names none. Such a caller links a target of every project access.CredentialCovers covers,
-// and is refused the first target outside them (refuseUncoveredProject), then a parent outside
-// its own project, before anything else is read. The lock step, a create's check before its
+// that names none. Such a caller links a target, and names a parent, of every project
+// access.CredentialCovers covers, and is refused the first target outside them, then a parent
+// outside them (refuseUncoveredProject), before anything else is read. The lock step, a create's check before its
 // near-copy gate and a PATCH's check before a close's settlement all run it, so each refuses the
 // same key in the same words.
 func foreignDependencyTargets(ctx context.Context, q queryer, project, caller string, targets []string, parent string) ([]foreignTarget, error) {
@@ -265,8 +264,9 @@ func foreignDependencyTargets(ctx context.Context, q queryer, project, caller st
 	if err != nil {
 		return nil, err
 	}
-	if caller != "" && len(foreignParent) > 0 {
-		return nil, refuseParentOutsideCallerProject(caller, parent, foreignParent[0].project)
+	if caller != "" && len(foreignParent) > 0 &&
+		!access.CredentialCovers(access.Credential{Listed: []string{caller}}, foreignParent[0].project, false) {
+		return nil, refuseUncoveredProject(caller, "parent issue "+parent, foreignParent[0].project)
 	}
 	return append(foreign, foreignParent...), nil
 }
@@ -306,17 +306,6 @@ func refuseUncoveredProject(caller, what, project string) error {
 	return errorf(http.StatusForbidden, codeProjectScope,
 		"this request's credential names project %s, and %s belongs to project %s, a private project that the credential does not name",
 		caller, what, project)
-}
-
-// refuseParentOutsideCallerProject is what a caller whose credential names one project is
-// answered for a parent outside it: a parent may be an issue of any project, but a credential
-// that may write one project does not hang its issue under another's. The lock step refuses it
-// before any lock is taken, and validateIssueParent or the create's read of its parent under the
-// locks, so the wording lives here once.
-func refuseParentOutsideCallerProject(caller, parent, parentProject string) error {
-	return errorf(http.StatusForbidden, codeProjectScope,
-		"this request's credential may write project %s; parent issue %s belongs to project %s",
-		caller, parent, parentProject)
 }
 
 // lockIssueOwners takes the owner locks of key and of the issues in others in one statement, in the
@@ -404,9 +393,10 @@ func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named 
 // validateIssueParent reads the ancestor chain while the dependency locks are held, and refuses a
 // parent that would make key its own ancestor or put key's subtree past parentDepthCap. The
 // parent may be an issue of any project, and the chain it reads runs through every project it
-// crosses. caller is the one project the request's credential may write, empty for a credential
-// that names none: a parent outside it is refused (refuseParentOutsideCallerProject), which is
-// the authoritative refusal of a write lockIssueDependencyWrite already refused before its locks.
+// crosses. caller is the one project the request's credential names, empty for a credential that
+// names none: a parent of a project access.CredentialCovers leaves out is refused
+// (refuseUncoveredProject), which is the authoritative refusal of a write
+// lockIssueDependencyWrite already refused before its locks.
 func validateIssueParent(ctx context.Context, tx pgx.Tx, key, caller, parent string) error {
 	if parent == key {
 		return errorf(http.StatusBadRequest, "PARENT_INPUT", "an issue cannot be its own parent")
@@ -419,8 +409,8 @@ func validateIssueParent(ctx context.Context, tx pgx.Tx, key, caller, parent str
 	if err != nil {
 		return err
 	}
-	if caller != "" && parentProject != caller {
-		return refuseParentOutsideCallerProject(caller, parent, parentProject)
+	if caller != "" && !access.CredentialCovers(access.Credential{Listed: []string{caller}}, parentProject, false) {
+		return refuseUncoveredProject(caller, "parent issue "+parent, parentProject)
 	}
 	// parent and the issues above it, parent first: the server's one ancestor walk
 	// (refs.IssueAncestors) with parent itself at its head, since a parent key already stands

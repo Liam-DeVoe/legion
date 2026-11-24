@@ -136,9 +136,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// A scoped caller is asked here too about a parent or a blocked_by target of another project
 	// (foreignDependencyTargets), with no lock held, before the near-copy gate and every other
 	// write before the transaction, so a create it may not make records no near-copy check and
-	// gets no 409 in place of its 403. A target of a project access.CredentialCovers leaves out is
-	// refused, and so is a parent outside the caller's project. The lock step and the reads under
-	// the locks ask again, the authoritative refusal.
+	// gets no 409 in place of its 403. A target or a parent of a project access.CredentialCovers
+	// leaves out is refused. The lock step and the reads under the locks ask again, the
+	// authoritative refusal.
 	if scoped && (parentKey != "" || len(blockers) > 0) {
 		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, blockers, parentKey); err != nil {
 			s.writeHandlerError(w, err)
@@ -318,8 +318,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		// A parent may be an issue of any project, but not for a credential that may write one
 		// project alone: the authoritative refusal, under the locks, of what the lock step
 		// refused before them.
-		if callerProject != "" && parentProject != callerProject {
-			s.writeHandlerError(w, refuseParentOutsideCallerProject(callerProject, parentKey, parentProject))
+		if callerProject != "" && !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, parentProject, false) {
+			s.writeHandlerError(w, refuseUncoveredProject(callerProject, "parent issue "+parentKey, parentProject))
 			return
 		}
 		// A parent of another project passes on no assignee, as it passes on no repository,
