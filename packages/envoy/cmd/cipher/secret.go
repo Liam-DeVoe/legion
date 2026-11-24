@@ -804,15 +804,16 @@ func proofFailed(err error) bool {
 // meet the guidance on its first request. It reads the key's own tags and the broker's judge_keys
 // (GET /v1/settings), the live policy's answer, which holds while the tags are unchanged:
 //
-//   - an administrator's key is a person's, on the broker page, whatever its judge tag says,
-//     since a person approves every release of one;
+//   - an administrator's key or an Anthropic federation key is a person's, on the broker page,
+//     whatever its judge tag says, since a person approves every release of one
+//     (policy.Secret.PersonApprovesEveryRelease);
 //   - a key whose judge tag gives the judge seconds of it is the model judge's, up to those
 //     seconds, against its guidance, and its person's only if the judge cannot decide;
 //   - a source the broker serves only through profiles of other names (always so for a GitHub
 //     App's key) is not in judge_keys by its own name: the judge decides the profiles judge_keys
 //     names as made from it (JudgeKey.Source), on this key's tags;
 //   - a key that carries a judge tag the broker gives nothing of is a person's, and the line says
-//     why: the broker serves no name from it now;
+//     so: the broker may serve no name from it, or be older than the judge tags and read none;
 //   - any other key is a person's, on the broker page.
 //
 // An agent-tier key is granted at once to a session its tags allow, so for one of those the line
@@ -834,12 +835,14 @@ func whoDecides(view secretView, settings Settings) string {
 	switch {
 	case view.Admin == "true":
 		decides = "a person, on the broker page: an administrator's key, which the judge never decides"
+	case view.Type == policy.TypeAnthropicFederation:
+		decides = "a person, on the broker page: an Anthropic federation key, which the judge never decides"
 	case hasJudge:
 		decides = fmt.Sprintf("the model judge, up to %s, against its guidance; the key's person only if the judge cannot decide", time.Duration(entry.Seconds)*time.Second)
 	case len(profiles) > 0:
 		decides = fmt.Sprintf("the model judge, up to %s, for the profiles made from this key (%s), against its guidance; the key's person only if the judge cannot decide", time.Duration(profileSeconds)*time.Second, settings.words(strings.Join(profiles, ", ")))
 	case view.Judge != "":
-		decides = "a person, on the broker page: the broker serves no name from this key now, so its judge tag gives the judge nothing"
+		decides = "a person, on the broker page: the broker gives the judge nothing of this key now"
 	default:
 		decides = "a person, on the broker page"
 	}
@@ -1381,8 +1384,6 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nproject: %s\nproject_channels: %s\nrollback_guard: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
 		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDashPtr(view.Project), orDashPtr(view.ProjectChannels), rollbackGuard, orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
-	// The key's own judge and guidance tags, as the store holds them, then who decides a request
-	// for it, which reads the broker's answer beside them.
 	fmt.Fprintf(stdout, "judge: %s\nguidance: %s\ndecides: %s\n", orDash(view.Judge), orDash(view.Guidance), whoDecides(view, s.settings))
 	switch {
 	case view.EarliestPurge != nil:

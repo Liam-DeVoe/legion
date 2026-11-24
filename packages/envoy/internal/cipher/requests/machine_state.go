@@ -2055,13 +2055,14 @@ const judgedKind = "request.judged"
 // leaves the first one nothing to write on, and ends no hold: the approval it could not read may
 // still hold the request's row, and its hold runs out by itself (JudgeHold), which hands the
 // request to its person. Every other row is written as given (JudgedWritten), with no read: an
-// approval the state machine refused before its COMMIT certainly wrote nothing.
-func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (JudgedWrite, error) {
+// approval the state machine refused before its COMMIT certainly wrote nothing. It answers what it
+// did with the row and, for a row it wrote, the verdict it wrote (JudgedLog).
+func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (JudgedLog, error) {
 	detail := judgedDetail(judged)
 	wrote := JudgedWritten
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
-		return "", err
+		return JudgedLog{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if applied, ok := detail["applied"].(string); ok && applied == AppliedUnknown {
@@ -2076,10 +2077,10 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 			// either way: the row is the one write a run that asked the model must keep.
 			_ = tx.Rollback(ctx)
 			if tx, err = m.Store.Pool.Begin(ctx); err != nil {
-				return "", err
+				return JudgedLog{}, err
 			}
 		case landed:
-			return JudgedAlreadyApplied, nil
+			return JudgedLog{Write: JudgedAlreadyApplied}, nil
 		default:
 			detail["applied"] = false
 		}
@@ -2094,22 +2095,22 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 		from requests req join enrollments e on e.id = req.enrollment_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where req.record_id=$1`, recordID).
 		Scan(&requestID, &state, &enr.ID, &enr.Kind, &enr.Operator, &enr.Service, &enr.RuntimeID, &enr.SessionID); err != nil {
-		return "", err
+		return JudgedLog{}, err
 	}
 	// The row's verdict is what became of the request, read here and never taken from the
 	// caller: a pending request is its person's from this row on, one already decided, cancelled
 	// or expired is not pending, and a row whose approval could not be read may yet be granted.
+	verdict := JudgedNotPending
 	switch {
 	case wrote == JudgedAppliedUnknown:
-		detail["verdict"] = AppliedUnknown
+		verdict = AppliedUnknown
 	case state == "pending":
-		detail["verdict"] = JudgedHandedOver
-	default:
-		detail["verdict"] = JudgedNotPending
+		verdict = JudgedHandedOver
 	}
+	detail["verdict"] = verdict
 	actor := record.JudgeActor(modelID)
 	if err := audit(ctx, tx, judgedKind, enr.ID, requestID, nil, actor, detail); err != nil {
-		return "", err
+		return JudgedLog{}, err
 	}
 	// The hand-over: a verdict that decides nothing ends the judge's hold in the transaction
 	// that records it, so the request is on its person's list the moment the row is, and
@@ -2118,14 +2119,14 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 	// and waiting on it would spend the time the row needs; the hold runs out by itself.
 	if wrote != JudgedAppliedUnknown {
 		if _, err := tx.Exec(ctx, `update requests set judge_until = null where id=$1 and judge_until is not null`, requestID); err != nil {
-			return "", err
+			return JudgedLog{}, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return "", err
+		return JudgedLog{}, err
 	}
 	logGrantRow(judgedKind, actor, enr, requestID, "", rawJSON(detail))
-	return wrote, nil
+	return JudgedLog{Write: wrote, Verdict: verdict}, nil
 }
 
 // approvalLanded reports whether the request recordID names carries the request.judged row an
@@ -2175,6 +2176,14 @@ func landedWait(ctx context.Context) time.Duration {
 		wait = time.Until(end) / 2
 	}
 	return max(wait, time.Millisecond)
+}
+
+// JudgedLog is what LogJudged did with the row it was given (Write) and, for a row it wrote, the
+// verdict it wrote (Verdict): what became of the request, read in the row's own transaction.
+// Verdict is empty for JudgedAlreadyApplied, which writes nothing.
+type JudgedLog struct {
+	Write   JudgedWrite
+	Verdict string
 }
 
 // JudgedWrite is what LogJudged did with the row it was given.

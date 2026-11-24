@@ -874,8 +874,7 @@ func (b *gcpBackend) requireAccount(context.Context) error { return nil }
 // checkTagValues refuses nothing: Secret Manager holds tags as annotations, whose values take any
 // character and no per-value limit, only one of under 16 KiB for every key and value of the secret
 // together (https://cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets, field
-// annotations). The longest tag this client writes is guidance, at most policy.MaxGuidanceRunes
-// characters (8000 bytes of UTF-8), which the tag rules hold it to, so the tags fit.
+// annotations), which the API holds an update to itself.
 func (b *gcpBackend) checkTagValues(map[string]string) error { return nil }
 
 // personEmail answers, for --owner me, the lowercased email of the person this sign-in is, as

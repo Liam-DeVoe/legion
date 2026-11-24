@@ -53,8 +53,8 @@ func TestLogJudgedWaitsForAnApprovalStillCommitting(t *testing.T) {
 		defer cancel()
 		answered := make(chan logged, 1)
 		go func() {
-			wrote, err := m.LogJudged(ctx, *req.RecordID, judgeModel, failureRow)
-			answered <- logged{wrote, err}
+			res, err := m.LogJudged(ctx, *req.RecordID, judgeModel, failureRow)
+			answered <- logged{res.Write, err}
 		}()
 		select {
 		case got := <-answered:
@@ -83,11 +83,11 @@ func TestLogJudgedWaitsForAnApprovalStillCommitting(t *testing.T) {
 		release, approved := hold(t, m, *req.RecordID)
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
-		wrote, err := m.LogJudged(ctx, *req.RecordID, judgeModel, failureRow)
+		res, err := m.LogJudged(ctx, *req.RecordID, judgeModel, failureRow)
 		release(errors.New("the test aborts the held approval"))
 		<-approved
-		if err != nil || wrote != JudgedAppliedUnknown {
-			t.Fatalf("LogJudged while the approval held past its deadline = %q, %v; want %q", wrote, err, JudgedAppliedUnknown)
+		if err != nil || res.Write != JudgedAppliedUnknown {
+			t.Fatalf("LogJudged while the approval held past its deadline = %q, %v; want %q", res.Write, err, JudgedAppliedUnknown)
 		}
 		if judged := readJudged(t, m, *req.RecordID); len(judged) != 1 || judged[0].applied != AppliedUnknown {
 			t.Errorf("request.judged rows = %+v; want LogJudged's alone, applied %q, never false", judged, AppliedUnknown)

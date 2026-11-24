@@ -5,6 +5,7 @@
 package judge
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -477,9 +478,12 @@ type fakeRequests struct {
 	writeTakes, applyTakes time.Duration
 	// commitTakes is how long ApplyJudgeDecision's transaction takes before it commits, ended
 	// with the context's own error when the context ends first, as a stopping broker's does;
-	// wrote is what LogJudged answers it did, JudgedWritten when empty.
+	// wrote is what LogJudged answers it did, JudgedWritten when empty, and verdict the verdict
+	// it answers it wrote, as the machine reads it off the request's state: applied unknown where
+	// wrote says so, else verdict, else the verdict the caller gave.
 	commitTakes time.Duration
 	wrote       requests.JudgedWrite
+	verdict     string
 	// onApply, when set, runs as ApplyJudgeDecision ends, before it answers, so a test can
 	// stop the broker while an approval is in flight.
 	onApply func()
@@ -616,20 +620,23 @@ func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID
 
 // LogJudged writes the row, or answers what wrote answers in its place: JudgedAlreadyApplied
 // writes nothing, as the machine does when the approval's own row is there.
-func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[string]any) (requests.JudgedWrite, error) {
+func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[string]any) (requests.JudgedLog, error) {
 	if err := f.transact(ctx); err != nil {
-		return "", err
+		return requests.JudgedLog{}, err
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	wrote := f.wrote
-	if wrote == "" {
-		wrote = requests.JudgedWritten
+	wrote := cmp.Or(f.wrote, requests.JudgedWritten)
+	if wrote == requests.JudgedAlreadyApplied {
+		return requests.JudgedLog{Write: wrote}, f.logErr
 	}
-	if wrote != requests.JudgedAlreadyApplied {
-		f.logged = append(f.logged, judged)
+	f.logged = append(f.logged, judged)
+	given, _ := judged["verdict"].(string)
+	verdict := cmp.Or(f.verdict, given)
+	if wrote == requests.JudgedAppliedUnknown {
+		verdict = requests.AppliedUnknown
 	}
-	return wrote, f.logErr
+	return requests.JudgedLog{Write: wrote, Verdict: verdict}, f.logErr
 }
 
 func (f *fakeRequests) DenyJudged(ctx context.Context, recordID, modelID string, judged map[string]any, why string) (requests.Decision, error) {

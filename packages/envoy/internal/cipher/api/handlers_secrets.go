@@ -45,8 +45,9 @@ type settingsResponse struct {
 	// `agent-secrets secret show` reads to say who decides a request for a key and what the judge
 	// will look for, so an agent can meet the guidance on its first request. It is the live
 	// policy's answer; a broker that runs no judge sends such a request to its person. An
-	// administrator's key is named here when its judge tag gives it seconds, and its person
-	// decides it all the same; `secret show` reads its tag.
+	// administrator's key or an Anthropic federation key is named here when its judge tag gives
+	// it seconds, and its person decides it all the same (policy.Secret.PersonApprovesEveryRelease);
+	// `secret show` reads its tags.
 	JudgeKeys map[string]judgeKey `json:"judge_keys,omitempty"`
 	// The audience a machine's Google identity token must carry at the token exchange
 	// (BROKER_GOOGLE_OIDC_AUDIENCE), on either store; absent where no machine can trade one, which

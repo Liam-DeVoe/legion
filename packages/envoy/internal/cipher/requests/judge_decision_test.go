@@ -225,13 +225,18 @@ func TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover(t *testing.T) {
 // state machine refused: LogJudged keeps what the judge answered and changes nothing else — no
 // decision event, no grant, and the request still waiting for the person who decides it today.
 // The row's verdict is what became of the request, whatever word the caller wrote: handed to the
-// person for a pending request, and not pending for one decided before the row.
+// person for a pending request, and not pending for one decided before the row. LogJudged answers
+// the verdict it wrote, so the judge's own line can say the same.
 func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
 
-	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "why": "an answer outside grant and deny, which hands the request over"}); err != nil {
+	wrote, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "why": "an answer outside grant and deny, which hands the request over"})
+	if err != nil {
 		t.Fatalf("LogJudged: %v", err)
+	}
+	if wrote.Verdict != JudgedHandedOver {
+		t.Errorf("LogJudged answered verdict %q; want %q, the verdict it wrote", wrote.Verdict, JudgedHandedOver)
 	}
 
 	judged := readJudged(t, m, *req.RecordID)
@@ -263,8 +268,12 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 		t.Fatalf("the person's denial: %v", err)
 	}
 	before := len(readJudged(t, m, *decided.RecordID))
-	if _, err := m.LogJudged(t.Context(), *decided.RecordID, judgeModel, map[string]any{"verdict": "grant", "not_applied": "already decided"}); err != nil {
+	wrote, err = m.LogJudged(t.Context(), *decided.RecordID, judgeModel, map[string]any{"verdict": "grant", "not_applied": "already decided"})
+	if err != nil {
 		t.Fatalf("LogJudged(decided): %v", err)
+	}
+	if wrote.Verdict != JudgedNotPending {
+		t.Errorf("LogJudged of a request decided first answered verdict %q; want %q, the verdict it wrote", wrote.Verdict, JudgedNotPending)
 	}
 	judged = readJudged(t, m, *decided.RecordID)
 	if len(judged) != before+1 || judged[len(judged)-1].verdict != JudgedNotPending {

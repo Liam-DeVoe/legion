@@ -109,6 +109,25 @@ func TestAnApprovalWhoseAnswerWasLostWritesNoSecondRow(t *testing.T) {
 	}
 }
 
+// TestTheVerdictLineIsTheVerdictTheRowHolds: a row LogJudged writes takes its verdict from the
+// request's state in its own transaction, so a request its person decided after the run's last
+// read and before that row is not pending, although the run guessed it handed over. The run's
+// verdict line says what the row says, never the run's guess.
+func TestTheVerdictLineIsTheVerdictTheRowHolds(t *testing.T) {
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
+	machine.verdict = requests.JudgedNotPending
+	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
+	lines := capturedLog(t, func() {
+		runner.write(t.Context(), pending(), verdictRow{asked: true, err: errors.New("the model did not answer")})
+	})
+	if _, logged := machine.rows(); len(logged) != 1 || logged[0]["verdict"] != requests.JudgedHandedOver {
+		t.Fatalf("the run gave LogJudged %v; want one row, guessed %q", logged, requests.JudgedHandedOver)
+	}
+	if line := lineWith(lines, "wrote a verdict"); !strings.Contains(line, `verdict="`+requests.JudgedNotPending+`"`) {
+		t.Errorf("the verdict line is %q; want it to say %q, the verdict the row holds", line, requests.JudgedNotPending)
+	}
+}
+
 // TestAnApprovalWhoseCommitGotNoAnswerIsNoRefusal is the tester's minor on cybermonklabs/legion#4135
 // at 032301a2c4: a judge approval whose COMMIT the database never answered — its connection lost
 // mid-commit — is no refusal, and the row LogJudged then wrote says whether it applied. One that
