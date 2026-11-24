@@ -1356,7 +1356,10 @@ func MergeStateReadOwed(issue record.Issue, line []phase.Phase, fact MergeStateF
 	case MergeStateFactHeadMove:
 		return MergeForwardStands(issue, line)
 	case MergeStateFactBasePush:
-		return MergeForwardStands(issue, line) && record.StandsAt(issue) != phase.Implementing
+		// c-conflict's negative control B, never for merge: a base push asks for no read here, as
+		// at main a9a8149984, so only askMergeStateFor's round reason, an approved issue in
+		// reviewing, asks for one.
+		return false
 	}
 	return false
 }
