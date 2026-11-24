@@ -722,10 +722,10 @@ type launchGitHubCredential struct {
 }
 
 // mintGitHubCredential mints spec's claim the GitHub credential of the role its pane works as
-// (runtime.SlotRole: spec's role, or the role the architect acts as: the step's while it does a
-// step of its own or the retro of one, and the implementer while a merge forward asked of it has
-// not ended) for the repository spec names, the one its write token reaches. The controller's
-// is asked for by owner instead
+// (runtime.SlotRole: spec's role, or the role the architect acts as: the implementer while a merge
+// forward asked of it has not ended, whatever step or retro it does then, else the step's while it
+// does a step of its own or the retro of one) for the repository spec names, the one its write
+// token reaches. The controller's is asked for by owner instead
 // (Options.ControllerCredential), the one function a controller's bundle is made from here, by
 // this launch and by the refresh of the pane it opens (refreshGitHubCredentials): it works no
 // repository, and the launch asks for no owner, which takes the first owner the project serves,
@@ -743,9 +743,9 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	}
 	// The pane holds the App of the role its claim acts as now (runtime.SlotRole): the claim's
 	// stored role, the spec's role, which the machine builds from it, unless the runtime's ActsAs
-	// gives another, the step's role while the architect does a step of its own or the retro of one,
-	// and the implementer while a merge forward asked of it has not ended. The controller's is its
-	// own.
+	// gives another: the implementer while a merge forward asked of the architect has not ended,
+	// whatever step or retro it does then, else the step's role while it does a step of its own or
+	// the retro of one. The controller's is its own.
 	role := spec.Role
 	var err error
 	if role != claim.RoleController {
@@ -801,9 +801,9 @@ func (r *Runtime) writeGitHubCredential(ctx context.Context, spec runtime.SpawnS
 	if _, err := ghconfig.WriteBundle(credential.root, bundle); err != nil {
 		return "", fmt.Errorf("spawn %s: write the github credential: %w", spec.Claim, err)
 	}
-	// The line names the role whose App the pane holds, the step's while the architect does a step
-	// of its own or the retro of one, and the implementer's while a merge forward asked of it has
-	// not ended, and the claim's own role beside it, so the App it names reads as that role's.
+	// The line names the role whose App the pane holds, the implementer's while a merge forward
+	// asked of the architect has not ended, else the step's while it does a step of its own or the
+	// retro of one, and the claim's own role beside it, so the App it names reads as that role's.
 	written := bundle.Dirs[bundle.Default]
 	r.log.Info("tmux runtime: github credential written", "claim", spec.Claim, "role", role, "claimRole", spec.Role, "app", written.App,
 		"expiresAt", written.ExpiresAt, "dirs", bundle.DirNames())
