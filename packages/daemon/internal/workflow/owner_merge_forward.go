@@ -46,7 +46,7 @@ import (
 // store holds it now, so of two writes of one fact that each end the ask, the second reads the
 // first's record and acts on nothing.
 func (e *Engine) ownersMergeForwardWritten(ctx context.Context, tx pgx.Tx, before, after record.Issue, beforePR, afterPR *record.PullRequest) error {
-	was, is := record.OwnersMergeForward(before, beforePR), record.OwnersMergeForward(after, afterPR)
+	was, is := before.ActiveInWorkflow() && beforePR != nil && beforePR.MergeForwardOpen(), record.OwnersMergeForward(after, afterPR)
 	switch {
 	case was && !is:
 		return e.mergeForwardWriteBack(ctx, tx, after)

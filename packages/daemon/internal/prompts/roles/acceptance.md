@@ -14,7 +14,7 @@ A head that conflicts with its base takes a forward merge while you read, since 
 
 ## The goal red team
 
-Before you decide, run `task(agent="goal-red-team")` with the issue's goal, every requirement of its spec, the plan, the pull request body and the diff. On a task with no pull request, give it what *A task with no pull request* below names in their place. It runs as a job of its own, so `wait` for its report and decide nothing until you have read it. Answer each `unmet` finding there: show the evidence at this head that meets the requirement, or the finding stands. A requirement left unmet is a fail.
+Before you decide, run `task(agent: "goal-red-team")` with the issue's goal, every requirement of its spec, the plan, the pull request body and the diff. On a task with no pull request, give it what *A task with no pull request* below names in their place. It runs as a job of its own, so `wait` for its report and decide nothing until you have read it. Answer each `unmet` finding there: show the evidence at this head that meets the requirement, or the finding stands. A requirement left unmet is a fail.
 
 ## The gate
 
