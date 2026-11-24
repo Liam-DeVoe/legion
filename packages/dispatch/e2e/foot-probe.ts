@@ -134,7 +134,7 @@ export type FootSelectors = Readonly<Record<string, string>>;
  *  page's composer, its queued sends above it, or both stand in the stuck box `BroadcastFoot`
  *  registers, which the selector finds by either; on a narrow or short screen that box is
  *  `display: contents`, has no box and shows nothing here, and the composer sticks by itself.
- *  Every row that reads the foot passes all of them. */
+ *  `expectFootClear` reads all of them. */
 export const FOOT_ELEMENTS = {
   "the selection bar": '[role="toolbar"]:not([aria-label])',
   "the broadcast composer": 'section[aria-label="Broadcast"]',
@@ -376,7 +376,8 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
     // element. The root's overflow, and the body's where the root's is `visible`, is the
     // screen's, which is read apart. `clipOf` answers the part of the screen that the boxes
     // between an element and `stop` (null: the document) leave it, with no edge where none clips
-    // it. Each box is read once per reading, as in `heldInPlace`.
+    // it. Each box is read once per reading, as in `heldInPlace`. `readFootElements` holds a copy
+    // of this walk, since a read in the page can import nothing, so the two change together.
     const open: Edges = { top: -Infinity, bottom: Infinity, left: -Infinity, right: Infinity };
     const cut = (a: Edges, b: Edges): Edges => ({
       top: Math.max(a.top, b.top),
@@ -447,12 +448,7 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
         ? { top: 0, bottom: innerHeight, left: 0, right: innerWidth }
         : scroller.getBoundingClientRect();
       // The part of the screen inside the scroller's box, where a float can cover its content.
-      const inside: Edges = {
-        top: Math.max(box.top, 0),
-        bottom: Math.min(box.bottom, innerHeight),
-        left: Math.max(box.left, 0),
-        right: Math.min(box.right, innerWidth),
-      };
+      const inside = cut(box, { top: 0, bottom: innerHeight, left: 0, right: innerWidth });
       const root = isDocument
         ? (document.getElementById("main-content") ?? document.body)
         : scroller;
@@ -590,7 +586,6 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
     ...reading.problems.covers,
     ...reading.problems.short,
     ...reading.problems.navigation,
-    ...reading.problems.unsettled,
   ];
   const first = read();
   await frames(2);
@@ -620,7 +615,7 @@ export async function readFootEnds(names: FootNames): Promise<FootEnds> {
  * element covers (`elementFromPoint`), read where that centre lies inside every box that clips
  * the control. A control whose centre a box clips away, as Pending changes' list of refused
  * changes scrolls its rows out of its view, is not read. A trial click is no proof of this: one
- * passed over a control a float covered. Every row that reads the foot passes `FOOT_ELEMENTS`.
+ * passed over a control a float covered.
  */
 export async function readFootElements(selectors?: FootSelectors): Promise<FootElements> {
   const meets = (a: Edges, b: Edges) =>
@@ -1113,9 +1108,9 @@ export function navigationProblems(ends: FootEnds): string[] {
 
 /**
  * Fails unless the foot of `page` is clear: one `expect.poll` that takes both reads until
- * neither answers a problem, of any clause, `readFootEnds` first, so `readFootElements` reads the
- * foot elements `selectors` names as the page stands at the end of every scroll, where the last
- * content of each scroller is. Each read is settled itself: it answers a problem unless two
+ * neither answers a problem, of any clause, `readFootEnds` first, so `readFootElements` reads
+ * every foot element (`FOOT_ELEMENTS`) as the page stands at the end of every scroll, where the
+ * last content of each scroller is. Each read is settled itself: it answers a problem unless two
  * readings two animation frames apart give the same answer, so a foot that flips between clean
  * and not clean does not pass. `message` names the reading, `<page> <WxH> <floats>`; the poll
  * fails under it, with the problems of the last reading, and the reading's `FOOT-CELL` line
@@ -1123,11 +1118,7 @@ export function navigationProblems(ends: FootEnds): string[] {
  * reads for a scroller it names. First starts `watchRoomHeld` on the page, so `expectNoEndRoom`
  * reads the room each scroller held while a float showed.
  */
-export async function expectFootClear(
-  page: Page,
-  selectors: FootSelectors,
-  message: string
-): Promise<FootEnds> {
+export async function expectFootClear(page: Page, message: string): Promise<FootEnds> {
   let ends: FootEnds = {
     floats: [],
     navigationTop: null,
@@ -1141,7 +1132,7 @@ export async function expectFootClear(
       .poll(
         async () => {
           ends = await page.evaluate(readFootEnds, FOOT_NAMES);
-          const elements = await page.evaluate(readFootElements, selectors);
+          const elements = await page.evaluate(readFootElements, FOOT_ELEMENTS);
           const { covers, navigation, short, unsettled } = ends.problems;
           problems = [...covers, ...short, ...navigation, ...unsettled, ...elements.problems];
           return problems;

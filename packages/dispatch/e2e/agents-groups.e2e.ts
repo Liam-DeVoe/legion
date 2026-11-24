@@ -20,7 +20,7 @@ import {
   patchIssue,
   replyToMessageDelivery,
 } from "./api";
-import { expectFootClear, FOOT_ELEMENTS } from "./foot-probe";
+import { expectFootClear } from "./foot-probe";
 import { pendingWrites } from "./keyed-writes";
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
@@ -639,7 +639,7 @@ test("scrolled to its end in a short window, the Agents page's broadcast compose
       // the page's end can grow once a float's band counts: the probe reads the page at the end
       // of its scroll as it then stands, until the reading holds, and the ended sessions show
       // there.
-      await expectFootClear(page, FOOT_ELEMENTS, `agents ${size.width}x${size.height} pending`);
+      await expectFootClear(page, `agents ${size.width}x${size.height} pending`);
       await expect(ended).toBeInViewport();
       // Both boxes the row reads apart are there: the probe leaves out an element with no box.
       await expect(broadcast).toBeVisible();

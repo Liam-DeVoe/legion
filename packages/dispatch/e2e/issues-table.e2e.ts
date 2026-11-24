@@ -33,7 +33,6 @@ import {
 import {
   expectFootClear,
   expectNoEndRoom,
-  FOOT_ELEMENTS,
   FOOT_NAMES,
   footCellLine,
   navigationProblems,
@@ -389,7 +388,7 @@ test("with a refused change pending, New epic from these and Clear selection sti
     await select(other.key).check();
     // The foot, read through the shared probe as every row that carries `@foot` reads it
     // (`e2e/foot-probe.ts`), with the selection bar and Pending changes shown.
-    await expectFootClear(page, FOOT_ELEMENTS, "issues-table 1600x1000 pending+bar");
+    await expectFootClear(page, "issues-table 1600x1000 pending+bar");
     // A press that another element takes fails here, where Playwright reads the element at the
     // control's point, rather than hanging until the test's own timeout.
     await page.getByRole("button", { name: "New epic from these" }).click({ timeout: 5_000 });
@@ -530,7 +529,7 @@ async function expectFootClearAt(
   for (const size of sizes) {
     await page.setViewportSize(size);
     const at = `${size.width}x${size.height}`;
-    await expectFootClear(page, FOOT_ELEMENTS, `issues-table ${at} ${floats}`);
+    await expectFootClear(page, `issues-table ${at} ${floats}`);
     await expectNamedShown(shown, at);
   }
   await page.evaluate(() => {
@@ -764,7 +763,7 @@ test("no two of the broadcast composer, Pending changes and the update banner me
       for (const size of sizes) {
         await page.setViewportSize(size);
         const at = `${size.width}x${size.height}`;
-        await expectFootClear(page, FOOT_ELEMENTS, `agents ${at} ${floats}`);
+        await expectFootClear(page, `agents ${at} ${floats}`);
         await expect(
           endedRow,
           `the ended session's row at the end of the page at ${at}`
@@ -883,7 +882,7 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
       for (const size of DESKTOP_SIZES) {
         await page.setViewportSize(size);
         const at = `${size.width}x${size.height}`;
-        const ends = await expectFootClear(page, FOOT_ELEMENTS, `${cell} ${at} pending+banner`);
+        const ends = await expectFootClear(page, `${cell} ${at} pending+banner`);
         const scroller = ends.scrollers.find((read) => read.testid === testid);
         expect(
           scroller?.last ?? null,
@@ -963,11 +962,7 @@ test("with the update banner shown, every control of the selection bar takes a p
     ];
     for (const size of own.width >= 640 ? [own, ...atFoot] : [own]) {
       await page.setViewportSize(size);
-      await expectFootClear(
-        page,
-        FOOT_ELEMENTS,
-        `issues-table ${size.width}x${size.height} banner+bar`
-      );
+      await expectFootClear(page, `issues-table ${size.width}x${size.height} banner+bar`);
       // A press that another element takes fails here, as in the rows above.
       for (const control of controls) await control.click({ trial: true, timeout: 5_000 });
     }
@@ -1029,11 +1024,7 @@ test("with the bar, the banner and Pending changes shown, the table's last row s
     ]) {
       await page.setViewportSize(size);
       const at = `${size.width}x${size.height}`;
-      const ends = await expectFootClear(
-        page,
-        FOOT_ELEMENTS,
-        `issues-table ${at} pending+banner+bar`
-      );
+      const ends = await expectFootClear(page, `issues-table ${at} pending+banner+bar`);
       const box = ends.scrollers.find((scroller) => scroller.testid === "issues-table-scroll");
       expect(
         box?.last?.cell ?? false,

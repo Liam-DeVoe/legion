@@ -202,7 +202,7 @@ async function readEverySize(
   for (const size of sizes) {
     await page.setViewportSize(size);
     const cell = cellName(name, size, shown);
-    if (floatShown) await expectFootClear(page, FOOT_ELEMENTS, cell);
+    if (floatShown) await expectFootClear(page, cell);
     else await expectNoEndRoom(page, cell);
     if (floatShown && stuck) await expectStuckInPlace(page, cellName(`${name}:stuck`, size, shown));
   }
@@ -277,11 +277,7 @@ for (const routes of routeRows()) {
         for (const size of ROUTE_SIZES) {
           await page.setViewportSize(size);
           await waitForRouteSettled(page, route);
-          await expectFootClear(
-            page,
-            FOOT_ELEMENTS,
-            cellName(route.name, size, ["pending", "banner"])
-          );
+          await expectFootClear(page, cellName(route.name, size, ["pending", "banner"]));
         }
         await dismissBanner(page);
         await discardPending(page);
@@ -1368,20 +1364,20 @@ test("a list that scrolls inside Pending changes is not read against the floats,
   const at = `${OWN_SCROLLER_SIZE.width}x${OWN_SCROLLER_SIZE.height}`;
   await page.setViewportSize(OWN_SCROLLER_SIZE);
   await page.setContent(ownScrollerPage(false));
-  await page.evaluate(() => {
-    const list = document.querySelector('[aria-label="Pending changes"] ul');
+  await page.evaluate((pending) => {
+    const list = document.querySelector(`${pending} ul`);
     if (list === null) throw new Error("The page holds no list of refused changes");
     list.scrollTop = (list.scrollHeight - list.clientHeight) / 2;
-  });
-  await expectFootClear(page, FOOT_ELEMENTS, `pending-list ${at} pending`);
+  }, PENDING_CHANGES);
+  await expectFootClear(page, cellName("pending-list", OWN_SCROLLER_SIZE, ["pending"]));
 
   // The first control: a fixed box over the centre of Close, of Help and of a Retry in the
   // list's view.
-  await page.evaluate(() => {
-    const list = document.querySelector('[aria-label="Pending changes"] ul');
+  await page.evaluate((pending) => {
+    const list = document.querySelector(`${pending} ul`);
     if (list === null) throw new Error("The page holds no list of refused changes");
     const view = list.getBoundingClientRect();
-    const buttons = [...document.querySelectorAll('[aria-label="Pending changes"] button')];
+    const buttons = [...document.querySelectorAll(`${pending} button`)];
     const inView = buttons.find((button) => {
       const box = button.getBoundingClientRect();
       const y = box.top + box.height / 2;
@@ -1399,7 +1395,7 @@ test("a list that scrolls inside Pending changes is not read against the floats,
         `width: ${box.width}px; height: ${box.height}px; background: gray`;
       document.body.append(over);
     }
-  });
+  }, PENDING_CHANGES);
   await expect
     .poll(async () => (await page.evaluate(readFootElements, FOOT_ELEMENTS)).problems, {
       message: `pending-list ${at}: each control a fixed box lies over is covered, and no other`,

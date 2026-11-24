@@ -834,7 +834,7 @@ func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T
 	})
 
 	t.Run("a session id of format characters and other zero-width characters alone is a session", func(t *testing.T) {
-		parent, named := started(t, "Named by format characters alone", map[string]any{"kind": "session", "id": "\u202E\u200B\u2066\u200E\u061C\uFEFF\u034F\uFE0F\u3164"}, shared)
+		parent, named := started(t, "Named by zero-width characters alone", map[string]any{"kind": "session", "id": "\u202E\u200B\u2066\u200E\u061C\uFEFF\u034F\uFE0F\u3164"}, shared)
 		requireComments(t, rig.database, []string{parent, named}, moved(parent, named, "a session"))
 	})
 
