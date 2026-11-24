@@ -93,8 +93,8 @@ func TestContextEndsWhereReceiveGivesUpAndWithTheTest(t *testing.T) {
 		taken = Context(t)
 		binary, bounded := t.Deadline()
 		deadline, has := taken.Deadline()
-		if has != bounded || has && !deadline.Equal(binary.Add(-margin)) {
-			t.Fatalf("Context's deadline is %v (%t), want %s before the binary's %v (%t)", deadline, has, margin, binary, bounded)
+		if has != bounded || has && !deadline.Equal(binary.Add(-Margin)) {
+			t.Fatalf("Context's deadline is %v (%t), want %s before the binary's %v (%t)", deadline, has, Margin, binary, bounded)
 		}
 		if err := taken.Err(); err != nil {
 			t.Fatalf("Context ended before its test did: %v", err)
