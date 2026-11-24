@@ -3,8 +3,10 @@ package shim
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -74,7 +76,7 @@ func (s *shim) bundleWorkspace(request shimwire.BundleWorkspace) {
 			result.OK, result.Error = false, err.Error()
 		default:
 			b := saved.bundle
-			result.Bundle, result.Head, result.Tips, result.Bookmarks, result.At = b.Bundle, b.Head, b.Tips, b.Bookmarks, b.At
+			result.Bundle, result.Head, result.FixHead, result.Tips, result.Bookmarks, result.At = b.Bundle, b.Head, b.FixHead, b.Tips, b.Bookmarks, b.At
 		}
 	}
 	s.toDaemonChunked(result)
@@ -83,12 +85,13 @@ func (s *shim) bundleWorkspace(request shimwire.BundleWorkspace) {
 // runBundle builds the bundle with the jj and git of PATH — the ones the pane's or pod's own
 // shell runs, since no runtime pins either on a pane or a pod — in the workspace the shim's
 // environment names in LEGION_WORKSPACE, which the runtime sets on every role (openWorkspace). It
-// reads the working copy's commit first, which is the one jj snapshot the save makes; every read
-// after it is --ignore-working-copy, so the whole save describes one state of the workspace. The
-// bundle is written under the process's temporary directory, never in the workspace, and removed.
-// The budget is a bound on the shim's command context (s.commands) rather than a context of its
-// own, so the shim's own end ends the save's jj and git at once and a command that outlives the
-// budget is still reported as a timeout.
+// snapshots every other working copy of the repository first (snapshotOtherWorkingCopies), then
+// reads the working copy's commit, which is the workspace's own snapshot; every read after it is
+// --ignore-working-copy, so the whole save describes one state of the repository. The bundle is
+// written under the process's temporary directory, never in the workspace, and removed. The
+// budget is a bound on the shim's command context (s.commands) rather than a context of its own,
+// so the shim's own end ends the save's jj and git at once and a command that outlives the budget
+// is still reported as a timeout.
 func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error) {
 	opened, done, err := s.openWorkspace("bundle", s.cfg.Env, time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
@@ -112,6 +115,10 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 		return workspace.OutputLines(out), nil
 	}
 
+	fixHead, err := snapshotOtherWorkingCopies(opened)
+	if err != nil {
+		return workspaceSave{}, err
+	}
 	head, err := run(nil, jj, "log", "-R", dir, "-r", "@", "--no-graph", "-T", "commit_id")
 	if err != nil {
 		return workspaceSave{}, err
@@ -178,9 +185,56 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 		return workspaceSave{}, fmt.Errorf("worker-shim: read the bundle: %w", err)
 	}
 	return workspaceSave{
-		bundle: shimwire.WorkspaceBundle{Bundle: bundle, Head: head, Tips: tips, Bookmarks: bookmarks, At: time.Now().UTC()},
+		bundle: shimwire.WorkspaceBundle{Bundle: bundle, Head: head, FixHead: fixHead, Tips: tips, Bookmarks: bookmarks, At: time.Now().UTC()},
 		size:   len(bundle),
 	}, nil
+}
+
+// snapshotOtherWorkingCopies runs one read in each working copy of the repository other than the
+// workspace the shim runs in, which is what snapshots it: an edit no jj command there has recorded
+// yet — the fix's agent's, in the fix's working copy beside the workspace — is then in that working
+// copy's commit, which the bundle keeps as one of its heads. Each working copy is one jj records a
+// root of, on this disk; the workspace's own snapshot is the save's read of its head. A working copy
+// jj cannot snapshot fails the save, and the release stops with the pod and its work kept, as for
+// the workspace's own. It answers the commit the fix's working copy (workspace.FixDir) stands on,
+// "" where there is none, which the bundle names (WorkspaceBundle.FixHead) so the pod that replaces
+// this one makes that working copy again there.
+func snapshotOtherWorkingCopies(opened openedWorkspace) (fixHead string, err error) {
+	listed, err := opened.run(nil, opened.jj, "workspace", "list", "-R", opened.dir, "--ignore-working-copy",
+		"-T", `if(root, root, "") ++ "\n"`)
+	if err != nil {
+		return "", err
+	}
+	fixDir := workspace.FixDir(opened.dir)
+	for _, root := range workspace.OutputLines(listed) {
+		if sameDir(root, opened.dir) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, ".jj")); errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return "", fmt.Errorf("worker-shim: read the working copy %s: %w", root, err)
+		}
+		head, err := opened.runIn(root, nil, opened.jj, "log", "-R", root, "-r", "@", "--no-graph", "-T", "commit_id")
+		if err != nil {
+			return "", err
+		}
+		if sameDir(root, fixDir) {
+			fixHead = head
+		}
+	}
+	return fixHead, nil
+}
+
+// sameDir is whether a and b name one directory on this disk, however each is spelled: jj records
+// a workspace's root as it resolved it, and LEGION_WORKSPACE is as the runtime set it.
+func sameDir(a, b string) bool {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	return err == nil && os.SameFile(ai, bi)
 }
 
 // bookmarksInto is every local bookmark of listed that points at a commit the bundle keeps, by

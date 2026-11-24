@@ -194,6 +194,14 @@ func describedArgs(jj, dir string) []string {
 	return []string{jj, "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", dir}
 }
 
+// fixWorkArgs prints each commit of the fix's working copy at fix that holds work over fixFrom: a
+// commit between fixFrom and the working copy, the working copy included, that changes something.
+// It prints nothing where the working copy does not stand over fixFrom, or holds nothing over it.
+// It is no --ignore-working-copy read, so it records the copy's last edits first.
+func fixWorkArgs(jj, fix, fixFrom string) []string {
+	return []string{jj, "log", "-r", fixFrom + "::@ ~ " + fixFrom + " ~ empty()", "--no-graph", "-T", `commit_id ++ "\n"`, "-R", fix}
+}
+
 // runAdoption runs the adoption under the requested identity and budget, in the workspace the
 // shim's environment names in LEGION_WORKSPACE and with PATH's jj (openWorkspace): the one the
 // pane's own shell runs, since no runtime pins a jj on a pane or pod. Every role of an issue
@@ -213,13 +221,18 @@ func describedArgs(jj, dir string) []string {
 // the commit it stands on, and a `jj new` onto MoveTo only where that is another commit; the answer
 // names MoveTo as moved to. With FixFrom, the adoption is of the fix's working copy, beside the
 // workspace (workspace.FixDir), in place of the workspace's: a jj workspace of the same clone added
-// on FixFrom where none is there, or, where one is, brought up to date and started on a fresh
-// commit over FixFrom; then the adoption command there, so the fix's commits carry the role's
-// identity. The answer names that directory. Every workspace of the clone shares its store, so a
-// commit a step makes in the workspace is there in the fix's working copy by its id, and a rewrite
-// made from the fix's working copy of a commit under the workspace's working copy leaves that
-// working copy stale. So where the fix's working copy exists, every adoption that acts on the
-// workspace brings it up to date first (`jj workspace update-stale`).
+// on FixFrom where none is there. Where one is, it is brought up to date, and one read (fixWorkArgs)
+// asks whether it holds work of its own over FixFrom — a commit, or an edit the read itself
+// records. Where it does, it is this fix's copy, and it stays where it stands: the adoption before a
+// fix's task runs again each time that task is sent again, and the pod that replaced a released one
+// made the copy again at its own last working copy (the launcher's restoreWorkspace). Where it does
+// not, it starts on a fresh commit over FixFrom, as a later fix of the task does. Then the adoption
+// command there, so the fix's commits carry the role's identity. The answer names that directory.
+// Every workspace of the clone shares its store, so a commit a step makes in the workspace is there
+// in the fix's working copy by its id, and a rewrite made from the fix's working copy of a commit
+// under the workspace's working copy leaves that working copy stale. So where the fix's working
+// copy exists, every adoption that acts on the workspace brings it up to date first (`jj workspace
+// update-stale`).
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo string, err error) {
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	opened, done, err := s.openWorkspace("adopt", env, time.Duration(request.TimeoutMs)*time.Millisecond)
@@ -255,8 +268,14 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (fixDir, movedTo s
 			if _, err := runIn(fix, nil, jj, "workspace", "update-stale", "-R", fix); err != nil {
 				return "", "", err
 			}
-			if _, err := runIn(fix, nil, jj, "new", request.FixFrom, "-R", fix); err != nil {
+			work, err := runIn(fix, nil, fixWorkArgs(jj, fix, request.FixFrom)...)
+			if err != nil {
 				return "", "", err
+			}
+			if work == "" {
+				if _, err := runIn(fix, nil, jj, "new", request.FixFrom, "-R", fix); err != nil {
+					return "", "", err
+				}
 			}
 		} else if _, err := run(nil, jj, "workspace", "add", "--name", filepath.Base(fix), "-r", request.FixFrom, fix, "-R", dir); err != nil {
 			return "", "", err

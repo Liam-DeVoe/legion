@@ -3049,9 +3049,9 @@ The earlier release names none of the three tables and not the column, so this s
 #### Rolling back the release that starts a fix beside the other steps
 
 This release starts a task's first implementation step again as a fix, in a working copy of its own, when a check that a CI job runs fails at the task's head, while the other steps of the task go on.
-Its migration `20261123134547_fix_beside_steps` adds the column `plan_tasks.fixes_ci`, the tables `task_fixes` and `ci_failures`, the columns `step_starts.start_commit`, `end_commit` and `fix_check`, and the columns `pending_task_deliveries.fix`, `fix_from` and `move_to`.
+Its migration `20261123134547_fix_beside_steps` adds the column `plan_tasks.fixes_ci`, the tables `task_fixes` and `ci_failures`, the columns `step_starts.start_commit`, `end_commit` and `fix_check`, the columns `pending_task_deliveries.fix`, `fix_from` and `move_to`, and the column `workspace_bundles.fix_head`, the commit the fix's working copy stood on when a release saved the workspace's work.
 It also writes the outbox's kind check (`outbox_kind_check`) again, with `fix_job_read` added to the list of `20261119203047_design_news`.
-An earlier release names none of the two tables and none of the seven columns in a statement.
+An earlier release names none of the two tables and none of the eight columns in a statement.
 It decodes a `notice`, a `controller_notice`, a `supervise` row and a `step_record` row strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), and fails at every attempt a row that carries what it does not know.
 This release queues such rows: the `ci-failed` notice, a fix's start with `fix` and `fixFrom`, a start with `moveTo`, and a step record with `startCommit`, `endCommit` and `fixCheck`.
 It also writes two new reasons of a hold on `issues.hold_reason`: `fix`, an issue held while its fix runs, and `ci`, an issue held until each check a CI job runs passes at its head.
@@ -3070,6 +3070,7 @@ update outbox set payload = payload - 'startCommit' - 'endCommit' - 'fixCheck' w
 update step_starts set record = record - 'startCommit' - 'endCommit' - 'fixCheck' where record ?| array['startCommit', 'endCommit', 'fixCheck'] and split_part(issue, '-', 1) = '<PROJECT>';
 delete from pending_task_deliveries delivery where (to_jsonb(delivery) ->> 'fix')::int > 0;
 alter table pending_task_deliveries drop column if exists move_to, drop column if exists fix_from, drop column if exists fix;
+alter table workspace_bundles drop column if exists fix_head;
 update issues set hold_reason = null where hold_reason in ('fix', 'ci') and split_part(key, '-', 1) = '<PROJECT>';
 alter table step_starts drop column if exists fix_check, drop column if exists end_commit, drop column if exists start_commit;
 drop table if exists ci_failures;
@@ -3093,6 +3094,7 @@ A deleted `ci-failed` notice is a failure the issue's architect is never told of
 A deleted fix start, or a deleted pending delivery of a fix, is a fix that does not run, and the rows of `task_fixes` and `ci_failures` go with their tables, so nothing after the roll-forward resumes it.
 An issue whose `fix` or `ci` reason the way back cleared is a plain hold under the earlier release, and a retry of that release releases it without waiting for the fix or the checks.
 So read the CI checks at the head of its pull request before that retry, and move the issue back to its implementer where one fails.
+A saved workspace bundle keeps its work when the way back drops `workspace_bundles.fix_head`: the earlier release restores it without the fix's working copy, and the fix's commits are still in it.
 After the roll-forward, each task reads `fixes_ci` false, so a run that started before the rollback takes no fix, and its CI messages are as the earlier release sent them.
 
 #### Rolling back below the release that trims an issue pod's volume
@@ -8042,6 +8044,9 @@ A start the daemon queues for a child's own architect does as the first does too
 Such a release arms no backstop, and it leaves the issue's wake marks and the open backstops of an earlier release as it found them.
 
 What the saved bundle holds is every visible commit the remote does not already hold, on any head, the working copy's own change, and each local bookmark that points at such a commit.
+Before it reads anything, the save records the edits of every other working copy of the repository: the shim runs one jj read in each working copy whose root jj records, so a working copy's edits that no jj command has recorded yet are in that working copy's commit, and the bundle keeps that commit.
+A fix that runs beside the other steps works in a working copy of its own beside the issue's workspace (`<workspace>-fix`, `workspace.FixDir`), and the save names the commit that working copy stands on (`workspace_bundles.fix_head`).
+The pod that replaces the released one makes that working copy again on that commit, with the fix's commits under it and its edits in it, and the fix's next adoption keeps it there.
 A commit a remote bookmark or a tag reaches is left out: the new pod's workspace fetch brings it back, and a clone of this repository holds thousands of tags, each of which jj makes a visible head.
 Its base commits are the ones a new pod's workspace fetch already has: the default branch and the issue's branch on the remote.
 It never reaches GitHub.
@@ -8053,7 +8058,7 @@ A bundle is offered to one pod and one only: the first pod of the issue that is 
 That pod is sent the bundle when it was created after the save, and refused when it was not — a pod the release did not replace, or the replacement itself on a node whose clock runs ahead of the API server's — and either way no later pod is sent it, because the roles of the pod that asked go on working and pushing from the workspace their own fetch provisioned.
 A pod of a kept Sandbox that was made before the save is sent no bundle, and the daemon drops the bundle, because the volume holds that work, so no `bundle_unrestored` hold keeps that pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 A restore that fails, and a refusal, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
-The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, checks it with `git bundle list-heads <KEY>.bundle`, and unbundles it into any clone of the repository, where the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
+The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, checks it with `git bundle list-heads <KEY>.bundle`, and unbundles it into any clone of the repository, where the row's `head` is the working copy's commit, `fix_head` the commit of the fix's working copy (empty for none), and `bookmarks` maps each bookmark to its commit.
 A bundle stays through a linger and a park, and goes when its issue is done or its tree closes.
 A release of a pod no claim owns neither takes a bundle nor deletes one, so a bundle an earlier release of the same issue saved stays where it is, and the issue's next pod is offered it as before.
 The `bundle_unrestored` hold does not keep such a pod either, since that release saves no bundle over the one the database holds.

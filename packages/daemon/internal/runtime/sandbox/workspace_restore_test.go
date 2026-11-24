@@ -25,7 +25,8 @@ const testRelease int64 = 11
 
 // savedWorkspaceBundle is a release's saved work as the store holds it: more than one
 // shimwire.LauncherBundlePayloadBytes of git bundle, so the hop to the launcher is a sequence of
-// slices and not one frame, with the head, the tips and the bookmark a restore needs beside it.
+// slices and not one frame, with the head, the fix's working copy, the tips and the bookmark a
+// restore needs beside it.
 // It was taken before the rig's clock starts, so every pod the rig makes is one created after
 // the save — the only kind a bundle is sent to
 // (store.TakeWorkspaceBundleForRestore). Its source pod, the pod the work came off, is a pod of
@@ -35,6 +36,7 @@ func savedWorkspaceBundle() runtime.WorkspaceBundle {
 	return runtime.WorkspaceBundle{
 		Bundle:    bytes.Repeat([]byte("PACKjj\x00\x02"), (600<<10)/8),
 		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		FixHead:   "c0de000000000000000000000000000000000003",
 		Tips:      []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"},
 		Bookmarks: map[string]string{"legion/" + testTree: "dffe88ae2f793e13436cef3921adc988433fbd4e"},
 		At:        rigNow.Add(-time.Minute),
@@ -132,9 +134,9 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 	if !bytes.Equal(read.Bundle, saved.Bundle) {
 		t.Fatalf("the bundle crossed as %d bytes, want the %d saved", len(read.Bundle), len(saved.Bundle))
 	}
-	if read.Head != saved.Head || !slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, saved.Bookmarks) {
-		t.Fatalf("the bundle crossed as head %s, tips %v and bookmarks %v, want %s, %v and %v",
-			read.Head, read.Tips, read.Bookmarks, saved.Head, saved.Tips, saved.Bookmarks)
+	if read.Head != saved.Head || read.FixHead != saved.FixHead || !slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, saved.Bookmarks) {
+		t.Fatalf("the bundle crossed as head %s, the fix's working copy %q, tips %v and bookmarks %v, want %s, %q, %v and %v",
+			read.Head, read.FixHead, read.Tips, read.Bookmarks, saved.Head, saved.FixHead, saved.Tips, saved.Bookmarks)
 	}
 	if !read.At.Equal(saved.At) {
 		t.Fatalf("the bundle crossed as taken at %s, want %s", read.At, saved.At)

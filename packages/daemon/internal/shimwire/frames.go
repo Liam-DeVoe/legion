@@ -919,12 +919,13 @@ type BundleWorkspace struct {
 	TimeoutMs int    `json:"timeoutMs"`
 }
 
-// BundleWorkspaceResult answers BundleWorkspace with the bundle and the three facts a restore
-// needs beside it: the commit the working copy sat on, the heads the bundle carries, and each
-// local bookmark that pointed into the saved set. A bundle larger than the request's MaxBytes is
-// refused rather than sent, with SizeBytes naming what it would have been, so the caller can stop
-// the release and record why. The result crosses the shim's lane as an rpc_chunk sequence when it
-// is larger than one line.
+// BundleWorkspaceResult answers BundleWorkspace with the bundle and the facts a restore needs
+// beside it: the commit the working copy sat on, the commit the fix's working copy beside the
+// workspace sat on where one was there (FixHead, "" for none), the heads the bundle carries, and
+// each local bookmark that pointed into the saved set. A bundle larger than the request's MaxBytes
+// is refused rather than sent, with SizeBytes naming what it would have been, so the caller can
+// stop the release and record why. The result crosses the shim's lane as an rpc_chunk sequence
+// when it is larger than one line.
 type BundleWorkspaceResult struct {
 	ID        string            `json:"id"`
 	OK        bool              `json:"ok"`
@@ -932,6 +933,7 @@ type BundleWorkspaceResult struct {
 	SizeBytes int               `json:"sizeBytes"`
 	Bundle    []byte            `json:"bundle,omitempty"`
 	Head      string            `json:"head,omitempty"`
+	FixHead   string            `json:"fixHead,omitempty"`
 	Tips      []string          `json:"tips,omitempty"`
 	Bookmarks map[string]string `json:"bookmarks,omitempty"`
 	At        time.Time         `json:"at"`
@@ -1050,11 +1052,13 @@ type LauncherLeakCheckResult struct {
 }
 
 // WorkspaceBundle is the saved work the LauncherBundle slices carry: the git bundle's own bytes,
-// the commit the working copy sat on, the heads the bundle carries and each local bookmark that
-// pointed into the saved set. It is no frame of its own — it is the body a sequence rebuilds.
+// the commit the working copy sat on, the commit the fix's working copy sat on ("" for none), the
+// heads the bundle carries and each local bookmark that pointed into the saved set. It is no frame
+// of its own — it is the body a sequence rebuilds.
 type WorkspaceBundle struct {
 	Bundle    []byte            `json:"-"`
 	Head      string            `json:"head"`
+	FixHead   string            `json:"fixHead,omitempty"`
 	Tips      []string          `json:"tips,omitempty"`
 	Bookmarks map[string]string `json:"bookmarks,omitempty"`
 	At        time.Time         `json:"at"`
@@ -1380,7 +1384,8 @@ func (f BundleWorkspace) Validate() error {
 }
 
 // Validate refuses a bundle result the daemon could not act on: one answering no request, a
-// refusal with no reason, or a bundle whose bytes and declared size disagree.
+// refusal with no reason, a bundle whose bytes and declared size disagree, or a fix's working copy
+// named by something other than a full commit id.
 func (f BundleWorkspaceResult) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1391,6 +1396,8 @@ func (f BundleWorkspaceResult) Validate() error {
 		return fmt.Errorf("%w: bundle-workspace-result carries no head", ErrMalformedFrame)
 	case f.OK && f.SizeBytes != len(f.Bundle):
 		return fmt.Errorf("%w: bundle-workspace-result says %d bytes and carries %d", ErrMalformedFrame, f.SizeBytes, len(f.Bundle))
+	case f.FixHead != "" && !commitShape.MatchString(f.FixHead):
+		return fmt.Errorf("%w: bundle-workspace-result fixHead %q is not a full commit id", ErrMalformedFrame, f.FixHead)
 	}
 	return nil
 }
