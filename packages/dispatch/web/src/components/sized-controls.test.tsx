@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import type {
   ColumnDef,
   ColumnFiltersState,
@@ -9,6 +9,7 @@ import type {
 import { render, screen } from "@testing-library/react";
 import { type ComponentType, type ReactNode, useState } from "react";
 
+import { layOutBar } from "../__tests__/chips-line";
 import { BarAction } from "./BarAction";
 import { Chip } from "./Chip";
 import { ColumnFilter, type ColumnFilterProps } from "./ColumnFilter";
@@ -362,12 +363,7 @@ test("the bar draws Clear filters, +N more and More at the page's size", () => {
       wide.unmount();
     }
     // Narrow, with chips and no trigger: one `+N more` stands in the line.
-    const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-      this: Element
-    ) {
-      const bar = this.getAttribute("data-control") === "control-row";
-      return new DOMRect(0, 0, bar ? 390 : 0, 44);
-    });
+    const restoreLayout = layOutBar({ width: 390 });
     const narrow = render(
       <ControlRow
         chips={[
@@ -381,7 +377,7 @@ test("the bar draws Clear filters, +N more and More at the page's size", () => {
       read[size].push(compactly(screen.getByRole("button", { name: "2 more filters" })));
     } finally {
       narrow.unmount();
-      boxes.mockRestore();
+      restoreLayout();
     }
   }
   expect(read).toEqual({ comfortable: [false, false, false], compact: [true, true, true] });

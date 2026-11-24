@@ -56,16 +56,19 @@ function featureFiles(dir: string): string[] {
   });
 }
 
-/** An import of `components/ControlRow`, read from code with its comments stripped. */
+/** An import of `components/ControlRow`, read from code with its comments stripped. Stripping
+ *  only blanks comments, so a file whose text names no `components/ControlRow` is never parsed. */
 const IMPORTS_CONTROL_ROW = /\bfrom\s+["'](?:\.\.\/)+components\/ControlRow["']/;
 
 test("every file that draws ControlRow draws it on a page of R8, and every page of R8 has one", () => {
   const drawing = featureFiles(FEATURES_ROOT)
-    .filter((path) =>
-      IMPORTS_CONTROL_ROW.test(
-        stripComments(readFileSync(join(FEATURES_ROOT, path), "utf8"), `features/${path}`)
-      )
-    )
+    .filter((path) => {
+      const source = readFileSync(join(FEATURES_ROOT, path), "utf8");
+      return (
+        source.includes("components/ControlRow") &&
+        IMPORTS_CONTROL_ROW.test(stripComments(source, `features/${path}`))
+      );
+    })
     .sort();
   const unnamed = drawing.filter((path) => BAR_FILES[path] === undefined);
   expect(

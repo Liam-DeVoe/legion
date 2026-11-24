@@ -1,11 +1,12 @@
 import { graphNodeKey, issueReferenceSections } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { memo, type ReactNode, useId, useMemo, useRef } from "react";
+import { memo, type ReactNode, useCallback, useId, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/types";
 import type { BarActionProps, BarActionRefusal } from "../../components/BarAction";
+import { textGlyph } from "../../components/bar-look";
 import { ControlRow } from "../../components/ControlRow";
 import { CONTROL, controlIn } from "../../components/control-names";
 import { QueryError } from "../../components/QueryError";
@@ -420,11 +421,7 @@ function ArtifactRow({
 }
 
 /** **Upload**'s glyph, drawn before its words where the control bar draws it. */
-const UPLOAD_GLYPH = (
-  <span aria-hidden="true" className="text-base leading-none">
-    ↑
-  </span>
-);
+const UPLOAD_GLYPH = textGlyph("↑");
 
 /**
  * The issue's artifacts: a control bar (`ControlRow`) of the search box and two actions, **New
@@ -483,13 +480,18 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
     [artifacts.data]
   );
   // The New document form hands the focus back, as it closes, to the action that opened it: the
-  // bar's first action, or **More** where the bar holds its actions there.
-  const newDocument = useNewDocument({
-    documents: orderedArtifacts,
-    opener: () =>
+  // bar's first action, or **More** where the bar holds its actions there. One function for every
+  // render, since the form's effect reads it (`TitleForm`).
+  const opener = useCallback(
+    () =>
       tab.current === null
         ? null
         : (controlIn(tab.current, CONTROL.barAction) ?? controlIn(tab.current, CONTROL.moreMenu)),
+    []
+  );
+  const newDocument = useNewDocument({
+    documents: orderedArtifacts,
+    opener,
     owner: { issue: issueKey ?? "" },
     refusal,
   });

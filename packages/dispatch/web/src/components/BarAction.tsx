@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from "react";
 
-import { barButton } from "./bar-look";
+import { type BarLook, barButton } from "./bar-look";
 import { CONTROL, type ControlSize } from "./control-names";
 import { heldPress } from "./held-press";
 import type { PanelTriggerProps } from "./PanelTrigger";
@@ -54,37 +54,48 @@ function face(icon: ReactNode, label: string, iconOnly: boolean): ReactNode {
   );
 }
 
-/** An action's panel, open or shut. Its own state, since a panel the page does not need to read
- *  is the action's own; the page hears that it opened through `onPress`. */
-function PanelAction({
-  filled,
-  icon,
-  iconOnly,
-  label,
-  onPress,
+/** An action's panel, open or shut, drawn as a button of the bar (`BarAction`) or as an item of
+ *  **More** (`MoreMenu`, which gives it its `role` and `triggerClassName`). Its own state, since
+ *  a panel the page does not need to read is the action's own; the page hears that it opened
+ *  through `onPress`. An action given a refusal is held as `BarAction` holds it: `aria-disabled`,
+ *  its refusal as its description and tooltip, and a press on it opens nothing. */
+export function PanelAction({
+  action: { label, onPress, refusal },
+  look,
   panel,
-  refusal,
+  role,
+  shown,
   size,
-}: BarActionProps & {
-  readonly filled: boolean;
-  readonly iconOnly: boolean;
+  triggerClassName,
+}: {
+  readonly action: BarActionProps;
+  readonly look?: BarLook;
   readonly panel: ViewPanelProps["children"];
-  readonly size: ControlSize;
+  readonly role?: ViewPanelProps["role"];
+  /** What the trigger shows: the action's glyph and label, or its glyph alone; on an item of
+   *  **More**, its label and refusal. */
+  readonly shown: ReactNode;
+  readonly size?: ControlSize;
+  readonly triggerClassName?: string;
 }): ReactNode {
   const [open, setOpen] = useState(false);
   return (
     <ViewPanel
       align="right"
       ariaDisabled={refusal !== undefined}
-      label={face(icon, label, iconOnly)}
-      look={{ filled, icon: iconOnly ? icon : undefined }}
+      describedBy={refusal?.id}
+      label={shown}
+      look={look}
       onOpenChange={(next) => {
         if (next) onPress();
         setOpen(next);
       }}
       open={open}
+      role={role}
       size={size}
       title={label}
+      tooltip={refusal?.words}
+      triggerClassName={triggerClassName}
     >
       {panel}
     </ViewPanel>
@@ -117,7 +128,13 @@ export function BarAction({
   const { icon, label, onPress, panel, refusal } = action;
   if (panel !== undefined) {
     return (
-      <PanelAction {...action} filled={filled} iconOnly={iconOnly} panel={panel} size={size} />
+      <PanelAction
+        action={action}
+        look={{ filled, icon: iconOnly ? icon : undefined }}
+        panel={panel}
+        shown={face(icon, label, iconOnly)}
+        size={size}
+      />
     );
   }
   return (

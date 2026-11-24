@@ -471,11 +471,12 @@ Inbox page. The actions are the same: answer, ask back, snooze, read a thread or
 without losing your place. The page underneath keeps its state, a half-typed message included,
 so a reply you were drafting is still there when you close the drawer.
 
-The drawer carries the same bar, with choices of its own: the switch, **Filter**, **More** with
-**View** and **Mark all read**, and **New message**. The drawer is narrower than 640 px, so its
-bar takes the narrow layout the Inbox takes on a phone. It opens on your own work, and what you
-pick there changes the drawer alone: the address of the page underneath never moves. The
-**Search asks** box is the drawer's own in the same way: the drawer keeps what you type there,
+The drawer carries the same bar, with choices of its own. In a window 768 px wide or wider the
+drawer is narrower than 640 px, so its bar takes the narrow layout the Inbox takes on a phone:
+the switch, **Filter**, **More** with **View** and **Mark all read**, and **New message**. It
+opens on your own work, and what you pick there changes the drawer alone: the address of the
+page underneath never moves. The **Search asks** box is the drawer's own in the same way: the
+drawer keeps what you type there,
 and it narrows the drawer alone. The two settings that are yours rather than the list's — the
 thread order and the bands you folded — are shared with the page, since they belong to your
 browser.

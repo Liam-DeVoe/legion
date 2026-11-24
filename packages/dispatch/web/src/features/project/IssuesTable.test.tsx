@@ -4,6 +4,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { controlBar } from "../../__tests__/chips-line";
 import { drawnSize } from "../../__tests__/control-size";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
@@ -217,9 +218,7 @@ async function groupRowsBy(user: UserEvent, option: string) {
 /** The List's control bar itself: a chip is drawn there and, while the Filters panel is open,
  *  again at the panel's top, which is portalled outside the bar. */
 function listBar(): HTMLElement {
-  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
-  if (found === null) throw new Error("the List draws no control bar");
-  return found;
+  return controlBar("the List");
 }
 
 test("rows keep parent links, unread marks, asks, progress and route reach, with priority editable", async () => {

@@ -13,6 +13,7 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
+import { controlBar } from "../../__tests__/chips-line";
 import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -498,9 +499,7 @@ test("List table and Board control row share the URL's status, labels and search
     expect(await screen.findByRole("button", { name: "Filters · 2" })).toBeTruthy();
     // Read in the Board's bar: its Filters panel, open while a narrowing is on, lists the same
     // chips again at its top.
-    const drawn = page.view.container.querySelector<HTMLElement>('[data-control="control-row"]');
-    if (drawn === null) throw new Error("the Board draws no control bar");
-    const bar = within(drawn);
+    const bar = within(controlBar("the Board", page.view.container));
     expect(bar.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
     expect(bar.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "List" }));

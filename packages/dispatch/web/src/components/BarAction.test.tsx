@@ -99,6 +99,35 @@ test("an action given a panel is a view-panel trigger that opens it and tells th
   }
 });
 
+test("an action with a panel given a refusal is held with its refusal as its description", async () => {
+  const user = userEvent.setup();
+  const onPress = mock(() => {});
+  const view = render(
+    <>
+      <BarAction
+        icon={ICON}
+        label="Save view"
+        onPress={onPress}
+        panel={() => <p>Name the view</p>}
+        refusal={{ id: "closed", words: "This issue is closed." }}
+      />
+      <p id="closed">This issue is closed.</p>
+    </>
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Save view" });
+    expect(trigger).toHaveAttribute("aria-disabled", "true");
+    expect(trigger).toHaveAttribute("title", "This issue is closed.");
+    expect(trigger).toHaveAccessibleDescription("This issue is closed.");
+    await user.click(trigger);
+    expect(onPress).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(trigger).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
 test("an action takes its size from the page", () => {
   const view = render(
     <BarAction icon={ICON} label="Upload" onPress={() => undefined} size="compact" />

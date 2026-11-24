@@ -59,9 +59,10 @@ const COUNT = `rounded-full px-1.5 text-xs font-semibold tabular-nums ${surfaceM
 /**
  * The one switch: two or more parts of one list, one of them chosen, where each part shows a part
  * of the same list - the Inbox's **All** and **Blocked on you**, the Issues tab's **Table** and
- * **Board**. It stands at the start of the control bar (`ControlRow`), as GitHub's All and Unread
- * and Outlook's Focused and Other stand at the start of their lists' bars, and Primer names the
- * segmented control for a filter one of whose parts shows the whole list.
+ * **Board**. It stands after the control bar's search box (`ControlRow`), so it leads the Inbox's
+ * bar, whose search box stands in the header line, as GitHub's All and Unread and Outlook's
+ * Focused and Other stand at the start of their lists' bars; Primer names the segmented control
+ * for a filter one of whose parts shows the whole list.
  *
  * It is drawn as the repository's own groups of pressed buttons are (the project page's List and
  * Board): a group named by the page (`fieldset`, whose role is `group`, with the page's

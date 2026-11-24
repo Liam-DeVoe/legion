@@ -28,35 +28,44 @@ export async function openFilterPanel(page: Page, within: Locator | Page = page)
   const trigger = control(controlRow(within), CONTROL.panelTrigger);
   if ((await expandedState("the row's filter trigger", trigger)) === "shut") await trigger.click();
   // `Filter` on the Inbox, the Agents page, the Delivery page and the search bar; `Filters` on
-  // the project List and Board, where the trigger also counts what is on.
+  // the project List, the Board and a priority's own page.
   const panel = page.getByRole("dialog", { name: /^Filters?$/ });
   await expect(panel).toHaveCount(1);
   return panel;
+}
+
+/** `button` where the control bar `bar` draws it in its line, else `item` among **More**'s items,
+ *  which this opens. Waits until the button or **More** is drawn, so the bar has read its own
+ *  width. */
+async function buttonOrMoreItem(bar: Locator, button: Locator, item: Locator): Promise<Locator> {
+  const more = control(bar, CONTROL.moreMenu);
+  await expect(button.or(more).first()).toBeVisible();
+  // The wait above saw the button or More, and the bar takes its layout from its own width
+  // before it first paints, so whether the button is drawn is settled by the time either shows.
+  if ((await button.count()) > 0) return button;
+  if ((await expandedState("the bar's More", more)) === "shut") await more.click();
+  return item;
 }
 
 /**
  * The control a page offers for the action `label`: on a page whose control bar holds it, the
  * bar's own button where the bar is 640 px wide or wider, else its item of **More**, which this
  * opens (R8, `components/ControlRow.tsx`); on a page that draws the action as a button of its
- * own, that button. Waits until one of the two is drawn, so the bar has read its own width.
+ * own, that button.
  */
 export async function barAction(page: Page, label: string): Promise<Locator> {
-  const button = page.getByRole("button", { exact: true, name: label });
-  const more = control(controlRow(page), CONTROL.moreMenu);
-  await expect(button.or(more).first()).toBeVisible();
-  // The wait above saw the button or More, and the bar takes its layout from its own width
-  // before it first paints, so whether the button is drawn is settled by the time either shows.
-  if ((await button.count()) > 0) return button;
-  if ((await expandedState("the bar's More", more)) === "shut") await more.click();
-  return page.getByRole("menuitem", { exact: true, name: label });
+  return buttonOrMoreItem(
+    controlRow(page),
+    page.getByRole("button", { exact: true, name: label }),
+    page.getByRole("menuitem", { exact: true, name: label })
+  );
 }
 
 /**
  * The trigger of the display menu `label` inside `within` - the page, or the Inbox drawer: the
  * bar's display menu where it stands in the bar's line, else its item of **More**, which this
  * opens. A bar that sets the narrow display rule, the Inbox's and its drawer's, holds the display
- * menu in **More** below 640 px of its width (R8, `components/ControlRow.tsx`). Waits until one of
- * the two is drawn, so the bar has read its own width.
+ * menu in **More** below 640 px of its width (R8, `components/ControlRow.tsx`).
  */
 export async function displayTrigger(
   page: Page,
@@ -64,18 +73,11 @@ export async function displayTrigger(
   within: Locator | Page = page
 ): Promise<Locator> {
   const bar = controlRow(within);
-  const button = control(bar, CONTROL.displayMenu).and(
-    page.getByRole("button", { exact: true, name: label })
+  return buttonOrMoreItem(
+    bar,
+    control(bar, CONTROL.displayMenu).and(page.getByRole("button", { exact: true, name: label })),
+    page.getByRole("menu", { name: "More" }).getByRole("menuitem", { exact: true, name: label })
   );
-  const more = control(bar, CONTROL.moreMenu);
-  await expect(button.or(more).first()).toBeVisible();
-  // The wait above saw the button or More, and the bar takes its layout from its own width
-  // before it first paints, so whether the button is drawn is settled by the time either shows.
-  if ((await button.count()) > 0) return button;
-  if ((await expandedState("the bar's More", more)) === "shut") await more.click();
-  return page
-    .getByRole("menu", { name: "More" })
-    .getByRole("menuitem", { exact: true, name: label });
 }
 
 /** Shuts the bar's **More** inside `within` where it stands open, as a reader does by pressing
@@ -99,16 +101,41 @@ export async function shutMore(within: Locator | Page): Promise<void> {
 }
 
 /**
- * The page's display menu, opened unless it is open already: the panel is the `dialog` named
- * after the trigger, and `label` is what that trigger reads (`View` on every page that draws
- * one today), in the bar's line or among **More**'s items (`displayTrigger`).
+ * The display menu of the bar inside `within` - the page, or the Inbox drawer - opened unless it
+ * is open already: the panel is the `dialog` named after the trigger, and `label` is what that
+ * trigger reads (`View` on every page that draws one today), in the bar's line or among
+ * **More**'s items (`displayTrigger`).
  */
-export async function openDisplayMenu(page: Page, label = "View"): Promise<Locator> {
+export async function openDisplayMenu(
+  page: Page,
+  label = "View",
+  within: Locator | Page = page
+): Promise<Locator> {
   const menu = page.getByRole("dialog", { name: label });
-  const trigger = await displayTrigger(page, label);
+  const trigger = await displayTrigger(page, label, within);
   if ((await expandedState(`the ${label} menu`, trigger)) === "shut") await trigger.click();
   await expect(menu).toHaveCount(1);
   return menu;
+}
+
+/** Shuts the **View** menu of the bar inside `within` - the page, or the Inbox drawer - by
+ *  pressing its trigger again, in the bar's line or among **More**'s items, and then **More**,
+ *  which stays open under a menu opened from it. */
+export async function shutDisplayMenu(page: Page, within: Locator | Page = page): Promise<void> {
+  const menu = page.getByRole("dialog", { name: "View" });
+  const trigger = control(controlRow(within), CONTROL.displayMenu).or(
+    page.getByRole("menu", { name: "More" }).getByRole("menuitem", { exact: true, name: "View" })
+  );
+  // The menu stands open on its trigger, which is pressed again to shut it, unless the trigger
+  // has left the page and taken the menu with it: so the menu's state is read once the page
+  // settles on one of the two, rather than the trigger's count at one instant.
+  const after = await settledState("the View menu", [
+    ["open", trigger.and(page.locator('[aria-expanded="true"]'))],
+    ["shut", page.locator("body").filter({ hasNot: menu })],
+  ]);
+  if (after === "open") await trigger.click();
+  await expect(menu).toHaveCount(0);
+  await shutMore(within);
 }
 
 /** One choice of one display-menu section, as the radio that carries it: the sections share
@@ -138,21 +165,10 @@ export async function chooseShow(
   label: string,
   within: Locator | Page = page
 ): Promise<void> {
-  const menu = page.getByRole("dialog", { name: "View" });
-  const trigger = await displayTrigger(page, "View", within);
-  if ((await expandedState("the View menu", trigger)) === "shut") await trigger.click();
-  await expect(menu).toHaveCount(1);
+  const menu = await openDisplayMenu(page, "View", within);
   await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
-  // The pick leaves the menu open on its trigger, which is pressed again to shut it, unless the
-  // trigger has left the page and taken the menu with it: so the menu's state is read once the
-  // page settles on one of the two, rather than the trigger's count at one instant.
-  const after = await settledState("the View menu", [
-    ["open", trigger.and(page.locator('[aria-expanded="true"]'))],
-    ["shut", page.locator("body").filter({ hasNot: menu })],
-  ]);
-  if (after === "open") await trigger.click();
-  await expect(menu).toHaveCount(0);
-  await shutMore(within);
+  // The pick leaves the menu open on its trigger, which is pressed again to shut it.
+  await shutDisplayMenu(page, within);
 }
 
 /** A Board strip picker or the List table's header filter, by the name it carries. */

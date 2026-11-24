@@ -434,7 +434,7 @@ function Facet({
  * The control bar the page's controls sit in (`ControlRow`), handed each control as its props:
  * the search box, **Filter** over the facets, and a chip for every value that is on, which the
  * trigger's panel lists at its top too, so every facet can be set and taken off from this bar in
- * either view. The page has no **Clear filters**, as it had none before the bar.
+ * either view. The page has no **Clear filters**: each chip takes its own value off.
  *
  * The panel holds the four facets that are no column of the list. While the list is drawn
  * (`columnsDrawn`, the List view) the other five sit on the headers of the columns they narrow,

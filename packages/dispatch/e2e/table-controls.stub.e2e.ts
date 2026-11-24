@@ -15,7 +15,12 @@
  */
 import { expect, type Locator } from "@playwright/test";
 
-import { CONTROL, type ControlName, type ControlSize } from "../web/src/components/control-names";
+import {
+  CONTROL,
+  type ControlName,
+  type ControlSize,
+  NARROW_BELOW,
+} from "../web/src/components/control-names";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { stubbed } from "./stub/stub-test";
 import {
@@ -25,24 +30,28 @@ import {
   expectNoGrowth,
   expectOneBarOn,
   gapBoxes,
+  HEADER_LINE,
   heightOf,
   INBOX_PICKS,
+  INBOXES,
   isPhoneProject,
-  NARROW_BELOW,
+  narrowedAddress,
   openSurface,
+  type PlaceholderRoom,
   pickInboxField,
+  placeholderRoom,
+  REMOVE_CHIP,
   resetScroll,
   STUBBABLE_SURFACES,
   SURFACE_CONTROLS,
   SURFACE_SEARCH_TERM,
   type Surface,
-  type SurfaceName,
   seedSurfaces,
   straysBetween,
   topOf,
   widthsOf,
 } from "./table-controls";
-import { assertPageFits } from "./unclipped";
+import { assertNoSidewaysScroll, assertPageFits } from "./unclipped";
 
 /** One project of six issues, each holding an open ask and a label, with three artifacts on the
  *  first, and one priority with one issue in flight under it: every surface below has a list
@@ -54,14 +63,6 @@ const test = stubbed(seedSurfaces);
  *  not touch, so it is the share the pane has at the commit before it. */
 const PANE_SHARE = 0.6;
 
-/** The Inbox's header line, on the page and in the drawer: the title, the search box and the link
- *  or the close button (`web/src/features/inbox/Inbox.tsx`). */
-const HEADER_LINE = "[data-inbox-header-line]";
-
-/** Six narrowings, as the Inbox's address writes them, under which the seed keeps every row: each
- *  of its asks is a question on CORE, so the list keeps them all under every kind and CORE. */
-const SIX_INBOX_NARROWINGS = "/?type=question,decision,approval,agent,reply&project=CORE";
-
 /** One part of a header line as the row reads it: what it is, and its box. */
 interface HeaderLinePart {
   readonly what: string;
@@ -71,19 +72,18 @@ interface HeaderLinePart {
   readonly top: number;
 }
 
-/** The header line `root` draws, read in one pass: its parts in their order, its own height, and
- *  its search box's content width beside the width of the box's placeholder in the box's own
- *  font. A heading is named by its tag, so the page's `h1` reads as one. */
-async function headerLineOf(root: Locator): Promise<{
-  readonly height: number;
-  readonly parts: readonly HeaderLinePart[];
-  readonly placeholder: string;
-  readonly placeholderWidth: number;
-  readonly room: number;
-}> {
+/** The header line `root` draws, read: its parts in their order and its own height, in one pass,
+ *  and its search box's room for its placeholder (`placeholderRoom`). A heading is named by its
+ *  tag, so the page's `h1` reads as one. */
+async function headerLineOf(root: Locator): Promise<
+  PlaceholderRoom & {
+    readonly height: number;
+    readonly parts: readonly HeaderLinePart[];
+  }
+> {
   const line = root.locator(HEADER_LINE);
   await expect(line, "the surface draws no one header line").toHaveCount(1);
-  return line.evaluate((node) => {
+  const drawn = await line.evaluate((node) => {
     const words = (element: Element) => (element.textContent ?? "").trim();
     const parts = [...node.children].map((child) => {
       const box = child.getBoundingClientRect();
@@ -99,43 +99,9 @@ async function headerLineOf(root: Locator): Promise<{
             : `${tag === "a" ? "link" : tag} "${words(child)}"`;
       return { height: box.height, left: box.left, right: box.right, top: box.top, what };
     });
-    const field = node.querySelector<HTMLInputElement>('[data-control="search-box"]');
-    if (field === null) {
-      return {
-        height: node.getBoundingClientRect().height,
-        parts,
-        placeholder: "",
-        placeholderWidth: 0,
-        room: 0,
-      };
-    }
-    const style = getComputedStyle(field);
-    const probe = document.createElement("span");
-    probe.textContent = field.placeholder;
-    probe.style.cssText = "position: absolute; visibility: hidden; white-space: pre";
-    for (const property of [
-      "fontFamily",
-      "fontSize",
-      "fontStyle",
-      "fontWeight",
-      "letterSpacing",
-    ] as const) {
-      probe.style[property] = style[property];
-    }
-    document.body.append(probe);
-    const placeholderWidth = probe.getBoundingClientRect().width;
-    probe.remove();
-    return {
-      height: node.getBoundingClientRect().height,
-      parts,
-      placeholder: field.placeholder,
-      placeholderWidth,
-      room:
-        field.clientWidth -
-        Number.parseFloat(style.paddingLeft) -
-        Number.parseFloat(style.paddingRight),
-    };
+    return { height: node.getBoundingClientRect().height, parts };
   });
+  return { ...drawn, ...(await placeholderRoom(line)) };
 }
 
 /** `k-one-row`'s reading of a header line at `where`: the parts `expected` in that order from its
@@ -193,7 +159,7 @@ const DRAWER_HEADER_LINE = ['h2 "Inbox"', "search box", 'button "Close"'] as con
  *  `web/src/styles.css` stops raising every button to 44 px (`@media (max-width: 1279px)`): the
  *  two recipes of `controlPadding` in `web/src/components/control-names.ts`, whose `min-h-11` is
  *  44 px and whose compact `md:min-h-8` is 32 px, at Tailwind's 4 px a step. A column filter's
- *  funnel takes the same two (`FILTER_TARGET`, `web/src/components/ColumnFilter.tsx`). */
+ *  funnel takes the same two (`glyphTarget`, in the same file). */
 const CONTROL_HEIGHT: Record<ControlSize, number> = { comfortable: 44, compact: 32 };
 
 /** The padding of the selection bar's own box at each size - top, right, bottom and left - as
@@ -230,7 +196,7 @@ test("each page draws one row of controls, and nothing else between its title an
       // and the header line and the control row are the two places between the title and the
       // first row that may draw a search box, a panel trigger or a chip. So there the line's box
       // is the page's search box, and the strays are read from under the line.
-      const headed = name === "Inbox" || name === "Inbox drawer";
+      const headed = INBOXES.includes(name);
       const line = surface.root.locator(HEADER_LINE);
       if (headed) {
         await expect(line, `${where}: not exactly one header line`).toHaveCount(1);
@@ -351,7 +317,7 @@ test("each page draws every shared control its design gives it, and no other @pr
     // also opens over the page, so there the chip is read in the panel.
     const width = await surface.row.evaluate((node) => node.getBoundingClientRect().width);
     const notHere = width < NARROW_BELOW ? CONTROL.barAction : CONTROL.moreMenu;
-    const viewInMore = (name === "Inbox" || name === "Inbox drawer") && width < NARROW_BELOW;
+    const viewInMore = INBOXES.includes(name) && width < NARROW_BELOW;
     const chipsInPanel =
       width < NARROW_BELOW && SURFACE_CONTROLS[name].includes(CONTROL.panelTrigger);
     const expected = [...SURFACE_CONTROLS[name]]
@@ -399,10 +365,10 @@ test("each page draws every shared control its design gives it, and no other @pr
   }
 });
 
-// R8 draws **Filter** in the bar's own look (`BarLook`), so the one trigger is read across the
-// two pages already on the bar's slots, the Board and the List, by everything their two sizes
-// share - its fill, its border, its type and its corners - and the Inbox, which joins the slots
-// last, still shares its search box and its chip with the Board.
+// R8 draws **Filter** in the bar's own look (`BarLook`), so the one trigger is read across two
+// pages on the bar's slots, the Board and the List, by everything their two sizes share - its
+// fill, its border, its type and its corners - and the Inbox, on the slots too, shares its search
+// box and its chip with the Board.
 test("one search box and chip across the Inbox and the Board, one bar trigger across the Board and the List, and the List's compact row behaving alike @pr", async ({
   page,
   scene,
@@ -410,7 +376,14 @@ test("one search box and chip across the Inbox and the Board, one bar trigger ac
   const drawnStyle = async (scope: Locator, which: ControlName) =>
     control(scope, which)
       .first()
-      .evaluate((node) => {
+      .evaluate(async (node) => {
+        // A narrowing put on tints the trigger through a CSS transition, so the style is read
+        // once every transition of the control has ended, and never a colour between two.
+        const running = () =>
+          node.getAnimations().filter((animation) => animation.playState === "running");
+        for (let now = running(); now.length > 0; now = running()) {
+          await Promise.allSettled(now.map((animation) => animation.finished));
+        }
         const style = getComputedStyle(node);
         return {
           background: style.backgroundColor,
@@ -462,7 +435,7 @@ test("one search box and chip across the Inbox and the Board, one bar trigger ac
   const chip = control(row, CONTROL.chip).first();
   await expect(chip, "the List's chip is not named as the Board's is").toHaveAttribute(
     "aria-label",
-    /^Remove .+ filter$/
+    REMOVE_CHIP
   );
   // And it behaves as the Board's does: the press takes that narrowing off and the chip goes.
   const chips = await control(row, CONTROL.chip).count();
@@ -597,7 +570,7 @@ test("k-one-row: the Inbox's header line is one line, its search box after the h
     const surface = await openSurface(page, "Inbox", scene, { phone });
     const where = `the Inbox at ${size.width}x${size.height}`;
     await expectOneHeaderLine(surface.root, `${where}, no narrowing on`, PAGE_HEADER_LINE);
-    await page.goto(SIX_INBOX_NARROWINGS);
+    await page.goto(narrowedAddress("Inbox", scene, 6));
     await expect(surface.firstRow).toBeVisible();
     await expectOneHeaderLine(surface.root, `${where}, six narrowings on`, PAGE_HEADER_LINE);
   }
@@ -610,19 +583,8 @@ test("k-one-row: the Inbox's header line is one line, its search box after the h
  * edge there, so the drawer scrolled sideways (builds Job infra-3135-probe4-k88vm at 968e2b90).
  */
 async function expectDrawerNotSideways(drawer: Locator, where: string): Promise<void> {
-  for (const [box, name] of [
-    [drawer, "the drawer"],
-    [controlRow(drawer), "the drawer's control bar"],
-  ] as const) {
-    const widths = await box.evaluate((node) => ({
-      client: node.clientWidth,
-      scroll: node.scrollWidth,
-    }));
-    expect(
-      widths.scroll,
-      `${where}: ${name} scrolls sideways, ${widths.scroll}px wide in ${widths.client}px`
-    ).toBeLessThanOrEqual(widths.client);
-  }
+  await assertNoSidewaysScroll(drawer, `${where}: the drawer`);
+  await assertNoSidewaysScroll(controlRow(drawer), `${where}: the drawer's control bar`);
 }
 
 // SLOW(>=2s): the drawer opened, and six narrowings picked in it, at each of this project's widths.
@@ -649,12 +611,6 @@ test("k-one-row: the drawer's header line is one line, its search box after its 
   }
 });
 
-/** The stubbable pages on the control bar's slots, which R8's own rows below read page by page
- *  (`expectOneBarOn`, `expectBarDesign`, `expectNoGrowth` in `table-controls.ts`): every one of
- *  them. The Agents page and the Delivery page are on the slots too, and read in
- *  `table-controls.e2e.ts`. */
-const BAR_PAGES: readonly SurfaceName[] = STUBBABLE_SURFACES;
-
 // SLOW(>=2s): eight pages at each of this project's widths, each read with no narrowing and with six.
 test("k-one-row: each page on the bar's slots draws one bar of one line above its list or table, its search box first or in the Inbox's header line, its placeholder whole @phone @pr", async ({
   page,
@@ -664,7 +620,7 @@ test("k-one-row: each page on the bar's slots draws one bar of one line above it
   const phone = isPhoneProject(testInfo);
   for (const size of widthsOf(page, testInfo)) {
     if (!phone) await page.setViewportSize(size);
-    for (const name of BAR_PAGES) await expectOneBarOn(page, name, scene, size, phone);
+    for (const name of STUBBABLE_SURFACES) await expectOneBarOn(page, name, scene, size, phone);
   }
 });
 
@@ -679,7 +635,7 @@ test("k-bar: each page on the bar's slots draws its design's controls and no oth
     ? (page.viewportSize() ?? { height: 664, width: 390 })
     : { height: 800, width: 1280 };
   if (!phone) await page.setViewportSize(size);
-  for (const name of BAR_PAGES) await expectBarDesign(page, name, scene, size, phone);
+  for (const name of STUBBABLE_SURFACES) await expectBarDesign(page, name, scene, size, phone);
 });
 
 // SLOW(>=2s): eight pages at each of this project's widths, each driven through four acts.
@@ -691,6 +647,6 @@ test("k-no-growth: no narrowing, panel, display menu or selection moves the firs
   const phone = isPhoneProject(testInfo);
   for (const size of widthsOf(page, testInfo)) {
     if (!phone) await page.setViewportSize(size);
-    for (const name of BAR_PAGES) await expectNoGrowth(page, name, scene, size, phone);
+    for (const name of STUBBABLE_SURFACES) await expectNoGrowth(page, name, scene, size, phone);
   }
 });

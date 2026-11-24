@@ -189,6 +189,7 @@ test("ControlRow: an item of More - Mark all read, kept there, and an action the
       name,
     });
     await afterFrameAndTasks();
+    // The arm is read in the task the click is made in, which user-event's own click waits past.
     expectArms(more, () => fireEvent.click(item));
     document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
   }
@@ -888,7 +889,6 @@ for (const way of ["a pointer's pick", "Enter in its text box"]) {
     const view = screen.getByRole("button", { name: /^View/ });
     await waitFor(() => expect(view).toHaveFocus());
     expect(screen.getByRole("link", { name: "Inbox" })).not.toHaveFocus();
-    expect(screen.getByRole("searchbox", { name: "Search issues" })).not.toHaveFocus();
     open.resolve([issue("CORE-1")]);
     await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
     expect(view).toHaveFocus();

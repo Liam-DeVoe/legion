@@ -53,7 +53,7 @@ test("each narrowing that is on is one chip named Remove <its text> filter, whos
 });
 
 test("no narrowing on is no chips at all, which the row reads as nothing to draw", () => {
-  expect(filterChips([])).toBeUndefined();
+  expect(filterChips([])).toEqual([]);
 });
 
 // The List's `only=` chip says more than it is named for: its name is the narrowing, its body

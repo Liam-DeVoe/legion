@@ -2,7 +2,7 @@ import { type ReactNode, useRef } from "react";
 
 import { borderDefault, card, surfaceMutedBg, textSecondaryOnCanvas } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
-import { type BarLook, badged, barButton } from "./bar-look";
+import { type BarLook, type BarTone, badged, barButton } from "./bar-look";
 import { CONTROL, type ControlName, type ControlSize, controlPadding } from "./control-names";
 import { ARM_ON_PRESS, useFocusPlace } from "./focus-place";
 import { heldPress } from "./held-press";
@@ -31,6 +31,9 @@ export interface PanelTriggerProps {
   /** Said after the label as `Columns · 2`, the way `MultiSelect`'s trigger counts a selection.
    *  In the control bar's look (`look`) it is said only while above zero, on a tint. */
   readonly count?: number;
+  /** The id of the line on screen that says why the trigger is held (`ariaDisabled`), named as
+   *  its description: a refused action of the bar that opens a panel (`PanelAction`). */
+  readonly describedBy?: string;
   /** Whether opening moves the focus into the panel, as every press that opens one does. A page
    *  that opens its panel by itself, from a choice it stored, passes false for that open, so the
    *  focus starts where the page starts (the Board). Read as the panel opens. */
@@ -58,6 +61,9 @@ export interface PanelTriggerProps {
   /** The accessible name of both the trigger and the panel: a trigger whose label is a glyph is
    *  nameless without it. */
   readonly title?: string;
+  /** The trigger's tooltip where it is not its name: why a refused action of the bar that opens
+   *  a panel is held (`PanelAction`). */
+  readonly tooltip?: string;
   /** For a trigger with a look of its own, such as the table header's funnel. */
   readonly triggerClassName?: string;
 }
@@ -83,6 +89,7 @@ export function PanelTrigger({
   children,
   control = CONTROL.panelTrigger,
   count,
+  describedBy,
   focusOnOpen,
   label,
   look,
@@ -92,6 +99,7 @@ export function PanelTrigger({
   size = "comfortable",
   stacked = false,
   title,
+  tooltip,
   triggerClassName,
 }: PanelTriggerProps): ReactNode {
   const trigger = useRef<HTMLButtonElement>(null);
@@ -141,18 +149,20 @@ export function PanelTrigger({
       </>
     );
   }
+  const tone: BarTone = look?.filled === true ? "filled" : counted ? "tint" : "quiet";
   const className =
     look === undefined
       ? (triggerClassName ?? ownTrigger)
       : barButton(
           size,
-          look.filled === true ? "filled" : counted ? "tint" : "quiet",
+          tone,
           glyph !== undefined,
           look.joined === true ? "rounded-l-lg" : "rounded-lg"
         );
   return (
     <>
       <button
+        aria-describedby={describedBy}
         aria-disabled={press["aria-disabled"]}
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -162,7 +172,7 @@ export function PanelTrigger({
         onClick={open ? () => onOpenChange(false) : press.onClick}
         ref={trigger}
         role={role}
-        title={name}
+        title={tooltip ?? name}
         type="button"
       >
         {face}

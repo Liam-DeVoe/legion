@@ -45,6 +45,10 @@ export interface SearchBoxProps {
   readonly value: string;
 }
 
+/** The room a box with a `hint` leaves at its end for the hint, so no typed word runs under it;
+ *  the control bar's placeholder sizer leaves it too (`ControlRow`). */
+export const SEARCH_HINT_ROOM = "pr-8";
+
 /**
  * The one search box: every page that narrows a list by typed words draws this, so the field a
  * reader meets on the Inbox is the field they meet on a project (`MultiSelect`'s own option
@@ -80,13 +84,13 @@ export function SearchBox({
           role: "combobox" as const,
         };
   // With a hint, the box fills a wrapper that takes the caller's layout, and leaves room at its
-  // end for the hint, so no typed word runs under it.
+  // end for the hint.
   const boxClass =
     hint === undefined
       ? className === undefined
         ? own
         : `${own} ${className}`
-      : `${own} w-full pr-8`;
+      : `${own} w-full ${SEARCH_HINT_ROOM}`;
   const box = (
     <input
       aria-keyshortcuts={hint}

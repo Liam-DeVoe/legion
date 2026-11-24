@@ -386,9 +386,6 @@ function useSearchNarrowing({
   };
 
   return {
-    // The bar's Filter counts what is on, as every bar's trigger does: on a tint while any is,
-    // and below 640 px of the bar's width as the badge that stands for the chips (R8).
-    count: searchFilterChips(filters).length,
     label: "Filter",
     onOpenChange: (next) => {
       // Shutting the panel is leaving the author box as much as moving off it is: a press
@@ -886,7 +883,10 @@ function PaletteDialog({
                 ref: inputRef,
                 value: query,
               }}
-              trigger={narrowing}
+              // The bar's Filter counts what is on, as every bar's trigger does: on a tint while
+              // any is, and below 640 px of the bar's width as the badge that stands for the
+              // chips (R8).
+              trigger={{ ...narrowing, count: narrowings.length }}
             />
           </div>
           {/* What the words themselves can do, between the controls and the hits: the three

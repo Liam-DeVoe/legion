@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { controlBar } from "../../__tests__/chips-line";
 import { countEngineParses, displayTree } from "../../__tests__/display-trees";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
@@ -476,10 +477,10 @@ test("a person who may write adds a priority from the bar's New priority, whose 
   const user = userEvent.setup();
   const { create } = page(FIFTEEN);
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  const bar = screen
-    .getByRole("region", { name: "Priorities" })
-    .querySelector<HTMLElement>('[data-control="control-row"]');
-  if (bar === null) throw new Error("the priorities table draws no control bar");
+  const bar = controlBar(
+    "the priorities table",
+    screen.getByRole("region", { name: "Priorities" })
+  );
   expect(within(bar).getByRole("searchbox", { name: "Search priorities" })).toHaveAttribute(
     "placeholder",
     "Search priorities"

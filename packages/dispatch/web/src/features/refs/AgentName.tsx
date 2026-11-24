@@ -206,13 +206,6 @@ function AgentStateMark({
  *  Inbox's compose dialog also draws beside such a recipient before Send. */
 export const UNRESPONSIVE_KEEPS_MESSAGES = "messages sent to it are stored until it answers";
 
-/** The address of a session's live conversation: where every link to it goes, the one this
- *  module draws beside a name and the one a page draws beside a control of its own, as the
- *  Inbox's agent chip does (`FilterChip.link`). */
-export function agentLivePath(sessionId: string): string {
-  return generatePath(AGENT_LIVE_PATH, { sessionId: encodeURIComponent(sessionId) });
-}
-
 /**
  * The visible mark beside an unresponsive session on a surface that lists sessions (the Agents
  * page's row, its live conversation's header). The state mark alone is a ring a reader must
@@ -320,7 +313,7 @@ function SessionAgentName({
   const shownName = fallbackMark === undefined ? name : <span {...fallbackMark}>{name}</span>;
   const state = registry.state(sessionId);
   const linkClass = tooltips ? LINK_CLASS : PAGE_LINK_CLASS;
-  const to = agentLivePath(sessionId);
+  const to = generatePath(AGENT_LIVE_PATH, { sessionId: encodeURIComponent(sessionId) });
 
   let named: ReactNode;
   let liveLink: ReactNode = null;

@@ -15,6 +15,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { controlBar } from "../../__tests__/chips-line";
 import { installCountingStorage } from "../../__tests__/counting-storage";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
@@ -1107,9 +1108,7 @@ async function openFilters(): Promise<void> {
 /** The Board's control bar itself: a chip is drawn there and, while the filter panel is open,
  *  again at the panel's top, which is portalled outside the bar. */
 function bar(): HTMLElement {
-  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
-  if (found === null) throw new Error("the Board draws no control bar");
-  return found;
+  return controlBar("the Board");
 }
 
 /** Opens the `Labels` picker inside the filter panel if it is closed and toggles one option. */

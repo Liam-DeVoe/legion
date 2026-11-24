@@ -1,7 +1,7 @@
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { answerDraft } from "./answer-drafts";
-import { type InboxRoute, useInboxRoute } from "./inbox-route";
+import type { InboxRoute } from "./inbox-route";
 import { ROW_ATTRIBUTE } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
 import type { InboxSection } from "./sections";
@@ -29,6 +29,9 @@ export interface PaneSelectionOptions {
   candidates: readonly InboxListRow[];
   /** The address this list is on. The selection is written into its `?item=`. */
   filter: InboxRoute;
+  /** Writes the address this list is on (`useInboxRoute`'s writer, which the Inbox holds): the
+   *  selection goes into its `?item=`. */
+  goToRoute: (next: InboxRoute) => void;
   /** The list's root, where the selected row's own element is looked up. */
   listRef: RefObject<HTMLElement | null>;
   /** Opens the folded band, for an `?item=` naming a row the reader deferred. */
@@ -81,13 +84,13 @@ export function usePaneSelection({
   bulkSnoozing,
   candidates,
   filter,
+  goToRoute,
   listRef,
   openFoldedBand,
   paneShown,
   presented,
   snoozing,
 }: PaneSelectionOptions): PaneSelection {
-  const [, goToRoute] = useInboxRoute();
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const selectedNow = useRef<string | undefined>(undefined);
   selectedNow.current = selectedId;

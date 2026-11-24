@@ -31,7 +31,7 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
   - `components/SearchBox.tsx`: the search box of a list narrowed by typed words, with the key that focuses it as its `hint`.
 
-  - `components/SegmentedControl.tsx`: the switch at the start of the bar, two or more parts of one list, one of them chosen (`aria-pressed`).
+  - `components/SegmentedControl.tsx`: the switch after the bar's search box, two or more parts of one list, one of them chosen (`aria-pressed`).
 
   - `components/PanelTrigger.tsx`: the button that opens a menu, a filter panel or a column filter; the bar draws it in its quiet look (`BarLook`, `components/bar-look.tsx`).
 

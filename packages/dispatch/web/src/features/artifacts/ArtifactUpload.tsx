@@ -660,33 +660,26 @@ export function useArtifactUpload(
   };
 }
 
-/** The upload control of a strip: its button, and, while a file is staged, that file's name, its
- *  summary and the two presses that store or discard it (`ArtifactUploadStaging`).
- *  `refusalShownBy` is the id of a line the host already shows the refusal on; without it the row
- *  shows its own. */
-export function ArtifactUploadRow({
-  refusalShownBy,
-  upload,
-}: {
-  readonly refusalShownBy?: string;
-  readonly upload: ArtifactUpload;
-}): ReactNode {
+/** The upload control of a strip: its button, with its refusal on a line of its own where it
+ *  carries one, and, while a file is staged, that file's name, its summary and the two presses
+ *  that store or discard it (`ArtifactUploadStaging`). */
+export function ArtifactUploadRow({ upload }: { readonly upload: ArtifactUpload }): ReactNode {
   const ownRefusalId = useId();
   if (upload.pendingFile !== null) return <ArtifactUploadStaging upload={upload} />;
   return (
-    // The host owns the strip this sits in, so the row carries no divider of its own: idle it
-    // is one button beside the filter, staging a file it takes the line.
+    // The host owns the box this sits in - a document's repair upload - so the row carries no
+    // divider of its own: idle it is one button, staging a file it takes the line.
     <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-2">
       <RefusableButton
         className="min-h-11 shrink-0"
         look="secondary-compact"
         onPress={upload.openPicker}
         refusal={upload.refusal}
-        refusalShownBy={upload.refusal === null ? undefined : (refusalShownBy ?? ownRefusalId)}
+        refusalShownBy={upload.refusal === null ? undefined : ownRefusalId}
       >
         Upload
       </RefusableButton>
-      {upload.refusal === null || refusalShownBy !== undefined ? null : (
+      {upload.refusal === null ? null : (
         <span className={`text-xs ${textMutedOnSurface}`} id={ownRefusalId}>
           {upload.refusal}
         </span>

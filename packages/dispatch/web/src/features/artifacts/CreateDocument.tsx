@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import type { BarActionProps, BarActionRefusal } from "../../components/BarAction";
+import { textGlyph } from "../../components/bar-look";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
@@ -187,11 +188,7 @@ function useDocumentCreate({
 }
 
 /** The glyph **New document** draws before its words where the control bar draws it. */
-const NEW_DOCUMENT_GLYPH = (
-  <span aria-hidden="true" className="text-base leading-none">
-    +
-  </span>
-);
+const NEW_DOCUMENT_GLYPH = textGlyph("+");
 
 /**
  * **New document** in an issue's Artifacts tab's control bar: the action the bar draws (a quiet
@@ -233,29 +230,18 @@ export function useNewDocument({
 
 /**
  * The control that makes a document on a project's document list (`useDocumentCreate`): a
- * `New document` button, which the form takes the place of while it stands open. With a
- * `refusal` the button says why nothing can be made: on the line the host already shows it on
- * (`refusalShownBy`), or on a hidden line of the button's own.
+ * `New document` button, which the form takes the place of while it stands open.
  */
 export function CreateDocument({
   documents,
   owner,
-  refusal = null,
-  refusalShownBy,
 }: {
   readonly documents: readonly Artifact[];
   readonly owner: DocumentOwner;
-  readonly refusal?: string | null;
-  readonly refusalShownBy?: string;
 }): ReactNode {
-  const create = useDocumentCreate({ documents, owner, refusal, refusalShownBy });
+  const create = useDocumentCreate({ documents, owner, refusal: null, refusalShownBy: undefined });
   return create.form(
-    <RefusableButton
-      look="secondary-compact"
-      onPress={create.start}
-      refusal={refusal}
-      refusalShownBy={refusalShownBy}
-    >
+    <RefusableButton look="secondary-compact" onPress={create.start} refusal={null}>
       New document
     </RefusableButton>
   );

@@ -1,7 +1,5 @@
 import {
-  Children,
   type FocusEvent,
-  isValidElement,
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
@@ -18,19 +16,21 @@ import { BarAction, type BarActionProps, type ViewPanelProps } from "./BarAction
 import { barButton, FUNNEL_GLYPH, INFO_GLYPH, SLIDERS_GLYPH } from "./bar-look";
 import { Chip } from "./Chip";
 import { ColumnsMenu, type ColumnsMenuProps } from "./ColumnsMenu";
-import { CONTROL, type ControlSize, controlIn, controlPadding } from "./control-names";
+import {
+  CONTROL,
+  type ControlSize,
+  controlIn,
+  controlSidePadding,
+  NARROW_BELOW,
+} from "./control-names";
 import { DisplayMenu, type DisplayMenuProps } from "./DisplayMenu";
 import { type FilterChip, filterChips } from "./filter-chips";
 import { ARM_ON_PRESS, useFocusPlace } from "./focus-place";
 import { MoreMenu } from "./MoreMenu";
 import { PANEL_FRAME, PanelTrigger, type PanelTriggerProps } from "./PanelTrigger";
-import { SearchBox, type SearchBoxProps } from "./SearchBox";
+import { SEARCH_HINT_ROOM, SearchBox, type SearchBoxProps } from "./SearchBox";
 import { SegmentedControl, type SegmentedControlProps } from "./SegmentedControl";
 import { ViewPanel } from "./ViewPanel";
-
-/** The bar's own width under which it takes its narrow layout. One width, so that each width
- *  has one layout a check can read. */
-const NARROW_BELOW_PX = 640;
 
 /** The panel `+N more` opens: a card over the page, as a filter panel is (`PANEL_FRAME`), that
  *  lists the chips the line has no room for one under another, each at its own width. */
@@ -453,16 +453,14 @@ export function ControlRow<TData = unknown>({
   const focusedAction = useRef<Element | null>(null);
 
   const width = useOwnWidth(rowRef);
-  const narrowBar = width > 0 && width < NARROW_BELOW_PX;
+  const narrowBar = width > 0 && width < NARROW_BELOW;
 
   // The chips as `filterChips` draws them, one element each, each keeping its own key, so a chip
   // the line hands to the panel stays the same chip. Below 640 px a trigger whose badge stands
   // for the chips takes them out of the line, and a bar with no trigger keeps every chip behind
   // one `+N more`.
   const all =
-    chips === undefined || (narrowBar && trigger !== undefined)
-      ? []
-      : Children.toArray(filterChips(chips, size)).filter(isValidElement);
+    chips === undefined || (narrowBar && trigger !== undefined) ? [] : filterChips(chips, size);
   const keys = all.map((chip) => String(chip.key));
   const shown = narrowBar ? 0 : layout === null ? all.length : chipsThatFit(keys, layout, !open);
   const inLine = all.slice(0, shown);
@@ -571,28 +569,6 @@ export function ControlRow<TData = unknown>({
       target instanceof Element && target.closest("[data-bar-actions]") !== null ? target : null;
   };
 
-  /** **Clear filters**: a × button beside the trigger, which hands the focus to the trigger once
-   *  its press has committed. */
-  const clearButton = (press: () => void, tinted: boolean, joined: boolean) => (
-    <button
-      aria-label="Clear filters"
-      className={barButton(
-        size,
-        tinted ? "tint" : "quiet",
-        true,
-        joined ? "rounded-r-lg" : "rounded-lg"
-      )}
-      onClick={(event) => {
-        handOff.current = { from: event.currentTarget, index: -1, panelPlace: null };
-        press();
-      }}
-      title="Clear filters"
-      type="button"
-    >
-      <span aria-hidden="true">×</span>
-    </button>
-  );
-
   // The chips, in the bar's empty space: the box takes the room the rest of the line leaves,
   // and gives way rather than push a control after it past the bar's edge.
   const chipsBox = (
@@ -660,19 +636,15 @@ export function ControlRow<TData = unknown>({
 
   // The box's own placeholder, drawn with no height and seen by nobody, is what keeps the slot
   // from narrowing past it: its width in the box's font - `text-sm`, and the 16 px `styles.css`
-  // gives every field below 1280 px - with the box's own side padding (`controlPadding`'s, with
-  // none of its height) and border, and the room a hint takes at the box's end.
-  const searchPadding = controlPadding[size]
-    .split(" ")
-    .filter((name) => name.startsWith("px-"))
-    .join(" ");
+  // gives every field below 1280 px - with the box's own side padding and border, and the room a
+  // hint takes at the box's end.
   const searchSlot =
     search === undefined ? null : (
       <div className="flex flex-1 basis-64 flex-col" data-row-slot="">
         {search.placeholder === undefined ? null : (
           <span
             aria-hidden="true"
-            className={`invisible h-0 border-x text-sm whitespace-pre max-xl:text-base ${searchPadding} ${search.hint === undefined ? "" : "pr-8"} ${borderTransparent}`}
+            className={`invisible h-0 border-x text-sm whitespace-pre max-xl:text-base ${controlSidePadding[size]} ${search.hint === undefined ? "" : SEARCH_HINT_ROOM} ${borderTransparent}`}
           >
             {search.placeholder}
           </span>
@@ -704,7 +676,22 @@ export function ControlRow<TData = unknown>({
             </>
           )}
         </PanelTrigger>
-        {clearShown ? clearButton(clear, tinted, true) : null}
+        {clearShown ? (
+          // **Clear filters**: a × button beside the trigger, which hands the focus to the
+          // trigger once its press has committed.
+          <button
+            aria-label="Clear filters"
+            className={barButton(size, tinted ? "tint" : "quiet", true, "rounded-r-lg")}
+            onClick={(event) => {
+              handOff.current = { from: event.currentTarget, index: -1, panelPlace: null };
+              clear();
+            }}
+            title="Clear filters"
+            type="button"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+        ) : null}
       </div>
     );
   }

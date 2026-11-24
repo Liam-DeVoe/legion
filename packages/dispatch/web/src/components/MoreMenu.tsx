@@ -7,14 +7,13 @@ import {
   surfaceMutedHoverBg,
   textSecondaryOnCanvas,
 } from "../theme/classes";
-import type { BarActionProps } from "./BarAction";
+import { type BarActionProps, PanelAction } from "./BarAction";
 import { DOTS_GLYPH } from "./bar-look";
 import { CONTROL, type ControlSize } from "./control-names";
 import { DisplayMenu, type DisplayMenuProps } from "./DisplayMenu";
 import { armHandOff } from "./focus-place";
 import { heldPress } from "./held-press";
 import { PanelTrigger } from "./PanelTrigger";
-import { ViewPanel } from "./ViewPanel";
 
 /** An item of **More**: a row the menu's width, at the touch target the display menu's choices
  *  keep. A refused item says why under its label. */
@@ -44,49 +43,31 @@ function words({ label, refusal }: BarActionProps): ReactNode {
   );
 }
 
-/** An item with a panel of its own (**Save view** below 640 px of the bar's width): a `menuitem`
- *  that opens its panel over the menu, which stays open under it. */
-function PanelItem({
-  action,
-  panel,
-}: {
-  action: BarActionProps;
-  panel: NonNullable<BarActionProps["panel"]>;
-}): ReactNode {
-  const [open, setOpen] = useState(false);
-  return (
-    <ViewPanel
-      align="right"
-      ariaDisabled={action.refusal !== undefined}
-      label={
-        <>
-          {action.icon}
-          {words(action)}
-        </>
-      }
-      onOpenChange={(next) => {
-        if (next) action.onPress();
-        setOpen(next);
-      }}
-      open={open}
-      role="menuitem"
-      title={action.label}
-      triggerClassName={ITEM}
-    >
-      {panel}
-    </ViewPanel>
-  );
-}
-
 /** One item of **More**. A check item leaves the menu open, so the reader can flip the next; any
  *  other press shuts the menu, putting the reader back on **More**, before it acts, and arms the
  *  hand-off on **More** there (`armHandOff`): the press acts from **More** now, so **More**'s
  *  going - its last action leaving, as **Mark all read** does once nothing is unread - is the
- *  press's doing, and the bar hands the focus on (`ControlRow`). A refused item is held
- *  (`aria-disabled`) and a press on it does nothing. */
+ *  press's doing, and the bar hands the focus on (`ControlRow`). An item with a panel of its own
+ *  (**Save view** below 640 px of the bar's width) opens its panel over the menu, which stays
+ *  open under it. A refused item is held (`aria-disabled`) and a press on it does nothing. */
 function Item({ action, close }: { action: BarActionProps; close: () => void }): ReactNode {
   const { checked, icon, label, onPress, panel, refusal } = action;
-  if (panel !== undefined) return <PanelItem action={action} panel={panel} />;
+  if (panel !== undefined) {
+    return (
+      <PanelAction
+        action={action}
+        panel={panel}
+        role="menuitem"
+        shown={
+          <>
+            {icon}
+            {words(action)}
+          </>
+        }
+        triggerClassName={ITEM}
+      />
+    );
+  }
   const described = {
     "aria-describedby": refusal?.id,
     "aria-label": refusal === undefined ? undefined : label,

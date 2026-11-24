@@ -23,7 +23,7 @@ import { inboxList, inboxPane } from "./inbox-pane";
 import { agentRowId, seedAgentThread } from "./inbox-threads";
 import { keyedWrite } from "./keyed-writes";
 import { sessionIds } from "./session-ids";
-import { INBOX_TOP, resetScroll, topOf } from "./table-controls";
+import { INBOX_TOP, readBar, resetScroll, topOf } from "./table-controls";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -51,17 +51,10 @@ function newMessage(within: Locator | Page): Locator {
 }
 
 /** Holds that **New message** is the last control of the control bar in `within`, as the bar's
- *  main action stands at its end (R6, R8), each control read by the name a screen reader hears. */
+ *  main action stands at its end (R6, R8), each control read by the name a screen reader hears
+ *  (`readBar`). */
 async function expectNewMessageLast(within: Locator | Page): Promise<void> {
-  const names = await controlRow(within).evaluate((bar) =>
-    [...bar.querySelectorAll<HTMLElement>("input, button, a[href]")]
-      .filter((element) => element.checkVisibility())
-      .map((element) => {
-        const spoken = element.cloneNode(true) as HTMLElement;
-        for (const hidden of spoken.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
-        return (element.getAttribute("aria-label") ?? spoken.textContent ?? "").trim();
-      })
-  );
+  const names = (await readBar(controlRow(within))).controls.map((one) => one.name);
   expect(names.at(-1), `the control bar's controls: ${names.join(", ")}`).toBe("New message");
 }
 

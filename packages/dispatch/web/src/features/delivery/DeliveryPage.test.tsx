@@ -5,6 +5,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { controlBar } from "../../__tests__/chips-line";
 import { drawnSize } from "../../__tests__/control-size";
 import { pickIn } from "../../__tests__/issue-picks";
 import { panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
@@ -1176,7 +1177,9 @@ test("a facet's trigger names the facet and what is picked", async () => {
   );
   // A picked value is a chip of the bar, which takes it off again.
   await user.click(
-    within(bar()).getByRole("button", { name: "Remove Component: Public API filter" })
+    within(controlBar("the Delivery page")).getByRole("button", {
+      name: "Remove Component: Public API filter",
+    })
   );
   await waitFor(() => expect(currentSearch().has("component")).toBe(false));
 });
@@ -1344,17 +1347,11 @@ const everyFacet: DeliveryTimelineWithMeasures = {
   prs: [listedPR],
 };
 
-/** The page's control bar itself: a chip is drawn there and, while the Filter panel is open, again
- *  at the panel's top, which is portalled outside the bar. */
-function bar(): HTMLElement {
-  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
-  if (found === null) throw new Error("the Delivery page draws no control bar");
-  return found;
-}
-
-/** The trigger and every chip of the page's control bar, by the name each is read out as. */
+/** The trigger and every chip of the page's control bar, by the name each is read out as: read
+ *  in the bar itself, since a chip is drawn there and, while the Filter panel is open, again at
+ *  the panel's top, which is portalled outside the bar. */
 function rowControls(): string[] {
-  return within(bar())
+  return within(controlBar("the Delivery page"))
     .getAllByRole("button", { name: /^(Filter(?: · \d+)?|Remove .* filter)$/ })
     .map((button) => button.getAttribute("aria-label") ?? button.textContent ?? "");
 }

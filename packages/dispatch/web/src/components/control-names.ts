@@ -20,7 +20,7 @@ export const CONTROL = Object.freeze({
   pager: "pager",
   panelTrigger: "panel-trigger",
   searchBox: "search-box",
-  /** The switch at the start of the control bar (`SegmentedControl`). */
+  /** The switch after the control bar's search box (`SegmentedControl`). */
   segmentedControl: "segmented-control",
   selectionBar: "selection-bar",
   tableShell: "table-shell",
@@ -37,16 +37,35 @@ export function controlIn(root: ParentNode, name: ControlName): HTMLElement | nu
   return root.querySelector<HTMLElement>(`[data-control="${name}"]`);
 }
 
+/** The control bar's own width under which it takes its narrow layout (`ControlRow`). One width,
+ *  so that each width has one layout a check can read; a browser row reads the bar against it. */
+export const NARROW_BELOW = 640;
+
 /** How much room a control takes in its row. `compact` is for a toolbar that holds more controls
  *  than a phone's width fits at the comfortable size: the project List's, the priorities
  *  table's and the Delivery page's. */
 export type ControlSize = "comfortable" | "compact";
+
+/** The side padding of a control's words at each size: `controlPadding`'s, and what a box sized
+ *  to a control's words takes with none of its height (`ControlRow`'s placeholder sizer). */
+export const controlSidePadding: Record<ControlSize, string> = {
+  comfortable: "px-3",
+  compact: "px-2",
+};
 
 /** 44 px: the touch target of the comfortable size. The compact size keeps that target wherever
  *  a finger is the pointer and gives it up only from `md`, where a mouse is. The font is each
  *  control's own: a chip reads at `text-xs` and a search box at `text-sm`, and a size that
  *  carried one would change every chip in the application. */
 export const controlPadding: Record<ControlSize, string> = {
-  comfortable: "min-h-11 px-3 py-2",
-  compact: "min-h-11 px-2 py-1 md:min-h-8",
+  comfortable: `min-h-11 ${controlSidePadding.comfortable} py-2`,
+  compact: `min-h-11 ${controlSidePadding.compact} py-1 md:min-h-8`,
+};
+
+/** A glyph's touch target at each size, a chip's link and a table column's funnel: 44 px each
+ *  way, which the compact size keeps wherever a finger is the pointer and gives up only from
+ *  `md`, where a mouse is, for 32 px. */
+export const glyphTarget: Record<ControlSize, string> = {
+  comfortable: "min-h-11 min-w-11",
+  compact: "min-h-11 min-w-11 md:min-h-8 md:min-w-8",
 };

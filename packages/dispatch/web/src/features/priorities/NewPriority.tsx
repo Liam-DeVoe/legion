@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import type { BarActionProps } from "../../components/BarAction";
+import { textGlyph } from "../../components/bar-look";
 import {
   borderDefault,
   focusVisibleRing,
@@ -10,11 +11,7 @@ import {
 import { usePriorityWrites } from "./priority-writes";
 
 /** **New priority**'s glyph, drawn before its words where the control bar draws it. */
-const PLUS_GLYPH = (
-  <span aria-hidden="true" className="text-base leading-none">
-    +
-  </span>
-);
+const PLUS_GLYPH = textGlyph("+");
 
 /**
  * The one-line form a priority is added with: its title, **Add priority** and **Cancel**. Its

@@ -4,8 +4,6 @@ import type { BarActionProps } from "../../components/BarAction";
 import { ControlRow } from "../../components/ControlRow";
 import { columnFilterChips } from "../../components/filter-chips";
 
-const NO_ACTIONS: readonly BarActionProps[] = [];
-
 /**
  * The control bar a table of these pages draws its controls in (`ControlRow`), handed each
  * control as its props, as the project List hands its own (`features/project/issues-table-page.tsx`):
@@ -19,7 +17,7 @@ const NO_ACTIONS: readonly BarActionProps[] = [];
  * priorities table's **New priority** form - the page draws under the bar, outside it.
  */
 export function TableToolbar<Row>({
-  actions = NO_ACTIONS,
+  actions,
   searchLabel,
   searchPlaceholder,
   table,

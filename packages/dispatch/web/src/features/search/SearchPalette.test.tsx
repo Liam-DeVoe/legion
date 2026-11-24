@@ -13,6 +13,7 @@ import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
+import { controlBar } from "../../__tests__/chips-line";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
@@ -702,8 +703,8 @@ test("keys that end an IME composition in Safari, at keyCode 229, move no highli
 
     await user.keyboard("{Enter}");
     expect(
-      (await screen.findAllByRole("button", { name: "Remove Author alice filter" })).length
-    ).toBeGreaterThan(0);
+      await screen.findAllByRole("button", { name: "Remove Author alice filter" })
+    ).toHaveLength(2);
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1444,9 +1445,7 @@ async function openFilters(user: UserEvent): Promise<void> {
 /** The bar's control bar itself: a chip is drawn there and, while the Filter panel is open, again
  *  at the panel's top, which is portalled outside the bar. */
 function bar(): HTMLElement {
-  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
-  if (found === null) throw new Error("the search bar draws no control bar");
-  return found;
+  return controlBar("the search bar");
 }
 
 // The dialog's own strip of controls is the control row itself, so the bar's box, the panel the

@@ -1583,7 +1583,7 @@ func meInboxOwnerArgs(shape meInboxShape) (issue, artifact string) {
 
 // meInboxDismissedKeys selects the keys of the rows the Dismissed view's page is taken from
 // (page_keys): each of the two arms cut to the page (meInboxDismissedCut) - the Reply rows off
-// user_threads_dismissed, and the Agent roots off their dismissal marks
+// user_threads_dismissed_replied, and the Agent roots off their dismissal marks
 // (myAgentDismissedRootsSelect) - then the two merged and cut again to the same offset + limit + 1,
 // or not at all where ?kind= narrows the entries (meInboxDismissedLimit), in the order the page
 // answers in (meInboxOrder). A key is the row's node, its id as the uuid both indexes hold, the kind

@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { controlBar } from "../../__tests__/chips-line";
 import { displayTree } from "../../__tests__/display-trees";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -297,9 +298,7 @@ test("New document puts the focus in Title, and Cancel gives it back to New docu
 
 /** The tab's control bar itself. */
 function bar(): HTMLElement {
-  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
-  if (found === null) throw new Error("the Artifacts tab draws no control bar");
-  return found;
+  return controlBar("the Artifacts tab");
 }
 
 // R8. The bar holds the search box and the actions New document and Upload, and what each action

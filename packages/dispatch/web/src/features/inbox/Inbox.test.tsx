@@ -4081,13 +4081,12 @@ test("a bulk Snooze deep in a long list hands the focus to the row that moves up
 const LAID_ROW_PX = 100;
 
 /** Lays the Inbox's rows down a page the window scrolls, as happy-dom does not: each row and its
- *  mark `LAID_ROW_PX` tall, stacked in the order the list draws them below `above()`, the height
- *  of what stands above the rows now, less `window.scrollY`. The list's own box (the anchor's
- *  root) starts where the rows do. `window.scrollY` starts at `scrollY`, and `window.scrollBy`
- *  moves it, so a row the list's own scroll keeping (`ViewportAnchor`) holds in place moves the
- *  window. Every other element keeps happy-dom's own box. Answers the function that gives
- *  happy-dom its own boxes and scroll back. */
-function layRowsDown(scrollY: number, above: () => number = () => 0): () => void {
+ *  mark `LAID_ROW_PX` tall, stacked from the page's top in the order the list draws them, less
+ *  `window.scrollY`. The list's own box (the anchor's root) starts where the rows do.
+ *  `window.scrollY` starts at `scrollY`, and `window.scrollBy` moves it, so a row the list's own
+ *  scroll keeping (`ViewportAnchor`) holds in place moves the window. Every other element keeps
+ *  happy-dom's own box. Answers the function that gives happy-dom its own boxes and scroll back. */
+function layRowsDown(scrollY: number): () => void {
   const real = Element.prototype.getBoundingClientRect;
   const scrollYWas = Object.getOwnPropertyDescriptor(window, "scrollY");
   const scrollByWas = window.scrollBy;
@@ -4103,14 +4102,14 @@ function layRowsDown(scrollY: number, above: () => number = () => 0): () => void
   ) {
     if (this.matches('[data-testid="inbox-list"] > *')) {
       const count = document.querySelectorAll("[data-inbox-row]").length;
-      return new DOMRect(0, above() - window.scrollY, 200, count * LAID_ROW_PX);
+      return new DOMRect(0, -window.scrollY, 200, count * LAID_ROW_PX);
     }
     const row = this.matches('[data-inbox-row], input[type="checkbox"]')
       ? this.closest("[data-inbox-row]")
       : null;
     if (row === null) return real.call(this);
     const rows = [...document.querySelectorAll("[data-inbox-row]")];
-    const top = above() + rows.indexOf(row) * LAID_ROW_PX - window.scrollY;
+    const top = rows.indexOf(row) * LAID_ROW_PX - window.scrollY;
     return new DOMRect(0, top, 200, LAID_ROW_PX);
   });
   return () => {

@@ -92,10 +92,23 @@ function Glyph({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
+/** A glyph that is a character of text, such as **New message**'s ✎, at the size the bar's
+ *  drawn glyphs read at, hidden from a screen reader, which hears the action's name. */
+export function textGlyph(char: string): ReactNode {
+  return (
+    <span aria-hidden="true" className="text-base leading-none">
+      {char}
+    </span>
+  );
+}
+
+/** The funnel's outline, which the table header's column filter draws too (`ColumnFilter`). */
+export const FUNNEL_PATH = "M1.5 2h13l-5 6.2V13l-3 1.5V8.2z";
+
 /** **Filter**'s glyph: the funnel the table header's column filter draws. */
 export const FUNNEL_GLYPH = (
   <Glyph>
-    <path d="M1.5 2h13l-5 6.2V13l-3 1.5V8.2z" />
+    <path d={FUNNEL_PATH} />
   </Glyph>
 );
 

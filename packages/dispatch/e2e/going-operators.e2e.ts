@@ -2,6 +2,7 @@ import { createComment, createIssue, createProject, patchIssue } from "./api";
 import { controlRow, openFilterPanel } from "./filters";
 import { usesFakeEmbedder } from "./harness-embedder";
 import { sql } from "./psql";
+import { REMOVE_CHIP } from "./table-controls";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -186,7 +187,7 @@ test("each chip narrows the same list and reads back in the words the person cho
 
     // Each chip says what it narrowed by in the words it was chosen with, and none of them was
     // written into the words the person typed. The panel, still open, lists them all at its top.
-    const chips = narrow.getByRole("button", { name: /^Remove .+ filter$/ });
+    const chips = narrow.getByRole("button", { name: REMOVE_CHIP });
     await expect(chips).toHaveCount(4);
     await expect(chips.filter({ hasText: "Project INFRA" })).toHaveCount(1);
     await expect(chips.filter({ hasText: "Status Todo" })).toHaveCount(1);

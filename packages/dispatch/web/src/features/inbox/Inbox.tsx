@@ -19,6 +19,7 @@ import { Link } from "react-router-dom";
 import { usersQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyRow, OpenAskRow } from "../../api/types";
 import type { BarActionProps } from "../../components/BarAction";
+import { textGlyph } from "../../components/bar-look";
 import { ControlRow } from "../../components/ControlRow";
 import { type ControlSize, controlPadding } from "../../components/control-names";
 import { WINDOW_OVERSCAN } from "../../components/DataTable";
@@ -57,12 +58,13 @@ import { CredentialRequestsSection } from "../credentials/CredentialRequestsSect
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
-import { AgentName, agentLivePath, useAgentText } from "../refs/AgentName";
+import { AgentName, useAgentText } from "../refs/AgentName";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { PlainText } from "../refs/plain-text";
 import {
   ANSWERS_PATH,
+  buildReferencePath,
   INBOX_FILTER_FIELDS,
   INBOX_FILTER_VOCABULARY,
   INBOX_GROUP_BYS,
@@ -175,18 +177,10 @@ type InboxFilterPanel = InboxFilterField | "assignee";
 
 /** **New message**'s glyph, drawn before its words and alone below 640 px of the bar's width,
  *  where its words stay its name. */
-const NEW_MESSAGE_GLYPH = (
-  <span aria-hidden="true" className="text-base leading-none">
-    ✎
-  </span>
-);
+const NEW_MESSAGE_GLYPH = textGlyph("✎");
 
 /** **Mark all read**'s glyph, drawn before its words where **More** lists it. */
-const MARK_ALL_GLYPH = (
-  <span aria-hidden="true" className="text-base leading-none">
-    ✓
-  </span>
-);
+const MARK_ALL_GLYPH = textGlyph("✓");
 
 /** The size the Inbox draws its selection bar at, the comfortable one: the one value the bar
  *  takes (`SelectionBar`'s `size`) and its actions' chrome reads, so the two cannot drift apart. */
@@ -1720,6 +1714,7 @@ function InboxBody({
     bulkSnoozing: bulkSnoozing.size,
     candidates,
     filter,
+    goToRoute,
     listRef,
     openFoldedBand: useCallback(() => openFoldedBand(LATER_GROUP_KEY), [openFoldedBand]),
     paneShown,
@@ -2510,8 +2505,7 @@ function InboxBody({
           label: `Asks from ${agentTitle}`,
           link: {
             label: `Open live conversation with ${agentTitle}`,
-            title: `Open live conversation with ${agentTitle}`,
-            to: agentLivePath(agent),
+            to: buildReferencePath({ kind: "agent-session", session: agent }),
           },
           remove: clearAgent,
         };
@@ -2900,8 +2894,9 @@ function InboxBody({
   // refused or stopped **Mark all read** says. Nothing the reader can press here makes the
   // header taller: the bar is one line that never wraps, its chips in that line, and the filter
   // panel, the display menu and **More** are portalled over the page (`AnchoredPanel`), and the
-  // selection bar is drawn over the list. The drawer is at most 28rem wide, so its bar takes the
-  // narrow layout there by its own width, as a phone's does.
+  // selection bar is drawn over the list. The drawer is at most 28rem wide from 768 px, so in a
+  // window 768 px wide or wider its bar takes the narrow layout by its own width, as a phone's
+  // does.
   const aboveList = (
     <div className="space-y-4">
       <ControlRow

@@ -2,9 +2,20 @@
  * The control bar laid out as a browser would lay it out, which happy-dom does not: a case that
  * reads which chips the line holds and which go behind `+N more`, or which layout the bar's own
  * width gives, lays it out here (`ControlRow.test.tsx`, `focus-hand-off-inventory.test.tsx`).
+ * And the bar itself, as a page's case finds it (`controlBar`).
  */
 
 import { spyOn } from "bun:test";
+
+import { CONTROL, controlIn } from "../components/control-names";
+
+/** The control bar `root` holds (`ControlRow`); a failure names `what`, the page that draws no
+ *  bar there. */
+export function controlBar(what: string, root: ParentNode = document): HTMLElement {
+  const found = controlIn(root, CONTROL.controlRow);
+  if (found === null) throw new Error(`${what} draws no control bar`);
+  return found;
+}
 
 /** Puts Tailwind's rules for the bar in the document for one test. Answers what takes them out. */
 export function withCss(css: string): () => void {
@@ -42,7 +53,7 @@ export function layOutLine(
   const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    if (this.getAttribute("data-control") === "control-row") {
+    if (this.getAttribute("data-control") === CONTROL.controlRow) {
       return new DOMRect(0, 0, bar.width, 44);
     }
     const words = wordsOf(this);
@@ -55,4 +66,9 @@ export function layOutLine(
     boxes.mockRestore();
     removeCss();
   };
+}
+
+/** Lays the bar out `bar.width` px wide, its chips' box with no room (`layOutLine`). */
+export function layOutBar(bar: { readonly width: number }): () => void {
+  return layOutLine({ width: 0 }, {}, bar);
 }

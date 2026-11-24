@@ -8,7 +8,7 @@
 import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
 import type { APIResponse, Locator, Route } from "@playwright/test";
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
-import { CONTROL } from "../web/src/components/control-names";
+import { CONTROL, NARROW_BELOW } from "../web/src/components/control-names";
 import * as theme from "../web/src/theme/classes";
 import {
   agentFilter,
@@ -82,7 +82,7 @@ import {
   openFilterPanel,
   pickFilterOption,
   pickFromList,
-  shutMore,
+  shutDisplayMenu,
 } from "./filters";
 import { focusHolder } from "./focus";
 import { nextFrames, settledScrollTop } from "./frames";
@@ -125,12 +125,13 @@ import {
   expectOneBarOn,
   INBOX_TOP,
   isPhoneProject,
-  NARROW_BELOW,
+  MORE_CHIPS,
   openDisplay,
   openIssuesTab,
   openSurface,
   pickInboxField,
   REAL_STACK_SURFACES,
+  REMOVE_CHIP,
   resetScroll,
   SURFACE_CONTROLS,
   SURFACE_SESSION,
@@ -388,7 +389,7 @@ test("however many narrowings are on, the Inbox's bar stays one line at every wi
       ).toHaveCount(0);
       const panel = await openFilterPanel(page, main);
       await expect(
-        panel.getByRole("button", { name: /^Remove .+ filter$/ }),
+        panel.getByRole("button", { name: REMOVE_CHIP }),
         `${at}: the Filter panel does not list the nine narrowings`
       ).toHaveCount(9);
       await closeControlPanel(main);
@@ -473,7 +474,7 @@ test("however many narrowings are on, the Board's bar stays one line at every wi
     // viewport this turn set at its top.
     const width = await row.evaluate((node) => node.getBoundingClientRect().width);
     let split: string;
-    if (width >= 640) {
+    if (width >= NARROW_BELOW) {
       // One chip per narrowing, so nine chips: the ones the line has room for, each whole, and
       // the rest in the panel its `+N more` opens.
       const chips = await chipsInLineAndPanel(row, 9, at);
@@ -488,7 +489,7 @@ test("however many narrowings are on, the Board's bar stays one line at every wi
       ).toHaveCount(0);
       const panel = await openFilterPanel(page, main);
       await expect(
-        panel.getByRole("button", { name: /^Remove .+ filter$/ }),
+        panel.getByRole("button", { name: REMOVE_CHIP }),
         `${at}: the Filters panel does not list the nine narrowings`
       ).toHaveCount(9);
       await closeControlPanel(main);
@@ -552,7 +553,7 @@ test("a chip of the Inbox's bar that has the keyboard focus is shown whole, with
 }) => {
   await seedLongInbox();
   const row = controlRow(page.getByTestId("main-content"));
-  const more = row.getByRole("button", { name: MORE_FILTERS });
+  const more = row.getByRole("button", { name: MORE_CHIPS });
   /** What the reader sees of the focused control the instant after a key, or null once the focus
    *  is outside `within`: whether it is a chip, and for a chip its name, whether its words are
    *  cut short, and how much of it is shown (`shownOf`). */
@@ -746,10 +747,6 @@ const SIXTEEN_NARROWINGS = `/?${[
   "project=CORE,EDGE,MESH,PIER",
 ].join("&")}`;
 
-/** The name of the row's `+N more`, `<N> more filters`, as a screen reader hears what it opens,
- *  and of the panel it opens. */
-const MORE_FILTERS = /^\d+ more filters?$/;
-
 /** The chips line of the control row `row` once it stands for the `count` narrowings that are on:
  *  the chips it draws, by name and in their order, and how many its `+N more` names (`left`). The
  *  line is read until its chips and that number add up to `count`. A chip the line draws in part
@@ -760,7 +757,7 @@ async function settledChipsLine(
   count: number,
   where: string
 ): Promise<{ left: number; line: string[] }> {
-  const more = row.getByRole("button", { name: MORE_FILTERS });
+  const more = row.getByRole("button", { name: MORE_CHIPS });
   let left = 0;
   await expect
     .poll(
@@ -816,8 +813,8 @@ async function chipsInLineAndPanel(
   let { line } = settled;
   let listed: string[] = [];
   if (settled.left > 0) {
-    await row.getByRole("button", { name: MORE_FILTERS }).click();
-    const panel = page.getByRole("dialog", { name: MORE_FILTERS });
+    await row.getByRole("button", { name: MORE_CHIPS }).click();
+    const panel = page.getByRole("dialog", { name: MORE_CHIPS });
     await expect(panel, `${where}: +N more opened no panel named for it`).toBeVisible();
     // The panel lists the chips the line leaves out in the commit that draws it, which was waited
     // for above, so the line and the panel are read here as one split of the chips.
@@ -841,7 +838,7 @@ test("the Inbox's chips that the line has no room for are listed behind one +N m
 }) => {
   await seedLongInbox();
   const row = controlRow(page.getByTestId("main-content"));
-  const more = row.getByRole("button", { name: MORE_FILTERS });
+  const more = row.getByRole("button", { name: MORE_CHIPS });
   const readings: string[] = [];
   for (const size of READING_WIDTHS) {
     const where = `${size.width}x${size.height}`;
@@ -889,7 +886,7 @@ test("the Inbox's chips that the line has no room for are listed behind one +N m
   await page.goto(SIXTEEN_NARROWINGS);
   await expect(more, "1280x800: sixteen chips draw no +N more").toBeVisible();
   await more.click();
-  const panel = page.getByRole("dialog", { name: MORE_FILTERS });
+  const panel = page.getByRole("dialog", { name: MORE_CHIPS });
   const last = panel.getByRole("button", { exact: true, name: "Remove Project: PIER filter" });
   await expect(
     last,
@@ -944,7 +941,7 @@ async function focusInRow(
       if (label === "Clear filters") return { where: "clear", label, whole } as const;
       return { where: "elsewhere", label, whole } as const;
     },
-    { measure: shownOf.toString(), more: MORE_FILTERS.source }
+    { measure: shownOf.toString(), more: MORE_CHIPS.source }
   );
 }
 
@@ -972,8 +969,8 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
   const main = page.getByTestId("main-content");
   const row = controlRow(main);
   const chips = control(row, CONTROL.chip);
-  const more = row.getByRole("button", { name: MORE_FILTERS });
-  const panel = page.getByRole("dialog", { name: MORE_FILTERS });
+  const more = row.getByRole("button", { name: MORE_CHIPS });
+  const panel = page.getByRole("dialog", { name: MORE_CHIPS });
   const wrong: string[] = [];
   for (const size of [
     { height: 900, width: 1440 },
@@ -1008,16 +1005,14 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
         await trigger.focus();
         await page.keyboard.press("Enter");
         const filters = page.getByRole("dialog", { name: /^Filters?$/ });
-        const listed = filters.getByRole("button", { name: /^Remove .+ filter$/ });
+        const listed = filters.getByRole("button", { name: REMOVE_CHIP });
         await expect(
           listed,
           `${where}: the Filters panel does not list every narrowing`
         ).toHaveCount(surface.chips);
         // The panel's count of listed chips was waited for above, so the names read here are
         // those of the panel the press opened.
-        let order = await listed.evaluateAll((all) =>
-          all.map((chip) => chip.getAttribute("aria-label") ?? "")
-        );
+        let order = await chipNames(filters);
         for (let turn = 0; order.length > 0; turn++) {
           const key = turn === 1 ? "Space" : "Enter";
           const index = turn === 0 ? order.length - 1 : 0;
@@ -1041,7 +1036,7 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
             });
           const right = (focus: { label: string; panel: string }) =>
             /^Filters?$/.test(focus.panel) &&
-            (next === undefined ? !/^Remove .+ filter$/.test(focus.label) : focus.label === next);
+            (next === undefined ? !REMOVE_CHIP.test(focus.label) : focus.label === next);
           const settled = await expect
             .poll(async () => right(await landed()), { timeout: 2_000 })
             .toBe(true)
@@ -2186,6 +2181,60 @@ test("the four parameters this change adds ride in the address and survive a rel
   expect(page.url(), "the drawer wrote its narrowing into the page's address").toBe(before);
 });
 
+/** The keys over a range of the rows `order` lists, from its first, `rowOf` finding a row by its
+ *  id and `marks` the selection bar: `x` marks the row in hand, `Shift+J` carries the range from
+ *  the row marked last to the next row and `Shift+K` back again, `Shift+X` takes every row from
+ *  the row marked last to the row in hand, and Escape twice clears the marks. */
+async function walkRowRange(
+  page: Page,
+  rowOf: (id: string) => Locator,
+  order: readonly string[],
+  marks: Locator
+): Promise<void> {
+  const first = rowOf(order[0] ?? "");
+  await first.focus();
+  await page.keyboard.press("x");
+  await expect(marks, "the x key").toContainText("1 selected");
+  await page.keyboard.press("Shift+J");
+  await expect(rowOf(order[1] ?? ""), "the Shift+J key").toBeFocused();
+  await expect(marks, "the Shift+J key").toContainText("2 selected");
+  await page.keyboard.press("Shift+K");
+  await expect(first, "the Shift+K key").toBeFocused();
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
+  await expect(rowOf(order[2] ?? "")).toBeFocused();
+  await page.keyboard.press("Shift+X");
+  await expect(marks, "the Shift+X key").toContainText("3 selected");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(marks, "the Escape key that clears the marks").toHaveCount(0);
+}
+
+/** The chip `pick` finds among the remove controls of the bar `row`'s chips, where a reader finds
+ *  it: in the bar's line where it fits whole, else among the chips the panel of the line's one
+ *  `+N more` lists, which this opens. The line draws a chip only whole (`chipsThatFit`,
+ *  `components/ControlRow.tsx`), so a chip wider than the line's room stands behind `+N more`. */
+async function barChip(
+  page: Page,
+  row: Locator,
+  pick: (chips: Locator) => Locator
+): Promise<Locator> {
+  const inLine = pick(row.locator("[data-chip-strip]").getByRole("button", { name: REMOVE_CHIP }));
+  const more = row.getByRole("button", { name: MORE_CHIPS });
+  if (
+    (await settledState("the chip", [
+      ["line", inLine],
+      ["more", more],
+    ])) === "line"
+  ) {
+    return inLine;
+  }
+  await more.click();
+  return pick(
+    page.getByRole("dialog", { name: MORE_CHIPS }).getByRole("button", { name: REMOVE_CHIP })
+  );
+}
+
 // SLOW(>=2s): eleven seeded rows worked through every field, sort, grouping and view.
 test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read and clear it had, and Clear filters keeps Blocked on you", async ({
   page,
@@ -2392,24 +2441,7 @@ test("k-keep: the Inbox keeps every field, sort, grouping, view, Mark all read a
   await decision.focus();
   await page.keyboard.press("1");
   await expect(decision.locator("[data-ask-option]").first(), "the 1 key").toBeChecked();
-  const marks = control(page, CONTROL.selectionBar);
-  const first = rowOf(order[0] ?? "");
-  await first.focus();
-  await page.keyboard.press("x");
-  await expect(marks, "the x key").toContainText("1 selected");
-  await page.keyboard.press("Shift+J");
-  await expect(rowOf(order[1] ?? ""), "the Shift+J key").toBeFocused();
-  await expect(marks, "the Shift+J key").toContainText("2 selected");
-  await page.keyboard.press("Shift+K");
-  await expect(first, "the Shift+K key").toBeFocused();
-  await page.keyboard.press("j");
-  await page.keyboard.press("j");
-  await expect(rowOf(order[2] ?? "")).toBeFocused();
-  await page.keyboard.press("Shift+X");
-  await expect(marks, "the Shift+X key").toContainText("3 selected");
-  await page.keyboard.press("Escape");
-  await page.keyboard.press("Escape");
-  await expect(marks, "the Escape key that clears the marks").toHaveCount(0);
+  await walkRowRange(page, rowOf, order, control(page, CONTROL.selectionBar));
   const thread = rowOf(seeded((row) => row.type === "reply").id);
   await thread.focus();
   await page.keyboard.press("e");
@@ -2609,10 +2641,7 @@ test("k-keep: the project List keeps its grouping, columns, pager, layout and ke
   // so the open below is the reader's own, which is what the Board stores.
   await closeControlPanel(main);
   const filters = await openFilterPanel(page, main);
-  await filters
-    .getByRole("button", { name: /^Remove .+ filter$/ })
-    .last()
-    .click();
+  await filters.getByRole("button", { name: REMOVE_CHIP }).last().click();
   await expect(boardChips).toHaveCount(1);
   await expect(boardTrigger, "the last chip's removal shut the panel").toHaveAttribute(
     "aria-expanded",
@@ -2744,13 +2773,16 @@ test("k-keep: the priorities page keeps its search, column filter and chip, grou
   await control(work, CONTROL.searchBox).fill("");
   await expect(issueRows).toHaveCount(2);
   // A column filter from its header: Todo taken out of the open statuses it opens with, which is
-  // a narrowing of the reader's, so its chip stands in the bar and its press puts them back.
+  // a narrowing of the reader's, so its chip stands in the bar - in its line, or behind its one
+  // `+N more` where it does not fit whole - and its press there puts them back.
   await pickFilterOption(page, "Status", "Todo");
-  const statusChip = control(work, CONTROL.chip);
-  await expect(statusChip, "the Status filter has no chip in the bar").toHaveCount(1);
+  const workChips = control(work, CONTROL.chip);
+  await expect(workChips, "the Status filter has no chip in the bar").toHaveCount(1);
   await expect(issueRows).toHaveCount(2);
+  const statusChip = await barChip(page, work, (chips) => chips.filter({ hasText: /^Status: / }));
   await statusChip.click();
   await expect(statusChip).toHaveCount(0);
+  await expect(workChips, "the Status filter's chip stayed in the bar").toHaveCount(0);
   const workMenu = await openDisplay(page, main);
   await workMenu.getByRole("group", { name: "Group by" }).locator('input[value="status"]').click();
   await expect(page).toHaveURL(/[?&]w\.group=status/);
@@ -3047,7 +3079,7 @@ test("k-keep: the Agents page keeps every narrowing, grouping, count, key, pin a
     // The chip stands in the bar's line where the bar is 640 px wide or wider; below it, as at
     // the phone's width, Filter's badge stands for it and the open panel lists it at its top (R8).
     const chip = phone
-      ? (await openFilterPanel(page, main)).getByRole("button", { name: /^Remove .+ filter$/ })
+      ? (await openFilterPanel(page, main)).getByRole("button", { name: REMOVE_CHIP })
       : chips;
     await expect(chip, `the ${field} narrowing's chip`).toHaveCount(1);
     await chip.click();
@@ -3162,9 +3194,7 @@ test("k-keep: the Agents page keeps every narrowing, grouping, count, key, pin a
   await expect(composer, "Clear selection").toHaveCount(0);
   // The role chip, in the bar's line, or at the phone's width at the open panel's top (R8).
   if (phone) {
-    await (await openFilterPanel(page, main))
-      .getByRole("button", { name: /^Remove .+ filter$/ })
-      .click();
+    await (await openFilterPanel(page, main)).getByRole("button", { name: REMOVE_CHIP }).click();
     await closeControlPanel(main);
   } else {
     await chips.click();
@@ -3494,18 +3524,21 @@ test("k-keep: the search bar keeps its narrowings, its groups, its count, its re
     await openFilterPanel(page, bar);
     await expect(field, `the ${narrowing} narrowing`).toBeVisible();
     await set();
-    // The chip stands in the bar's line where the bar is 640 px wide or wider; below it, as at
-    // the phone's width, Filter's badge stands for it and the open panel lists it at its top (R8).
+    // The chip stands in the bar where the bar is 640 px wide or wider - in its line, or behind
+    // its one `+N more` where it does not fit whole; below it, as at the phone's width, Filter's
+    // badge stands for it and the open panel lists it at its top (R8).
     if (!phone) await closeControlPanel(bar);
-    const chip = (
-      phone ? filters.getByRole("button", { name: /^Remove .+ filter$/ }) : chips
-    ).filter({ hasText: new RegExp(`^${narrowing} `) });
+    const named = (all: Locator) => all.filter({ hasText: new RegExp(`^${narrowing} `) });
+    const chip = phone
+      ? named(filters.getByRole("button", { name: REMOVE_CHIP }))
+      : await barChip(page, controlRow(bar), named);
     await expect(chip, `the ${narrowing} narrowing's chip`).toHaveCount(1);
     await expect
       .poll(() => hitOwners(bar), { message: `the ${narrowing} narrowing` })
       .toEqual([...left].sort());
     await chip.click();
     await expect(chip).toHaveCount(0);
+    if (!phone) await expect(chips, `the ${narrowing} narrowing's chip stayed`).toHaveCount(0);
     if (phone) await closeControlPanel(bar);
     await expect.poll(() => hitOwners(bar)).toEqual(harbour);
   }
@@ -3598,21 +3631,7 @@ async function shutDisplay(root: Locator): Promise<void> {
   // Every caller opened the display menu with `openDisplay` just before this, which waited for
   // it, so the bar has drawn its trigger in its line or among More's items, as its width gives.
   if ((await trigger.count()) === 0) {
-    const page = root.page();
-    const menu = page.getByRole("dialog", { name: "View" });
-    const item = page
-      .getByRole("menu", { name: "More" })
-      .getByRole("menuitem", { exact: true, name: "View" });
-    // The menu stands open on its item, which is pressed again to shut it, unless the item has
-    // left the page and taken the menu with it: so the menu's state is read once the page settles
-    // on one of the two, rather than the item's count at one instant.
-    const shown = await settledState("the View item", [
-      ["open", item.and(page.locator('[aria-expanded="true"]'))],
-      ["shut", page.locator("body").filter({ hasNot: menu })],
-    ]);
-    if (shown === "open") await item.click();
-    await expect(menu).toHaveCount(0);
-    await shutMore(root);
+    await shutDisplayMenu(root.page(), root);
     return;
   }
   if ((await expandedState("the surface's View menu", trigger)) === "open") await trigger.click();
@@ -3675,7 +3694,7 @@ test("k-keep: the Inbox drawer keeps every field, sort, grouping, count, view, b
   // line (R8): each narrowing is read, and taken off, there. `lineChips` are the line's.
   const chips = page
     .getByRole("dialog", { name: "Filter" })
-    .getByRole("button", { name: /^Remove .+ filter$/ });
+    .getByRole("button", { name: REMOVE_CHIP });
   const lineChips = control(controlRow(peek), CONTROL.chip);
   const drawerTrigger = control(controlRow(peek), CONTROL.panelTrigger);
   const rowOf = (id: string) => peek.locator(`[data-inbox-row="${id}"]`);
@@ -3864,23 +3883,7 @@ test("k-keep: the Inbox drawer keeps every field, sort, grouping, count, view, b
 
   // `Shift+J` carries the range from the row marked last to the next row, `Shift+K` back again,
   // and `Shift+X` takes every row from the row marked last to the row in hand.
-  const first = rowOf(order[0] ?? "");
-  await first.focus();
-  await page.keyboard.press("x");
-  await expect(bar, "the x key").toContainText("1 selected");
-  await page.keyboard.press("Shift+J");
-  await expect(rowOf(order[1] ?? ""), "the Shift+J key").toBeFocused();
-  await expect(bar, "the Shift+J key").toContainText("2 selected");
-  await page.keyboard.press("Shift+K");
-  await expect(first, "the Shift+K key").toBeFocused();
-  await page.keyboard.press("j");
-  await page.keyboard.press("j");
-  await expect(rowOf(order[2] ?? "")).toBeFocused();
-  await page.keyboard.press("Shift+X");
-  await expect(bar, "the Shift+X key").toContainText("3 selected");
-  await page.keyboard.press("Escape");
-  await page.keyboard.press("Escape");
-  await expect(bar, "the Escape key that clears the marks").toHaveCount(0);
+  await walkRowRange(page, rowOf, order, bar);
   // `n` opens the compose dialog over the drawer, and its Escape shuts it and no more.
   await page.keyboard.press("n");
   const compose = page.getByRole("dialog", { name: "New message" });
@@ -5108,7 +5111,8 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     await expect(moreOfBar, `${where}: More is not drawn`).toBeVisible();
     // More was waited for above, so the bar is drawn, and its width follows the viewport this
     // turn set at its top.
-    const narrowAt = (await row.evaluate((node) => node.getBoundingClientRect().width)) < 640;
+    const barWidth = await row.evaluate((node) => node.getBoundingClientRect().width);
+    const narrowAt = barWidth < NARROW_BELOW;
     await moreOfBar.focus();
     await page.keyboard.press("Enter");
     await expect(markAll, `${where}: More holds no Mark all read`).toBeVisible();
@@ -5127,9 +5131,9 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     // line and no `+N more` is drawn (R8), so this is read in the wide bar alone.
     if (!narrowAt) {
       await page.goto(SIXTEEN_NARROWINGS);
-      const more = row.getByRole("button", { name: MORE_FILTERS });
+      const more = row.getByRole("button", { name: MORE_CHIPS });
       await expect(more, `${where}: sixteen narrowings draw no +N more`).toBeVisible();
-      const morePanel = page.getByRole("dialog", { name: MORE_FILTERS });
+      const morePanel = page.getByRole("dialog", { name: MORE_CHIPS });
       const firstInPanel = morePanel.getByRole("button").first();
       await more.focus();
       await page.keyboard.press("Enter");
@@ -5258,7 +5262,7 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     const filters = page.getByRole("dialog", { name: "Filter" });
     await expect(filters, `${where}: Enter on Filter opened no panel`).toBeVisible();
     const author = filters.getByRole("searchbox", { name: "Author" });
-    const lastChip = filters.getByRole("button", { name: /^Remove .+ filter$/ }).last();
+    const lastChip = filters.getByRole("button", { name: REMOVE_CHIP }).last();
     const panelSteps = [
       {
         menu: "Project",

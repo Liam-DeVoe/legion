@@ -5,7 +5,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { layOutLine, withCss, wordsOf } from "../__tests__/chips-line";
+import { controlBar, layOutBar, layOutLine, withCss, wordsOf } from "../__tests__/chips-line";
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { afterFrameAndTasks } from "../__tests__/frames";
 import { installResizeObserver } from "../__tests__/scroll-box";
@@ -30,9 +30,7 @@ const HEIGHT_RULE_CSS =
 const FUTURE = { v7_relativeSplatPath: true, v7_startTransition: true } as const;
 
 function row(): HTMLElement {
-  const found = document.querySelector<HTMLElement>('[data-control="control-row"]');
-  if (found === null) throw new Error("no control row is drawn");
-  return found;
+  return controlBar("the page");
 }
 
 /** A chip of the bar, by the name of its remove control (`filterChips`). */
@@ -53,11 +51,6 @@ function lineChips(): string[] {
 /** The words of each chip the open panel of `+N more` lists, in its order. */
 function panelChips(name: string): string[] {
   return within(screen.getByRole("dialog", { name })).getAllByRole("button").map(wordsOf);
-}
-
-/** Lays the bar out `bar.width` px wide, its chips' box with no room (`layOutLine`). */
-function layOutBar(bar: { readonly width: number }): () => void {
-  return layOutLine({ width: 0 }, {}, bar);
 }
 
 /** A row of a table that is not an issue, for the columns menu's slot. */

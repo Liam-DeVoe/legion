@@ -7,7 +7,8 @@ import {
   tableFilterActive,
   textMutedOnCanvas,
 } from "../theme/classes";
-import { CONTROL, type ControlSize } from "./control-names";
+import { FUNNEL_PATH } from "./bar-look";
+import { CONTROL, type ControlSize, glyphTarget } from "./control-names";
 import type { RowNoun } from "./DataTable";
 import { MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
@@ -16,21 +17,13 @@ function FunnelIcon(): ReactNode {
   return (
     <svg aria-hidden="true" className="size-3.5" fill="currentColor" viewBox="0 0 16 16">
       <title>Filter</title>
-      <path d="M1.5 2h13l-5 6.2V13l-3 1.5V8.2z" />
+      <path d={FUNNEL_PATH} />
     </svg>
   );
 }
 
-/** The funnel's touch target at each size. The comfortable size keeps 44 px at every width. The
- *  compact size keeps 44 px wherever a finger is the pointer and gives it up only from `md`,
- *  where a mouse is, for 32 px. */
-const FILTER_TARGET: Record<ControlSize, string> = {
-  comfortable: "min-h-11 min-w-11",
-  compact: "min-h-11 min-w-11 md:min-h-8 md:min-w-8",
-};
-
 const filterTrigger = (active: boolean, size: ControlSize) =>
-  `${FILTER_TARGET[size]} rounded p-1 ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
+  `${glyphTarget[size]} rounded p-1 ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
 
 export interface ColumnFilterProps<TData> {
   readonly column: Column<TData, unknown>;

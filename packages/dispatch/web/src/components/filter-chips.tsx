@@ -1,18 +1,17 @@
 import type { Column } from "@tanstack/react-table";
-import type { ReactNode } from "react";
+import type { ReactElement } from "react";
 import { Link } from "react-router-dom";
 
 import { focusVisibleRing, linkHoverText, linkText } from "../theme/classes";
 import { Chip } from "./Chip";
-import type { ControlSize } from "./control-names";
+import { type ControlSize, glyphTarget } from "./control-names";
 
 /** A link a chip carries beside it, outside its remove control: the Inbox's agent chip carries
  *  the agent's live conversation. */
 export interface FilterChipLink {
-  /** The link's accessible name, since it draws a glyph: `Open live conversation with Planner`. */
+  /** The link's accessible name and its tooltip, since it draws a glyph: `Open live conversation
+   *  with Planner`. */
   readonly label: string;
-  /** Its tooltip, where the page draws one. */
-  readonly title?: string;
   /** Where it goes: an address of the app. */
   readonly to: string;
 }
@@ -36,13 +35,6 @@ export interface FilterChip {
   readonly remove: () => void;
 }
 
-/** A chip's link at each size: the chip's own touch target, which the compact size gives up only
- *  from `md`, where a mouse is. */
-const CHIP_LINK: Record<ControlSize, string> = {
-  comfortable: "min-h-11 min-w-11",
-  compact: "min-h-11 min-w-11 md:min-h-8 md:min-w-8",
-};
-
 /**
  * The chips of the narrowings that are on, for a `ControlRow`, on every page that has a row: one
  * removable chip per narrowing, whose press takes that narrowing off. Each is named for what the
@@ -57,14 +49,11 @@ const CHIP_LINK: Record<ControlSize, string> = {
  * chip's remove control and the link, neither inside the other. The box is never wider than its
  * line (`max-w-full`), and the chip's own box gives way inside it (`min-w-0`), so a long chip is
  * cut short by its own `max-w-full` and the link stays in the line.
- *
- * Answers undefined for no narrowing, which is what the row's `chips` takes for no chips.
  */
 export function filterChips(
   chips: readonly FilterChip[],
   size: ControlSize = "comfortable"
-): ReactNode[] | undefined {
-  if (chips.length === 0) return undefined;
+): ReactElement[] {
   return chips.map(({ key, label, link, remove, text }) => {
     const chip = (
       <Chip
@@ -85,8 +74,8 @@ export function filterChips(
         <span className="flex min-w-0">{chip}</span>
         <Link
           aria-label={link.label}
-          className={`inline-flex shrink-0 items-center justify-center rounded px-1 outline-none focus-visible:ring-2 ${CHIP_LINK[size]} ${focusVisibleRing} ${linkText} ${linkHoverText}`}
-          title={link.title}
+          className={`inline-flex shrink-0 items-center justify-center rounded px-1 outline-none focus-visible:ring-2 ${glyphTarget[size]} ${focusVisibleRing} ${linkText} ${linkHoverText}`}
+          title={link.label}
           to={link.to}
         >
           <span aria-hidden="true">↗</span>

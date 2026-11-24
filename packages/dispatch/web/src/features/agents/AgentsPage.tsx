@@ -963,7 +963,7 @@ const GROUP_FILTER_LABELS: ReadonlyMap<string, string> = new Map(
  * lists at its top too. Each narrowing is still a multi-select whose panel holds a text box that
  * narrows its own options, because forty machines cannot be read in a list that does not search;
  * all three sit behind one trigger rather than three of their own. The page has no **Clear
- * filters**, as it had none before the bar: each chip takes its own value off.
+ * filters**: each chip takes its own value off.
  *
  * The placeholder is the box's name, `Search agents`, which still says what it searches where the
  * bar gives the box its least room, at the phone's width (the measurement of 2026-11-24,

@@ -115,6 +115,18 @@ func gateLinesOf(lines []approvalGateLine) []gateSeededLine {
 	return read
 }
 
+// readIssueApprovalGate is the approval gate the issue read answers for key, as alice reads it.
+func readIssueApprovalGate(t *testing.T, handler http.Handler, key string) []approvalGateLine {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
+	}
+	return decodeBody[struct {
+		ApprovalGate []approvalGateLine `json:"approval_gate"`
+	}](t, response).ApprovalGate
+}
+
 // gateVersionProbe is the one shape in which the one read may name artifact_versions: a gate
 // document's latest version as max(number) over that document's own rows (meInboxGateReads),
 // which Postgres answers from the last entry of the document's range of the unique (artifact_id,
@@ -313,13 +325,7 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 		} else {
 			key = entry.Thread.Issue.Key
 		}
-		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
-		if response.Code != http.StatusOK {
-			t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
-		}
-		issueGate := decodeBody[struct {
-			ApprovalGate []approvalGateLine `json:"approval_gate"`
-		}](t, response).ApprovalGate
+		issueGate := readIssueApprovalGate(t, handler, key)
 		if len(issueGate) == 0 || !reflect.DeepEqual(issueGate, entry.ApprovalGate) {
 			t.Errorf("%s's issue read answers the gate %+v, and its Inbox row carries %+v", key, issueGate, entry.ApprovalGate)
 		}
@@ -372,13 +378,7 @@ func TestAnIssueUnderAnIssueOfAnotherProjectIsARootOfItsOwnProjectsGate(t *testi
 	}
 	for _, want := range cases {
 		key := want.seeded.issue.Key
-		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
-		if response.Code != http.StatusOK {
-			t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
-		}
-		issueGate := decodeBody[struct {
-			ApprovalGate []approvalGateLine `json:"approval_gate"`
-		}](t, response).ApprovalGate
+		issueGate := readIssueApprovalGate(t, handler, key)
 		rowGate, held := rows[key]
 		if !held {
 			t.Errorf("alice's Inbox holds no row of %s, %s", key, want.is)
