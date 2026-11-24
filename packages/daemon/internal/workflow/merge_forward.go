@@ -313,6 +313,13 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 		return err
 	}
 	var sends []mergeForwardSend
+	worker, token, told, err := record.MergeForwardWorker(record.MergeForwardLanded, issue, at)
+	if err != nil {
+		return err
+	}
+	if told {
+		sends = append(sends, mergeForwardSend{step: record.MergeForwardLanded, to: roleRecipient{issue: issue.Key, role: worker, row: issue.Key, claim: token}})
+	}
 	if record.PastReview(issue) && slices.Contains(w.Line, phase.Reviewing) {
 		// The review goes to the agent of the task's reviewer step (workAgent): the owner's claim where
 		// that step's key is owner, and never the reviewer's row, which can name the architect above.
@@ -324,13 +331,6 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 			sends = append(sends, mergeForwardSend{step: record.MergeForwardReview,
 				to: roleRecipient{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key, claim: reviewer.claim}})
 		}
-	}
-	worker, token, told, err := record.MergeForwardWorker(record.MergeForwardLanded, issue, at)
-	if err != nil {
-		return err
-	}
-	if told {
-		sends = append(sends, mergeForwardSend{step: record.MergeForwardLanded, to: roleRecipient{issue: issue.Key, role: worker, row: issue.Key, claim: token}})
 	}
 	pushed := func(step record.MergeForwardStep, to claim.Token) bool {
 		return step == record.MergeForwardLanded && asked.Agent != "" && to == asked.Agent
