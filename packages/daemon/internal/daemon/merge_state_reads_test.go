@@ -469,8 +469,11 @@ func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
 		state := "clean"
 		if reads.Add(1) == 1 {
 			// The first read is held until the second request has been queued, so the request
-			// lands while this ladder is reading rather than before or after it.
-			state = "blocked"
+			// lands while this ladder is reading rather than before or after it. It answers
+			// `behind`, which ends no round: `blocked` on this head, MERGEABLE with its checks
+			// concluded and no review asked for, would end the round on the first read, and the
+			// second read this test counts would race the move to accepting.
+			state = "behind"
 			<-release
 		}
 		w.Write([]byte(`{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"` + state + `"}`))
