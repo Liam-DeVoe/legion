@@ -2691,7 +2691,14 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// A start that asks for a new session has the retry forget the recorded one, inside
 			// that one decision: the operator's `legion claims retry --fresh-session`, which is
 			// refused by whatever refuses this row rather than having discarded the session first.
-			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
+			// A production check look's start is the half-open trial of a checking role that
+			// failed: it retries the claim with one attempt left of each budget its failure spent,
+			// never a fresh budget, so a role that cannot start launches once a look rather than
+			// until a whole budget runs out at every look up to the check's bound
+			// (supervise.RequestRetry.OneAttemptLeft). A start that asks for a new session is a
+			// person's or the controller's reset, and gives the full budget.
+			again := supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession, OneAttemptLeft: payload.CheckLook > 0 && !payload.FreshSession}
+			if err := machine.Handle(ctx, again); err != nil {
 				return fmt.Errorf("retry claim %s: %w", token, err)
 			}
 		case supervise.StateRetired:

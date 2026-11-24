@@ -1447,7 +1447,9 @@ func (m MergeState) Mergeable() bool {
 // LastWakeAt when; WakeAt is when the check is next looked at — the time the checking agent
 // named on a pending report, or the retry of a look nobody reported — and is nil when neither
 // stands. Last marks the bound's look, after which no look starts. A closed check has ClosedAt
-// and its Outcome.
+// and its Outcome. FailedLooks counts the looks in a row whose checking role's claim failed, in
+// the look or after it ended, since the role last reported a look: what the next look's backoff
+// doubles by (workflow.failedLookRetry), and 0 again once a look is reported.
 type ProductionCheck struct {
 	Issue   string
 	Project string
@@ -1474,6 +1476,7 @@ type ProductionCheck struct {
 	Last           bool
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
+	FailedLooks    int
 }
 
 // Open says whether the check is still open: no look has closed it.

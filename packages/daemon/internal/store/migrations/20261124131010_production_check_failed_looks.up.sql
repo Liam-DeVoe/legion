@@ -1,0 +1,38 @@
+-- 20261124131010_production_check_failed_looks.up.sql — a production check backs off a checking
+-- role that keeps failing.
+--
+-- production_checks.failed_looks is record.ProductionCheck.FailedLooks: the looks in a row whose
+-- checking role's claim failed, in the look or after it ended, since the role last reported a
+-- look. The look after a failed one is due 2 h on, doubled for each failed look in a row before
+-- it (workflow.failedLookRetry), and never past the check's bound; a reported look sets it back
+-- to 0. A column of its own is what lets a daemon restarted between two looks keep the backoff.
+--
+-- Every row the table already holds takes the default, 0: no release before this one counted a
+-- failed look, so each open check's next failure is its first, as it would have been.
+--
+-- The release before this one names each column of the table it reads and writes (the record
+-- store's productionCheckColumns and PutProductionCheck), so it neither reads nor writes this one:
+-- its upsert of an existing row leaves the count as this release left it, and a row it inserts
+-- takes the default. After a rollback its checks name every look after a failure 2 h on, as they
+-- always did, and a count this release left stands, unread, until a later release's next report
+-- or failure of that check moves it.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction that closes this header, its last
+-- paragraph (migrations.WayBack), run with every daemon of the database stopped and before the
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. production_checks
+-- holds the checks of every project that shares the database, and a daemon of this release names
+-- the column in every read and write of a check, so one still running for another project after
+-- the drop would fail every fact that reads a check. The release before this one needs neither
+-- statement to run, since it never names the column: the delete is what makes the version the
+-- store reports, its highest recorded row (store.SchemaVersionTx), that release's own again, and
+-- both are owed to the roll-forward. With the column dropped and the row deleted, store.apply
+-- finds no row of this version and runs this file again, which adds the column again at its
+-- default. What the drop costs is the counts: each open check's next failed look after the
+-- roll-forward is counted as its first.
+--
+-- begin;
+-- alter table production_checks drop column if exists failed_looks;
+-- delete from schema_version where version = 20261124131010;
+-- commit;
+alter table production_checks add column failed_looks integer not null default 0 check (failed_looks >= 0);

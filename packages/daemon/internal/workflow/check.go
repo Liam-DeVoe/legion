@@ -209,7 +209,9 @@ func boundText(bound time.Duration) string {
 // record with the look's close, and the summary as its reason, which the route requires of every
 // report (api.handoffComplete, before it reaches its checkReport). A pending that names no time
 // is woken as a look nobody reported is, a look bound out, so the check is never left with no row
-// to wake it.
+// to wake it. A report of any verdict ends the role's run of failed looks
+// (record.ProductionCheck.FailedLooks): the role came up, so a later failure of its claim is named
+// a look bound out again (failedLookRetry).
 //
 // How the current look ended does not matter: a report of it counts while the check is open,
 // however that look ended — its bound came due, an operator's hold met its start, or the
@@ -239,7 +241,7 @@ func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.Check
 	default:
 		return refused("CHECK_VERDICT_REQUIRED", fmt.Sprintf("a production check report names a verdict of pass, pending or fail, not %q; this report changed nothing", fact.Verdict)), nil
 	}
-	check.LookOpen = false
+	check.LookOpen, check.FailedLooks = false, 0
 	if outcome == "" {
 		var wake time.Time
 		if fact.WakeAt == nil {
@@ -260,19 +262,105 @@ func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.Check
 	return intake.Result{}, e.closeCheck(ctx, tx, check, outcome)
 }
 
-// endLook ends the open look of a check nobody reported — its bound came due, the outbox met an
-// operator's hold on its start, or the checking role's claim failed in it — as a report of pending
-// would (endLookPending), and names the next look a look bound out, the retry with cause as its
-// reason. cause is why, for the log.
+// endLook ends the open look of a check nobody reported — its bound came due, or the outbox met an
+// operator's hold on its start — as a report of pending would (endLookPending), and names the next
+// look a look bound out, the retry with cause as its reason. cause is why, for the log.
 func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, cause string) error {
+	return e.endLookWaking(ctx, tx, check, cause, e.lookRetry())
+}
+
+// endFailedLook ends the open look whose checking role's claim failed in it, as endLook does, and
+// counts it a failed look (record.ProductionCheck.FailedLooks), so the next look is named the
+// backoff out (failedLookRetry) rather than a look bound: the circuit breaker's open state, after
+// which that look retries the claim with one attempt left of the budget its failure spent (the
+// daemon's outbox, supervise.RequestRetry.OneAttemptLeft).
+func (e *Engine) endFailedLook(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck) error {
+	check.FailedLooks++
+	return e.endLookWaking(ctx, tx, check, failedLookCause(check.FailedLooks), e.failedLookRetry(*check))
+}
+
+// endLookWaking is endLook with the next look named at at, clamped (clampWake).
+func (e *Engine) endLookWaking(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, cause string, at time.Time) error {
 	check.LookOpen = false
-	check.WakeAt = e.clampWake(*check, e.lookRetry())
+	check.WakeAt = e.clampWake(*check, at)
 	if err := e.store.PutProductionCheck(ctx, tx, *check); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: production check look ended without a report", "issue", check.Issue, "mergeCommit", check.MergeSHA,
-		"look", check.Looks, "cause", cause)
+		"look", check.Looks, "cause", cause, "failedLooks", check.FailedLooks, "wake", check.WakeAt)
 	return e.endLookPending(ctx, tx, check, "the retry of a look nobody reported: "+cause)
+}
+
+// failedLookCause is the cause a look whose checking role's claim failed ends with, the failedth
+// such look in a row.
+func failedLookCause(failed int) string {
+	if failed <= 1 {
+		return "claim failed"
+	}
+	return fmt.Sprintf("claim failed, %d looks in a row", failed)
+}
+
+// failedLookRetry is when the look after a failed one is due (record.ProductionCheck.FailedLooks,
+// the looks in a row whose checking role's claim failed): a look bound from now for the first,
+// doubled for each failed look in a row before it — 2 h, 4 h, 8 h and so on — and back to a look
+// bound once a look is reported (checkReported). The doubling stops once the wait reaches the
+// check's bound, which clampWake then turns into no wake at all, since the bound's own row starts
+// the last look. It is the half-open circuit breaker's growing wait: a role that cannot start is
+// tried once at each of these looks rather than at every look bound until the check's bound.
+func (e *Engine) failedLookRetry(check record.ProductionCheck) time.Time {
+	wait := CheckLookBound
+	for failed := 1; failed < check.FailedLooks && e.now().Add(wait).Before(check.BoundAt); failed++ {
+		wait *= 2
+	}
+	return e.now().Add(wait)
+}
+
+// failedBetweenLooks counts a failure of the checking role's claim after its look ended, with no
+// look open, as a failed look (record.ProductionCheck.FailedLooks): the look before it ended at its
+// bound or on a report while the claim was still failing its way through a budget, and its role
+// never came up. The wake that look's end named stands, and the look it starts retries the claim
+// with one attempt left (the daemon's outbox), so the next failure is named a longer backoff out.
+func (e *Engine) failedBetweenLooks(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck) error {
+	check.FailedLooks++
+	if err := e.store.PutProductionCheck(ctx, tx, *check); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: production check role's claim failed between looks", "issue", check.Issue, "mergeCommit", check.MergeSHA,
+		"look", check.Looks, "role", check.Role, "failedLooks", check.FailedLooks, "wake", check.WakeAt)
+	return nil
+}
+
+// checkRoleFailedReason is what a worker-died of the checking role's failed claim says after the
+// look it names (claimFailed): how the claim ended — the supervisor's sentence, then the pod's end
+// or the first line of the runtime's account of the death (deathReason) — the cause word the
+// failure carries, and what the check does next, from check as the failure left it. That is the
+// look that retries the claim and when, or the check's bound where no wake stands before it, and
+// whether that retry has one attempt left of the budget the failure spent (the daemon's outbox,
+// supervise.RequestRetry.OneAttemptLeft) or starts a fresh run, the failure having spent none; or,
+// once the check's last look lost its role, that the check closed as not run. The count of failed
+// looks in a row closes it, which is what the backoff doubles by (failedLookRetry).
+func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck) string {
+	said := deathReason(fact, false)
+	if said == "" {
+		said = fmt.Sprintf("the %s's claim failed before it reported the look", check.Role)
+	}
+	if fact.Cause != "" {
+		said += "; its cause is " + string(fact.Cause)
+	}
+	how := "with a fresh run, since its failure spent no budget"
+	if fact.Budgets.Spent(fact.Limits) {
+		how = "with one attempt left of the budget its failure spent"
+	}
+	var next string
+	switch {
+	case !check.Open():
+		return said + "; that was the check's last look, so the check closed as " + string(check.Outcome)
+	case check.WakeAt != nil:
+		next = fmt.Sprintf("look %d retries the claim at %s %s", check.Looks+1, check.WakeAt.UTC().Format(time.RFC3339), how)
+	default:
+		next = fmt.Sprintf("the check's last look retries the claim at its bound, %s, %s", check.BoundAt.UTC().Format(time.RFC3339), how)
+	}
+	return fmt.Sprintf("%s; %s (failed looks in a row: %d)", said, next, check.FailedLooks)
 }
 
 // endLookPending is what follows a look that ended pending, reported so or with no report
@@ -426,12 +514,12 @@ func (e *Engine) checkIssue(ctx context.Context, tx pgx.Tx, check record.Product
 	return *issue, *root, nil
 }
 
-// checkLookEnded is a look ending with no report (intake.CheckLookEnded: the look's bound, an
-// operator's hold met by its start, the checking role's failed claim): the look it names, still
-// open, ends as a pending report would (endLook); a look already ended, or a check closed, changes
-// nothing, and so does a look of a check a later merge has replaced, one the fact does not name
-// (record.ProductionCheck.NamedBy), whose look 1 the current check's would otherwise be taken
-// for, logged.
+// checkLookEnded is a look ending with no report (intake.CheckLookEnded: the look's bound, or an
+// operator's hold met by its start; a look whose checking role's claim failed is claimFailed's):
+// the look it names, still open, ends as a pending report would (endLook); a look already ended, or
+// a check closed, changes nothing, and so does a look of a check a later merge has replaced, one the
+// fact does not name (record.ProductionCheck.NamedBy), whose look 1 the current check's would
+// otherwise be taken for, logged.
 func (e *Engine) checkLookEnded(ctx context.Context, tx pgx.Tx, fact intake.CheckLookEnded) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil || check == nil || !check.Open() || !check.LookOpen || check.Looks != fact.Look {

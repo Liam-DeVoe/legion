@@ -163,6 +163,9 @@ import (
 // claims.last_start_failure on every claim stored ready, working or idle, a column this list's
 // 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
 // (migration_20261123212127_test.go reads it).
+// The production check's count of failed looks in a row (20261124131010) is applied after all of
+// these and touches no outbox_kind_check: it adds production_checks.failed_looks at its default,
+// 0, on every check it finds (migration_20261124131010_test.go reads it).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -174,7 +177,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261120144241,
-	20261121170714, 20261123165139, 20261123212127,
+	20261121170714, 20261123165139, 20261123212127, 20261124131010,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -196,6 +199,7 @@ var thisBranchsMigrations = []int{
 // applied sequence, 20261121170714, the plan of an experiment's draw (20261123165139) and
 // dispatch://INFRA-5463's 20261123212127. That is why the loop below holds the list rather than
 // counting it, so that a version added above any of them is named here rather than read as main's.
+// The production check's count of failed looks (20261124131010) stands above all of them.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

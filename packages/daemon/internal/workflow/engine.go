@@ -1231,8 +1231,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // tree holds its members where they stood, so neither tells anyone.
 //
 // The checking role of a closed issue failing inside a look of its production check ends that look
-// as a report of pending would (endLook): a done issue has no phase to hold, and the look's next
-// wake starts the claim again.
+// as a report of pending would (endFailedLook): a done issue has no phase to hold, and the look's
+// next wake starts the claim again, a backoff out that doubles with each failed look in a row. A
+// failure of that role between looks counts the same (failedBetweenLooks), and either is told.
 func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFailed) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1253,36 +1254,36 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", issue.Key, issue.Key)})
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
-	// check, as its bound would. Which role that is the check's own row says (record.ProductionCheck.Role,
-	// the role it opened under), never the setting as it stands now, so a check opened before the
-	// project changed its `production_check` still ends its look on its own role's failure. Unlike
-	// an ordinary pending report, nobody remains to report the look or wait for
-	// the next wake, so the architect is told now with the persisted launch failure. An issue in the
-	// workflow (one reopened inside its linger with a look still open at the reopen) takes the
-	// live-phase path below instead, where the failure holds the phase and is told; its stale look
-	// ends at the look's own bound (check_look), which endLookPending keeps for the run.
+	// check, as its bound would, and counts it a failed look, so the next look is named a backoff
+	// out that doubles with each failed look in a row (endFailedLook). Which role that is the check's
+	// own row says (record.ProductionCheck.Role, the role it opened under), never the setting as it
+	// stands now, so a check opened before the project changed its `production_check` still ends its
+	// look on its own role's failure. A failure after the look ended, with none open, counts the same
+	// and keeps the wake that look's end named (failedBetweenLooks). Unlike an ordinary pending
+	// report, nobody remains to report the look or wait for the next wake, so the architect is told
+	// now, in either case, with the cause, how the last process ended, and when the next look retries
+	// the claim and how (checkRoleFailedReason). An issue in the workflow (one reopened inside its
+	// linger with a look still open at the reopen) takes the live-phase path below instead, where
+	// the failure holds the phase and is told; its stale look ends at the look's own bound
+	// (check_look), which endLookPending keeps for the run.
 	if !record.InWorkflow(*issue) {
 		check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
 		if err != nil {
 			return intake.Result{}, err
 		}
-		if check != nil && check.Open() && check.LookOpen && fact.Role == check.Role {
-			if err := e.endLook(ctx, tx, check, "claim failed"); err != nil {
+		if check != nil && check.Open() && fact.Role == check.Role {
+			lost := fmt.Sprintf("production check look %d lost its %s", check.Looks, check.Role)
+			if check.LookOpen {
+				err = e.endFailedLook(ctx, tx, check)
+			} else {
+				lost = fmt.Sprintf("production check of %s lost its %s after look %d ended", issue.Key, check.Role, check.Looks)
+				err = e.failedBetweenLooks(ctx, tx, check)
+			}
+			if err != nil {
 				return intake.Result{}, err
 			}
-			// The supervisor's sentence is text the daemon did not write, so it is carried as
-			// every worker-died's reason carries it, on one line, quoted and cut (deathSentence).
-			// The daemon's own sentence for a fact that holds none is written bare, as deathReason
-			// writes its own words ("the pod ended: ", "the process was last found "): the quotes
-			// in a reason mark text the daemon did not write, and never the daemon's own words.
-			// The pod end deathReason writes bare is the one text it did not write that a reason
-			// leaves unquoted: the kubelet's reason and message, cut at runtime.PodEndRunes.
-			reason := fmt.Sprintf("the %s's claim failed before it reported the look", check.Role)
-			if fact.Reason != "" {
-				reason = deathSentence(fact.Reason)
-			}
 			return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{
-				Kind: "worker-died", Role: fact.Role, Reason: fmt.Sprintf("production check look %d lost its %s: %s", check.Looks, check.Role, reason),
+				Kind: "worker-died", Role: fact.Role, Reason: lost + ": " + checkRoleFailedReason(fact, *check),
 			})
 		}
 	}
