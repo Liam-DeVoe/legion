@@ -7,10 +7,10 @@ click; a small change inside a standing shape does not, unless you are unsure wh
 surface that is only text (an alert, a report, printed output) carries that literal text in the
 spec instead.
 
-1. Build the surface as a page from real readings of the real system. Draw the empty state and the
+1. **Build the surface** as a page from real readings of the real system. Draw the empty state and the
    worst realistic data, or say which states you left out. Mark every invented figure in the
    picture, and draw an existing surface as it is now beside the new one.
-2. Take the picture with the pod's Chromium and put it on the issue, with a clickable page as a
+2. **Take the picture** with the pod's Chromium and put it on the issue, with a clickable page as a
    `file` artifact for a flow:
 
    ```bash
@@ -19,9 +19,9 @@ spec instead.
    dispatch artifact --issue <KEY> --name <name>.png --path <file.png>
    ```
 
-3. Ask one question with two to four answers, one of them that this is the wrong surface. Write no
+3. **Ask** one question with two to four answers, one of them that this is the wrong surface. Write no
    code for the round, and end your turn.
-4. Put the agreed pictures in the spec, each with a line on what it shows and which readings are
+4. **Put the agreed pictures in the spec,** each with a line on what it shows and which readings are
    real. The spec's words still govern the build.
 
 You end the round, not the person. The round writes no spec version of its own, and a tree whose
