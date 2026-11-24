@@ -116,14 +116,17 @@ func TestTheRecordStepLeavesAStaleIssueUntilTheRepair(t *testing.T) {
 }
 
 // Every edit of an input an issue's text is built from makes its recorded source stop matching
-// its current one, so the report builds and hashes its text again, and answers what main's
-// statement answers (mainCoverageQuery); the next run records the issue again. The edits are a
-// new spec version and a title edit, each with its trigger on, and the latest version's markdown
-// rewritten in place with the triggers off, once as it was (which changes the row version alone)
-// and once to a new text (which leaves the row stale, so the repair comes before the record).
-// Before each edit the row is embedded at its current text, so a report that trusted the source
-// past the edit would count a vector of the old text current.
-func TestEachEditOfAnIssuesInputsMakesTheReportHashItUntilTheNextRun(t *testing.T) {
+// its current one, so its hash is built from its text again until the record step's next run
+// records the issue again, and the counts follow the edit: at once where it fires its triggers,
+// and at the counts loop's next recount where it fires none (R7 of dispatch://INFRA-4864's spec).
+// Then the report answers what main's statements answer (requireMainsAnswer). The edits are a new
+// spec version and a title edit, each with its trigger on and read at once, and the latest
+// version's markdown rewritten in place with the triggers off, once as it was (which changes the
+// row version alone) and once to a new text (which leaves the row stale, so the repair comes
+// before the record), each read after one recount (RecountCoverage). Before each edit the row is
+// embedded at its current text, so a report that trusted the source past the edit would count a
+// vector of the old text current.
+func TestTheCountsFollowEachEditOfAnIssuesInputsByTheNextRecount(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "REDT", "REDT-1", "A title")
 	spec := seedSpec(t, database.Pool, "REDT", "REDT-1", "## Summary\n\nThe first version.\n")
@@ -153,20 +156,30 @@ func TestEachEditOfAnIssuesInputsMakesTheReportHashItUntilTheNextRun(t *testing.
 		// stale is whether the edit leaves the row at the text before it, for the repair to point
 		// at the new one before the record step records it.
 		stale bool
+		// triggersOff is whether the edit fires no trigger, so the counts follow it at the next
+		// recount rather than at once.
+		triggersOff bool
 	}{
-		{"a new spec version", func() { addVersion(t, database.Pool, spec, 2, "## Summary\n\nThe second version.\n") }, 0, false},
-		{"a title edit", func() { mustExec(t, database.Pool, `update issues set title = 'A title, edited' where key = 'REDT-1'`) }, 0, false},
-		{"the latest version's markdown rewritten in place as it was", rewriteLatest(""), 1, false},
-		{"the latest version's markdown changed in place", rewriteLatest("## Summary\n\nChanged in place.\n"), 0, true},
+		{"a new spec version", func() { addVersion(t, database.Pool, spec, 2, "## Summary\n\nThe second version.\n") }, 0, false, false},
+		{"a title edit", func() { mustExec(t, database.Pool, `update issues set title = 'A title, edited' where key = 'REDT-1'`) }, 0, false, false},
+		{"the latest version's markdown rewritten in place as it was", rewriteLatest(""), 1, false, true},
+		{"the latest version's markdown changed in place", rewriteLatest("## Summary\n\nChanged in place.\n"), 0, true, true},
 	} {
 		edit.edit()
 		if sourceMatches(t, database, "REDT-1") {
 			t.Errorf("after %s REDT-1's recorded source still matches, so the report would read the hash of the text before it", edit.name)
 		}
-		mains, heads := requireMainsAnswer(t, database, "after "+edit.name)
+		stage := "after " + edit.name
+		if edit.triggersOff {
+			if err := RecountCoverage(context.Background(), database); err != nil {
+				t.Fatalf("recount %s: %v", stage, err)
+			}
+			stage += " and one recount"
+		}
+		mains, heads := requireMainsAnswer(t, database, stage)
 		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "the coverage statement": heads} {
 			if got := rows["issue"].current; got != edit.current {
-				t.Errorf("after %s %s counts %d issues current, want %d", edit.name, name, got, edit.current)
+				t.Errorf("%s %s counts %d issues current, want %d", stage, name, got, edit.current)
 			}
 		}
 		if edit.stale {

@@ -438,12 +438,17 @@ func trustedIssues(t *testing.T, database *store.Store, identity string) (truste
 // when every issue builds and hashes its text; once the record step has recorded every issue's
 // source, when main's route statement reads most issues' hashes from their rows; and once every
 // input an issue's text is built from has changed after its source was recorded
-// (changeInputsAfterRecording).
+// (changeInputsAfterRecording) and one recount (RecountCoverage) has run.
 //
-// The last stage is not vacuous: the two issues whose inputs changed with their triggers off still
-// hold a vector of the configured identity at their rows' content_hash, so a report that trusted a
-// recorded source beyond the inputs it names would count them current. Both statements count
-// them lacking.
+// Two of those changes, a title and the latest version's markdown, are written with their tables'
+// triggers off, so no counting trigger fires for them, and the counts follow such a write at the
+// counts loop's next recount (R7 of dispatch://INFRA-4864's spec), not at once. So the last stage
+// reads the report after one recount, for the configured identity, as a server with an embedder
+// reads it, and for none, as a server with no embedder does. It is not vacuous: the two issues
+// whose inputs changed with their triggers off still hold a vector of the configured identity at
+// their rows' content_hash, so a report that trusted a recorded source beyond the inputs it names
+// would count them current. Both statements count them lacking, and so do the counts once
+// recounted.
 func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -475,12 +480,15 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	requireIssuesCurrent("after the record step", mains, heads, trusted)
 
 	changeInputsAfterRecording(t, database, states)
-	mains, heads = requireMainsAnswer(t, database, "after the inputs changed")
+	if err := RecountCoverage(ctx, database); err != nil {
+		t.Fatalf("recount after the inputs changed: %v", err)
+	}
+	mains, heads = requireMainsAnswer(t, database, "after the inputs changed and one recount")
 	trusted, stale = trustedIssues(t, database, configuredIdentity)
 	if stale != 2 {
 		t.Fatalf("after the inputs changed %d issues hold a vector at a content_hash that is not their text's, want the 2 changed with their triggers off", stale)
 	}
-	requireIssuesCurrent("after the inputs changed", mains, heads, trusted-stale)
+	requireIssuesCurrent("after the inputs changed and one recount", mains, heads, trusted-stale)
 }
 
 // coverageCostProfiles are the costs the plan tests read the recount's window statement's plan

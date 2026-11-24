@@ -277,9 +277,14 @@ func coverage(t *testing.T, database *store.Store, identity string) (items, curr
 // The server embeds content no trigger saw with no command: an issue written with its trigger
 // off has no row, and Run's pass at startup and its scan loop give it a vector. The items
 // written beside it hold no window, and the pass adds none: a window is the block index's to
-// write, not the queue's, so no kind but the issue has an item to cover here.
+// write, not the queue's, so no kind but the issue has an item to cover here. The items are
+// written once the counts are filled, under session_replication_role = replica, which fires no
+// counting trigger either, and the counts follow such a write at the counts loop's next recount
+// (R7 of dispatch://INFRA-4864's spec), not at once: they are read after one recount
+// (RecountCoverage). Run's own writes fire their triggers, so the counts follow them at once.
 func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	database := storetest.Open(t)
+	fillCounts(t, database)
 	seeded := 1
 	withTriggersOff(t, database, func(q querier) { seedItems(t, q, "PRET") })
 	var rows int
@@ -289,8 +294,11 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	if rows != 0 {
 		t.Fatalf("%d embeddings rows after writing with the triggers off, want 0", rows)
 	}
+	if err := RecountCoverage(context.Background(), database); err != nil {
+		t.Fatalf("recount after writing with the triggers off: %v", err)
+	}
 	if items, current, lacking, _, oldest := coverage(t, database, configuredIdentity); items != int64(seeded) || current != 0 || lacking != int64(seeded) || oldest == nil {
-		t.Fatalf("coverage before Run: items %d current %d lacking %d oldest %v, want %d, 0, %d and an age", items, current, lacking, oldest, seeded, seeded)
+		t.Fatalf("coverage after one recount, before Run: items %d current %d lacking %d oldest %v, want %d, 0, %d and an age", items, current, lacking, oldest, seeded, seeded)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
