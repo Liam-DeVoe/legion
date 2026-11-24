@@ -371,7 +371,7 @@ var (
 // store keys it by: `<ref_key>#<block>` for a document's block, `<kind>/<uuid>#<block>` for an
 // item's (refs.ParseItemBlockNode).
 func searchPageAndTailSQL(legsSource string, seen int) string {
-	return searchPageAndTailReading(legsSource, searchPresentTexts, seen)
+	return searchPageAndTailReading(legsSource, searchPresentTexts, "", seen)
 }
 
 // searchPresentTexts is the page's lateral join that gives each hit the text its snippet is cut
@@ -395,16 +395,25 @@ const searchPresentTexts = `  -- Mirrors the kind arms in kinds above (issue/doc
 // searchPageAndTailReading is searchPageAndTailSQL with texts, the lateral join that gives each
 // hit of the page the text its snippet is cut from (txt.text): searchPresentTexts, or at a cut
 // searchAsOfTexts. texts, like legsSource, is always one of this package's own constants.
-func searchPageAndTailReading(legsSource, texts string, seen int) string {
+//
+// shown is empty for every statement of the present, and the page is the CTE `page`. At a cut it
+// is searchAsOfShown: the ranked page is then `ranked_page`, and shown, which this text follows
+// with nothing but the select, defines `page` over it, with the columns a hit only shows read for
+// the page's own rows. An empty shown leaves the text as it was before the hook existed.
+func searchPageAndTailReading(legsSource, texts, shown string, seen int) string {
 	visibleBlock := refs.VisibleEnd(`case r.kind when 'document' then 'block' else r.kind || '_block' end`,
 		`case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id`,
 		true, searchParam(seen))
-	return fmt.Sprintf(`page as (
+	page := "page"
+	if shown != "" {
+		page = "ranked_page"
+	}
+	return fmt.Sprintf(`%[4]s as (
   select l.*, f.score, f.own_lead
     from %[1]s l join fused f using (kind, id)
    order by f.score desc, case when f.own_lead then l.id end, l.updated_at desc, l.id
    limit $3 offset $6
-)
+)%[5]s
 select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 'issue' else 'document' end,
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
@@ -445,7 +454,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
-`, legsSource, texts, visibleBlock)
+`, legsSource, texts, visibleBlock, page, shown)
 }
 
 // searchQuery scores every kind of content on one list, so a page holds the query's best matches
@@ -554,11 +563,12 @@ func searchParam(number int) string {
 // with an exclusion (searchKindsCTE): every CTE it reads q from and the page. seen is the
 // parameter the acting credential is bound at, which every caller numbers after its own.
 func searchQueryBody(keywordLegs, fused, exclude string, seen int) string {
-	return searchQueryBodyReading(keywordLegs, fused, exclude, searchPresentTexts, seen)
+	return searchQueryBodyReading(keywordLegs, fused, exclude, searchPresentTexts, "", seen)
 }
 
-// searchQueryBodyReading is searchQueryBody with the page's texts (searchPageAndTailReading).
-func searchQueryBodyReading(keywordLegs, fused, exclude, texts string, seen int) string {
+// searchQueryBodyReading is searchQueryBody with the page's texts and shown
+// (searchPageAndTailReading).
+func searchQueryBodyReading(keywordLegs, fused, exclude, texts, shown string, seen int) string {
 	return searchKindsCTE(keywordLegs, exclude, seen) + `ranked as (
   select *, row_number() over (partition by kind order by own desc, r desc, updated_at desc, id) as pos,
          count(*) over (partition by kind) as matches
@@ -571,7 +581,7 @@ legs as (
   select (select coalesce(sum(matches), 0) from (select max(matches) as matches from legs group by kind) each_kind) as total,
          (select count(*) from fused) as reachable
 ),
-` + searchPageAndTailReading("legs", texts, seen)
+` + searchPageAndTailReading("legs", texts, shown, seen)
 }
 
 // searchWindowLimit is the LIMIT a window arm's candidate CTE takes, searchWindowCandidates as
@@ -886,7 +896,7 @@ meaning_ask_candidates as (
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
-` + searchMeaningMessageProjection + searchMeaningRankedPage(keywordLegs, fused, exclude, searchPresentTexts, seen)
+` + searchMeaningMessageProjection + searchMeaningRankedPage(keywordLegs, fused, exclude, searchPresentTexts, "", seen)
 }
 
 // searchMeaningIssueProjection, searchMeaningDocumentProjection, searchMeaningAskProjection and
@@ -935,9 +945,10 @@ var (
 
 // searchMeaningRankedPage is a meaning statement after its meaning arms: kinds, the keyword legs
 // unioned with the five meaning arms; each list's ranking and depth; fused, as the caller scores;
-// one row per item; the totals; and the page, its snippets cut from texts
-// (searchPageAndTailReading). seen is the parameter the acting credential is bound at.
-func searchMeaningRankedPage(keywordLegs, fused, exclude, texts string, seen int) string {
+// one row per item; the totals; and the page, its snippets cut from texts and the columns a hit
+// shows read by shown (searchPageAndTailReading). seen is the parameter the acting credential is
+// bound at.
+func searchMeaningRankedPage(keywordLegs, fused, exclude, texts, shown string, seen int) string {
 	return searchKindsCTE(keywordLegs+`
   union all select * from meaning_issue
   union all select * from meaning_document
@@ -960,7 +971,7 @@ totals as (
   select (select count(*) from (select distinct kind, id from kinds) u) as total,
          (select count(*) from fused) as reachable
 ),
-` + searchPageAndTailReading("legs_unique", texts, seen)
+` + searchPageAndTailReading("legs_unique", texts, shown, seen)
 }
 
 // searchMeaningCommentArm is searchQueryMeaningBody's comment arm. It is two arms, not one,
@@ -1159,30 +1170,88 @@ const searchMeaningCommentJoinedProjection = `meaning_comment as (
 //     (store.TextVersions, the CTE text_versions) in place of the items' search columns. Each arm
 //     matches and ranks the version of the item that held at the cut. A comment or a message
 //     that has a present deleted_at gives no hit (decision 14).
+//   - The keyword arms of comments, asks and messages read each post's issue at the cut once for
+//     all its matched posts, and a post's own columns from its present row; a column a write
+//     changes they read from the shadow only where a filter or the page needs it
+//     (searchAsOfPosts, searchAsOfShown).
 //   - The document arm reads each document's newest version at the cut (searchAsOfDocumentLegs).
-//   - The issue arm by key and the row filters read the shadows.
-//   - A meaning arm keeps a window only when its item did not change after the cut, and only a
-//     window embedded at or before the cut (searchAsOfMeaningBody).
+//   - The issue arms read the issues shadow, and every row filter reads the state at the cut.
+//   - A meaning arm walks its windows nearest first and keeps a window only when its item did not
+//     change after the cut, and only a window embedded at or before the cut (searchAsOfMeaningBody).
 //   - Each hit's snippet comes from the text of its item at the cut (searchAsOfTexts).
 //
 // A search at a cut does not broaden (D2): search_term_stats counts the present text only.
 
-// searchAsOfVersions is the members of a past-time statement's WITH list after q: text_versions,
-// the keyword table at the cut, and text_matched, its versions that the query matches. The
-// keyword arms read text_matched, the arm of the issues the query names by key and the snippets
-// read text_versions. text_versions is NOT MATERIALIZED, so that each read of it reaches the
-// table's indexes. text_matched is MATERIALIZED: it reads the table's GIN index once, with the
-// query of q, and each arm then joins its shadows for its matches alone. As one relation joined
-// by each arm, the planner took the table's versions at the cut as the outer side, for an
-// estimate of a few dozen rows (it cannot read how many versions a later version ends), joined
-// each version to its item's shadow, and tested the match last: on a copy of production's event
-// log, every comment of a cut, and more than two minutes for a search at the newest cut.
-// It carries each match's rank (searchKeywordRank) in place of its vector, so its rows are small.
+// searchAsOfVersions is the members of a past-time statement's WITH list after q:
+//
+//   - text_versions, the keyword table at the cut. It is NOT MATERIALIZED, so that each read of
+//     it reaches the table's indexes. The arm of the issues the query names by key, the meaning
+//     arms and the snippets read it.
+//   - text_matched, its versions that the query matches, which the keyword arms read. It is
+//     MATERIALIZED: it reads the table's GIN index once, with the query of q. As one relation
+//     joined by each arm, the planner took the table's versions at the cut as the outer side, for
+//     an estimate of a few dozen rows (it cannot read how many versions a later version ends),
+//     joined each version to its item's shadow, and tested the match last: on a copy of
+//     production's event log, every comment of a cut, and more than two minutes for a search at
+//     the newest cut. It carries each match's rank (searchKeywordRank) in place of its vector, so
+//     its rows are small, and not the relation's deleted_at, which the relation reads from the
+//     post's present row by its primary key and text_posts reads from that row itself.
+//   - text_posts and text_issues, the matched posts and their issues at the cut (searchAsOfPosts).
 func searchAsOfVersions(versions store.TextVersions) string {
 	return "text_versions as not materialized " + versions.SQL() + ",\n" +
-		"text_matched as materialized (select v.kind, v.id, v.deleted_at, " + searchKeywordRank("v.search") +
-		" as r from text_versions v, q where v.search @@ q.tsq),\n"
+		"text_matched as materialized (select v.kind, v.id, " + searchKeywordRank("v.search") +
+		" as r from text_versions v, q where v.search @@ q.tsq),\n" + searchAsOfPosts
 }
+
+// searchAsOfPosts is text_posts and text_issues, which the keyword arms of comments, asks and
+// messages read in place of the shadows of their items and of the items' issues.
+//
+// text_posts is each matched version of a comment, an ask or a message, with the post's columns
+// that no write changes after its insert - id, issue_key, artifact_id, author and created_at, as
+// asof's commentsShadow, asksShadow and messagesShadow name them - read from its present row
+// (public.comments, public.asks, public.messages) by its primary key, and a comment or a message
+// whose present row has a deleted_at left out (decision 14; the relation's own deleted_at is that
+// column of that row). The version at the cut proves the post was there at the cut: a post's
+// first version starts at the event that made it, and a version holds at the cut only once it has
+// started. So the present row stands for the shadow's in every column the arms rank and filter by.
+//
+// text_issues is each issue at the cut (the issues shadow) that a post of text_posts names, read
+// once however many of its posts match, and each post arm joins it in place of the shadow.
+//
+// Measured on a copy of production's event log, the keyword-only statement for `issue` at the
+// copy's newest event (2026-11-24T13:41:25.812227Z): 55,084 versions match, 38,588 of them
+// comments, 13,376 messages, 2,644 asks and 476 issues, and the 55,326 posts belong to 8,695
+// issues. With each match joined to its post's shadow and its issue's, the comments shadow probed
+// events_comment_state 38,588 times (7.0 s on a first run, 0.5 s on a second) and the issues
+// shadow read events_issue_state and events_issue_activity 38,381 times for the comments alone
+// (about 3.8 s and 1.5 s), and the statement took 31.1 s and 7.7 s. Read here, the issues shadow
+// is read for 8,695 issues, and a post's shadow only where a filter or the page needs a column a
+// write changes: its edited_at inside the updated_since filter (searchAsOfEditedAt), an ask's
+// typed block inside the project filter when its issue does not decide it (searchAsOfAskProject),
+// and the columns a hit shows (searchAsOfShown). The same EXPLAIN (ANALYZE, BUFFERS), run twice
+// back to back on that copy before and after this change, where the second run of the old
+// statement still read 215,231 blocks from outside shared_buffers: 37.3 s and 31.2 s before,
+// 20.3 s and 3.3 s after. Of the 20.3 s, text_matched took 7.3 s, text_posts 6.5 s and
+// text_issues 4.8 s; of the 3.3 s, 0.8 s, 0.9 s and 0.4 s.
+var searchAsOfPosts = `text_posts as materialized (
+  select 'comment' as kind, c.id, c.issue_key, c.artifact_id, c.author, c.created_at, v.r
+    from text_matched v join public.comments c on c.id = ` + store.CanonicalUUID(`v.id`) + `
+   where v.kind = 'comment' and c.deleted_at is null
+  union all
+  select 'ask', k.id, k.issue_key, k.artifact_id, k.author, k.created_at, v.r
+    from text_matched v join public.asks k on k.id = ` + store.CanonicalUUID(`v.id`) + `
+   where v.kind = 'ask'
+  union all
+  select 'message', m.id, m.issue_key, null::uuid, m.author, m.created_at, v.r
+    from text_matched v join public.messages m on m.id = ` + store.CanonicalUUID(`v.id`) + `
+   where v.kind = 'message' and m.deleted_at is null
+),
+text_issues as materialized (
+  select i.key, i.project_key, i.title, i.status, i.updated_at
+    from issues i
+   where i.key in (select p.issue_key from text_posts p)
+),
+`
 
 // searchAsOfLiteral is the cut of versions as a timestamptz literal (asof.Cut.Literal). It comes
 // from the time value alone, never from the text of a request, as the relation writes it.
@@ -1190,13 +1259,16 @@ func searchAsOfLiteral(versions store.TextVersions) string {
 	return asof.CutAt(versions.Cut).Literal()
 }
 
-// searchAsOfKeywordLegs is searchKeywordLegs at a cut: the same arms, columns, filters and rank
-// (searchKeywordRank), over the version of each item at the cut that the query matches
-// (text_matched v, searchAsOfVersions, which carries each match's rank as v.r) in place of the
-// item's search column. Each arm joins the item's shadow by the version's id, for the columns the
-// row carries and the filters. The id of a comment, a message or an ask is a uuid as text, read
-// through a guarded cast, so a version of another kind never fails the statement.
-func searchAsOfKeywordLegs() string {
+// searchAsOfKeywordLegs is searchKeywordLegs at the cut, a timestamptz literal: the same arms,
+// filters and rank (searchKeywordRank), over the version of each item at the cut that the query
+// matches (text_matched, searchAsOfVersions, which carries each match's rank as r) in place of the
+// item's search column. The issue arm joins the issues shadow by the version's id. The comment,
+// ask and message arms read text_posts and text_issues (searchAsOfPosts): what ranks a row, scores
+// it and orders the page (own, r, updated_at and id) and what the filters read comes from there.
+// The columns a hit only shows that a write changes - a comment's document as its anchor names
+// it, an ask's documents and its typed block - are null here and read for the page's rows alone
+// (searchAsOfShown).
+func searchAsOfKeywordLegs(cut string) string {
 	rank := searchKeywordRank("v.search")
 	return `
   select 'issue' as kind, 'keyword' as list, i.key as issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, i.key as id, null::text as block_id,
@@ -1216,53 +1288,79 @@ func searchAsOfKeywordLegs() string {
    where i.key = named.key and v.kind = 'issue' and v.id = i.key and ($2 = '' or i.project_key = $2)` +
 		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
   union all
-` + searchAsOfDocumentLegs() + `
+` + searchAsOfDocumentLegs(cut) + `
   union all
-  select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, coalesce(c.artifact_id, (c.anchor->>'artifact_id')::uuid), c.id::text, null::text,
+  select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, null::uuid, c.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, p.key, a.slug, a.name,
          coalesce(i.updated_at, c.created_at),
-         false, v.r
-    from text_matched v
-    join comments c on c.id = ` + store.CanonicalUUID(`v.id`) + `
-    left join issues i on i.key = c.issue_key
+         false, c.r
+    from text_posts c
+    left join text_issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
-   where v.kind = 'comment' and v.deleted_at is null and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
+   where c.kind = 'comment' and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
+		searchRowFilters("i.status", "c.author", "coalesce("+searchAsOfEditedAt("comments", "c")+", c.created_at)") + `
   union all
-  select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
-         coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
+  select 'ask' as kind, 'keyword', k.issue_key, null::uuid, null::uuid, k.id::text, null::text,
          null::text, null::text[],
-         i.title, i.status, p.key, a.slug, a.name, coalesce(i.updated_at, k.created_at),
-         false, v.r
-    from text_matched v
-    join asks k on k.id = ` + store.CanonicalUUID(`v.id`) + `
-    left join issues i on i.key = k.issue_key
-    left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
-    left join projects p on p.key = a.project_key, q
-   where v.kind = 'ask' and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-		searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
+         i.title, i.status, null::text, null::text, null::text, coalesce(i.updated_at, k.created_at),
+         false, k.r
+    from text_posts k
+    left join text_issues i on i.key = k.issue_key, q
+   where k.kind = 'ask' and ($2 = '' or ` + searchAsOfAskProject + ` = $2)` +
+		searchRowFilters("i.status", "k.author", "coalesce("+searchAsOfEditedAt("asks", "k")+", k.created_at)") + `
   union all
   select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, null::text, null::text, null::text, i.updated_at,
-         false, v.r
-    from text_matched v
-    join messages m on m.id = ` + store.CanonicalUUID(`v.id`) + `
-    join issues i on i.key = m.issue_key, q
-   where v.kind = 'message' and v.deleted_at is null and ($2 = '' or i.project_key = $2)` +
-		searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)")
+         false, m.r
+    from text_posts m join text_issues i on i.key = m.issue_key, q
+   where m.kind = 'message' and ($2 = '' or i.project_key = $2)` +
+		searchRowFilters("i.status", "m.author", "coalesce("+searchAsOfEditedAt("messages", "m")+", m.created_at)")
 }
 
-// searchAsOfDocumentLegs is searchDocumentKeywordLeg at a cut: each document's newest version at
-// the cut, the newest artifact_versions row whose insert began at or before the cut (the shadow),
-// read through artifact_versions_artifact_id_number_key. A document whose newest version at the
-// cut is its present newest one is read through document_search, whose GIN index holds that
-// version's vector (migration 20261101182447, trigger 20261101182454). Every other document is
-// read version by version, and its version's own search column is tested, which no index holds.
-// Both arms carry the present arm's columns, filters and rank.
-func searchAsOfDocumentLegs() string {
+// searchAsOfEditedAt is the edited_at at the cut of the post aliased post (a row of text_posts),
+// read from table's shadow (comments, asks or messages) by the post's id. It is the one column the
+// row filters read of a post that a write changes, and only the updated_since filter reads it,
+// which searchRowFilters writes as `q.updated_since is null or ...`: a search that does not narrow
+// by that filter stops at the first term and reads no shadow of a post for it.
+func searchAsOfEditedAt(table, post string) string {
+	return "(select x.edited_at from " + table + " x where x.id = " + post + ".id)"
+}
+
+// searchAsOfAskProject is the project the ask aliased k (a row of text_posts) belongs to at the
+// cut, as the present ask arm reads it, coalesce(i.project_key, p.key): its issue's (i, a row of
+// text_issues), else the project of the document coalesce(artifact_id, block_artifact_id) names,
+// which is its own document where it has one, else the document its typed block was in at the
+// cut. A write changes block_artifact_id, so the asks shadow gives it. coalesce evaluates no value
+// after the first that is not null, and an ask has an issue or a document of its own, never both
+// (asks_one_owner), so the shadow is read only for an ask whose issue is not at the cut.
+var searchAsOfAskProject = `coalesce(i.project_key, (
+           select p.key from artifacts a join projects p on p.key = a.project_key
+            where a.id = coalesce(k.artifact_id, (select b.block_artifact_id from asks b where b.id = k.id))))`
+
+// searchAsOfDocumentLegs is searchDocumentKeywordLeg at the cut, a timestamptz literal: each
+// document's newest version at the cut, the newest artifact_versions row with markdown whose
+// insert began at or before the cut (the shadow). document_search holds each document's present
+// newest version with markdown, and its created_at is that version's: trigger 20261101182454 and
+// store.FillDocumentSearch both copy it from the version, and the boot's fill gives every document
+// with markdown its row before the server serves. So a document's newest version at the cut is its
+// present newest one exactly when that row's created_at is at or before the cut, and the two arms
+// split the documents on it:
+//
+//   - At or before the cut: the row's own version, matched through document_search's GIN index.
+//   - After the cut: the newest version at the cut, read through
+//     artifact_versions_artifact_id_number_key, its own search column tested, which no index
+//     holds.
+//
+// Each arm compares the row's created_at with the cut in place of reading the document's newest
+// version at the cut to compare numbers: the second arm read it for every document, 43,910 probes
+// of artifact_versions_artifact_id_number_key and 1.6 s of the first run of the keyword-only
+// statement for `issue` at the newest event of a copy of production's event log, to find the
+// documents whose newest version came later, of which that cut has none. Both arms carry the
+// present arm's columns, filters and rank.
+func searchAsOfDocumentLegs(cut string) string {
 	columns := `  select 'document' as kind, 'keyword', a.issue_key, case when a.issue_key is null then a.id else null::uuid end, a.id, a.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, p.key, a.slug, a.name,
@@ -1273,25 +1371,20 @@ func searchAsOfDocumentLegs() string {
     join artifacts a on a.id = v.artifact_id
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key, q
-   where a.kind = 'doc' and v.search @@ q.tsq and ($2 = '' or p.key = $2)
-     and v.number = (select max(n.number) from artifact_versions n where n.artifact_id = a.id and n.markdown is not null)` +
+   where a.kind = 'doc' and v.search @@ q.tsq and ($2 = '' or p.key = $2) and v.created_at <= ` + cut +
 		searchRowFilters("i.status", "a.created_by", "v.created_at") + `
   union all
 ` + columns + `
-    from artifacts a
+    from document_search d
+    join artifacts a on a.id = d.artifact_id
     cross join lateral (select n.number, n.created_at, n.search from artifact_versions n
                          where n.artifact_id = a.id and n.markdown is not null
                          order by n.number desc limit 1) v
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key, q
-   where a.kind = 'doc' and v.search @@ q.tsq and ($2 = '' or p.key = $2)
-     and not exists (select from document_search d where d.artifact_id = a.id and d.number = v.number)` +
+   where a.kind = 'doc' and d.created_at > ` + cut + ` and v.search @@ q.tsq and ($2 = '' or p.key = $2)` +
 		searchRowFilters("i.status", "a.created_by", "v.created_at")
 }
-
-// searchAsOfKeywordLegsSQL is searchAsOfKeywordLegs, which reads the cut from text_versions and
-// the shadows alone, so one text serves every cut.
-var searchAsOfKeywordLegsSQL = searchAsOfKeywordLegs()
 
 // searchAsOfTexts is the page's texts at a cut (searchPageAndTailReading): a document hit's
 // newest version at the cut (the artifact_versions shadow), and every other hit's version in the
@@ -1306,14 +1399,56 @@ const searchAsOfTexts = `  -- At a cut, each hit's text as it stood at the cut: 
   ) txt on true
 `
 
+// searchAsOfShown is the page at a cut (searchPageAndTailReading's shown): the ranked page, with
+// the columns a comment's or an ask's hit shows read for the page's rows alone, from the shadows.
+// They are the columns a write changes - a comment's anchor, an ask's typed block and the
+// document it is in - which the keyword arms leave null (searchAsOfKeywordLegs), since reading
+// them there read the shadow of every match. No order reads them, so reading them after the page
+// is cut moves no row. They are what the present arms answer: a comment's document, its own or
+// its anchor's; an ask's owner document where it has no issue, its document (its own, its block's
+// or its anchor's), its typed block while that block is a node of the graph (askBlockNodeSQL), and
+// the project, slug and name of its own or its block's document. A meaning arm's row carries the
+// same values from the same shadows, so its rows take them from here too.
+var searchAsOfShown = `,
+page as (
+  select r.kind, r.issue_key,
+         case r.kind when 'ask' then shown_ask.owner_artifact_id else r.owner_artifact_id end as owner_artifact_id,
+         case r.kind when 'ask' then shown_ask.artifact_id when 'comment' then shown_comment.artifact_id else r.artifact_id end as artifact_id,
+         r.id, case r.kind when 'ask' then shown_ask.block_id else r.block_id end as block_id, r.covers,
+         r.issue_title, r.issue_status,
+         case r.kind when 'ask' then shown_ask.owner_project else r.owner_project end as owner_project,
+         case r.kind when 'ask' then shown_ask.owner_slug else r.owner_slug end as owner_slug,
+         case r.kind when 'ask' then shown_ask.owner_name else r.owner_name end as owner_name,
+         r.updated_at, r.score, r.own_lead
+    from ranked_page r
+    left join lateral (
+      select case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) end as owner_artifact_id,
+             coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `) as artifact_id,
+             ` + askBlockNodeSQL + ` as block_id,
+             p.key as owner_project, a.slug as owner_slug, a.name as owner_name
+        from asks k
+        left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+        left join projects p on p.key = a.project_key
+       where r.kind = 'ask' and k.id = ` + store.CanonicalUUID(`r.id`) + `
+      offset 0
+    ) shown_ask on true
+    left join lateral (
+      select coalesce(c.artifact_id, (c.anchor->>'artifact_id')::uuid) as artifact_id
+        from comments c
+       where r.kind = 'comment' and c.id = ` + store.CanonicalUUID(`r.id`) + `
+      offset 0
+    ) shown_comment on true
+)`
+
 // searchAsOfQuery is searchQuery at the cut of versions: the same parameters, the acting
 // credential at searchSeenParam among them, over the keyword legs at the cut
-// (searchAsOfKeywordLegs) and their texts (searchAsOfTexts). Which nodes the acting person may see
-// is read as it stands now (refs.VisibleKind and refs.VisibleEnd over graph_nodes, which keeps no
-// history), so a past-time search answers no node the reader may not see today.
+// (searchAsOfKeywordLegs), their texts (searchAsOfTexts) and the page that reads what a hit shows
+// (searchAsOfShown). Which nodes the acting person may see is read as it stands now
+// (refs.VisibleKind and refs.VisibleEnd over graph_nodes, which keeps no history), so a past-time
+// search answers no node the reader may not see today.
 func searchAsOfQuery(versions store.TextVersions) string {
 	return searchQOpener(9) + searchAsOfVersions(versions) +
-		searchQueryBodyReading(searchAsOfKeywordLegsSQL, searchFusedSQL, "", searchAsOfTexts, searchSeenParam)
+		searchQueryBodyReading(searchAsOfKeywordLegs(searchAsOfLiteral(versions)), searchFusedSQL, "", searchAsOfTexts, searchAsOfShown, searchSeenParam)
 }
 
 // searchAsOfMeaningQuery is searchQueryMeaning at the cut of versions: the same seventeen
@@ -1340,98 +1475,155 @@ func searchAsOfMeaningQuery(versions store.TextVersions) string {
 //     space and ask_search_suffix of its options and answer), and a post has no present
 //     deleted_at.
 //
-// The keyword legs are the ones at the cut (searchAsOfKeywordLegs), and the snippets come from
-// the texts at the cut (searchAsOfTexts). seen is the parameter the acting credential is bound at:
-// each candidate CTE binds its own kind's visibility predicate before its limit, as
-// searchQueryMeaningBody's do, so a node the acting person may not see takes no place in the cut.
+// Each arm walks its windows nearest first and tests each one as the scan hands it up
+// (searchAsOfWindows): the test holds what the arm's joins and filters held, so the arm's limit
+// counts the windows that pass them all, in the same order, and the arm then joins the item's
+// columns to the windows it kept. The arm joined those tables inside its ordered, limited select,
+// and the order of the joins was the planner's, which keeps no statistics of an expression of a
+// window's id: on TestAsOfMeaningCostOnASyntheticCorpus's corpus at scale 0.01, at its newest
+// event, it read the comments first, expecting 1 and getting 1,478, and read all 2,796 comment
+// windows again for each of them, 16,991 ms of a 20,786 ms statement, so every search with meaning
+// at that cut ended at searchMeaningStatementBound and answered 500. Walked so, the statement for
+// one of the test's words at that cut, EXPLAIN (ANALYZE, BUFFERS) with the server's search
+// settings and no time limit, took 2,245 ms on a first run and 358 ms on a second, against
+// 25,301 ms and 24,066 ms before.
+//
+// The keyword legs are the ones at the cut (searchAsOfKeywordLegs), the snippets come from the
+// texts at the cut (searchAsOfTexts) and the page reads what a hit shows (searchAsOfShown). seen
+// is the parameter the acting credential is bound at: each walk's test binds its own kind's
+// visibility predicate, as searchQueryMeaningBody's candidate CTEs do before their limits, so a
+// node the acting person may not see takes no place in the cut.
 func searchAsOfMeaningBody(cut string, seen int) string {
 	project := meaningOneProjectJoined.candidateProject
 	return `meaning_issue_candidates as (
-  select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
-         1 - (e.embedding <=> $9::vector) as r
-    from embeddings e
-    join issues i on i.key = e.id
-    join text_versions v on v.kind = 'issue' and v.id = e.id
-    join public.issues present_issue on present_issue.key = e.id
-    left join public.artifacts present_spec on present_spec.issue_key = present_issue.key and present_spec.is_primary, q
-   where e.kind = 'issue' and e.embedding is not null and e.model = $11 and e.embedded_at <= ` + cut + `
-     and v.body = present_issue.title and v.spec_artifact_id is not distinct from present_spec.id
-     and v.spec_version is not distinct from (select max(n.number) from public.artifact_versions n where n.artifact_id = present_spec.id)
-     and ` + refs.VisibleKind("issue", "i.key", searchParam(seen)) +
-		project("i.project_key") + searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
-   order by e.embedding <=> $9::vector
-   limit $7
+  select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at, w.r
+    from ` + searchAsOfWindows("issue", cut, `e.id`, `
+                from issues i
+                join text_versions v on v.kind = 'issue' and v.id = i.key
+                join public.issues present_issue on present_issue.key = i.key
+                left join public.artifacts present_spec on present_spec.issue_key = present_issue.key and present_spec.is_primary, q
+               where i.key = e.id
+                 and v.body = present_issue.title and v.spec_artifact_id is not distinct from present_spec.id
+                 and v.spec_version is not distinct from (select max(n.number) from public.artifact_versions n where n.artifact_id = present_spec.id)
+                 and `+refs.VisibleKind("issue", "i.key", searchParam(seen))+
+		project("i.project_key")+searchRowFilters("i.status", "i.created_by", "i.updated_at"), "limit $7") + `
+    join issues i on i.key = w.item
 ),
 ` + searchMeaningIssueProjection + `meaning_document_candidates as (
-  select a.issue_key, a.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
-         coalesce(i.updated_at, v.created_at) as updated_at,
-         1 - (e.embedding <=> $9::vector) as r
-    from embeddings e
-    join artifacts a on a.id = ` + windowOwnerUUID + `
+  select a.issue_key, a.id, w.window_id, w.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
+         coalesce(i.updated_at, v.created_at) as updated_at, w.r
+    from ` + searchAsOfWindows("document_block", cut, windowOwnerUUID, `
+                from artifacts a
+                left join issues i on i.key = a.issue_key
+                join projects p on p.key = a.project_key
+                join lateral (select v.number, v.created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
+               where a.id = `+windowOwnerUUID+` and a.kind = 'doc'
+                 and v.number = (select max(n.number) from public.artifact_versions n where n.artifact_id = a.id)
+                 and `+refs.VisibleKind("artifact", "a.ref_key", searchParam(seen))+
+		project("p.key")+searchRowFilters("i.status", "a.created_by", "v.created_at"), searchWindowLimit) + `
+    join artifacts a on a.id = w.item
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key
-    join lateral (select v.number, v.created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
-   where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11 and e.embedded_at <= ` + cut + `
-     and v.number = (select max(n.number) from public.artifact_versions n where n.artifact_id = a.id)
-     and ` + refs.VisibleKind("artifact", "a.ref_key", searchParam(seen)) +
-		project("p.key") + searchRowFilters("i.status", "a.created_by", "v.created_at") + `
-   order by e.embedding <=> $9::vector
-   ` + searchWindowLimit + `
+    join lateral (select v.created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true
 ),
 ` + searchMeaningDocumentProjection + `meaning_comment_candidates as (
-  select c.issue_key, c.artifact_id, c.anchor, c.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
-         coalesce(i.updated_at, c.created_at) as updated_at,
-         1 - (e.embedding <=> $9::vector) as r
-    from embeddings e
-    join comments c on c.id = ` + windowItemUUID + `
-    join text_versions v on v.kind = 'comment' and v.id = c.id::text
-    join public.comments present_comment on present_comment.id = c.id
+  select c.issue_key, c.artifact_id, c.anchor, c.id, w.window_id, w.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
+         coalesce(i.updated_at, c.created_at) as updated_at, w.r
+    from ` + searchAsOfWindows("comment_block", cut, windowItemUUID, `
+                from comments c
+                join text_versions v on v.kind = 'comment' and v.id = c.id::text
+                join public.comments present_comment on present_comment.id = c.id
+                left join issues i on i.key = c.issue_key
+                left join artifacts a on a.id = c.artifact_id
+                left join projects p on p.key = a.project_key, q
+               where c.id = `+windowItemUUID+`
+                 and v.deleted_at is null and v.body = present_comment.body
+                 and `+refs.VisibleKind("comment", "c.id::text", searchParam(seen))+
+		project(searchMeaningCommentProject)+searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)"), searchWindowLimit) + `
+    join comments c on c.id = w.item
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
-    left join projects p on p.key = a.project_key, q
-   where e.kind = 'comment_block' and e.embedding is not null and e.model = $11 and e.embedded_at <= ` + cut + `
-     and v.deleted_at is null and v.body = present_comment.body
-     and ` + refs.VisibleKind("comment", "c.id::text", searchParam(seen)) +
-		project(searchMeaningCommentProject) + searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
-   order by e.embedding <=> $9::vector
-   ` + searchWindowLimit + `
+    left join projects p on p.key = a.project_key
 ),
 ` + searchMeaningCommentJoinedProjection + `,
 meaning_ask_candidates as (
-  select k.issue_key, k.artifact_id, k.block_artifact_id, k.anchor, k.id, ` + askBlockNodeSQL + ` as block_id, e.id as window_id, e.covers,
+  select k.issue_key, k.artifact_id, k.block_artifact_id, k.anchor, k.id, ` + askBlockNodeSQL + ` as block_id, w.window_id, w.covers,
          i.title as issue_title, i.status as issue_status,
-         p.key as owner_project, a.slug as owner_slug, a.name as owner_name, coalesce(i.updated_at, k.created_at) as updated_at,
-         1 - (e.embedding <=> $9::vector) as r
-    from embeddings e
-    join asks k on k.id = ` + windowItemUUID + `
-    join text_versions v on v.kind = 'ask' and v.id = k.id::text
-    join public.asks present_ask on present_ask.id = k.id
+         p.key as owner_project, a.slug as owner_slug, a.name as owner_name, coalesce(i.updated_at, k.created_at) as updated_at, w.r
+    from ` + searchAsOfWindows("ask_part", cut, windowItemUUID, `
+                from asks k
+                join text_versions v on v.kind = 'ask' and v.id = k.id::text
+                join public.asks present_ask on present_ask.id = k.id
+                left join issues i on i.key = k.issue_key
+                left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+                left join projects p on p.key = a.project_key, q
+               where k.id = `+windowItemUUID+`
+                 and v.body = present_ask.question || ' ' || ask_search_suffix(present_ask.options, present_ask.answer)
+                 and `+refs.VisibleKind("ask", "k.id::text", searchParam(seen))+
+		project("coalesce(i.project_key, p.key)")+searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)"), searchWindowLimit) + `
+    join asks k on k.id = w.item
     left join issues i on i.key = k.issue_key
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
-    left join projects p on p.key = a.project_key, q
-   where e.kind = 'ask_part' and e.embedding is not null and e.model = $11 and e.embedded_at <= ` + cut + `
-     and v.body = present_ask.question || ' ' || ask_search_suffix(present_ask.options, present_ask.answer)
-     and ` + refs.VisibleKind("ask", "k.id::text", searchParam(seen)) +
-		project("coalesce(i.project_key, p.key)") + searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
-   order by e.embedding <=> $9::vector
-   ` + searchWindowLimit + `
+    left join projects p on p.key = a.project_key
 ),
 ` + searchMeaningAskProjection + `meaning_message_candidates as (
-  select m.issue_key, m.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, i.updated_at,
-         1 - (e.embedding <=> $9::vector) as r
-    from embeddings e
-    join messages m on m.id = ` + windowItemUUID + `
-    join text_versions v on v.kind = 'message' and v.id = m.id::text
-    join public.messages present_message on present_message.id = m.id
-    join issues i on i.key = m.issue_key, q
-   where e.kind = 'message_block' and e.embedding is not null and e.model = $11 and e.embedded_at <= ` + cut + `
-     and v.deleted_at is null and v.body = present_message.body
-     and ` + refs.VisibleKind("message", "m.id::text", searchParam(seen)) +
-		project("i.project_key") + searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)") + `
-   order by e.embedding <=> $9::vector
-   ` + searchWindowLimit + `
+  select m.issue_key, m.id, w.window_id, w.covers, i.title as issue_title, i.status as issue_status, i.updated_at, w.r
+    from ` + searchAsOfWindows("message_block", cut, windowItemUUID, `
+                from messages m
+                join text_versions v on v.kind = 'message' and v.id = m.id::text
+                join public.messages present_message on present_message.id = m.id
+                join issues i on i.key = m.issue_key, q
+               where m.id = `+windowItemUUID+`
+                 and v.deleted_at is null and v.body = present_message.body
+                 and `+refs.VisibleKind("message", "m.id::text", searchParam(seen))+
+		project("i.project_key")+searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)"), searchWindowLimit) + `
+    join messages m on m.id = w.item
+    join issues i on i.key = m.issue_key
 ),
-` + searchMeaningMessageProjection + searchMeaningRankedPage(searchAsOfKeywordLegsSQL, searchFusedSQL, "", searchAsOfTexts, seen)
+` + searchMeaningMessageProjection + searchMeaningRankedPage(searchAsOfKeywordLegs(cut), searchFusedSQL, "", searchAsOfTexts, searchAsOfShown, seen)
+}
+
+// searchAsOfWindows is one meaning arm's walk at the cut, under the alias w: the windows of
+// embeddings of kind embedded at or before the cut with the query's model, nearest to the query's
+// embedding ($9) first, each kept only when check holds of it, until limit of them are kept. check
+// is the from list and the where clause of a select over the window e: the window's item, its
+// version at the cut, its present row and the arm's filters, which the arm joined and filtered
+// before. Each kept window carries its id, its covers, its similarity r and item, an expression
+// over e that gives the key the arm joins its item by.
+//
+// The test is a scalar subquery in the walk's where clause, and the walk has embeddings for its one
+// table, so no plan can read the item side first and the windows again for each item, whatever the
+// planner estimates of a join: the test runs once for each window the scan hands up. An EXISTS
+// would not hold that: the planner turns an EXISTS of the where clause into a semi-join, a join
+// whose order is its own again. LIMIT 1 holds the test to one row, which its keys already do.
+//
+// The ORDER BY and the LIMIT stand beside the scan, at the level of the one table, because only
+// there does the planner price a walk by embeddings_cosine knowing that the LIMIT ends it early.
+// A walk fenced in a subquery of its own (OFFSET 0), with the tests joined above it and the LIMIT
+// outside, is planned for every row of the subquery: on the synthetic corpus at scale 0.01 the
+// comment arm so fenced was planned to read all 2,796 comment windows and sort them. Here, where
+// embeddings_cosine is the cheaper walk, the plan is a Limit over an Index Scan of
+// embeddings_cosine whose filter is the test, and the walk stops once limit windows have passed;
+// where the kind holds few windows against the limit, the planner reads them all through
+// embeddings_kind_project, tests each once and sorts those that pass, which is linear in the
+// kind's windows too. At scale 0.01, at the newest cut, the document arm (12,807 windows against
+// a limit of 1,000) walks embeddings_cosine and stops at 1,000; the issue arm (135 windows
+// against 100), the comment arm (2,796 against 1,000), the ask arm (177) and the message arm
+// (562) read their kind's windows, and no arm of the present statement takes embeddings_cosine at
+// that scale either. Priced out of sorting (enable_sort off), every arm there walks
+// embeddings_cosine, and the issue arm's walk takes 3,156 ms on a first run and 258 ms on a
+// second to find its 100 windows among the corpus's 16,477, where the read of its 135 takes 72 ms
+// and 12 ms.
+func searchAsOfWindows(kind, cut, item, check, limit string) string {
+	return `(
+      select e.id as window_id, e.covers, ` + item + ` as item, 1 - (e.embedding <=> $9::vector) as r
+        from embeddings e
+       where e.kind = '` + kind + `' and e.embedding is not null and e.model = $11 and e.embedded_at <= ` + cut + `
+         and (select true` + check + `
+               limit 1)
+       order by e.embedding <=> $9::vector
+       ` + limit + `
+    ) w`
 }
 
 // searchAskBlocksMovedStatement reads, of the asks whose ids $1 holds (uuid[]), the id of each
