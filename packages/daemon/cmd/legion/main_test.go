@@ -1733,8 +1733,10 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made
 // it is in none; with no agent in a call the line says so.
 func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
+	// No admission block: the line reads the claims alone, and an issue at implementing holds a
+	// slot (record.PhaseKeepsSlot), which an empty `active` would deny.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+		`"pendingStatusWrites":[]`
 	// The architect's call ended; the implementer's has a start and no end, which is the shape a
 	// turn that stopped moving leaves behind.
 	open := `"step":{"at":"2026-09-23T01:14:00Z","turnStartedAt":"2026-09-23T01:10:00Z","tool":"bash",` +
@@ -1786,8 +1788,9 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 // opened before this release, which carries the implementer and a wake the daemon no longer reads
 // (LEGION-208's), from one the project's `production_check` opened for the tester (LEGION-209's).
 // `nextWakeAt` is whichever names that look, the time the checking agent asked for (LEGION-209's,
-// inside its bound) or the check's bound where no agent's time stands (LEGION-208's). With none
-// open the line says so.
+// inside its bound) or the check's bound where no agent's time stands (LEGION-208's). An agent's
+// time stands only between looks, since a look's start clears it (workflow's startLook), so
+// LEGION-209's look 1 is closed. With none open the line says so.
 func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -1796,7 +1799,7 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 		`"mergeCommit":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","openedAt":"2026-10-19T09:00:00Z","role":"implementer","looks":2,"lookOpen":false,` +
 		`"lastWake":{"kind":"issue.deployed","detail":"run 77 completed 2026-10-19T10:00:00Z","at":"2026-10-19T10:00:05Z"},"nextWakeAt":"2026-11-02T09:00:00Z","last":false}}`
 	newer := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"done","status":"done","check":{"repo":"sjawhar/legion","pullRequest":1302,` +
-		`"mergeCommit":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","openedAt":"2026-10-19T11:00:00Z","role":"tester","looks":1,"lookOpen":true,` +
+		`"mergeCommit":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","openedAt":"2026-10-19T11:00:00Z","role":"tester","looks":1,"lookOpen":false,` +
 		`"lastWake":{"kind":"merge","detail":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","at":"2026-10-19T11:00:00Z"},"nextWakeAt":"2026-10-20T11:00:00Z","last":false}}`
 	for _, tc := range []struct {
 		name, issues, want string
@@ -1842,17 +1845,21 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 //   - a read time and no merge state -> `read <time> with no merge state`
 //   - no merge state and no read time -> `no read recorded for this head`
 func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
+	// No admission block: the line reads the issues alone, and an issue at reviewing or
+	// implementing holds a slot (record.PhaseKeepsSlot), which an empty `active` would deny.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+		`"pendingStatusWrites":[]`
 	// Two waits holding a merge state and a read time: LEGION-208's `headUpdatedAt` is the day
 	// before and its read an hour ago, LEGION-209's head time this morning and its read a minute
-	// ago, so the older head is the one named although its read is the older too.
+	// ago, so the older head is the one named although its read is the older too. Each pull
+	// request view names the merge state its wait names, since the daemon reads both from one
+	// column of the record (projection's Project and mergeWaitView).
 	oldest := `"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"reviewing","status":"needs_review",` +
 		`"pullRequest":{"repo":"acme/widgets","number":1301,"head":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","state":"open","mergeState":"blocked","reviewDecision":"approved"},` +
 		`"mergeWait":{"waitsOn":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","mergeState":"blocked","stateReadAt":"2026-10-19T09:00:00Z",` +
 		`"headUpdatedAt":"2026-10-18T14:00:00Z","checkRuns":2,"toldHead":"a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0","toldState":"blocked"}}`
 	newer := `"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"reviewing","status":"needs_review",` +
-		`"pullRequest":{"repo":"acme/widgets","number":1302,"head":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","state":"open","reviewDecision":"approved"},` +
+		`"pullRequest":{"repo":"acme/widgets","number":1302,"head":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","state":"open","mergeState":"behind","reviewDecision":"approved"},` +
 		`"mergeWait":{"waitsOn":"b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1","mergeState":"behind","stateReadAt":"2026-10-19T09:59:00Z",` +
 		`"headUpdatedAt":"2026-10-19T08:00:00Z","checkRuns":4}}`
 	// A wait holding no merge state, no read time and no `headUpdatedAt`, which sorts it behind
@@ -1942,13 +1949,14 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 	}
 }
 
-// An operator reading plain `legion state` is told which roots gave their slot up to wait on a
-// person, how many of them a person answered and the daemon's own published waiting line still
-// names, and each by key with what it waits on: an unanswered one is
-// in neither admission list, so without this line the capacity it freed looks idle.
+// An operator reading plain `legion state` is told which roots wait on a person, how many of them
+// a person answered and the daemon's own published waiting line still names, and each by key with
+// what it waits on: such a root keeps its slot while it waits (record.PhaseKeepsSlot), so `active`
+// alone does not say what it waits for. The state carries no admission block, since the line
+// reads the issues alone and each root here would stand in `active`.
 func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
-		`"admission":{"cap":2,"active":[],"waiting":["LEGION-211"]},"pendingStatusWrites":[]`
+		`"pendingStatusWrites":[]`
 	gate := `"LEGION-210":{"key":"LEGION-210","generation":1,"phase":"awaiting_person","status":"in_progress",` +
 		`"waitingOn":{"kind":"gate","gateVersion":3,"artifactId":"spec-210","since":"2026-10-25T10:00:00Z"}}`
 	asked := `"LEGION-211":{"key":"LEGION-211","generation":1,"phase":"awaiting_person","status":"in_progress",` +
@@ -2745,8 +2753,11 @@ func TestPlainStateGivesEachDurableConsumersLag(t *testing.T) {
 // however many there are; with none the line says
 // so. Nothing here is the daemon's to clear, so the line names them and stops.
 func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
+	// The line reads `blocked` alone, so the state names nothing else of the admission block and no
+	// `issues`: the daemon lists an issue in `active`, `waiting` or `blocked` only beside its record
+	// in `issues` (projection's Project), which an empty object would deny.
 	admission := func(blocked string) string {
-		return `"admission":{"cap":2,"active":["LEGION-208"],"waiting":["LEGION-211"],"blocked":` + blocked + `}`
+		return `"admission":{"cap":2,"blocked":` + blocked + `}`
 	}
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},`
 	for _, tc := range []struct {
@@ -2766,7 +2777,7 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 		{name: "none", blocked: `[]`, want: "blocked on Dispatch links: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + admission(tc.blocked) + `,"issues":{},"pendingStatusWrites":[]}`
+			served := "{" + daemon + admission(tc.blocked) + `,"pendingStatusWrites":[]}`
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(served))
@@ -2794,8 +2805,11 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 // a reader the line from the held lifecycle rows the same output prints below it. A grep of the
 // source would pass on a comment, so this reads what the command prints.
 func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
+	// The line reads `held` alone, so the state names no `active`, `waiting` or `issues`: the
+	// daemon lists an issue in any of the three lists only beside its record in `issues`
+	// (projection's Project, record.HeldList), which an empty object would deny.
 	admission := func(held string) string {
-		return `"admission":{"cap":2,"active":["LEGION-208"],"waiting":["LEGION-211"],"blocked":[],"held":` + held + `}`
+		return `"admission":{"cap":2,"blocked":[],"held":` + held + `}`
 	}
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},`
 	for _, tc := range []struct {
@@ -2816,17 +2830,19 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 		{
 			// The two holds of an owner's plan stand after accepted_ancestor and before at_work and
 			// unclassified in the ladder, so they are counted there, whatever order the rows come in.
+			// LEGION-218 stands under LEGION-215, whose stopped task holds it from retro: that counts
+			// as accepted, and LEGION-216's hold before its retro does not (record.Accepted).
 			name: "the two holds of a plan, in the ladder's order",
 			held: `[{"issue":"LEGION-214","reason":"unclassified"},` +
 				`{"issue":"LEGION-215","reason":"task_stopped"},` +
 				`{"issue":"LEGION-216","reason":"children_before_retro","heldBy":["LEGION-217"]},` +
-				`{"issue":"LEGION-218","reason":"accepted_ancestor","heldBy":["LEGION-216"]}]`,
+				`{"issue":"LEGION-218","reason":"accepted_ancestor","heldBy":["LEGION-215"]}]`,
 			want: "admission.held: 4 issues — accepted_ancestor 1, children_before_retro 1, task_stopped 1, unclassified 1\n",
 		},
 		{name: "none", held: `[]`, want: "admission.held: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			served := "{" + daemon + admission(tc.held) + `,"issues":{},"pendingStatusWrites":[]}`
+			served := "{" + daemon + admission(tc.held) + `,"pendingStatusWrites":[]}`
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(served))
