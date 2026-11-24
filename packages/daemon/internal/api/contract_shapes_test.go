@@ -717,7 +717,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerIntakeReplay: {roots: typesOf(IntakeReplayResponse{}), bodies: []any{goldenIntakeReplay}},
 		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
 		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
-		// A set of the cap by the controller's regulator (contract 247): the cap in force, the
+		// A set of the cap by the controller's regulator (contract 268): the cap in force, the
 		// ceiling, and the cap that stands with who set it, when, why and at which tick, every key
 		// the answer can carry. A clear answers no override.
 		AnswerAdmissionCap: {roots: typesOf(AdmissionCapResponse{}), bodies: []any{AdmissionCapResponse{Cap: 5, Ceiling: 8,

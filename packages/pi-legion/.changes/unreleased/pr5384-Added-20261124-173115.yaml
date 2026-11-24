@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-    Daemon API contract 247: the controller's `legion` tool gains `set_admission_cap` (`cap`,
+    Daemon API contract 268: the controller's `legion` tool gains `set_admission_cap` (`cap`,
     `reason`, optional `decision_id`) and `clear_admission_cap` (`reason`, optional
     `decision_id`), which move the project's admission cap while the daemon runs, up to the
     deployment's ceiling, with no restart. `read_state`'s summary names the cap in force, the

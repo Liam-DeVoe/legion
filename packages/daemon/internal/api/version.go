@@ -3542,7 +3542,77 @@ package api
 // main's 228 that no other open pull request declares. Read main's own number and every open head
 // again at the next merge rather than from this line.)
 //
-// 247: dispatch://INFRA-5616 -- the controller changes the project's admission cap while the
+// 246: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
+// body) carries `podHold`, the standing hold of the issue's pod: why the
+// idle rule keeps that pod past the idle period. It is `{reason, firstAt, at, detail}`: `reason`
+// is the rule's own word for the hold (workflow.IdleHold's String, as the daemon's hold records
+// spell it), `firstAt` the first pass of the hold's streak, `at` its newest pass, and `detail`
+// what that word leaves out, cut to its first 200 characters and absent where the record holds
+// none. The daemon reads it from `pod_holds` in the state's own snapshot, one statement for the
+// whole project (store.StandingPodHoldsTx), and writes the key only for an issue whose pod a hold
+// stands on: a pod the rule has not held, one it released and one whose streak a later pass ended
+// carry none. A plugin below 246 reads each issue with a strict schema that names no `podHold`,
+// so a caller below 246 is served every issue without it (shaping.go's podHoldContract and
+// withoutPodHold, its row of stateNarrowings). The caller is placed as 193 places every caller of
+// the state: a plugin from 228 to 245 states its contract and is served 228's keys. No enumerated
+// field arrives: `reason` is a string a reader takes whole, so a hold a later rule adds is read
+// rather than refused. `packages/contracts/src/legion-api.ts` mirrors the key on its issue and
+// takes each of its four members as optional, since no plugin code reads them
+// (LEGION_ANSWER_READS).
+// (This entry took 221 at first, the lowest number above main's 205 that no open pull request
+// declared at a reading of every open pull request of cybermonklabs/legion that ended at
+// 2026-11-22T04:57Z. 220 to 222 had been named for three changes, #4930 among them, and 223 for
+// #4805, before each of them declared its number, so 221 was taken twice. This entry moved to 224,
+// the lowest number above 223 that no open pull request declares and that no change had been named
+// for. A reading of every open pull request that ended at 2026-11-22T06:08:16Z found 206 (#3712
+// and #4940), 207 (#3993 and #4432), 208 (#4175), 209 (#4049), 210 (#4661), 211 (#2230), 212
+// (#4030, #4392, #4540 and #4580), 213 (#4553), 214 (#4592), 215 (#4065 and #4596), 216 (#4173,
+// #4180, #4182, #4193, #4259 and #4932), 217 (#4273, #4590 and #4771), 218 (#3831), 219 (#4611),
+// 220 (#4930), 221 (this change at its first number) and 223 (#4805) declared, and none above 223.
+// The forward merge of 2026-11-24 that brought in e14345bf brought main's 228 (INFRA-1575's entry,
+// over 213, 217, 219 and 220). A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// each open pull request whose files touch this file, made between 2026-11-24T09:38:10Z and
+// 09:42:57Z, found 229 (#2230), 230 (#4580), 231 (#4540), 233 (#4173, #4180, #4182, #4193 and
+// #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592),
+// 240 (#3831 and #5271), 241 (#4771 and #5307), 242 (#4596) and 243 (#5349) declared, and 244 had
+// been named for another change before it declared it, so this entry moved to 245, above every
+// number an open pull request declares or a change had been named for. A second reading, between
+// 2026-11-24T11:29:31Z and 11:32:10Z, found 245 declared by #5158 as well, with 244 (#3831 and
+// #5365), 243 (#5349) and 242 (#4596) below it, so this entry moved to 246, above every number an
+// open pull request declares.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b2 brought main's 232 (INFRA-4508's
+// entry, right above this one), and a reading of the open heads that change this file, between
+// 2026-11-24T12:30:11Z and 12:32:24Z, found 246 declared by this change alone (245 by #5158,
+// 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
+// again at every forward merge rather than from this line.)
+//
+// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
+// `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
+// or null for none; and each member's `waitingLine` carries `priority`, the priority that placed
+// it in the line (its own, else its tree root's), null for a member neither it nor its root has a
+// priority for, whose band stands after P3. The records of 250 hold `issues.*.priority` and
+// `issues.*.waitingLine.priority`, and no record below 250 does: a caller whose contract (the one
+// it states, else its pod's) is below 250 is served every issue without either key (the band of
+// shaping.go's stateNarrowings, `withoutPriority`). Two values change meaning at every contract
+// and move no shape: `waitingLine.partPlace` and `partLength` count within the member's priority
+// band and part rather than within the part across the whole line, and `admission.waiting` and
+// each member's `place` follow the new order, which no reader enumerates. (This entry took 221
+// when main declared 220, with no reading of the other open pull requests. A reading of `const
+// DaemonAPIVersion` at the head commit of each open pull request that changes this file or whose
+// file list GitHub cut short (138 of 500), made between 2026-11-24T09:14:34Z and 09:17:00Z, found
+// every number from 221 to 243 declared and nothing above, so this entry moved to 244. The
+// forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (#4590's entry
+// above). A second reading (137 of 498), made between 09:35:23Z and 09:40:15Z, found 221 to 227,
+// 229 to 231 and 233 to 243 declared and nothing above 243, so this entry kept 244. Then #3831
+// took 244, the numbers from 245 to 249 were given to other changes, and this entry moved to 250.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b23a brought main's 232 (#5271's entry
+// above), below 250, so this entry kept 250. The forward merge of 2026-11-24 that brought in
+// 7e75126fae brought main's 246 (#4960's entry above), below 250, so this entry kept 250. Read
+// main's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 268: dispatch://INFRA-5616 -- the controller changes the project's admission cap while the
 // daemon runs, with no pull request and no restart, up to the deployment's ceiling. Four routes:
 // the controller's `POST /legion/v1/project/admission-cap` (`{grantId, cap, reason, decisionId?}`)
 // and `POST /legion/v1/project/admission-cap/clear` (`{grantId, reason, decisionId?}`), which take a
@@ -3574,7 +3644,7 @@ package api
 // until fewer issues than it hold a slot. A set of the cap that stands, and a clear where none
 // stands, change nothing: they append no row, and the daemon logs one Debug line for each. The
 // controller's two routes answer `{cap, ceiling, override?}` (`api.AdmissionCapResponse`,
-// answers.go's AnswerAdmissionCap, whose routes arrive with it, so no contract below 247 records
+// answers.go's AnswerAdmissionCap, whose routes arrive with it, so no contract below 268 records
 // either); the operator's answer the same body to the `legion` command, which no plugin parses.
 // `cap` is the cap the passes admit under, `ceiling` the deployment's, and `override`, `{cap,
 // setBy, setAt, reason, decisionId?}` with `setBy` a pause's actor view (`{kind: controller,
@@ -3586,16 +3656,17 @@ package api
 // reads (dispatch://INFRA-5616/spec#b-r7-tick-log, dispatch://INFRA-979/spec#b-r39), so its names
 // are held as they stand. `admission.cap`, which every reader has typed since before the floor, now says the cap
 // the passes admit under where it said the configured cap, the same number until a cap is set.
-// The records of 247 hold the three keys, and no record below 247 does: a caller whose contract
-// (the one it states, else its pod's) is below 247 is served the admission without them (the band
+// The records of 268 hold the three keys, and no record below 268 does: a caller whose contract
+// (the one it states, else its pod's) is below 268 is served the admission without them (the band
 // of shaping.go's stateNarrowings, `withoutAdmissionCap`). `settings.admission_cap` stays the
 // configured value, the ceiling. No value of an enumerated field moves: the actor's `kind` is a
 // discriminator read with a `z.literal`, as the pause's is.
-// (This entry took 243 at first, then 247, which Main assigned after a reading of all 492 open
-// heads between 2026-11-24T11:05Z and 11:09Z. The forward merge that brought in 87204559 brought
-// main's 232, the entry above. INFRA-3118's architect, who allocates the numbers of this tree,
-// moved cybermonklabs/legion#4580 from 247 to 257 at 15:50:02Z, so this change, #5384, keeps 247.
-// From this entry the last number of answers.go's SupportedContracts is
-// `api.admissionCapContract`, after 232. Read main's own number and every open head again at the
-// next merge rather than from this line.)
-const DaemonAPIVersion = 247
+// (This entry took 243 at first, then 247. The forward merge of 2026-11-24 that brought in
+// ebfaa2d2 brought main's 250 (#5365, the entry above), which is above that number. A reading of all 488
+// open heads between 2026-11-24T18:20:02Z and 18:23:37Z, 140 of which change this file, found
+// 246 to 257, 261, 262 and 265 declared, and INFRA-3118's architect, who allocates the numbers
+// of this tree, reserved 258 to 260 and 263 to 267 for changes not pushed yet and gave this
+// change, #5384, 268 at 18:26:29Z. From this entry the last number of answers.go's
+// SupportedContracts is `api.admissionCapContract`, after `priorityContract`. Read main's own
+// number and every open head again at the next merge rather than from this line.)
+const DaemonAPIVersion = 268

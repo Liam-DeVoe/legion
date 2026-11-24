@@ -70,11 +70,7 @@ A free slot or a full cap is no reason to take, label, admit or park an issue: a
 
 A slot is one issue the daemon started, a root or a child. Free slots are `admission.cap`, less every issue in `admission.active`, less each issue of `admission.waiting` in neither `admission.active` nor `admission.blocked`. A returned issue goes before an unstarted one whatever their ranks, by design ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). The lists and `admission.held` words: `skill://legion-controller/references/admission.md`.
 
-`admission.cap` is the cap in force: `admission.ceiling` (legion.yaml's `admission_cap`) unless a cap set while the daemon runs stands in `admission.override`, with who set it, when and why.
-Change it only where a person's words ask for the change, and cite those words in `reason`: `set_admission_cap` (`cap`, `reason`) or `clear_admission_cap` (`reason`).
-The change is in force at the next admission pass with no restart, and a lower cap stops nothing that runs.
-A cap above `admission.ceiling` is refused: ask the operator to raise `admission_cap` in legion.yaml.
-`admission.capChanges` lists the newest changes, each with the cap before and after it.
+Change the admission cap only where a person's words ask for the change, and cite those words in `reason`: `skill://legion-controller/references/admission.md#the-admission-cap`.
 
 Every move to `todo` you make is one of these:
 
