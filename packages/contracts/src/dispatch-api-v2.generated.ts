@@ -1077,7 +1077,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read one issue: its own fields, and artifacts, each of its documents, files and images in creation order as GET /api/v2/issues/{key}/artifacts lists them. include= adds, each as a member of its name: progress {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none; open_asks, its open asks, oldest first, each as GET /api/v2/asks answers it; children, its direct children, each with a rollup of its subtree; design_gates, the document each design-gate step records and whether the deployment's gate holds the issue's tree on it, null where the daemon said nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; and referenced_by_count, how many references to it stand. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description Read one issue: its own fields, and artifacts, each of its documents, files and images in creation order as GET /api/v2/issues/{key}/artifacts lists them. include= adds, each as a member of its name: progress {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none; open_asks, its open asks, oldest first, each as GET /api/v2/asks answers it; children, its direct children, each with a rollup of its subtree; design_gates, the document each design-gate step records and whether the deployment's gate holds the issue's tree on it, null where the daemon said nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; referenced_by_count, how many references to it stand; and legion {issue, project, configured, state, read, runs_revision}, its Legion state from what the sampler recorded of the daemon of its project, the body a /ws/live legion_issue view of it carries. In legion, configured is whether that project names a Legion daemon, state is null where the daemon does not record the issue and otherwise {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}, read is the newest read of the daemon {at, ok, error} or null where none was recorded, and runs_revision counts the tuples of its runs, 0 with no run, and grows with each write of a run that stores something new. A project that names no daemon is not refused: its issue answers configured false, state null and read null. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKey"];
     put?: never;
     post?: never;
@@ -4648,6 +4648,7 @@ export interface components {
       key: string;
       labels: string[] | null;
       last_seq: number;
+      legion?: components["schemas"]["LegionIssueResponse"];
       number: number;
       open_asks?: components["schemas"]["AskV2"][];
       parent: null | string;
@@ -4907,6 +4908,65 @@ export interface components {
       kind: string;
       /** Format: date-time */
       since: null | string;
+    };
+    LegionIssueRead: {
+      /** Format: date-time */
+      at: string;
+      error: null | string;
+      ok: boolean;
+    };
+    LegionIssueResponse: {
+      configured: boolean;
+      issue: string;
+      project: string;
+      read: components["schemas"]["LegionIssueRead"] | null;
+      /** Format: int64 */
+      runs_revision: number;
+      state: components["schemas"]["LegionIssueState"] | null;
+    };
+    LegionIssueState: {
+      blocked_by: string[] | null;
+      phase: string;
+      /** Format: date-time */
+      phase_since: string;
+      phase_start_seen: boolean;
+      roles: components["schemas"]["LegionRoleClaim"][] | null;
+      slot: null | number;
+      waiting_line: components["schemas"]["LegionIssueWaitingLine"] | null;
+      waiting_on:
+        | ({
+            /**
+             * Format: date-time
+             * @description an RFC3339 timestamp
+             */
+            answeredAt?: string;
+            /** @description how the wait was answered, once it was, and not always by a person */
+            answeredBy?: string;
+            /** @description for a gate, the id of the document whose version no person has reviewed */
+            artifactId?: string;
+            /** @description for an ask, the id of the oldest question of the issue's tree still with a person */
+            ask?: string;
+            /** @description for a gate, the spec version no person has reviewed */
+            gateVersion?: number;
+            /** @description the kind of wait: ask, gate, or a kind a later daemon names */
+            kind: string;
+            /**
+             * Format: date-time
+             * @description an RFC3339 timestamp
+             */
+            since?: string;
+          } & {
+            [key: string]: unknown;
+          })
+        | null;
+    };
+    LegionIssueWaitingLine: {
+      length: number;
+      place: number;
+    };
+    LegionRoleClaim: {
+      role: string;
+      state: string;
     };
     LegionSetting: {
       created_by: components["schemas"]["Actor"];
@@ -9899,6 +9959,7 @@ export interface operations {
           | "design_gates"
           | "reach"
           | "referenced_by_count"
+          | "legion"
         )[];
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
@@ -14745,6 +14806,11 @@ export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
 export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
+export type LegionIssueRead = components["schemas"]["LegionIssueRead"];
+export type LegionIssueResponse = components["schemas"]["LegionIssueResponse"];
+export type LegionIssueState = components["schemas"]["LegionIssueState"];
+export type LegionIssueWaitingLine = components["schemas"]["LegionIssueWaitingLine"];
+export type LegionRoleClaim = components["schemas"]["LegionRoleClaim"];
 export type LegionSetting = components["schemas"]["LegionSetting"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type LogPageOfEvent = components["schemas"]["LogPageOfEvent"];

@@ -7,10 +7,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -18,7 +20,8 @@ func init() { addTourSteps("issues", issuesTourSteps) }
 
 // issuesTourSteps are the route tour's steps of the issue routes: each
 // route, the list with its cross-project filters and its route_status cut, the read with every
-// include=, the patch of the design gates alone, and the checks read with the commit at= names.
+// include= and with the Legion state a daemon recorded, the patch of the design gates alone, and
+// the checks read with the commit at= names.
 func issuesTourSteps() []tourStep {
 	alice := tourPerson("alice")
 	issueMissing := []tourMissing{{Param: "key", Value: "NOPE-404", Code: apicode.IssueNotFound}}
@@ -125,8 +128,19 @@ func issuesTourSteps() []tourStep {
 				tour.ask(t, issue)
 				return tourRequest{
 					Path:  map[string]string{"key": issue.Key},
-					Query: url.Values{"include": {"open_asks,children,progress,design_gates,reach,referenced_by_count"}}, As: alice,
+					Query: url.Values{"include": {"open_asks,children,progress,design_gates,reach,referenced_by_count,legion"}}, As: alice,
 				}
+			},
+			Missing: issueMissing,
+		},
+		{
+			// The legion member of an issue whose project names a daemon that recorded it: a state
+			// and a read, where every include's step answers its project's configured false body.
+			Method: http.MethodGet, Pattern: "/issues/{key}", Name: "with the Legion state its daemon recorded", Status: http.StatusOK,
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				issue := tour.issue(t)
+				tour.legionState(t, issue)
+				return tourRequest{Path: map[string]string{"key": issue.Key}, Query: url.Values{"include": {"legion"}}, As: alice}
 			},
 			Missing: issueMissing,
 		},
@@ -267,6 +281,29 @@ func (tour *routeTour) projectOf(t *testing.T, issue tourIssue) string {
 		t.Fatalf("read the project of %s: %v", issue.Key, err)
 	}
 	return project
+}
+
+// legionState names a Legion daemon for issue's project and records, as the sampler records a
+// good read of it, the issue waiting on a person: its phase, its slot, a claim in a turn and one
+// idle, the ask it waits on, a waiting line and a blocker naming it, and the read itself.
+func (tour *routeTour) legionState(t *testing.T, issue tourIssue) {
+	t.Helper()
+	project := tour.projectOf(t, issue)
+	nameLegionDaemon(t, tour.handler, project, "http://legion-tour.example:13370")
+	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	for field, value := range map[string]string{
+		legion.FieldPhase:                     `"awaiting_person"`,
+		legion.FieldSlot:                      `0`,
+		legion.ClaimFieldPrefix + "architect": `"working"`,
+		legion.ClaimFieldPrefix + "planner":   `"idle"`,
+		legion.FieldWaitingOn:                 `{"kind":"ask","ask":"6f1c0f8e-3d4b-4a8e-9f51-2b7c1d9e0a11","since":"2026-11-20T08:30:00Z"}`,
+	} {
+		seedLegionObservation(t, tour.database, project, issue.Key, field, value, at)
+	}
+	seedLegionObservation(t, tour.database, project, legion.AdmissionKey, legion.FieldAdmission, `{"cap": 2, "active": ["`+
+		issue.Key+`"], "waiting": ["`+project+`-7", "`+issue.Key+`"], "blocked": [{"issue": "`+issue.Key+`", "blockedBy": ["`+
+		project+`-9"]}]}`, at)
+	seedLegionRead(t, tour.database, project, at, "")
 }
 
 // claim claims issue for alice through /api/v1.

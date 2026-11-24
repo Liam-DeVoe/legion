@@ -117,6 +117,7 @@ GET /api/v1/issues/{key}/events
 GET /api/v1/issues/{key}/handoffs
 POST /api/v1/issues/{key}/handoffs/{phase}
 GET /api/v1/issues/{key}/handoffs/{phase}/latest
+GET /api/v1/issues/{key}/legion # #5300, one issue's Legion state, its live view and the runs' revision
 GET /api/v1/issues/{key}/messages
 POST /api/v1/issues/{key}/messages
 GET /api/v1/issues/{key}/messages/{id}

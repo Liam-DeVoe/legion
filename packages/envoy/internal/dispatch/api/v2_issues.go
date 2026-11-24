@@ -184,8 +184,15 @@ func (s *server) v2IssueRows() []routeRow {
 				"nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, " +
 				"holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its " +
 				"claim is in, read from the Envoy listener, each null where there is none or the listener did not answer; " +
-				"and referenced_by_count, how many references to it stand. 404 ISSUE_NOT_FOUND for an issue that does not " +
-				"exist.",
+				"referenced_by_count, how many references to it stand; and legion {issue, project, configured, state, read, " +
+				"runs_revision}, its Legion state from what the sampler recorded of the daemon of its project, the body a " +
+				"/ws/live legion_issue view of it carries. In legion, configured is whether that project names a Legion " +
+				"daemon, state is null where the daemon does not record the issue and otherwise {phase, phase_since, " +
+				"phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}, read is the newest read of the daemon " +
+				"{at, ok, error} or null where none was recorded, and runs_revision counts the tuples of its runs, 0 with no " +
+				"run, and grows with each write of a run that stores something new. A project that names no daemon is not " +
+				"refused: its issue answers configured false, state null and read null. 404 ISSUE_NOT_FOUND for an issue " +
+				"that does not exist.",
 			Handler:  s.getIssueV2,
 			Resource: "issues", Kind: kindItem, Key: "{key}",
 			Query:    issueReadV2Query{},
@@ -625,7 +632,7 @@ type projectIssuesV2Query struct {
 
 // issueReadV2Query is GET /api/v2/issues/{key}'s query.
 type issueReadV2Query struct {
-	Include []string `query:"include,comma" enum:"open_asks,children,progress,design_gates,reach,referenced_by_count"`
+	Include []string `query:"include,comma" enum:"open_asks,children,progress,design_gates,reach,referenced_by_count,legion"`
 }
 
 // issueReadV2 is GET /api/v2/issues/{key}'s answer (the route map's J3): the issue's own fields
@@ -648,6 +655,10 @@ type issueReadV2 struct {
 	Reach *issueReachV2 `json:"reach,omitempty"`
 	// ReferencedByCount is how many references to the issue stand, with include=referenced_by_count.
 	ReferencedByCount *int `json:"referenced_by_count,omitempty"`
+	// Legion is the issue's Legion state, with include=legion: the body GET
+	// /api/v1/issues/{key}/legion answers and a legion_issue live view carries (readLegionIssue),
+	// so its runs_revision is the one that view moves on.
+	Legion *legionIssueResponse `json:"legion,omitempty"`
 }
 
 // issueReachV2 is what the Envoy listener says of an issue (include=reach): where its route reaches
@@ -1062,6 +1073,14 @@ func (s *server) getIssueV2(w http.ResponseWriter, r *http.Request) {
 			reach.IssueClaimLiveness = roster.claimLiveness(parts.issue.Claim, time.Now())
 		}
 		answer.Reach = &reach
+	}
+	if wants("legion") {
+		state, err := s.readLegionIssue(r.Context(), key)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		answer.Legion = &state
 	}
 	WriteJSON(w, http.StatusOK, answer)
 }
