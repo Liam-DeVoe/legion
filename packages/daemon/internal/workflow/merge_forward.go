@@ -182,8 +182,8 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil || pr == nil || !classify.ConflictRound(*pr) {
 		return err
 	}
-	if worker, held := heldWorker(*pr, record.StandsAt(issue)); held {
-		return e.holdWorker(ctx, tx, issue, pr, worker)
+	if held, err := e.holdStartedWorker(ctx, tx, issue, pr); err != nil || held {
+		return err
 	}
 	asked := pr.MergeForward
 	switch {
@@ -212,8 +212,26 @@ func heldWorker(pr record.PullRequest, at phase.Phase) (claim.Role, bool) {
 	return record.MergeForwardWorker(record.MergeForwardHold, at)
 }
 
+// holdStartedWorker holds the worker that has just started in the phase issue stands at, where
+// the record holds another role's open merge forward of the head pr stands at in a confirmed
+// conflict (classify.ConflictRound, heldWorker), and answers whether it did. It is the one rule
+// of every start of a phase's worker: a move's (mergeForwardOnEntry), and the architect's retry of
+// a held phase and the operator's restart of a phase's worker (retryPhase), whose worker the first
+// hold may never have reached, since a hold to a claim that failed ends undelivered, or reached in
+// a session the restart does not keep.
+func (e *Engine) holdStartedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (bool, error) {
+	if pr == nil || !classify.ConflictRound(*pr) {
+		return false, nil
+	}
+	worker, held := heldWorker(*pr, record.StandsAt(issue))
+	if !held {
+		return false, nil
+	}
+	return true, e.holdWorker(ctx, tx, issue, pr, worker)
+}
+
 // holdWorker tells worker, the worker of the phase an issue has just entered, that another role's
-// merge forward of the head stands and has not landed (mergeForwardOnEntry, heldWorker): the hold
+// merge forward of the head stands and has not landed (holdStartedWorker, heldWorker): the hold
 // (record.MergeForwardHold) has it stop writing the workspace, merge nothing where it is the
 // merger, and wait for the landed message, which mergeForwardLanded sends it as the worker of that
 // phase, with the reviewer's review of the new head where the task's reviewer step already ran.

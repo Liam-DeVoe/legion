@@ -2273,9 +2273,14 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}, freshSession); err != nil {
 		return "", err
 	}
-	// The release puts the issue back in a phase, so it queues the reconcile of the tree's news as
-	// a move does after its start (queueMovedNews). It puts the issue back in the phase the hold is
-	// from, which is no move between phases, so the merge forward stands as the hold left it.
+	// The release puts the issue back in the phase the hold is from, which is no move between
+	// phases, so the merge forward stands as the hold left it; but the worker it starts again is
+	// held as a worker a move starts is, where another role's merge forward of the head is open
+	// (holdStartedWorker). Then it queues the reconcile of the tree's news as a move does after its
+	// start (queueMovedNews).
+	if _, err := e.holdStartedWorker(ctx, tx, issue, pr); err != nil {
+		return "", err
+	}
 	return from, e.queueMovedNews(ctx, tx, issue)
 }
 
