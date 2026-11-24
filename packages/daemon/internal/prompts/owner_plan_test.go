@@ -90,8 +90,6 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				{"later version", "waits", "stopped"},
 				{"running task", "`PLAN_REFUSED`", "task <id> is running"},
 				{"running task's block", "goes on"},
-				// ... unless it moves the base of a started task's pull request.
-				{"running or held task", "moves the branch", "`PLAN_REFUSED`", "task <id> has started on the base"},
 				// A refusal changes nothing, so the same version is given again, and an issue
 				// that started before plans takes none.
 				{"changes nothing", "given again"},

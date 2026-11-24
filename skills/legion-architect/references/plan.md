@@ -31,8 +31,11 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 A task's `needs` names each task it needs, separated by spaces, each as a reference to that task's block: `dispatch://<KEY>/artifact/plan-md#b-<id>`.
 A need that names another issue is refused (`PLAN_REFUSED`): a task needs only tasks of its own plan, and an issue waits on another issue by its `blocked_by` list (`skill://legion-architect/references/decomposition.md`, "Recording a wait on other work").
 Legion starts each task with no `needs` when the issue's work starts, and each other task once every task it needs is done, from their joined work.
-Exactly one task is needed by no task: Legion runs the retro and the merge in that task alone, and the work of every task merges there as one change.
-Each other task is done when its last step passes.
+A task's work merges into the repository's default branch by itself when its block says `merges="true"` or when no task needs it.
+Each such task gets Legion's retro and merge after its last step, and is done when its merge is on the default branch.
+A task that needs such a task starts from the default branch, which holds its work.
+Every other task is done when its last step passes, and its work merges with the task that needs it.
+The issue is done when each of its tasks is done.
 This release runs one agent of each role for an issue, so give the steps of one role in several tasks the same key.
 That agent works one step at a time, and a step of another task that it works waits for it.
 
@@ -48,6 +51,7 @@ An example with five tasks:
 
 a and b start at once, and one implementer and one reviewer work the steps of all five tasks, one step at a time.
 e is the one task that no task needs: its tester tests the joined work of every task, and the whole issue merges as one change after e's retro.
+If c's block said `merges="true"`, c would get its own retro and merge, and d would start once c's work was on the default branch.
 
 Task d as its block:
 
@@ -65,7 +69,7 @@ What task d must deliver, on the joined work of tasks a and c.
 | `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
 | `tester` | testing | `testing` | Only the implementer records results against the checks, and nobody runs them again. |
 | `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. |
-| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, and nothing waits for you to read the evidence. |
+| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro of a task that merges, and nothing waits for you to read the evidence. |
 
 Without `acceptance:owner`, two steps still hold the checks:
 a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
