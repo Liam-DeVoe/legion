@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/going/bakeoff/cases.json TestSavedAnswersScoreAgainstTheCasesGiven reads the committed case set (moduleRoot, going/bakeoff/cases.json)
+
 import (
 	"bytes"
 	"errors"

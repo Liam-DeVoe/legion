@@ -1,5 +1,7 @@
 package agent
 
+//ci:reads packages/envoy/going/eval/seed.json TestThePromptsExamplesNameNoItemOfTheEvalsSeed os.ReadFile (../eval/seed.json): no prompt or tool text names a project, session or person of the eval's seed
+
 import (
 	"context"
 	"encoding/binary"

@@ -1,5 +1,7 @@
 package agent
 
+//ci:reads packages/contracts/fixtures/shown-values.json os.ReadFile (../../../contracts/fixtures/shown-values.json): TestTheModelIsGivenEachValueInTheWebsWords holds the agent's shown values to the words the web writes
+
 import (
 	"encoding/json"
 	"fmt"

@@ -1,5 +1,7 @@
 package going_test
 
+//ci:reads packages/envoy/going/bakeoff/cases.json committedCases os.ReadFile (bakeoff/cases.json), a directory of no package, for TestTheCaseSetCoversTheCatalogue and TestARandomModelScoresAtChance
+
 import (
 	"encoding/json"
 	"math"

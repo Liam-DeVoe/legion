@@ -1,5 +1,7 @@
 package eval
 
+//ci:reads packages/contracts/fixtures/shown-values.json os.ReadFile (../../../contracts/fixtures/shown-values.json): TestEachStatusWordIsThePagesWord holds the eval's status words (answer.go statusWords) to the words the web writes
+
 import (
 	"context"
 	"encoding/json"

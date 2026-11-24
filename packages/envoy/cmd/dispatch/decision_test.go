@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/going/decision_models.json TestTheRecordNamesItsChosenModel os.ReadFile (../../going/decision_models.json): the committed record names one chosen model, and each model it holds builds a decider
+
 import (
 	"encoding/json"
 	"errors"

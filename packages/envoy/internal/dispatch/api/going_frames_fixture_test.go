@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/going/* TestTheGoingFrameFixturesAreWhatTheServerWrites os.ReadFile (../../../../contracts/fixtures/going): each fixture must be the frame data the server writes on a run's stream
+
 import (
 	"bytes"
 	"encoding/json"
