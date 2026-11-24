@@ -1124,9 +1124,6 @@ export const CONTROL_LABELS = freeze({
   other_nodes: "Files and documents",
   /** Opens the Contents pane's list below 1024 px, where the pane is not drawn (R14). */
   outline: "Outline",
-  /** What the one line that folds a parent's overtaken children says after their count:
-   *  "1 overtaken", "3 overtaken". The line opens them in place and closes them again. */
-  overtaken_count: "overtaken",
   /** The pin, as the issue's actions control holds it (R13, the Design's "Where each thing
    *  goes"): it reads what pressing it does, and carries `aria-pressed` for what is so. */
   pin_issue: "Pin issue",

@@ -1,6 +1,7 @@
 import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
+import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
   GAP_WORDS,
@@ -16,16 +17,18 @@ import {
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { parseNodeReference } from "../web/src/features/refs/routes";
 import { wordsOf as readingWords } from "../web/src/features/refs/tree-fragment";
+import { getIssue } from "./api";
 import { seedWholeIssue } from "./issue-layout-seed";
 import { readTree } from "./issue-layout-seed-support";
-import { gotoIssue, issuePage, issueRead, openDetails, phase } from "./issue-page";
+import { contentsPane, gotoIssue, issuePage, issueRead, openDetails, phase } from "./issue-page";
 import {
   DESKTOP,
+  expectOpeningLanded,
   focusRow,
-  focusThePage,
   nodeRow,
   nodeRows,
   PHONE,
+  READER,
   unfoldEveryBranch,
 } from "./issue-page-g";
 import {
@@ -37,9 +40,11 @@ import {
   rowGaps,
   treeText,
 } from "./issue-page-i";
+import { contentsEntries } from "./issue-page-j";
 import { planChart, planChartRows, planView } from "./issue-page-k";
 import { withIssuePage } from "./issue-page-option";
-import { decisionsPartRows, decisionsRows } from "./issue-page-q";
+import { waitingCount } from "./issue-page-p";
+import { decisionsPartRows } from "./issue-page-q";
 import {
   convertedGate,
   type Gate,
@@ -67,15 +72,16 @@ import {
   compactMarks,
   coveredCount,
   type DrawnMark,
+  drawnOpenGate,
   FOCUSED_FACTS_GATE,
   type FoldedCount,
   filterCount,
   flagCount,
   focusedNodeFacts,
   foldedCounts,
+  graphGate,
+  graphName,
   heldUnder,
-  lineFocused,
-  lineLocator,
   NOBODY_WROTE,
   type NodeStateSeed,
   nodeHolding,
@@ -87,12 +93,12 @@ import {
   referencedByCount,
   referencesTo,
   reservedUnder,
+  STATEMENT_8_WORD,
   seedAuthorOnly,
   seedGateIssue,
   seedNodeStates,
   settleNodeApi,
   settlesSent,
-  type TreeItem,
   treeIdReads,
   treeItemsDrawn,
 } from "./issue-page-x";
@@ -102,8 +108,10 @@ import { asUser } from "./users";
 
 /**
  * The rows of a node's life on the new issue page - a proposed node marked and settled, an
- * overtaken one folded away - and of a node reserved for its author, read on the real stack
- * (`web/src/features/issue-page/node-states/`, with the helpers of `e2e/issue-page-x.ts`).
+ * overtaken one drawn open and marked, an overtaken question that stays a Contents entry and waits
+ * on nobody, each way to a node reaching an overtaken one - and of a node reserved for its author,
+ * read on the real stack (`web/src/features/issue-page/node-states/`, with the helpers of
+ * `e2e/issue-page-x.ts`).
  *
  * Each row turns the new page on for alice with `phase` (`e2e/issue-page.ts`) and checks its
  * gates first, on an issue of its own (`seedGateIssue`): the tree read is served (`treeReadGate`,
@@ -120,9 +128,13 @@ import { asUser } from "./users";
  * `@phone` row reads 1440 px on `chromium` and 390 px on `iphone` (`rowSize`). Every word a row
  * reads is the page's own word list's (`page-words.ts`), never typed here.
  *
- * Details draws the focused row's facts, and their "Referenced by" list, only where this tree
- * holds the file that draws them (`FOCUSED_FACTS_GATE`): until then a row notes those readings
- * as owed (`noteOwed`) and makes every other.
+ * What a row reads of code that is not under this head it reads behind a gate, and notes as owed
+ * where the gate is not met (`noteOwed`): Details' facts of the focused row
+ * (`FOCUSED_FACTS_GATE`), each Graph reading (`graphGate`), and each reading of a node as the page
+ * opens it with every node drawn open (`drawnOpenGate`), which row 3 is owed whole. A gate never
+ * reads what this part draws: the nodes at or under an overtaken one are left out of the page's
+ * opening, so a build that draws an overtaken node folded fails the reading of that node and does
+ * not turn it owed.
  */
 
 /** The mark of a proposed node, an overtaken one and one reserved for its reader, each as the
@@ -169,6 +181,10 @@ const WORD_BOOK: readonly string[] = [
   ),
 ];
 
+/** What no row of the page reads: a count of overtaken nodes in the words of a line that folds
+ *  them away, "1 overtaken", in the mark's word in lower case after a number. */
+const OVERTAKEN_COUNT = new RegExp(`\\d+\\s+${ROW_MARK_WORDS.overtaken.toLowerCase()}`, "u");
+
 /** The size a `@phone` row reads: 390 px on the `iphone` project, 1440 px on every other. */
 function rowSize(): { readonly height: number; readonly width: number } {
   return test.info().project.name === "iphone" ? PHONE : DESKTOP;
@@ -188,7 +204,7 @@ async function gotoSettled(page: Page, traffic: ApiRequests, address: string): P
 
 /** The id the page draws the node `readId` names under, as the poll that found it drawn read it:
  *  each poll first opens every branch a fold or the drawn levels left shut, which ends with the
- *  focus on no row. No poll opens an overtaken line: neither opener presses one. */
+ *  focus on no row. */
 async function drawnRowId(page: Page, readId: string, what: string): Promise<string> {
   const message = `the page draws no row for ${what}`;
   let id: string | null = null;
@@ -251,17 +267,22 @@ async function expectNoRawValue(page: Page, where: string): Promise<void> {
   ).toEqual([]);
 }
 
-/** The line that holds the row of `readId` in `items`: the item just above that row one level
- *  up, where it is an overtaken line; undefined where the row is not drawn or is no line's. */
-function lineHolding(items: readonly TreeItem[], readId: string): TreeItem | undefined {
-  const at = items.findIndex((item) => item.readId === readId);
-  const level = items[at]?.level ?? 0;
-  for (let above = at - 1; above >= 0; above -= 1) {
-    const item = items[above];
-    if (item === undefined || item.level >= level) continue;
-    return item.level === level - 1 && item.kind === "line" ? item : undefined;
+/** Fails where a row of the page reads a count of overtaken nodes: an overtaken node is a row at
+ *  its place, so no line stands for a parent's overtaken children. */
+async function expectNoOvertakenCount(page: Page, where: string): Promise<void> {
+  await expect(issuePage(page), `${where}, a row reads a count of overtaken nodes`).not.toHaveText(
+    OVERTAKEN_COUNT
+  );
+}
+
+/** Runs `body` with forced colours on, and puts them back. */
+async function withForcedColours(page: Page, body: () => Promise<void>): Promise<void> {
+  await page.emulateMedia({ forcedColors: "active" });
+  try {
+    await body();
+  } finally {
+    await page.emulateMedia({ forcedColors: "none" });
   }
-  return undefined;
 }
 
 /** The node `readId` of `answer`'s words, as the page reads them: the words of its reading
@@ -272,261 +293,171 @@ function wordsOf(answer: IssueTreeRead, readId: string): string {
   return node.text_tree === undefined ? node.text : readingWords(node.text_tree);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Row 1: a proposed node is marked and settled, and an overtaken one folds away.
-// ---------------------------------------------------------------------------------------------
+/** The chip inside `row` that names the node whose words are `words`. */
+function chipNaming(page: Page, row: Locator, words: string): Locator {
+  return row
+    .locator("[data-node-chip]")
+    .filter({ has: page.locator("[data-chip-name]", { hasText: chipWords(words) }) });
+}
 
-/** What row 1 reads its page with: the issue, its tree read, the id the page draws each node of
+/**
+ * Waits until the row of the node `readId` is drawn open, with a row under it for each of
+ * `under`, as the page draws a branch it holds open: `aria-expanded` true, and each of those
+ * nodes one level below it. Fails with `message`.
+ */
+async function expectDrawnOpen(
+  page: Page,
+  readId: string,
+  under: readonly string[],
+  message: string
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const items = await treeItemsDrawn(page);
+        const row = items.find((item) => item.readId === readId);
+        const below = childItems(items, row).map((item) => item.readId);
+        return {
+          expanded: row?.expanded ?? null,
+          held: under.every((id) => below.includes(id)),
+        };
+      },
+      { message, timeout: DRAWN_MS }
+    )
+    .toEqual({ expanded: "true", held: true });
+}
+
+/** What a row reads its page with: the issue, its tree read, the id the page draws each node of
  *  that read under, and the page's one watcher of its requests, made before its first load. */
-interface ProposedPage {
+interface SeededPage {
   readonly answer: IssueTreeRead;
   readonly key: string;
   readonly plain: string;
   readonly seeded: NodeStateSeed;
   readonly traffic: ApiRequests;
   readonly treeId: (readId: string) => string;
-  readonly wide: boolean;
 }
 
-/** How many statements the seed writes: twelve and the one that cites a document. */
-function statementsOf(seeded: NodeStateSeed): number {
-  return seeded.whole.requirements.length + 1;
-}
-
-/**
- * Step (1) in the outline: statement 9, live with no check, carries "No check" and no mark,
- * read before statement 7, which carries "Proposed" and its shape and no gap; check 2, the first
- * decision and plan task 1 carry "Proposed"; the chip naming statement 7 on the decision that
- * shapes it carries it in its compact form; each keeps its word and its shape with forced
- * colours; and no text is a raw value of the tree read.
- */
-async function expectProposedMarks(page: Page, { answer, seeded }: ProposedPage): Promise<void> {
-  const { ids } = seeded;
-  const statement9 = await drawnRow(page, ids.statement9, "statement 9");
-  expect(await ownMarks(statement9), "statement 9 carries no Proposed mark").toEqual([]);
-  await expect(
-    statement9.locator('[data-gap][data-gap-kind="no_check"]'),
-    "statement 9, live with no check, does not carry No check"
-  ).toContainText(GAP_WORDS.no_check);
-  const statement7 = await drawnRow(page, ids.statement7, "statement 7");
-  await expect
-    .poll(() => ownMarks(statement7), { message: "statement 7 carries Proposed" })
-    .toEqual([PROPOSED]);
-  await expect(rowGaps(statement7), "statement 7, which is proposed, draws a gap").toHaveCount(0);
-  const proposed = [
-    { readId: ids.check2, what: "check 2" },
-    { readId: ids.decision1, what: "the first decision" },
-    { readId: ids.planTask1, what: "plan task 1" },
-  ];
-  const rows = [statement7];
-  for (const { readId, what } of proposed) {
-    const row = await drawnRow(page, readId, what);
-    await expect
-      .poll(() => ownMarks(row), { message: `${what} does not carry Proposed in the outline` })
-      .toEqual([PROPOSED]);
-    rows.push(row);
-  }
-  const shaping = await drawnRow(
-    page,
-    ids.shapingDecision,
-    "the agent's decision that shapes statement 7"
-  );
-  const chip = shaping.locator("[data-node-chip]").filter({
-    has: page.locator("[data-chip-name]", {
-      hasText: chipWords(wordsOf(answer, ids.statement7)),
-    }),
-  });
-  await expect(chip, "the decision that shapes statement 7 draws no chip naming it").toHaveCount(1);
-  await expect
-    .poll(() => compactMarks(chip), {
-      message: "the chip naming statement 7 does not carry Proposed in its compact form",
-    })
-    .toEqual([PROPOSED]);
-
-  await page.emulateMedia({ forcedColors: "active" });
-  try {
-    for (const row of rows) {
-      await expect
-        .poll(() => ownMarks(row), {
-          message: "a proposed row's mark loses its word or its shape with forced colours",
-        })
-        .toEqual([PROPOSED]);
-    }
-    await expect
-      .poll(() => compactMarks(chip), {
-        message: "the chip's compact mark loses its word or its shape with forced colours",
-      })
-      .toEqual([PROPOSED]);
-  } finally {
-    await page.emulateMedia({ forcedColors: "none" });
-  }
-  await expectNoRawValue(page, "in the outline");
-}
-
-/**
- * Details' facts of statement 7 carry "Proposed", read only where Details draws the focused
- * row's facts; noted as owed otherwise.
- */
-async function expectProposedInDetails(page: Page, { seeded }: ProposedPage): Promise<void> {
-  if (!noteOwed(FOCUSED_FACTS_GATE)) return;
-  const statement7 = await drawnRowId(page, seeded.ids.statement7, "statement 7");
-  await focusRow(page, statement7);
-  await openDetails(page);
-  await expect
-    .poll(() => compactMarks(focusedNodeFacts(page)), {
-      message: "Details' facts of statement 7 do not carry Proposed",
-    })
-    .toEqual([PROPOSED]);
-}
-
-/**
- * Step (2) in the outline: statement 8 is no row and no line is open on load; its parent draws
- * its overtaken children's line after its other children, which `j` reaches, Enter opens with
- * statement 8 under it ("Overtaken", no gap, folded with its lens) and closes again; ArrowRight
- * opens it and ArrowLeft closes it at 1440 px; a press opens it; and the words filter with
- * statement 8's words draws statement 8 under its open line. Plan task 2 is no row either.
- */
-async function expectOvertakenFold(page: Page, read: ProposedPage): Promise<void> {
-  const { answer, key, plain, seeded, traffic, treeId, wide } = read;
-  const { ids } = seeded;
-  // The load draws the outline once its tree read answers, after the page itself: wait for the
-  // load to settle, as each other step does, and read the rows only once statement 7's is drawn,
-  // which opens every branch on the way (`drawnRowId`). Read before the tree read answers, the
-  // outline holds no rows; opened before the load settles, a row takes back the focus the opener
-  // leaves for the page.
+/** Opens the seeded issue on `page` with the watcher made before its first load, and answers
+ *  what a row reads it with once its tree read has answered what the seed wrote. */
+async function seededPage(page: Page, seeded: NodeStateSeed): Promise<SeededPage> {
+  const key = seeded.whole.key;
+  const plain = presetPath(key, "conversation");
+  const tree = treeAnswerOf(page);
+  const traffic = watchApiRequests(page);
   await gotoSettled(page, traffic, plain);
-  await drawnRowId(page, ids.statement7, "statement 7");
-  let items = await treeItemsDrawn(page);
-  expect(
-    items.some((item) => item.readId === ids.statement8),
-    "statement 8 is a row of the outline"
-  ).toBe(false);
-  expect(
-    items.some((item) => item.readId === ids.planTask2),
-    "plan task 2 is a row of the outline"
-  ).toBe(false);
-  expect(
-    items.filter((item) => item.kind === "line" && item.expanded !== "false").length,
-    "a path is open to an overtaken node on load"
-  ).toBe(0);
+  const answer = await heldTreeAnswer(tree, "the load", (held) =>
+    (held.nodes ?? []).some(
+      (node) => node.id === seeded.ids.statement7 && node.state === "proposed"
+    )
+  );
+  return { answer, key, plain, seeded, traffic, treeId: treeIdOf(answer, await treeIdReads(key)) };
+}
 
-  const parent = answer.nodes?.find((node) => node.id === ids.statement8)?.parent?.id ?? null;
-  const parentId = parent === null ? key : treeId(parent);
-  const parentRow = parentId === key ? null : items.find((item) => item.id === parentId);
-  const held = (answer.nodes ?? []).filter(
-    (node) =>
-      (node.parent?.id ?? null) === parent &&
-      node.state === "overtaken" &&
-      (node.issue === undefined || node.issue === key)
+/**
+ * What the header's count of what waits, the Decisions view's to-review flag and the header's
+ * presses read of the overtaken question and the overtaken decision: neither is counted, and no
+ * press reaches either. The count is the open questions whose turn is alice's, the overtaken one
+ * left out, and the decisions that wait for review, the overtaken one left out. Each press of the
+ * count puts the focus on the next thing that waits, round to the first, so one more press than
+ * there are things reaches each once.
+ */
+async function expectWaitsLeaveOut(page: Page, read: SeededPage): Promise<void> {
+  const { key, seeded, treeId } = read;
+  const { ids } = seeded;
+  const overtaken = [ids.overtakenQuestion, ids.waitingDecision];
+  await gotoIssue(page, presetPath(key, "decisions"));
+  const asking = ((await getIssue(key)).open_asks ?? []).filter(
+    (ask) =>
+      ask.state === "open" &&
+      ask.kind !== "approval" &&
+      ask.waiting_on === "human" &&
+      ask.waiting_on_person === READER &&
+      ask.id !== seeded.questionAskId
   ).length;
-  const siblings = childItems(items, parentRow);
-  const line = siblings[siblings.length - 1];
-  expect(line?.kind, "statement 8's parent draws no overtaken line after its other children").toBe(
-    "line"
-  );
-  expect(line?.text, `statement 8's parent does not say it holds ${held} overtaken`).toBe(
-    `${held} ${CONTROL_LABELS.overtaken_count}`
-  );
-  if (line === undefined) return;
-  const lines = items.filter((item) => item.kind === "line");
-  const lineAt = lines.indexOf(line);
-  const lineElement = lineLocator(page, items, line);
-  await expect(lineElement, "statement 8's line is drawn open").toHaveAttribute(
-    "aria-expanded",
-    "false"
-  );
-
-  // `j` from the item drawn just above the line reaches it.
-  await issuePage(page)
-    .locator("[data-node-row], [data-overtaken-line]")
-    .nth(items.indexOf(line) - 1)
-    .focus();
-  await page.keyboard.press("j");
   await expect
-    .poll(() => lineFocused(page), { message: "j does not reach statement 8's overtaken line" })
-    .toBe(true);
-
-  // Enter opens it: statement 8 stands under it, overtaken, with no gap, folded with its lens.
-  await page.keyboard.press("Enter");
-  await expect(lineElement, "Enter does not open statement 8's line").toHaveAttribute(
-    "aria-expanded",
-    "true"
-  );
-  items = await treeItemsDrawn(page);
-  const open = items.filter((item) => item.kind === "line")[lineAt];
-  expect(
-    childItems(items, open).map((item) => item.readId),
-    "Enter does not draw statement 8 under its line"
-  ).toContain(ids.statement8);
-  const statement8 = issuePage(page).locator(
-    `[data-node-row][data-node-read-id="${ids.statement8}"]`
-  );
-  await expect
-    .poll(() => ownMarks(statement8), { message: "statement 8 does not carry Overtaken" })
-    .toEqual([OVERTAKEN]);
-  await expect(rowGaps(statement8), "statement 8, which is overtaken, draws a gap").toHaveCount(0);
-  await expect(statement8, "statement 8 is drawn open under its line").toHaveAttribute(
-    "aria-expanded",
-    "false"
-  );
-  await expect(
-    statement8,
-    "statement 8's fold does not count its lens with the rest of its branch"
-  ).toHaveAttribute("data-folded-count", String(heldUnder(answer, key, ids.statement8)));
-  expect(
-    items.some((item) => item.readId === ids.lens),
-    "the lens on statement 8 is drawn while statement 8 is folded"
-  ).toBe(false);
-
-  // Enter closes it again.
-  await page.keyboard.press("Enter");
-  await expect(lineElement, "Enter does not close statement 8's line").toHaveAttribute(
-    "aria-expanded",
-    "false"
-  );
-  expect(
-    (await treeItemsDrawn(page)).some((item) => item.readId === ids.statement8),
-    "statement 8 stays drawn once its line is closed"
-  ).toBe(false);
-
-  // ArrowRight opens it and ArrowLeft closes it, above 1024 px.
-  if (wide) {
-    await page.keyboard.press("ArrowRight");
-    await expect(lineElement, "ArrowRight does not open statement 8's line").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-    await page.keyboard.press("ArrowLeft");
-    await expect(lineElement, "ArrowLeft does not close statement 8's line").toHaveAttribute(
-      "aria-expanded",
-      "false"
-    );
-  }
-
-  // A press opens it.
-  await lineElement.click();
-  await expect(lineElement, "a press does not open statement 8's line").toHaveAttribute(
-    "aria-expanded",
-    "true"
-  );
-
-  // The words filter with statement 8's words draws it under its open line.
-  await gotoIssue(page, `${plain}?q=${encodeURIComponent(wordsOf(answer, ids.statement8))}`);
-  await expect
-    .poll(async () => lineHolding(await treeItemsDrawn(page), ids.statement8)?.expanded ?? null, {
-      message: "the words filter with statement 8's words does not draw it under its open line",
+    .poll(async () => (await decisionsPartRows(page, "review")).length, {
+      message: "the Decisions view draws no decision that waits for review",
       timeout: DRAWN_MS,
     })
-    .toBe("true");
+    .toBeGreaterThan(0);
+  // The poll above waited for the review part to draw, so one read of its rows is its whole list.
+  const reviewing = (await decisionsPartRows(page, "review")).filter(
+    (id) => id !== treeId(ids.waitingDecision)
+  ).length;
+  await expect
+    .poll(() => flagCount(page, "to_review"), {
+      message: "the to-review flag counts the overtaken decision",
+    })
+    .toBe(reviewing);
+  const waits = asking + reviewing;
+  await expect(
+    waitingCount(page),
+    "the header's count of what waits counts an overtaken question or decision"
+  ).toHaveText(`${PROPERTY_LABELS.waiting_on_you} (${waits})`);
+
+  const reached: string[] = [];
+  let last: string | null = null;
+  for (let pressed = 0; pressed <= waits; pressed += 1) {
+    await waitingCount(page).press("Enter");
+    const before = last;
+    await expect
+      .poll(
+        async () => {
+          const now = await focusedRowReadId(page);
+          return now !== null && now !== before;
+        },
+        {
+          message:
+            "a press of the header's count does not put the focus on the next thing that waits",
+          timeout: DRAWN_MS,
+        }
+      )
+      .toBe(true);
+    last = await focusedRowReadId(page);
+    reached.push(last ?? "");
+  }
+  expect(
+    reached.filter((id) => overtaken.includes(id)),
+    "a press of the header's count reaches an overtaken node"
+  ).toEqual([]);
+  expect(
+    new Set(reached).size,
+    "the header's presses do not reach each thing that waits once"
+  ).toBe(waits);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Row 1: a proposed node is marked and settled, and an overtaken one is drawn open and marked.
+// ---------------------------------------------------------------------------------------------
+
+/** What row 1 reads its page with, and the two readings it holds back until the code they need is
+ *  under the head: a Graph control (`graph`) and a page that opens with every node drawn open
+ *  (`opens`), the second read on the first load, before any press. */
+interface ProposedPage extends SeededPage {
+  readonly graph: Gate;
+  readonly opens: Gate;
+}
+
+/** How many statements the seed writes: twelve, the one that cites a document, and the one under
+ *  the overtaken question. */
+function statementsOf(seeded: NodeStateSeed): number {
+  return seeded.whole.requirements.length + 2;
+}
+
+/** How many statements no Verification count reads before statement 7 is settled: statement 7,
+ *  which is proposed, statement 8, which is overtaken, and the one under the overtaken
+ *  question. */
+const UNCOUNTED_BEFORE_SETTLE = 3;
+
 /**
- * Step (3): `?node=` and `#b-` of statement 8 open its line with it focused; with the Decisions
- * view on, the overtaken decision's address draws the outline under no filter, its line open and
- * the decision focused, on screen.
+ * The first reading of step (2) and (3): the page draws statement 8 open, with its lens under it,
+ * where its own fold rules do - at the address that names it. `?node=` and `#b-` of statement 8
+ * focus its row, on screen, and the row is open with its lens, at 1440 px and at 390 px. It comes
+ * first, before any press opens a branch, so what it reads is the page's fold and not a reader's.
  */
-async function expectOvertakenAddresses(page: Page, read: ProposedPage): Promise<void> {
-  const { key, plain, seeded, treeId } = read;
+async function expectOvertakenOpen(page: Page, read: ProposedPage): Promise<void> {
+  const { plain, seeded, treeId } = read;
   const { ids } = seeded;
   // A `#b-` fragment names a block by its id in its document, which the tree read's own id for
   // the block (`<KEY>/<slug>#<block id>`) is not: it is read from the block's address.
@@ -542,45 +473,401 @@ async function expectOvertakenAddresses(page: Page, read: ProposedPage): Promise
         timeout: DRAWN_MS,
       })
       .toBe(ids.statement8);
-    expect(
-      lineHolding(await treeItemsDrawn(page), ids.statement8)?.expanded,
-      `${address} does not open statement 8's line`
-    ).toBe("true");
+    await expectDrawnOpen(
+      page,
+      ids.statement8,
+      [ids.lens],
+      "statement 8 is drawn open with its lens"
+    );
+    await expect
+      .poll(() => onScreen(nodeRow(page, treeId(ids.statement8)).first()), {
+        message: `${address} does not bring statement 8's row on screen`,
+        timeout: DRAWN_MS,
+      })
+      .toBe(true);
   }
+}
+
+/**
+ * Step (1) in the outline: statement 9, live with no check, carries "No check" and no mark,
+ * read before statement 7, which carries "Proposed" and its shape and no gap; check 2 and the
+ * first decision carry "Proposed", which the outline draws and plan task 1 it does not; the chip
+ * naming statement 7 on the decision that shapes it carries it in its compact form; each keeps
+ * its word and its shape with forced colours; and no text is a raw value of the tree read.
+ */
+async function expectProposedMarks(page: Page, read: ProposedPage): Promise<void> {
+  const { answer, plain, seeded, traffic } = read;
+  const { ids } = seeded;
+  // The page as it opens: this step presses each branch open as a reader does.
+  await gotoSettled(page, traffic, plain);
+  const statement9 = await drawnRow(page, ids.statement9, "statement 9");
+  expect(await ownMarks(statement9), "statement 9 carries no Proposed mark").toEqual([]);
+  await expect(
+    statement9.locator('[data-gap][data-gap-kind="no_check"]'),
+    "statement 9, live with no check, does not carry No check"
+  ).toContainText(GAP_WORDS.no_check);
+  const statement7 = await drawnRow(page, ids.statement7, "statement 7");
+  await expect
+    .poll(() => ownMarks(statement7), { message: "statement 7 carries Proposed" })
+    .toEqual([PROPOSED]);
+  await expect(rowGaps(statement7), "statement 7, which is proposed, draws a gap").toHaveCount(0);
+  const proposed = [
+    { readId: ids.check2, what: "check 2" },
+    { readId: ids.decision1, what: "the first decision" },
+  ];
+  const rows = [statement7];
+  for (const { readId, what } of proposed) {
+    const row = await drawnRow(page, readId, what);
+    await expect
+      .poll(() => ownMarks(row), { message: `${what} does not carry Proposed in the outline` })
+      .toEqual([PROPOSED]);
+    rows.push(row);
+  }
+  const shaping = await drawnRow(
+    page,
+    ids.shapingDecision,
+    "the agent's decision that shapes statement 7"
+  );
+  const chip = chipNaming(page, shaping, wordsOf(answer, ids.statement7));
+  await expect(chip, "the decision that shapes statement 7 draws no chip naming it").toHaveCount(1);
+  await expect
+    .poll(() => compactMarks(chip), {
+      message: "the chip naming statement 7 does not carry Proposed in its compact form",
+    })
+    .toEqual([PROPOSED]);
+
+  await withForcedColours(page, async () => {
+    for (const row of rows) {
+      await expect
+        .poll(() => ownMarks(row), {
+          message: "a proposed row's mark loses its word or its shape with forced colours",
+        })
+        .toEqual([PROPOSED]);
+    }
+    await expect
+      .poll(() => compactMarks(chip), {
+        message: "the chip's compact mark loses its word or its shape with forced colours",
+      })
+      .toEqual([PROPOSED]);
+  });
+  await expectNoRawValue(page, "in the outline");
+}
+
+/**
+ * Details' facts of statement 7 carry "Proposed" and those of statement 8 "Overtaken", read only
+ * where Details draws the focused row's facts; noted as owed otherwise.
+ */
+async function expectDetails(page: Page, { seeded }: ProposedPage): Promise<void> {
+  if (!noteOwed(FOCUSED_FACTS_GATE)) return;
+  const { ids } = seeded;
+  for (const [readId, what, mark] of [
+    [ids.statement7, "statement 7", PROPOSED],
+    [ids.statement8, "statement 8", OVERTAKEN],
+  ] as const) {
+    await focusRow(page, await drawnRowId(page, readId, what));
+    await openDetails(page);
+    await expect
+      .poll(() => compactMarks(focusedNodeFacts(page)), {
+        message: `Details' facts of ${what} do not carry ${mark.word}`,
+      })
+      .toEqual([mark]);
+  }
+}
+
+/** Every folded row's count is what the tree read holds under it, an overtaken node and what
+ *  stands under it counted as every node is. */
+async function expectFoldedCounts(page: Page, { answer, key }: ProposedPage): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        (await foldedCounts(page)).flatMap((row) => {
+          if (row.readId === null) return [];
+          const held = heldUnder(answer, key, row.readId);
+          return row.count === held ? [] : [`${row.id} draws ${row.count}, its read holds ${held}`];
+        }),
+      {
+        message:
+          "a folded branch's count is not what its read holds under it, an overtaken node and what stands under it included",
+      }
+    )
+    .toEqual([]);
+}
+
+/**
+ * Statement 8 stands among its parent's other statements in the order the tree read gives them,
+ * which is the place the read puts it.
+ */
+async function expectAtItsPlace(page: Page, read: ProposedPage): Promise<void> {
+  const { answer, key, seeded } = read;
+  const { ids } = seeded;
+  const parent = answer.nodes?.find((node) => node.id === ids.statement8)?.parent?.id ?? null;
+  const statements = (answer.nodes ?? [])
+    .filter(
+      (node) =>
+        (node.parent?.id ?? null) === parent &&
+        node.supertag === "requirement" &&
+        (node.issue === undefined || node.issue === key)
+    )
+    .map((node) => node.id);
+  const drawn = (await treeItemsDrawn(page)).flatMap((item) =>
+    item.readId !== null && statements.includes(item.readId) ? [item.readId] : []
+  );
+  expect(drawn, "statement 8 is no row among its parent's children").toContain(ids.statement8);
+  expect(drawn, "statement 8 does not stand at its place among its parent's statements").toEqual(
+    statements.filter((id) => drawn.includes(id))
+  );
+}
+
+/** `j` and `k` reach statement 8's row and leave it as they do any row: from the row above it
+ *  `j` reaches it and the next `j` goes to the row under it, and `k` comes back the same way. */
+async function expectKeysPassStatement8(page: Page, { seeded }: ProposedPage): Promise<void> {
+  const { ids } = seeded;
+  const items = await treeItemsDrawn(page);
+  const at = items.findIndex((item) => item.readId === ids.statement8);
+  const above = items[at - 1];
+  const under = items[at + 1];
+  expect(above?.readId ?? null, "no row stands above statement 8").not.toBeNull();
+  expect(under?.readId, "statement 8, drawn open, has no row under it but its lens").toBe(ids.lens);
+  const start = nodeRow(page, above?.id ?? "").first();
+  await start.focus();
+  await expect(start).toBeFocused();
+  await page.keyboard.press("j");
+  await expect
+    .poll(() => focusedRowReadId(page), { message: "j does not reach statement 8's row" })
+    .toBe(ids.statement8);
+  await page.keyboard.press("j");
+  await expect
+    .poll(() => focusedRowReadId(page), { message: "j does not leave statement 8's row" })
+    .toBe(under?.readId ?? null);
+  await page.keyboard.press("k");
+  await expect
+    .poll(() => focusedRowReadId(page), { message: "k does not reach statement 8's row" })
+    .toBe(ids.statement8);
+  await page.keyboard.press("k");
+  await expect
+    .poll(() => focusedRowReadId(page), { message: "k does not leave statement 8's row" })
+    .toBe(above?.readId ?? null);
+}
+
+/** Statement 8's fold control folds it with its lens, counting what it holds, and opens it again
+ *  with its lens. */
+async function expectStatement8Folds(page: Page, read: ProposedPage): Promise<void> {
+  const { answer, key, seeded, treeId } = read;
+  const { ids } = seeded;
+  const row = nodeRow(page, treeId(ids.statement8)).first();
+  await row.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
+  await expect(row, "statement 8's fold control does not fold it").toHaveAttribute(
+    "aria-expanded",
+    "false"
+  );
+  await expect(
+    row,
+    "statement 8's fold does not count its lens with the rest of its branch"
+  ).toHaveAttribute("data-folded-count", String(heldUnder(answer, key, ids.statement8)));
+  expect(
+    (await treeItemsDrawn(page)).some((item) => item.readId === ids.lens),
+    "the lens on statement 8 is drawn while statement 8 is folded"
+  ).toBe(false);
+  await row.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
+  await expectDrawnOpen(
+    page,
+    ids.statement8,
+    [ids.lens],
+    "statement 8's fold control does not open it again with its lens"
+  );
+}
+
+/**
+ * The overtaken decision is a row carrying "Overtaken" in the outline, and the chip naming
+ * statement 8 on the decision that shapes it carries it in its compact form; each keeps its word
+ * and its shape with forced colours.
+ */
+async function expectOvertakenMarks(page: Page, read: ProposedPage): Promise<void> {
+  const { answer, seeded } = read;
+  const { ids } = seeded;
+  const statement8 = await drawnRow(page, ids.statement8, "statement 8");
+  const decision = await drawnRow(page, ids.waitingDecision, "the overtaken decision");
+  await expect
+    .poll(() => ownMarks(decision), {
+      message: "the overtaken decision does not carry Overtaken in the outline",
+    })
+    .toEqual([OVERTAKEN]);
+  const shaping = await drawnRow(
+    page,
+    ids.shapingDecision8,
+    "the agent's decision that shapes statement 8"
+  );
+  const chip = chipNaming(page, shaping, wordsOf(answer, ids.statement8));
+  await expect(chip, "the decision that shapes statement 8 draws no chip naming it").toHaveCount(1);
+  await expect
+    .poll(() => compactMarks(chip), {
+      message: "the chip naming statement 8 does not carry Overtaken in its compact form",
+    })
+    .toEqual([OVERTAKEN]);
+  await withForcedColours(page, async () => {
+    for (const row of [statement8, decision]) {
+      await expect
+        .poll(() => ownMarks(row), {
+          message: "an overtaken row's mark loses its word or its shape with forced colours",
+        })
+        .toEqual([OVERTAKEN]);
+    }
+    await expect
+      .poll(() => compactMarks(chip), {
+        message: "the chip's compact Overtaken loses its word or its shape with forced colours",
+      })
+      .toEqual([OVERTAKEN]);
+  });
+}
+
+/**
+ * Step (2) in the outline: statement 8 is a row at its place among its parent's children,
+ * carrying "Overtaken" and no gap, open with its lens under it; every folded branch's count
+ * counts it; no row reads "1 overtaken"; `j` and `k` reach and leave its row; its fold control
+ * folds it with its lens and opens it again; the overtaken decision and the chip naming statement
+ * 8 carry the mark. Where the page opens with every node drawn open it opens statement 8 open
+ * with its lens, as it stays after a reload.
+ */
+async function expectOvertakenRows(page: Page, read: ProposedPage): Promise<void> {
+  const { plain, seeded, traffic } = read;
+  const { ids } = seeded;
+  // The load draws the outline once its tree read answers, after the page itself: wait for the
+  // load to settle, as each other step does, and read the rows only once statement 8's is drawn,
+  // which opens every branch on the way (`drawnRowId`). Read before the tree read answers, the
+  // outline holds no rows; opened before the load settles, a row takes back the focus the opener
+  // leaves for the page.
+  await gotoSettled(page, traffic, plain);
+  await expectFoldedCounts(page, read);
+  if (noteOwed(read.opens)) {
+    await expectDrawnOpen(
+      page,
+      ids.statement8,
+      [ids.lens],
+      "statement 8 is drawn open with its lens"
+    );
+  }
+  const statement8 = await drawnRow(page, ids.statement8, "statement 8");
+  await expect
+    .poll(() => ownMarks(statement8), { message: "statement 8 does not carry Overtaken" })
+    .toEqual([OVERTAKEN]);
+  await expect(rowGaps(statement8), "statement 8, which is overtaken, draws a gap").toHaveCount(0);
+  await expectDrawnOpen(
+    page,
+    ids.statement8,
+    [ids.lens],
+    "statement 8 is drawn open with its lens"
+  );
+  await expectAtItsPlace(page, read);
+  await expectNoOvertakenCount(page, "in the outline");
+  await expectKeysPassStatement8(page, read);
+  await expectStatement8Folds(page, read);
+  await expectOvertakenMarks(page, read);
+  await expectNoRawValue(page, "in the outline");
+
+  // Statement 8 stays open after a reload, where the page opens with every node drawn open.
+  await page.reload();
+  await issueRead(page);
+  if (noteOwed(read.opens)) {
+    await expectDrawnOpen(
+      page,
+      ids.statement8,
+      [ids.lens],
+      "statement 8 does not stay open with its lens after a reload"
+    );
+  }
+}
+
+/** Each Graph reading of row 1, made only where the page draws a Graph control: check 2, the first
+ *  decision and plan task 1 carry "Proposed"; statement 8, plan task 2 and the overtaken decision
+ *  carry "Overtaken"; statement 8 draws no gap and is open with its lens. */
+async function expectProposedInGraph(page: Page, read: ProposedPage): Promise<void> {
+  if (!noteOwed(read.graph)) return;
+  const { ids } = read.seeded;
+  const name = graphName();
+  await pickPreset(page, name);
+  await expectActivePreset(page, name);
+  for (const [readId, what, mark] of [
+    [ids.check2, "check 2", PROPOSED],
+    [ids.decision1, "the first decision", PROPOSED],
+    [ids.planTask1, "plan task 1", PROPOSED],
+    [ids.statement8, "statement 8", OVERTAKEN],
+    [ids.planTask2, "plan task 2", OVERTAKEN],
+    [ids.waitingDecision, "the overtaken decision", OVERTAKEN],
+  ] as const) {
+    const row = await drawnRow(page, readId, `${what} in Graph`);
+    await expect
+      .poll(() => ownMarks(row), { message: `${what} does not carry ${mark.word} in Graph` })
+      .toEqual([mark]);
+  }
+  const statement8 = await drawnRow(page, ids.statement8, "statement 8 in Graph");
+  await expect(rowGaps(statement8), "statement 8 draws a gap in Graph").toHaveCount(0);
+  await expectDrawnOpen(
+    page,
+    ids.statement8,
+    [ids.lens],
+    "statement 8 is drawn open with its lens in Graph"
+  );
+  await pickPreset(page, PRESET_NAMES.conversation);
+}
+
+/**
+ * Step (3), with the Decisions view on: loading the overtaken decision's address keeps that view
+ * on, with the focus on the decision's row, which stands with the decisions that wait for review
+ * and carries "Overtaken". The to-review flag and the header's count of what waits do not count
+ * it, and the header's presses never reach it (`expectWaitsLeaveOut`).
+ */
+async function expectOvertakenDecisionAddress(page: Page, read: ProposedPage): Promise<void> {
+  const { key, seeded, treeId } = read;
+  const { ids } = seeded;
+  const decisions = presetPath(key, "decisions");
   const decisionBlock = blockNamed(seeded.addresses.waitingDecision, "the overtaken decision");
-  await gotoIssue(page, `${presetPath(key, "decisions")}#b-${encodeURIComponent(decisionBlock)}`);
+  await gotoIssue(page, `${decisions}#b-${encodeURIComponent(decisionBlock)}`);
   const decision = nodeRow(page, treeId(ids.waitingDecision)).first();
   await expect
     .poll(
       async () => ({
         focused: await focusedRowReadId(page),
-        line: lineHolding(await treeItemsDrawn(page), ids.waitingDecision)?.expanded ?? null,
         onScreen: await onScreen(decision),
         path: new URL(page.url()).pathname,
         query: new URL(page.url()).searchParams.get("q"),
         view: await activePreset(page),
       }),
-      { message: "the overtaken decision's address opens the outline", timeout: DRAWN_MS }
+      {
+        message:
+          "the overtaken decision's address does not keep the Decisions view on, with the focus on its row",
+        timeout: DRAWN_MS,
+      }
     )
     .toEqual({
       focused: ids.waitingDecision,
-      line: "true",
       onScreen: true,
-      path: plain,
+      path: decisions,
       query: null,
-      view: PRESET_NAMES.conversation,
+      view: PRESET_NAMES.decisions,
     });
+  await expect
+    .poll(() => decisionsPartRows(page, "review"), {
+      message: "the overtaken decision stands with the decisions that wait for review",
+      timeout: DRAWN_MS,
+    })
+    .toContain(treeId(ids.waitingDecision));
+  await expect
+    .poll(() => ownMarks(decision), {
+      message: "the overtaken decision does not carry Overtaken under Decisions",
+    })
+    .toEqual([OVERTAKEN]);
+  await expectWaitsLeaveOut(page, read);
 }
 
 /**
  * Steps (1) and (2) in each view: check 2 carries "Proposed" under Verification, with no query
- * and with its result's words; no failing flag and no summary count counts a check or a
- * statement that is proposed or overtaken; the first decision carries "Proposed" under
- * Decisions, where the overtaken decision is in no part and the to-review flag counts the review
- * part alone; plan task 1 carries "Proposed" under Plan, which draws plan task 2 as its line
- * after every step, and the steps draw the line naming statement 7 on plan task 7's row in its
- * compact form; and the Spec control counts every statement. No view draws a raw value of the
- * tree read.
+ * and with its result's words; no failing flag and no summary count counts a check or a statement
+ * that is proposed or overtaken; the first decision carries "Proposed" under Decisions, where the
+ * overtaken decision stands with the decisions that wait for review and the to-review flag leaves
+ * it out; plan task 1 carries "Proposed" under Plan, which draws plan task 2 as a row after every
+ * step, and the steps draw the line naming statement 7 on plan task 7's row in its compact form;
+ * statement 7 carries "Proposed" and statement 8 "Overtaken", with no gap, under Spec, whose
+ * control counts every statement. No view draws a raw value of the tree read.
  */
 async function expectProposedViews(page: Page, read: ProposedPage): Promise<void> {
   const { answer, key, seeded, treeId } = read;
@@ -605,10 +892,11 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
   await expect
     .poll(async () => (await coveredCount(page))?.of, {
       message:
-        "the Verification summary counts statement 7, which is proposed, or statement 8, which is overtaken",
+        "the Verification summary counts statement 7, which is proposed, statement 8, which is overtaken, or the statement under the overtaken question",
     })
-    .toBe(statements - 2);
+    .toBe(statements - UNCOUNTED_BEFORE_SETTLE);
   await expectNoRawValue(page, "under Verification");
+  await expectNoOvertakenCount(page, "under Verification");
   const result = answer.nodes?.find(
     (node) => node.supertag === "result" && node.parent?.id === ids.check2
   );
@@ -638,17 +926,27 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
       message: "the first decision does not carry Proposed under Decisions",
     })
     .toEqual([PROPOSED]);
-  expect(
-    (await decisionsRows(page)).map((row) => row.id),
-    "the Decisions view draws the overtaken decision"
-  ).not.toContain(treeId(ids.waitingDecision));
-  const review = (await decisionsPartRows(page, "review")).length;
+  const overtaken = treeId(ids.waitingDecision);
+  await expect
+    .poll(() => decisionsPartRows(page, "review"), {
+      message: "the overtaken decision stands with the decisions that wait for review",
+      timeout: DRAWN_MS,
+    })
+    .toContain(overtaken);
+  await expect
+    .poll(() => ownMarks(nodeRow(page, overtaken).first()), {
+      message: "the overtaken decision does not carry Overtaken under Decisions",
+    })
+    .toEqual([OVERTAKEN]);
+  // The poll above waited for the review part to draw, so one read of its rows is its whole list.
+  const review = (await decisionsPartRows(page, "review")).filter((id) => id !== overtaken).length;
   await expect
     .poll(() => flagCount(page, "to_review"), {
-      message: "the to-review flag counts a decision the review part does not hold",
+      message: "the to-review flag counts the overtaken decision",
     })
     .toBe(review);
   await expectNoRawValue(page, "under Decisions");
+  await expectNoOvertakenCount(page, "under Decisions");
 
   await gotoIssue(page, presetPath(key, "plan"));
   const planTask1 = planChart(page)
@@ -662,23 +960,28 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
     (await planChartRows(page)).map((row) => row.id),
     "plan task 2 is a step of the Plan view"
   ).not.toContain(treeId(ids.planTask2));
-  const planLine = planChart(page).locator("[data-overtaken-line]");
-  await expect(planLine, "the Plan view does not draw plan task 2 as its one line").toHaveText(
-    `1 ${CONTROL_LABELS.overtaken_count}`
+  const planTask2 = planChart(page).locator(
+    `[data-plan-overtaken-row][data-node-id="${treeId(ids.planTask2)}"]`
   );
+  await expect(planTask2, "the Plan view draws no row for plan task 2").toHaveCount(1);
+  await expect
+    .poll(() => ownMarks(planTask2), {
+      message: "plan task 2 does not carry Overtaken under Plan",
+    })
+    .toEqual([OVERTAKEN]);
   expect(
     await planChart(page).evaluate(
       (chart) =>
         [
           ...chart.querySelectorAll(
-            "[data-plan-bar-row], [data-plan-cycle-row], [data-overtaken-line]"
+            "[data-plan-bar-row], [data-plan-cycle-row], [data-plan-overtaken-row]"
           ),
         ]
           .at(-1)
-          ?.hasAttribute("data-overtaken-line") ?? false
+          ?.getAttribute("data-node-id") ?? null
     ),
-    "the Plan view's overtaken line does not stand after every step"
-  ).toBe(true);
+    "the Plan view's row for plan task 2 does not stand after every step"
+  ).toBe(treeId(ids.planTask2));
   // The steps draw plan task 7's row with the line naming statement 7, which it serves and
   // which is proposed (decision 391).
   await planView(page, "steps").click();
@@ -699,6 +1002,7 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
     })
     .toEqual([PROPOSED]);
   await expectNoRawValue(page, "under Plan");
+  await expectNoOvertakenCount(page, "under Plan");
 
   await gotoIssue(page, presetPath(key, "spec"));
   const statement7 = nodeRow(page, treeId(ids.statement7)).first();
@@ -706,12 +1010,25 @@ async function expectProposedViews(page: Page, read: ProposedPage): Promise<void
   await expect
     .poll(() => ownMarks(statement7), { message: "statement 7 does not carry Proposed under Spec" })
     .toEqual([PROPOSED]);
+  const statement8 = nodeRow(page, treeId(ids.statement8)).first();
+  await expect(statement8, "the Spec view draws no row for statement 8").toHaveCount(1);
+  await expect
+    .poll(() => ownMarks(statement8), {
+      message: "statement 8 does not carry Overtaken under Spec",
+    })
+    .toEqual([OVERTAKEN]);
+  await expect(
+    rowGaps(statement8),
+    "statement 8, which is overtaken, draws a gap under Spec"
+  ).toHaveCount(0);
   await expect
     .poll(() => filterCount(page, "spec"), {
-      message: "the Spec control does not count every statement",
+      message:
+        "the Spec control does not count every statement, statement 8 and the one under the overtaken question included",
     })
     .toBe(statements);
   await expectNoRawValue(page, "under Spec");
+  await expectNoOvertakenCount(page, "under Spec");
 }
 
 /**
@@ -772,7 +1089,7 @@ async function expectSettled(page: Page, read: ProposedPage): Promise<void> {
     .poll(async () => (await coveredCount(page))?.of, {
       message: "the Verification summary does not count statement 7 once it is settled",
     })
-    .toBe(statementsOf(seeded) - 1);
+    .toBe(statementsOf(seeded) - (UNCOUNTED_BEFORE_SETTLE - 1));
 
   await pickPreset(page, PRESET_NAMES.spec);
   await expectActivePreset(page, PRESET_NAMES.spec);
@@ -791,10 +1108,10 @@ async function expectSettled(page: Page, read: ProposedPage): Promise<void> {
   );
 }
 
-// SLOW(>=2s): a whole seeded issue with nine node states and a lens written, every branch opened
-// three times, the line pressed and keyed open and shut, eleven loads of the outline and the views,
-// one settle and a reload.
-test("a proposed node is marked and settled on the page, and an overtaken one folds away @phone", async ({
+// SLOW(>=2s): a whole seeded issue with nine node states, a question and its two nodes and a lens
+// written, the outline's branches opened a dozen times, twelve loads of the outline and the views,
+// the header's count pressed past each thing that waits, one settle and two reloads.
+test("a proposed node is marked and settled on the page, and an overtaken one is drawn open and marked @phone", async ({
   browser,
 }) => {
   test.setTimeout(480_000);
@@ -803,36 +1120,25 @@ test("a proposed node is marked and settled on the page, and an overtaken one fo
     owedUnless(await treeReadGate(page, gateIssue));
     owedUnless(await convertedGate(page, gateIssue));
     const whole = await seedWholeIssue();
-    const key = whole.key;
     const seeded = await seedNodeStates(whole);
-    const plain = presetPath(key, "conversation");
     await page.setViewportSize(size);
-    const tree = treeAnswerOf(page);
-    const traffic = watchApiRequests(page);
-    await gotoSettled(page, traffic, plain);
+    const loaded = await seededPage(page, seeded);
     // (5) The load sends no request of the node state routes: a node's life is the tree read's.
     expect(
-      nodeStateRequests(traffic.requests),
+      nodeStateRequests(loaded.traffic.requests),
       "the load sends a request of the node state routes"
     ).toEqual([]);
-    const answer = await heldTreeAnswer(tree, "the load", (held) =>
-      (held.nodes ?? []).some(
-        (node) => node.id === seeded.ids.statement7 && node.state === "proposed"
-      )
-    );
     const read: ProposedPage = {
-      answer,
-      key,
-      plain,
-      seeded,
-      traffic,
-      treeId: treeIdOf(answer, await treeIdReads(key)),
-      wide: size.width === DESKTOP.width,
+      ...loaded,
+      graph: await graphGate(page),
+      opens: await drawnOpenGate(page, loaded.answer),
     };
+    await expectOvertakenOpen(page, read);
     await expectProposedMarks(page, read);
-    await expectProposedInDetails(page, read);
-    await expectOvertakenFold(page, read);
-    await expectOvertakenAddresses(page, read);
+    await expectDetails(page, read);
+    await expectOvertakenRows(page, read);
+    await expectProposedInGraph(page, read);
+    await expectOvertakenDecisionAddress(page, read);
     await expectProposedViews(page, read);
     await expectSettled(page, read);
   });
@@ -857,8 +1163,8 @@ const REFUSALS = [
   },
 ] as const;
 
-// SLOW(>=2s): a whole seeded issue with nine node states and a lens written, the outline's load
-// waited out, and three settles each refused and read.
+// SLOW(>=2s): a whole seeded issue with nine node states, a question and its two nodes and a lens
+// written, the outline's load waited out, and three settles each refused and read.
 test("a refused settle says why and leaves the row as it was", async ({ browser }) => {
   test.setTimeout(240_000);
   await phase(browser, seedGateIssue, async (page, gateIssue) => {
@@ -927,6 +1233,294 @@ test("a refused settle says why and leaves the row as it was", async ({ browser 
 });
 
 // ---------------------------------------------------------------------------------------------
+// Row 4: an overtaken question stays a Contents entry and waits on nobody.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The overtaken question carries "Overtaken" in the outline, drawn open with its criterion and
+ * its statement under it, and the statement draws no gap.
+ */
+async function expectOvertakenQuestionRows(page: Page, read: SeededPage): Promise<void> {
+  const { plain, seeded, traffic, treeId } = read;
+  const { ids } = seeded;
+  await gotoSettled(page, traffic, plain);
+  const question = await drawnRow(page, ids.overtakenQuestion, "the overtaken question");
+  await expect
+    .poll(() => ownMarks(question), { message: "the overtaken question carries Overtaken" })
+    .toEqual([OVERTAKEN]);
+  await expectDrawnOpen(
+    page,
+    ids.overtakenQuestion,
+    [ids.questionCriterion, ids.questionStatement],
+    "the overtaken question is drawn open with its criterion and its statement"
+  );
+  const statement = nodeRow(page, treeId(ids.questionStatement)).first();
+  await expect(statement, "the statement under the overtaken question is no row").toHaveCount(1);
+  await expect(
+    rowGaps(statement),
+    "the statement under the overtaken question draws a gap"
+  ).toHaveCount(0);
+  await expectNoRawValue(page, "in the outline");
+}
+
+/**
+ * The overtaken question is an entry of the Contents list, at its place in the tree's order, and
+ * its own entry carries no count. It stands under the issue, so no entry stands above it to count
+ * the statement under it.
+ */
+async function expectQuestionInContents(page: Page, read: SeededPage): Promise<void> {
+  const { plain, seeded, traffic, treeId } = read;
+  const { ids } = seeded;
+  await gotoSettled(page, traffic, plain);
+  const pane = contentsPane(page);
+  const entry = pane.locator(`[data-contents-entry="${treeId(ids.overtakenQuestion)}"]`);
+  const open = pane.locator(`[data-contents-entry="${treeId(ids.openQuestion)}"]`);
+  await expect(entry, "the overtaken question is a Contents entry").toHaveCount(1);
+  await expect(open, "the open question is a Contents entry").toHaveCount(1);
+  await expect(
+    entry.locator("[data-contents-mark]"),
+    "the overtaken question's own Contents entry carries a count"
+  ).toHaveCount(0);
+  await expect(
+    entry,
+    "an entry stands above the overtaken question, which stands under the issue"
+  ).toHaveAttribute("aria-level", "1");
+  const both = [treeId(ids.openQuestion), treeId(ids.overtakenQuestion)];
+  await drawnRowId(page, ids.overtakenQuestion, "the overtaken question");
+  const outline = (await treeItemsDrawn(page)).map((item) => item.id);
+  const listed = await contentsEntries(pane).evaluateAll((rows) =>
+    rows.map((row) => row.getAttribute("data-contents-entry") ?? "")
+  );
+  expect(
+    listed.filter((id) => both.includes(id)),
+    "the Contents list does not hold the questions in the tree's order"
+  ).toEqual(outline.filter((id) => both.includes(id)));
+}
+
+/** With the Decisions view on, the overtaken question stands with the open questions, marked
+ *  "Overtaken". */
+async function expectQuestionInDecisions(page: Page, read: SeededPage): Promise<void> {
+  const { key, seeded, treeId } = read;
+  const { ids } = seeded;
+  await gotoIssue(page, presetPath(key, "decisions"));
+  const question = treeId(ids.overtakenQuestion);
+  await expect
+    .poll(() => decisionsPartRows(page, "open_questions"), {
+      message: "the overtaken question stands with the open questions",
+      timeout: DRAWN_MS,
+    })
+    .toContain(question);
+  await expect
+    .poll(() => ownMarks(nodeRow(page, question).first()), {
+      message: "the overtaken question does not carry Overtaken under Decisions",
+    })
+    .toEqual([OVERTAKEN]);
+}
+
+/** Conversation opens with the focus on the open question that waits on alice, and not on the
+ *  overtaken one. */
+async function expectOpensOnLiveQuestion(page: Page, read: SeededPage): Promise<void> {
+  const { plain, seeded, traffic } = read;
+  const { ids } = seeded;
+  await gotoSettled(page, traffic, plain);
+  await expectOpeningLanded(page);
+  await expect
+    .poll(() => focusedRowReadId(page), {
+      message:
+        "Conversation opens with the focus on a row other than the open question that waits on alice",
+    })
+    .toBe(ids.openQuestion);
+}
+
+/** The overtaken question in Graph, with its criterion and its statement open under it and no
+ *  gap on the statement. */
+async function expectQuestionInGraph(page: Page, read: SeededPage): Promise<void> {
+  if (!noteOwed(await graphGate(page))) return;
+  const { ids } = read.seeded;
+  const name = graphName();
+  await pickPreset(page, name);
+  await expectActivePreset(page, name);
+  const question = await drawnRow(page, ids.overtakenQuestion, "the overtaken question in Graph");
+  await expect
+    .poll(() => ownMarks(question), {
+      message: "the overtaken question does not carry Overtaken in Graph",
+    })
+    .toEqual([OVERTAKEN]);
+  await expectDrawnOpen(
+    page,
+    ids.overtakenQuestion,
+    [ids.questionCriterion, ids.questionStatement],
+    "the overtaken question is drawn open with its criterion and its statement in Graph"
+  );
+  const statement = await drawnRow(page, ids.questionStatement, "the statement under the question");
+  await expect(
+    rowGaps(statement),
+    "the statement under the question draws a gap in Graph"
+  ).toHaveCount(0);
+  await pickPreset(page, PRESET_NAMES.conversation);
+}
+
+// SLOW(>=2s): a whole seeded issue with nine node states, a question and its two nodes and a lens
+// written, five loads of the outline, its Contents list and the Decisions view, and the header's
+// count pressed past each thing that waits.
+test("an overtaken question stays a Contents entry and waits on nobody", async ({ browser }) => {
+  test.setTimeout(240_000);
+  await phase(browser, seedGateIssue, async (page, gateIssue) => {
+    owedUnless(await treeReadGate(page, gateIssue));
+    owedUnless(await convertedGate(page, gateIssue));
+    const whole = await seedWholeIssue();
+    const seeded = await seedNodeStates(whole);
+    await page.setViewportSize(DESKTOP);
+    const read = await seededPage(page, seeded);
+    await expectOvertakenQuestionRows(page, read);
+    await expectQuestionInContents(page, read);
+    await expectQuestionInDecisions(page, read);
+    await expectWaitsLeaveOut(page, read);
+    await expectOpensOnLiveQuestion(page, read);
+    await expectQuestionInGraph(page, read);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Row 5: each way to a node reaches an overtaken one.
+// ---------------------------------------------------------------------------------------------
+
+/** The words filter with the one word only statement 8 holds draws statement 8 marked
+ *  "Overtaken", as it draws every match. */
+async function expectWordsFilterDraws(page: Page, read: SeededPage): Promise<void> {
+  const { plain, seeded, traffic, treeId } = read;
+  const { ids } = seeded;
+  await gotoSettled(page, traffic, `${plain}?q=${encodeURIComponent(STATEMENT_8_WORD)}`);
+  const row = nodeRow(page, treeId(ids.statement8)).first();
+  await expect(row, "the words filter draws statement 8 marked Overtaken").toHaveCount(1);
+  await expect
+    .poll(() => ownMarks(row), { message: "the words filter draws statement 8 marked Overtaken" })
+    .toEqual([OVERTAKEN]);
+}
+
+/** Waits until the focus is on the row of the node `readId` names, and that row is on screen. */
+async function expectFocusedOnScreen(
+  page: Page,
+  read: SeededPage,
+  readId: string,
+  what: string
+): Promise<void> {
+  await expect
+    .poll(() => focusedRowReadId(page), {
+      message: `${what} does not focus its row`,
+      timeout: DRAWN_MS,
+    })
+    .toBe(readId);
+  await expect
+    .poll(() => onScreen(nodeRow(page, read.treeId(readId)).first()), {
+      message: `${what} does not bring its row on screen`,
+      timeout: DRAWN_MS,
+    })
+    .toBe(true);
+}
+
+/** A press on the chip naming statement 8, on the decision that shapes it, focuses statement 8's
+ *  row, on screen. */
+async function expectChipReaches(page: Page, read: SeededPage): Promise<void> {
+  const { answer, plain, seeded, traffic } = read;
+  const { ids } = seeded;
+  await gotoSettled(page, traffic, plain);
+  const shaping = await drawnRow(
+    page,
+    ids.shapingDecision8,
+    "the agent's decision that shapes statement 8"
+  );
+  const chip = chipNaming(page, shaping, wordsOf(answer, ids.statement8));
+  await expect(chip, "the decision that shapes statement 8 draws no chip naming it").toHaveCount(1);
+  await chip.locator("[data-chip-name]").click();
+  await expectFocusedOnScreen(page, read, ids.statement8, "a press on the chip naming statement 8");
+}
+
+/** A press on the overtaken question's Contents entry, and its `/asks/<id>` address, each focus the
+ *  question's row, on screen. */
+async function expectQuestionReached(page: Page, read: SeededPage): Promise<void> {
+  const { key, plain, seeded, traffic, treeId } = read;
+  const { ids } = seeded;
+  await gotoSettled(page, traffic, plain);
+  const entry = contentsPane(page).locator(
+    `[data-contents-entry="${treeId(ids.overtakenQuestion)}"]`
+  );
+  await expect(entry, "the overtaken question is a Contents entry").toHaveCount(1);
+  await entry.click();
+  await expectFocusedOnScreen(
+    page,
+    read,
+    ids.overtakenQuestion,
+    "a press on the overtaken question's Contents entry"
+  );
+  await gotoIssue(page, `/issues/${key}/asks/${seeded.questionAskId}`);
+  await expectFocusedOnScreen(
+    page,
+    read,
+    ids.overtakenQuestion,
+    "the overtaken question's /asks/<id> address"
+  );
+}
+
+/** `q` from the row above the overtaken question focuses it, as it focuses any open question. */
+async function expectQReaches(page: Page, read: SeededPage): Promise<void> {
+  const { plain, seeded, traffic } = read;
+  const { ids } = seeded;
+  await gotoSettled(page, traffic, plain);
+  await drawnRowId(page, ids.overtakenQuestion, "the overtaken question");
+  const items = await treeItemsDrawn(page);
+  const above = items[items.findIndex((item) => item.readId === ids.overtakenQuestion) - 1];
+  expect(above?.readId, "the row above the overtaken question is not the open question").toBe(
+    ids.openQuestion
+  );
+  const start = nodeRow(page, above?.id ?? "").first();
+  await start.focus();
+  await expect(start).toBeFocused();
+  await page.keyboard.press("q");
+  await expectFocusedOnScreen(
+    page,
+    read,
+    ids.overtakenQuestion,
+    "q from the row above the overtaken question"
+  );
+}
+
+/** `w` on a statement's row whose decision behind it is the overtaken decision focuses that
+ *  decision's row: statement 10 is shaped by that decision and by no other. */
+async function expectWReaches(page: Page, read: SeededPage): Promise<void> {
+  const { plain, seeded, traffic } = read;
+  const { ids } = seeded;
+  await gotoSettled(page, traffic, plain);
+  await focusRow(page, await drawnRowId(page, ids.statement10, "statement 10"));
+  await page.keyboard.press("w");
+  await expectFocusedOnScreen(
+    page,
+    read,
+    ids.waitingDecision,
+    "w on the row of the statement the overtaken decision shaped"
+  );
+}
+
+// SLOW(>=2s): a whole seeded issue with nine node states, a question and its two nodes and a lens
+// written, and seven loads of the outline, each followed by a press or a key.
+test("each way to a node reaches an overtaken one", async ({ browser }) => {
+  test.setTimeout(240_000);
+  await phase(browser, seedGateIssue, async (page, gateIssue) => {
+    owedUnless(await treeReadGate(page, gateIssue));
+    owedUnless(await convertedGate(page, gateIssue));
+    const whole = await seedWholeIssue();
+    const seeded = await seedNodeStates(whole);
+    await page.setViewportSize(DESKTOP);
+    const read = await seededPage(page, seeded);
+    await expectWordsFilterDraws(page, read);
+    await expectChipReaches(page, read);
+    await expectQuestionReached(page, read);
+    await expectQReaches(page, read);
+    await expectWReaches(page, read);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
 // Row 3: a node reserved for its author.
 // ---------------------------------------------------------------------------------------------
 
@@ -934,21 +1528,59 @@ test("a refused settle says why and leaves the row as it was", async ({ browser 
 interface ReaderReading {
   /** The reader's own tree read. */
   readonly answer: IssueTreeRead;
-  /** The read id of every row drawn with every body and every branch open. */
+  /** The read id of every row the page draws as it opens, every node drawn whole and open. */
   readonly drawn: ReadonlySet<string>;
   /** Each filter control's count, read with that filter on. */
   readonly filters: Readonly<Record<(typeof VIEWS)[number], number>>;
-  /** Each folded row's count on load. */
+  /** Each branch's count, read once its row is folded. */
   readonly folded: readonly FoldedCount[];
-  /** The page's text with every body and every branch open, and each view's. */
+  /** The page's text as it opens, and each view's. */
   readonly texts: readonly { readonly text: string; readonly where: string }[];
 }
 
 /**
- * Reads issue `key` on `page` as its reader, with `traffic`, the page's one watcher: the load's
- * folded counts, each beside the count the reader's own tree read makes; the outline with `z` to
- * every body open and every deeper branch open; and each view, its control's count beside the
- * count its own view read makes where the page holds that read.
+ * Folds each branch the page draws open, one at a time, reads the count its row draws once it is
+ * folded beside what `answer` holds under it, and opens it again: each branch's count, as the
+ * reader's own read makes it.
+ */
+async function foldEachBranch(
+  page: Page,
+  answer: IssueTreeRead,
+  key: string,
+  who: string
+): Promise<FoldedCount[]> {
+  // The page opens with every node drawn, so one read of its rows holds every branch.
+  const branches = (await treeItemsDrawn(page)).filter(
+    (item) => item.expanded === "true" && item.readId !== null
+  );
+  const counts: FoldedCount[] = [];
+  for (const branch of branches) {
+    const row = nodeRow(page, branch.id).first();
+    await row.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
+    await expect(row, `${who}'s fold of ${branch.id} does not fold it`).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    const count = Number(await row.getAttribute("data-folded-count"));
+    expect(
+      count,
+      `${who}'s fold of ${branch.id} does not count what ${who}'s tree read holds under it`
+    ).toBe(heldUnder(answer, key, branch.readId ?? ""));
+    counts.push({ count, id: branch.id, readId: branch.readId });
+    await row.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
+    await expect(row, `${who}'s fold of ${branch.id} does not open again`).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+  }
+  return counts;
+}
+
+/**
+ * Reads issue `key` on `page` as its reader, with `traffic`, the page's one watcher: the page as
+ * it opens, every node drawn whole and unfolded, its text and the nodes it draws; each branch's
+ * count once its row folds it, beside the count the reader's own tree read makes; and each view,
+ * its control's count beside the count its own view read makes where the page holds that read.
  */
 async function readAsReader(
   page: Page,
@@ -966,28 +1598,11 @@ async function readAsReader(
   const plain = presetPath(key, "conversation");
   await gotoSettled(page, traffic, plain);
   const answer = await heldAnswer(tree, `${who}'s tree read`);
-  let folded: FoldedCount[] = [];
-  await expect
-    .poll(
-      async () => {
-        folded = await foldedCounts(page);
-        return folded.flatMap((row) => {
-          if (row.readId === null) return [];
-          const held = heldUnder(answer, key, row.readId);
-          return row.count === held ? [] : [`${row.id} draws ${row.count}, its read holds ${held}`];
-        });
-      },
-      { message: `${who}'s folds do not count what ${who}'s tree read holds under them` }
-    )
-    .toEqual([]);
-  await focusThePage(page);
-  await page.keyboard.press("z");
-  await page.keyboard.press("z");
-  await openEveryDeeperBranch(page);
   const drawn = new Set(
     (await treeItemsDrawn(page)).flatMap((item) => (item.readId === null ? [] : [item.readId]))
   );
   const texts = [{ text: await issuePage(page).innerText(), where: "the outline" }];
+  const folded = await foldEachBranch(page, answer, key, who);
   const filters = { decisions: 0, plan: 0, spec: 0, verification: 0 };
   for (const view of VIEWS) {
     const name = PRESET_NAMES[view];
@@ -1061,14 +1676,11 @@ async function wordsFilterDraws(
 const WALK_SLACK = 4;
 
 /** The read id of every row `j` reaches from the outline's first row to its last, once the page
- *  has gone quiet (`gotoSettled`), with every body and every deeper branch open. */
+ *  has gone quiet (`gotoSettled`), as the page opens with every node drawn. */
 async function jWalk(page: Page, traffic: ApiRequests, plain: string): Promise<string[]> {
   await gotoSettled(page, traffic, plain);
-  await focusThePage(page);
-  await page.keyboard.press("z");
-  await page.keyboard.press("z");
-  await openEveryDeeperBranch(page);
-  // The branches are all open once openEveryDeeperBranch returns, so every row is drawn by now.
+  // The load has gone quiet and the page draws every node it holds, so one read of its rows is
+  // every row the walk can reach.
   const items = await treeItemsDrawn(page);
   await nodeRows(page).first().focus();
   const reached: string[] = [];
@@ -1198,8 +1810,8 @@ async function bobsReading(
 }
 
 // SLOW(>=2s): a whole seeded issue with seven lens nodes written, two readers each reading the
-// outline with every branch open and each of the four views, seven words filters, a walk of every
-// row and three loads by `?node=`.
+// outline with each branch folded and opened and each of the four views, seven words filters, a
+// walk of every row and three loads by `?node=`.
 test("a node reserved for its author is on its author's page and on nobody else's", async ({
   browser,
 }) => {
@@ -1212,6 +1824,13 @@ test("a node reserved for its author is on its author's page and on nobody else'
     const plain = presetPath(key, "conversation");
     const hers = await readTree(key, null);
     expect(hers.converted, "the seeded issue's tree read does not answer converted").toBe(true);
+    // The row is owed whole until the page opens with every node drawn open (part T's R11): its
+    // readings are of that page. The gate reads a page that holds branches, so it is made on the
+    // row's own issue, once it is seeded.
+    await page.setViewportSize(DESKTOP);
+    const traffic = watchApiRequests(page);
+    await gotoSettled(page, traffic, plain);
+    owedUnless(await drawnOpenGate(page, hers));
     const reserved = new Map(
       RESERVED_NODES.map((name) => [
         name,
@@ -1225,8 +1844,6 @@ test("a node reserved for its author is on its author's page and on nobody else'
     const { his, references: hisReferences } = await bobsReading(browser, seeded, reserved);
 
     // Then as alice, who reads each node she reserved, marked as hers alone.
-    await page.setViewportSize(DESKTOP);
-    const traffic = watchApiRequests(page);
     const her = await readAsReader(page, traffic, key, "alice");
     for (const name of RESERVED_NODES) {
       const row = await drawnRow(page, reserved.get(name) ?? "", `her reserved ${name}`);
