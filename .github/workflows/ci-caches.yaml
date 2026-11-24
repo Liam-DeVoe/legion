@@ -349,9 +349,10 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # 37 s a leg on its newest entry (jobs 138290290861 and 138290290676); from nothing it also
-    # downloads the module's dependencies and compiles both commands, so 15 leaves that room.
-    timeout-minutes: 15
+    # Warm, on its newest entry: 37 s a leg (jobs 138290290861, 138290290676). Cold, from an empty
+    # module and build cache: 61 s and 48 s, the build 37 s and 25 s, before a save of about 0.5 GB
+    # (probe run 45375660275, jobs 138381154486 and 138381153841). 10 is about nine times the cold.
+    timeout-minutes: 10
     outputs:
       # The key each leg saved, named by family and architecture as the daemon job's are.
       go-envoy-x64: ${{ steps.go-envoy-saved.outputs.go-envoy-x64 }}
@@ -418,9 +419,11 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # Compiling the test binary of every package of the envoy module on a cold module cache is
-    # the long step.
-    timeout-minutes: 60
+    # Warm: 5.5 and 4.1 min a leg, save included (jobs 138290290807, 138290290989). Cold: 6.2 and
+    # 4.0 min before the save, the test binaries 5.1 and 3.2 min, leaving 3.5 GB to save, which
+    # took up to 1.9 min warm (probe run 45375660275, jobs 138381154602 and 138381154546). 30 is
+    # about four times the cold job with its save.
+    timeout-minutes: 30
     outputs:
       # The key each leg saved, named by family and architecture as the daemon job's are.
       go-envoy-test-x64: ${{ steps.go-envoy-test-saved.outputs.go-envoy-test-x64 }}
