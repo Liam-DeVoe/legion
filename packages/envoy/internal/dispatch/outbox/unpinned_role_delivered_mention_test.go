@@ -115,7 +115,6 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 			rows)
 	}
 
-	waitFor(t, "the comment's forward and the owner's later event at the holder", func() bool { return len(recv.received()) > 1 })
 	copies := recv.receivedNow(t, rig.client)
 	if len(copies) != 2 {
 		t.Fatalf("%s was sent %+v, want two copies: the comment's forward under its own mention's key and the owner's later event behind it. The copy bound for the holder's own topic is left to the mention that delivered the comment (destinations.leftToMention)",

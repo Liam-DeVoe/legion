@@ -251,8 +251,6 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	seedIssue(t, database, "T-1", nil)
 	publisher := &recordingPublisher{}
 	outbox := New(Deps{Store: database, Publisher: publisher, Broker: events.NewBroker(), Listen: database.Pool.Listener})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
 	// Every wait the outbox arms its one retry timer for, with the moment it was armed and the
 	// claims the outbox had made by then: the sequence this row reads, in place of a wall clock.
 	type armedWait struct {
@@ -274,8 +272,7 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		return slices.Clone(armed)
 	}
 	atRest := restReading(t, outbox)
-	go func() { outbox.Run(ctx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
+	t.Cleanup(runTheOutbox(t, outbox))
 
 	waitFor(t, "the outbox taking the publisher hold", outbox.Publishing)
 	// The first scan and the LISTEN connection's catch-up run as the hold is taken; the row reads
@@ -322,10 +319,10 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	backedOff, due := appendBackedOffEvent(t, other, backOffDue)
 	// A local clock for the readings below alone: no assertion reads it.
 	inserted := time.Now()
-	// The loop's one bound is the test binary's deadline less testwait's margin, as every wait's.
-	giveUp := testwait.Context(t)
-	var published time.Time
-	for {
+	// The polling's one bound is the test binary's deadline less testwait's margin, as every
+	// wait's, and it reads every 5 ms, bounding nothing: a coarser poll would only read the same
+	// sequence later.
+	published := testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("the back-off due in %s published", backOffDue), func() (time.Time, bool) {
 		// Read oldest first, so nothing is judged against a reading younger than itself: the waits,
 		// then the claims (never fewer than the waits' own count), then the database's answer,
 		// whose now() is therefore no earlier than the moment those claims were read.
@@ -333,12 +330,7 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		claims := outbox.claims.Load()
 		at, beforeDue := backOffState(t, database, backedOff.ID)
 		if at != nil {
-			published = *at
-			break
-		}
-		if giveUp.Err() != nil {
-			t.Fatalf("the back-off due in %s was never published: %s after its insert the outbox had armed %v",
-				backOffDue, time.Since(inserted).Round(time.Millisecond), waitsSince())
+			return *at, true
 		}
 		// Nothing else wakes the outbox until the timer fires: no claim since the wait was armed,
 		// while the database says the back-off is still ahead on its own clock.
@@ -349,10 +341,8 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 					since[0].at.Sub(inserted).Round(time.Millisecond))
 			}
 		}
-		// How often this loop reads, bounding nothing: a coarser poll would only read the same
-		// sequence later.
-		time.Sleep(5 * time.Millisecond)
-	}
+		return time.Time{}, false
+	})
 	publishedAfter := time.Since(inserted)
 	since := waitsSince()
 	if len(since) != 1 {

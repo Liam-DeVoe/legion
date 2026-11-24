@@ -178,7 +178,6 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 
-	waitFor(t, "the comment's copy the row owes the holder", func() bool { return len(recv.received()) > 1 })
 	copies := recv.receivedNow(t, rig.client)
 	if len(copies) != 2 || copies[1].SourceEventID != fmt.Sprint(comment.ID) {
 		t.Fatalf("%s was sent %+v once the mentions settled, want the later event (%d) and then the comment (%d), each once: the row delivers the comment the forward gave up, and delivers it once",

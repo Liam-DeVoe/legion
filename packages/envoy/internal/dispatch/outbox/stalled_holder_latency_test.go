@@ -36,9 +36,10 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 		// It outlasts the whole test, so the wait the live holder's send must not queue behind is
 		// still running when the verdict below is read, however slow the machine is.
 		stalledForwardWait = 10 * time.Minute
-		// A hang guard on each wait for a forward, not a bound this row measures anything
-		// against: a healthy run reaches both of them in milliseconds, and a send queued behind
-		// the stalled forward's wait arrives only after stalledForwardWait, ten times this.
+		// The bound on the final wait, for the live holder's forward, which this row reads against
+		// stalledForwardWait rather than measures: a healthy run reaches it in milliseconds, and a
+		// send queued behind the stalled forward's wait arrives only after stalledForwardWait, ten
+		// times this. The wait before it ends at the test binary's deadline.
 		hangGuard = 60 * time.Second
 	)
 	rig := newRoleRig(t)

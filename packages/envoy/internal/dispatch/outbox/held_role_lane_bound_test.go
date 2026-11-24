@@ -71,12 +71,14 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	seedDelivery(t, rig.database, commentID, "role:"+second, "", "resumed")
 	_, later := comment("and one more thing")
 
-	// Within the bound: the attempts are ten seconds short of it, their claims this moment's.
-	agedUnnamedAttempts(t, rig.database, commentID, heldRoleLaneBound-10*time.Second)
+	// Within the bound: the attempts are half the bound old, their claims this moment's. Half,
+	// not a few seconds short, so that the scan below reads them inside the bound however long a
+	// loaded machine takes to reach it.
+	agedUnnamedAttempts(t, rig.database, commentID, heldRoleLaneBound/2)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	if got := recv.receivedNow(t, rig.client); len(got) != 1 {
-		t.Fatalf("%s was sent %v with the attempts %s short of the bound, want the earlier comment alone: the forward waits for the unnamed mentions, and the later event waits behind it",
-			holder, keysOf(got), 10*time.Second)
+		t.Fatalf("%s was sent %v with the attempts half the bound old, want the earlier comment alone: the forward waits for the unnamed mentions, and the later event waits behind it",
+			holder, keysOf(got))
 	}
 	if publishedAt(t, rig.database, held.ID) != nil || publishedAt(t, rig.database, later.ID) != nil {
 		t.Fatal("the comment or the later event is published within the bound, want both waiting")
@@ -114,7 +116,6 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 		t.Fatalf("make the role row due: %v", err)
 	}
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	waitFor(t, "the comment's copy at the holder", func() bool { return len(recv.received()) == 3 })
 	got := recv.receivedNow(t, rig.client)
 	var ids []string
 	for _, item := range got {

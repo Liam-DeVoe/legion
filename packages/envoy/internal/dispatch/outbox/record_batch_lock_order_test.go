@@ -13,11 +13,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// recordLockWait bounds each wait of the lock-order test: for the record to queue behind a hold,
-// and for the scan to return once the record has queued behind none.
-const recordLockWait = 30 * time.Second
 
 // TestRecordBatchTakesAPrefixOfTheStoreLockOrder is the outbox half of the check
 // c-lock-order: recordBatch is a store write path that takes fewer steps than the store's lock
@@ -189,29 +186,26 @@ const recordStatement = "%with hold as%recorded as (%update events e set%"
 func followTheRecord(t *testing.T, ctx context.Context, database *store.Store, holds []*recordHold, scanned <-chan scanEnd) ([]*recordHold, scanEnd) {
 	t.Helper()
 	var queued []*recordHold
-	deadline := time.Now().Add(recordLockWait)
-	for {
+	// Its one bound is the test binary's deadline less testwait's margin, as every wait's; it
+	// reads every 2 ms, bounding nothing.
+	end := testwait.UntilPolling(t, 2*time.Millisecond, "the scan to return as the record queues behind each hold in turn", func() (scanEnd, bool) {
 		select {
 		case end := <-scanned:
-			return queued, end
+			return end, true
 		default:
 		}
 		behind := holdsTheRecordWaitsOn(t, ctx, database, holds)
 		switch len(behind) {
 		case 0:
-			if time.Now().After(deadline) {
-				t.Fatalf("the record queued behind none of the holds still held and the scan did not return within %s (queued so far behind %d)",
-					recordLockWait, len(queued))
-			}
-			time.Sleep(2 * time.Millisecond)
 		case 1:
 			queued = append(queued, behind[0])
 			behind[0].release()
-			deadline = time.Now().Add(recordLockWait)
 		default:
 			t.Fatalf("the record queued behind %d holds at once, which one statement cannot do", len(behind))
 		}
-	}
+		return scanEnd{}, false
+	})
+	return queued, end
 }
 
 // holdsTheRecordWaitsOn is every hold still held that the record's backend is queued behind. It

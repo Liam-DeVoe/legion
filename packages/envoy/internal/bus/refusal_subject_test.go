@@ -13,7 +13,7 @@ import (
 
 // testnats.SeedOnly, the one seed lookup of the module's tests, names the seed by a string of its
 // own, because testnats cannot import this package. It must answer under the variable a connect
-// reads (NkeySeedEnvVar), and an empty seed is none, as an empty variable is.
+// reads (NkeySeedEnvVar), and an empty seed is none, as an unset variable is.
 func TestTheTestsSeedLookupAnswersTheBusSeedVariable(t *testing.T) {
 	t.Parallel()
 	if seed, ok := testnats.SeedOnly("SUAEXAMPLE")(NkeySeedEnvVar); !ok || seed != "SUAEXAMPLE" {

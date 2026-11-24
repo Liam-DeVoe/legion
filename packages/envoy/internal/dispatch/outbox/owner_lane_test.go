@@ -56,10 +56,11 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 		// and a batch that held its owners until it ended could not end during this test at all,
 		// however slow the machine is.
 		stalledForwardWait = 10 * time.Minute
-		// A hang guard on each wait for a forward, not a bound this row measures anything
-		// against: a healthy run reaches every one of them in milliseconds, and a batch that
-		// holds its owners until it ends forwards the later event only after stalledForwardWait,
-		// ten times this.
+		// The bound on the final wait, for the live holder's later forward, which this row reads
+		// against stalledForwardWait rather than measures: a healthy run reaches it in
+		// milliseconds, and a batch that holds its owners until it ends forwards the later event
+		// only after stalledForwardWait, ten times this. The waits before it end at the test
+		// binary's deadline.
 		hangGuard = 60 * time.Second
 	)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -125,6 +126,10 @@ func TestAnOwnersSecondEventDoesNotOvertakeItsFirstWhileItsForwardIsUnacknowledg
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
+	// The first event's wait for an acknowledgement outlasts any run, as this file's siblings set
+	// it (stalledForwardWait), so the quiet window below cannot run into its expiry and a resend:
+	// roleForwardAckTimeout's 5 s and a 1 s back-off were all the slack a loaded run had.
+	deps.forwardAckWait = 10 * time.Minute
 	stop := runDeps(t, deps)
 	defer stop()
 
@@ -134,9 +139,9 @@ func TestAnOwnersSecondEventDoesNotOvertakeItsFirstWhileItsForwardIsUnacknowledg
 		t.Fatalf("the stalled holder received event %s first, want event %d", forward.SourceEventID, first.ID)
 	}
 
-	// Committed on the same owner while the first event's wait for an acknowledgement runs, and
-	// well inside roleForwardAckTimeout, so the first event has not been settled when the wait
-	// below ends.
+	// Committed on the same owner while the first event's wait for an acknowledgement runs, which
+	// lasts past any run (forwardAckWait above), so the first event has not been settled when the
+	// wait below ends: a lower bound on quiet, which load can only make see less.
 	time.Sleep(200 * time.Millisecond)
 	second := rig.laterEvent(t, "T-1", alice)
 	select {

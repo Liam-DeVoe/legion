@@ -31,9 +31,10 @@ const seedVariable = "NATS_NKEY_SEED"
 
 // SeedOnly is a connect's environment (bus.WithEnvironment, bus.Dial) that holds seed as the nkey
 // seed and nothing else, as a process whose environment held that one variable would: no seed
-// file, no remote server allowed, no proxy. An empty seed is no seed at all, as an empty variable
-// is. A test that connects as an nkey user (User) passes it rather than set the variable with
-// t.Setenv, which changes the whole process and so keeps the test from running in parallel.
+// file, no remote server allowed, no proxy. An empty seed is no seed at all, as an unset variable
+// is (a variable set but empty, the bus refuses). A test that connects as an nkey user (User)
+// passes it rather than set the variable with t.Setenv, which changes the whole process and so
+// keeps the test from running in parallel.
 func SeedOnly(seed string) func(string) (string, bool) {
 	return func(name string) (string, bool) {
 		if name == seedVariable && seed != "" {

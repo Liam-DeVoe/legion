@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // countingPublisher records every topic it is asked to publish, answering each with its entry in
@@ -88,15 +87,9 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	})
 	unreachable := fmt.Errorf("bus: %w: waiting for NATS to reconnect: context deadline exceeded", bus.ErrUnavailable)
 	publisher := &countingPublisher{fail: unreachable}
-	outbox := New(withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
+	outbox := outboxOn(database, publisher, broker)
 	atRest := restReading(t, outbox)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { outbox.Run(ctx); close(done) }()
-	defer func() {
-		cancel()
-		testwait.Receive(t, "the outbox's Run to return once its context ended", done)
-	}()
+	defer runTheOutbox(t, outbox)()
 
 	waitFor(t, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
 	// The hold's first scan and the LISTEN connection's catch-up each wake one scan; after them

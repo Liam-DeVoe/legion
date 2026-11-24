@@ -2021,17 +2021,32 @@ func TestRunSettlesAPriorityEventPublishedWithoutASend(t *testing.T) {
 // run runs an outbox on database, publishing through publisher, until the returned func stops it.
 func run(t *testing.T, database *store.Store, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
-	return runDeps(t, withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
+	return runTheOutbox(t, outboxOn(database, publisher, broker))
 }
 
-// runDeps runs New(deps) until the returned func stops it, which waits for Run to return through
-// the shared wait, with no span of its own. A test that needs more of Deps than run's store,
-// publisher and broker - a metrics counter among them - builds it itself and calls this.
+// outboxOn is the outbox run runs: on database, publishing through publisher, its LISTEN
+// connection on database's pool and every role's holder held (withHeldRoles). A test that sets a
+// hook before Run starts, as restReading does, builds it here and runs it with runOutbox.
+func outboxOn(database *store.Store, publisher Publisher, broker *events.Broker) *Outbox {
+	return New(withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
+}
+
+// runDeps runs New(deps) until the returned func stops it (runOutbox). A test that needs more of
+// Deps than run's store, publisher and broker - a metrics counter among them - builds it itself
+// and calls this.
 func runDeps(t *testing.T, deps Deps) func() {
+	t.Helper()
+	return runTheOutbox(t, New(deps))
+}
+
+// runTheOutbox runs outbox until the returned func stops it, which waits for Run to return through
+// the shared wait, with no span of its own. (runOutbox, beside the throughput test, runs one as
+// cmd/dispatch wires it.)
+func runTheOutbox(t *testing.T, outbox *Outbox) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { New(deps).Run(ctx); close(done) }()
+	go func() { outbox.Run(ctx); close(done) }()
 	return func() {
 		cancel()
 		testwait.Receive(t, "the outbox's Run to return once its context ended", done)
@@ -2172,10 +2187,10 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 //     a correct product.
 //
 // A parallel test's wait is bounded by the test binary's deadline alone (waitFor, testwait.Until,
-// testwait.Receive, testwait.Context), so the load of the tests beside it only makes the same
-// reading come later, but for these bounds, each kept on purpose because it tells a correct
-// outbox from a broken one, and each set from the product's own value it tells apart, with the
-// slack that leaves for load:
+// testwait.UntilPolling, testwait.Receive, testwait.Context), so the load of the tests beside it
+// only makes the same reading come later, but for these bounds, each kept on purpose because it
+// tells a correct outbox from a broken one, and each set from the product's own value it tells
+// apart, with the slack that leaves for load:
 //   - TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack: half the 64 s
 //     back-off a scan that read past the owner would wait for (32 s);
 //   - TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds and
@@ -2183,8 +2198,17 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 //     (hangGuard), against the 10 min acknowledgement wait a held batch would add;
 //   - TestTheOutboxDoesNotScanWhileIdle: backOffDue, 10 s, inside which the insert's
 //     notification and the scan it wakes must arm the back-off's timer, millisecond work;
-//   - TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt: a 1 s window that must stay
-//     quiet once the outbox rests, a lower bound on quiet that load can only make see less.
+//   - TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold: its client must read connected
+//     before natsLossGrace (3 s) after serve began, and the test sets it 200 ms in, so 2.8 s of
+//     slack; natsLossGrace is a constant of the package, not a field a test can lengthen, and
+//     the test's subject is the holder's reading at the grace's end.
+//
+// The quiet windows are not on that list: a sleep after which a test asserts nothing happened
+// (window_test.go, order_test.go, lease_test.go, publisher_test.go, the owner lane and attempt
+// tests) is a lower bound on quiet, which load can only shorten, so it can let a defect through
+// on a loaded run but never fail a correct outbox. Each is set inside a product wait the test
+// holds open past any run - forwardAckWait, a back-off, a timer it never arms - so its end
+// cannot run into the next send.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const outboxTestParallelism = 8

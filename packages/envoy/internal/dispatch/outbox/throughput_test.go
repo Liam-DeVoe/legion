@@ -602,13 +602,12 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 					// logged, never asserted, so a loaded machine only reads a lower rate.
 					waitFor(t, name+": every event published", func() bool { return unpublishedCount(t, rig.database) == 0 })
 					elapsed := time.Since(started)
-					left := unpublishedCount(t, rig.database)
-					rate := float64(count-left) / elapsed.Seconds()
+					rate := float64(count) / elapsed.Seconds()
 					peak := sends.peakOutstanding()
 					if tc.burst {
-						t.Logf("%s: drained %d of %d events on one issue in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
+						t.Logf("%s: drained %d events on one issue in %s: %.1f events/s, %d sends outstanding at the peak", name, count, elapsed.Round(time.Millisecond), rate, peak)
 					} else {
-						t.Logf("%s: published %d of %d events in %s: %.1f events/s, %d sends outstanding at the peak", name, count-left, count, elapsed.Round(time.Millisecond), rate, peak)
+						t.Logf("%s: published %d events in %s: %.1f events/s, %d sends outstanding at the peak", name, count, elapsed.Round(time.Millisecond), rate, peak)
 					}
 
 					// One issue is one chain, so a burst holds a send or three at once whatever
