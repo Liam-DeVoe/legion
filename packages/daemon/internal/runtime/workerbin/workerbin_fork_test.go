@@ -11,11 +11,13 @@ import (
 )
 
 // The scripts Install writes run at once however many goroutines of the process start commands
-// beside the install. A tmux daemon installs them at its boot, beside the goroutines that already
-// start git and tmux, and an agent runs them by name off its PATH. A child forked while a script
+// beside the install, and an agent runs them by name off its PATH. A child forked while a script
 // was open for writing holds it open until its own exec, and the kernel refuses to run a file some
 // process holds open for writing (ETXTBSY, "text file busy"), whatever name the rename gave it.
-// Eight goroutines start true without a pause while this test installs again and again, over the
+// Install's callers start no command beside it today: a tmux daemon installs the scripts at its
+// boot before it starts supervision, the NATS connection or its API, and `legion controller
+// start` while nothing else of it starts one. Eight goroutines that start true without a pause
+// stand in here for a process that does, while this test installs again and again, over the
 // install before, and runs each script as soon as the install returns.
 func TestTheScriptsInstallWritesRunWhileTheProcessForks(t *testing.T) {
 	legion, err := exec.LookPath("true")
