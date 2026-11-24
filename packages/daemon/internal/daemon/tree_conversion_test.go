@@ -733,6 +733,98 @@ func TestALandedHandOverCarriesItsPlanIntoItsNewRun(t *testing.T) {
 	}
 }
 
+// A hand-over whose write landed carries the member's open pull request into its new run with the
+// CI settlement fence it held (step 8 of the first boot's conversion, finishHandOver). The
+// fence's generation is the listener's generation of the settlement that stands, not the issue's,
+// so a settlement of the head from before the carry, delivered late or replayed from a message
+// the intake gave up on, is as stale after the carry as it was before: the record keeps the newer
+// settlement's generation and snapshot, and the later status of its commit. CAPTURE-80 lingers at
+// generation 2; CAPTURE-81, a member of its tree at its acceptance with pull request #42 open at
+// head-42, was handed over, and the listing shows that the write landed. This is main's
+// TestAnEarlierSettlementOfACarriedPullRequestsHeadChangesNothing (admit's
+// late_settlement_carry_test.go, #4590) on the one path of this release that carries a pull
+// request into a new run, the conversion.
+func TestALandedHandOverKeepsItsPullRequestsSettlementFence(t *testing.T) {
+	t.Parallel()
+	const root, member, head = "CAPTURE-80", "CAPTURE-81", "head-42"
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	lingering := conversionIssue(root, root, phase.Done, "done", 2)
+	deadline := time.Now().Add(48 * time.Hour).UTC()
+	lingering.LingerUntil = &deadline
+	for _, issue := range []record.Issue{lingering, conversionIssue(member, root, phase.Accepting, "needs_review", 1)} {
+		putOutboxIssue(t, pool, records, issue)
+	}
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: member, Repo: "acme/widgets", Number: 42, Branch: "legion/" + member,
+			HeadSHA: head, State: record.PullRequestOpen, Failing: []string{}, Cancelled: []string{}})
+	}); err != nil {
+		t.Fatalf("seed the pull request of %s: %v", member, err)
+	}
+	if _, err := pool.Exec(ctx, `insert into handovers (issue, tree, linger_generation) values ($1, $2, 2)`, member, root); err != nil {
+		t.Fatalf("seed the hand-over the release before left: %v", err)
+	}
+	board := &copyBoard{listing: []map[string]any{
+		conversionSummary(root, "done", 3, ""),
+		conversionSummary(member, "todo", 3, root, "legion"),
+	}}
+	w := copyRuntime(t, pool, board, 3)
+	w.projectID = "capture"
+	at := func(minute int) time.Time { return time.Date(2026, 9, 23, 11, minute, 0, 0, time.UTC) }
+	settlement := func(generation int64, state record.CommitStatusState, minute int) intake.PullRequestChecks {
+		return intake.PullRequestChecks{Repo: "acme/widgets", Number: 42, HeadSHA: head, CheckRuns: []record.AttemptRun{{Name: "ci", ID: 5}},
+			Generation: generation, Snapshot: fmt.Sprintf("snapshot-%d", generation), Failing: []string{}, Cancelled: []string{},
+			Statuses: []record.CommitStatus{{Context: "deploy", State: state, CreatedAt: at(minute)}}}
+	}
+	settle := func(eventID string, fact intake.PullRequestChecks) record.PullRequest {
+		t.Helper()
+		if _, err := intake.ApplyFact(ctx, pool, "github", eventID, fact, w.engine); err != nil {
+			t.Fatalf("ApplyFact %s: %v", eventID, err)
+		}
+		var pr *record.PullRequest
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			pr, err = records.PullRequest(ctx, tx, member)
+			return err
+		}); err != nil || pr == nil {
+			t.Fatalf("read the pull request of %s after %s: %v, %v", member, eventID, pr, err)
+		}
+		return *pr
+	}
+	newer, earlier := settlement(40, record.CommitStatusSuccess, 2), settlement(30, record.CommitStatusFailure, 1)
+
+	if held := settle("newer", newer); held.Generation != 40 || held.Snapshot != newer.Snapshot {
+		t.Fatalf("the newer settlement left generation %d, snapshot %q; want 40, %q", held.Generation, held.Snapshot, newer.Snapshot)
+	}
+	if got := settle("earlier-before-the-carry", earlier); got.Generation != 40 || got.Snapshot != newer.Snapshot {
+		t.Fatalf("before the carry the earlier settlement left generation %d, snapshot %q; want it stale: 40, %q", got.Generation, got.Snapshot, newer.Snapshot)
+	}
+
+	if err := bootConversionStoppedAt(ctx, w, convertRecord); !errors.Is(err, errStoppedAfterStep) {
+		t.Fatalf("the first boot's conversion ended with %v, want it to reach its last step", err)
+	}
+	var carried *record.Issue
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		carried, err = records.Issue(ctx, tx, member)
+		return err
+	}); err != nil || carried == nil || carried.Generation != 2 || !carried.TakenBack {
+		t.Fatalf("%s after the conversion = %+v (%v); want it carrying its run into generation 2: the case's premise", member, carried, err)
+	}
+
+	got := settle("earlier-after-the-carry", earlier)
+	if got.Generation != 40 || got.Snapshot != newer.Snapshot {
+		t.Errorf("after the carry the earlier settlement left generation %d, snapshot %q; want it stale as before the carry: 40, %q",
+			got.Generation, got.Snapshot, newer.Snapshot)
+	}
+	for _, status := range got.Statuses {
+		if status.Context == "deploy" && status.State != record.CommitStatusSuccess {
+			t.Errorf("after the carry the earlier settlement put deploy back to %s; want the later success", status.State)
+		}
+	}
+}
+
 // seedOwnersPlanAtAcceptance writes the plan the architect of root gave for key's run at
 // generation 1: version 2 of plan-artifact, one task a whose steps are `implementer reviewer
 // acceptance:owner`, running at its acceptance, step 3, where an issue in accepting stands.

@@ -97,7 +97,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		}
 		return err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}
@@ -297,7 +297,7 @@ func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged recor
 	if !awaitsMerge(merged) {
 		return nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, merged.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, merged.Key)
 	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 		return err
 	}

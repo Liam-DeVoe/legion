@@ -79,12 +79,12 @@ import (
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047),
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714,
-// dispatch://INFRA-3320's 20261122154643, dispatch://INFRA-4730's 20261122154644 and
-// 20261122154645, the plan of an experiment's draw (20261123165139) and dispatch://INFRA-5463's
-// 20261123212127, so an upgrade of a database main migrated applies it just before those twelve.
-// It adds pull_requests.statuses at its default, the empty list, and it touches no
-// outbox_kind_check.
+// dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
+// applied sequence, 20261121170714, dispatch://INFRA-3320's 20261122154643, dispatch://INFRA-4730's
+// 20261122154644 and 20261122154645, the plan of an experiment's draw (20261123165139) and
+// dispatch://INFRA-5463's 20261123212127, so an upgrade of a database main migrated applies it
+// just before those thirteen. It adds pull_requests.statuses at its default, the empty list, and
+// it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), it stands below the design news too, and it touches no
@@ -138,33 +138,40 @@ import (
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
 // (20261119003157) stands above every other version of this list but the design news,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714,
-// INFRA-3320's 20261122154643, dispatch://INFRA-4730's 20261122154644 and 20261122154645, the
-// plan of an experiment's draw (20261123165139) and dispatch://INFRA-5463's 20261123212127: it
-// names every kind the plan-record list names and its own two, phase_ended among them. The same
-// migration deletes the queued phase_ended rows, the seeded one below among them, and adds
-// pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it finds.
+// dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
+// applied sequence, 20261121170714, INFRA-3320's 20261122154643, dispatch://INFRA-4730's
+// 20261122154644 and 20261122154645, the plan of an experiment's draw (20261123165139) and
+// dispatch://INFRA-5463's 20261123212127: it names every kind the plan-record list names and its
+// own two, phase_ended among them. The same migration deletes the queued phase_ended rows, the
+// seeded one below among them, and adds pull_requests.conflict_read and
+// pull_requests.merge_forward, both null on every row it finds.
 // The design news's list, applied after it and after every other version of this list but
-// 20261120012547, 20261120042902, 20261120055717, 20261121170714, 20261122154643,
+// 20261120012547, 20261120042902, 20261120055717, 20261120144241, 20261121170714, 20261122154643,
 // 20261122154644, 20261122154645, 20261123165139 and 20261123212127, names those kinds and
 // design_changes.
 // dispatch://INFRA-3178's set-back sequence (20261120012547) is applied after all of these, the
 // design news among them, and before dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, 20261121170714, INFRA-3320's 20261122154643,
-// dispatch://INFRA-4730's 20261122154644 and 20261122154645, 20261123165139 and 20261123212127.
-// It runs no statement, so it changes nothing on a database main migrated, and it touches no
-// outbox_kind_check.
+// dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, 20261121170714,
+// INFRA-3320's 20261122154643, dispatch://INFRA-4730's 20261122154644 and 20261122154645,
+// 20261123165139 and 20261123212127. It runs no statement, so it changes nothing on a database
+// main migrated, and it touches no outbox_kind_check.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
 // (20261120042902) stands above every other version of this list, the design news among them, but
-// dispatch://INFRA-4729's 20261120055717, 20261121170714, INFRA-3320's 20261122154643,
-// dispatch://INFRA-4730's 20261122154644 and 20261122154645, 20261123165139 and 20261123212127;
-// it adds claims.agent_resume_generation at its default, 0, on every row it finds, and touches no
-// outbox_kind_check, so it needs no row of its own here.
+// dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, 20261121170714,
+// INFRA-3320's 20261122154643, dispatch://INFRA-4730's 20261122154644 and 20261122154645,
+// 20261123165139 and 20261123212127; it adds claims.agent_resume_generation at its default, 0, on
+// every row it finds, and touches no outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
-// is applied after all of these, the design news among them, and before 20261121170714,
-// INFRA-3320's 20261122154643, dispatch://INFRA-4730's two, 20261123165139 and 20261123212127,
-// and it touches no outbox_kind_check: it adds columns to dispatch_issues at their defaults, an
-// index on its parent, and a refill mark for each project the copy holds rows of.
+// is applied after all of these, the design news among them, and before dispatch://INFRA-1575's
+// 20261120144241, 20261121170714, INFRA-3320's 20261122154643, dispatch://INFRA-4730's two,
+// 20261123165139 and 20261123212127, and it touches no outbox_kind_check: it adds columns to
+// dispatch_issues at their defaults, an index on its parent, and a refill mark for each project
+// the copy holds rows of.
+// dispatch://INFRA-1575's intake failures (20261120144241) are applied after all of these and
+// before 20261121170714, INFRA-3320's 20261122154643, dispatch://INFRA-4730's two, 20261123165139
+// and 20261123212127: they create intake_failures, cleared_pull_requests and
+// pull_request_settled_heads, all three empty, and touch no dispatch_issues column and no
+// outbox_kind_check.
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these and before INFRA-3320's 20261122154643, dispatch://INFRA-4730's two, 20261123165139 and
 // 20261123212127, and it touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its
@@ -197,8 +204,8 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261114064234, 20261114232555, 20261115194357, 20261116144907, 20261116165926,
 	20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117034837, 20261117064152,
 	20261117112334, 20261117200337, 20261119003157, 20261119203047, 20261120012547, 20261120042902,
-	20261120055717, 20261121170714, 20261122154643, 20261122154644, 20261122154645, 20261123165139,
-	20261123212127,
+	20261120055717, 20261120144241, 20261121170714, 20261122154643, 20261122154644, 20261122154645,
+	20261123165139, 20261123212127,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -217,11 +224,11 @@ var thisBranchsMigrations = []int{
 // 20261122154643, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714,
-// dispatch://INFRA-4730's 20261122154644 and 20261122154645, the plan of an experiment's draw
-// (20261123165139) and dispatch://INFRA-5463's 20261123212127. That is why the loop below holds
-// the list rather than counting it, so that a version added above any of them is named here
-// rather than read as main's.
+// dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
+// applied sequence, 20261121170714, dispatch://INFRA-4730's 20261122154644 and 20261122154645, the
+// plan of an experiment's draw (20261123165139) and dispatch://INFRA-5463's 20261123212127. That
+// is why the loop below holds the list rather than counting it, so that a version added above any
+// of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -501,6 +508,9 @@ const mainsAppliedSequence = 20261121170714
 // two, and one that this branch's head before that merge (8af2e555670f) migrated lacks that one,
 // above its newest, and INFRA-4730's two, below it, and holds every other version this head
 // embeds. Each of the databases of the earlier merges lacks it too, above their newest.
+// dispatch://INFRA-1575's intake failures (20261120144241), which this branch takes with main
+// 843a9f45a3a0, stand below the newest of every one of these databases, and none of them recorded
+// it: main took it after 8517faba31ac, and this branch only at this merge. So each lacks it too.
 // Store.Migrate asks each embedded migration whether its own version is recorded (apply) and
 // never compares it with the newest, so each upgrade applies the versions that database lacks,
 // below its newest and above it alike, and leaves every embedded version recorded once.
@@ -554,28 +564,28 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "main at 4a8d82bfd090",
 			newest: mainsAppliedSequence,
-			lacks:  []int{gateBasisVersion, awaitingChildrenVersion},
+			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, intakeFailuresVersion},
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
 		},
 		{
 			name:   "main at 4ad19fe8459c",
 			newest: experimentAssignmentPlanVersion,
-			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, holdsGateVersion, issueFactsVersion},
+			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, intakeFailuresVersion, basisSeedsVersion, holdsGateVersion, issueFactsVersion},
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
 		},
 		{
 			name:   "main at 8517faba31ac",
 			newest: startFailureAfterReadyVersion,
-			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, holdsGateVersion, issueFactsVersion},
+			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, intakeFailuresVersion, basisSeedsVersion, holdsGateVersion, issueFactsVersion},
 			seed:   queueMainsKinds,
 			check:  queueBasisSeeds,
 		},
 		{
 			name:   "this branch at 10e98a85ef53",
 			newest: basisSeedsVersion,
-			lacks:  []int{issuePlansVersion, mainsAppliedSequence},
+			lacks:  []int{issuePlansVersion, intakeFailuresVersion, mainsAppliedSequence},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261121170714 names these columns and no other (record's
 				// PutDispatchIssue).
@@ -595,7 +605,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "INFRA-4730 at 910fabb572",
 			newest: issueFactsVersion,
-			lacks:  []int{issuePlansVersion, mainsAppliedSequence},
+			lacks:  []int{issuePlansVersion, intakeFailuresVersion, mainsAppliedSequence},
 			seed: func(t *testing.T, store *Store) {
 				// That release names the same columns as the one above, and no other (record's
 				// PutDispatchIssue).
@@ -615,7 +625,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "this branch at 03ac783258da",
 			newest: basisSeedsVersion,
-			lacks:  []int{issuePlansVersion},
+			lacks:  []int{issuePlansVersion, intakeFailuresVersion},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261117034837 names no step of a phases row.
 				for _, seed := range []string{
@@ -639,6 +649,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "this branch at dc73ab2f7f06",
 			newest: basisSeedsVersion,
+			lacks:  []int{intakeFailuresVersion},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261123165139 names these seven columns of a draw and no other
 				// (record's PutAssignments).
@@ -663,7 +674,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "this branch at 8af2e555670f",
 			newest: experimentAssignmentPlanVersion,
-			lacks:  []int{holdsGateVersion, issueFactsVersion},
+			lacks:  []int{intakeFailuresVersion, holdsGateVersion, issueFactsVersion},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261123212127 keeps a claim's start failure through every later
 				// ready (record's claims columns as that release writes them).

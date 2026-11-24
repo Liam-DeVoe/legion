@@ -148,7 +148,8 @@ const RoleTopicPrefix = "notifications.role."
 // controllerMemoryGuardKill, once for each kill), the first refusal in a daemon run of the
 // daemon's own token by Dispatch's status scope or its check of a publication of role holders
 // (`status-scope`, the daemon's outbox, which no architect is told, since no architect can give
-// the daemon a token), and
+// the daemon a token), the messages the intake gave up, counted in one notice that waits a minute
+// for the give-ups after its first (`intake-gave-up`, record's Postgres.GiveUpIntakeMessage), and
 // the slot wakes admission sends through wakeController, `slot-free`, `todo` and `tick`
 // (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,

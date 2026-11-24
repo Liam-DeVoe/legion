@@ -546,6 +546,20 @@ type Notice struct {
 	// reholdNotice).
 	Generation uint64 `json:"generation,omitempty"`
 	Entry      int64  `json:"entry,omitempty"`
+	// Count is how many messages the intake gave up that an intake-gave-up notice counts, and
+	// GiveUps names the first of them, at most giveUpNoticeNames (Postgres.countIntakeGiveUp). Only
+	// that kind carries either: the controller reads the rest in the state.
+	Count   int            `json:"count,omitempty"`
+	GiveUps []NoticeGiveUp `json:"giveUps,omitempty"`
+}
+
+// NoticeGiveUp names one message the intake gave up, in an intake-gave-up notice: its record's id
+// in intake_failures, which a replay or a discard names, the consumer that delivered it and its
+// subject.
+type NoticeGiveUp struct {
+	ID       int64  `json:"id"`
+	Consumer string `json:"consumer"`
+	Subject  string `json:"subject"`
 }
 
 // ProjectPause is what the controller is told when the operator pauses or resumes its project
@@ -1060,6 +1074,15 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // code and the issue and says that a person must give the daemon a token that holds the scope. The
 // write is kept and written again; the first such refusal in a daemon run queues one notice (the
 // daemon's status executor), and no architect is told, since no architect can change a token.
+//
+// An intake-gave-up notice counts the messages the intake gave up while it waited for its
+// publish, and names the first giveUpNoticeNames of them by their records' ids (Count, GiveUps).
+// It carries no role, and its issue is the project key, as a tick's is. The give-up writes it,
+// and only while a controller is registered (Postgres.GiveUpIntakeMessage, countIntakeGiveUp):
+// the first give-up of a burst opens it, due giveUpNoticeDelay later, each later give-up joins it
+// while no publish has taken it, and one that finds it leased or given back to retry opens the
+// next. Nobody inside a tree is told: the message is the intake's, of no issue an architect runs,
+// and the controller replays or discards it (dispatch://INFRA-1575).
 const (
 	TriageNotice           NoticeKind = "triage"
 	SlotFreeNotice         NoticeKind = "slot-free"
@@ -1076,6 +1099,7 @@ const (
 	ProjectPausedNotice    NoticeKind = "project-paused"
 	ProjectResumedNotice   NoticeKind = "project-resumed"
 	StatusScopeNotice      NoticeKind = "status-scope"
+	IntakeGaveUpNotice     NoticeKind = "intake-gave-up"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -2772,6 +2796,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if err := validateNoticeEscalation(value.Kind, value.Reason, value.Escalation); err != nil {
 			return err
 		}
+		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
+			return err
+		}
 		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
 			return err
 		}
@@ -2827,6 +2854,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Kind == StatusScopeNotice && value.Reason == "" {
 			return fmt.Errorf("a status-scope notice carries the reason that names the code, the issue and the token a person must give the daemon")
+		}
+		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
+			return err
 		}
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
@@ -3249,6 +3279,35 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 	return nil
 }
 
+// validateNoticeGiveUps holds a notice's count and named give-ups to the intake-gave-up notice,
+// which counts one give-up or more, names between one and min(Count, giveUpNoticeNames) of them,
+// each by its record's positive id, and carries no role, since it is the controller's alone.
+// Every other kind carries neither. Both arms of the switch above call it, as they call
+// validateNoticeFailure: a Notice can never be of this kind, so there it refuses any count.
+func validateNoticeGiveUps(kind NoticeKind, role claim.Role, count int, giveUps []NoticeGiveUp) error {
+	if kind != IntakeGaveUpNotice {
+		if count != 0 || len(giveUps) > 0 {
+			return fmt.Errorf("a %s notice carries a count or names give-ups; only an intake-gave-up notice does", kind)
+		}
+		return nil
+	}
+	if count < 1 {
+		return fmt.Errorf("an intake-gave-up notice counts one give-up or more, not %d", count)
+	}
+	if most := min(count, giveUpNoticeNames); len(giveUps) < 1 || len(giveUps) > most {
+		return fmt.Errorf("an intake-gave-up notice that counts %d names between 1 and %d of them, not %d", count, most, len(giveUps))
+	}
+	for _, giveUp := range giveUps {
+		if giveUp.ID <= 0 {
+			return fmt.Errorf("an intake-gave-up notice names each give-up by its positive record id, not %d", giveUp.ID)
+		}
+	}
+	if role != "" {
+		return fmt.Errorf("an intake-gave-up notice carries no role, not %q: it is the controller's alone", role)
+	}
+	return nil
+}
+
 // validateNoticeStopper holds the claim of the architect that stopped a task to the one notice
 // that carries it: the task-stopped notice of its owner's stop_task (workflow's taskStopped),
 // which the daemon's executor publishes only to an architect that is not that claim. Both arms
@@ -3266,7 +3325,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
 		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, MemoryGuardKillNotice,
-		ProjectPausedNotice, ProjectResumedNotice, StatusScopeNotice:
+		ProjectPausedNotice, ProjectResumedNotice, StatusScopeNotice, IntakeGaveUpNotice:
 		return true
 	default:
 		return false

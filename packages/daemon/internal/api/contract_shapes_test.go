@@ -366,7 +366,9 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // alone. Its repositories block names five live repositories, both role Apps installed on each,
 // whose caches stand in the five states a cache can be in, so `repositories.live.*.cache.state`
 // carries every word of that field, which arrived with the block at repositoriesLiveContract
-// (answers.go's liveCacheStates).
+// (answers.go's liveCacheStates). The intake's open give-ups list one record of each reason, so
+// `intakeGiveUps.newest.*.reason` carries every word, where populatedState's three records carry
+// three of the five.
 //
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
@@ -407,6 +409,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	stallWords := []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable,
 		record.ArchitectSlowBeforeGate}
 	cacheWords := []string{"cloning", "failing", "ready", "refused", "starting"}
+	reasonWords := []record.IntakeGiveUpReason{record.GiveUpBound, record.GiveUpDidNotEnd, record.GiveUpRetention,
+		record.GiveUpUndecodable, record.GiveUpConsumerMovedPast}
 
 	// claimView is a claim that failed with cause, whose pending cause is the next word of the
 	// list and whose held task was queued for taskPhase: every key of a failure and of a held
@@ -509,6 +513,16 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			Repo: repo, Sandbox: "legion-values-cache-acme-" + state, State: state,
 		}})
 	}
+	// One record of each reason, newest first as the projection lists them, all of one consumer.
+	const valuesConsumer = "legion-go-VALUES-dispatch"
+	giveUps := IntakeGiveUpsView{Consumers: []IntakeGiveUpCountView{
+		{Name: valuesConsumer, Open: len(reasonWords), NewestSeq: uint64(900 + len(reasonWords))}}}
+	for i, reason := range reasonWords {
+		seq := uint64(900 + len(reasonWords) - i)
+		giveUps.Newest = append(giveUps.Newest, IntakeGiveUpView{ID: int64(seq), Consumer: valuesConsumer,
+			Subject: fmt.Sprintf("notifications.dispatch.issue.VALUES-%d.issue.updated", i+1), StreamSeq: seq, StoredAt: at,
+			Deliveries: 21, GaveUpAt: at, Reason: reason, LastError: "the handler failed"})
+	}
 	return State{
 		Daemon: DaemonInfo{
 			Project:       "values",
@@ -524,7 +538,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
-		Paused: pausedViewOf(goldenPause(false), stops, nil),
+		Paused:        pausedViewOf(goldenPause(false), stops, nil),
+		IntakeGiveUps: giveUps,
 	}
 }
 
@@ -721,6 +736,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Version:    4,
 			Tasks:      []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}}},
 		})}}},
+		// The replay golden's own value (goldenIntakeReplay, TestIntakeReplayAnswerGolden).
+		AnswerIntakeReplay: {roots: typesOf(IntakeReplayResponse{}), bodies: []any{goldenIntakeReplay}},
+		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
+		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
 	}
 }
 

@@ -333,9 +333,11 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 
 // mergeCanLand says whether the merge of member, out of Legion's work while it awaits its landing,
 // can still land: while its pull request is open, a person can merge it, and the merge is what ends
-// the step.
+// the step. The pull request's state is all it reads, so it reads the row alone
+// (record.Store.PullRequestRow), with none of what the pull request remembers of its settled
+// heads.
 func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, member record.Issue) (bool, error) {
-	pr, err := e.store.PullRequest(ctx, tx, member.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, member.Key)
 	if err != nil {
 		return false, err
 	}

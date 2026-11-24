@@ -17,7 +17,11 @@ import (
 // Every event moves an issue's sequence, a message as much as an update, so the newest one the
 // consumer has handled or dropped is the cursor a queued write to Dispatch waits on
 // (record.Issue.SeenSeq; decision 11 of dispatch://INFRA-4730): a write that read the issue at
-// sequence S writes only once the record has seen every event up to S.
+// sequence S writes only once the record has seen every event up to S. A message the intake gives
+// up (consumerRun.failed, the failure sweep) and a discard of it move no cursor, as a failed
+// delivery moves none: the record has not had what the consumer makes of the event, and
+// DispatchEventsSeen reads such an event, where it holds a fact, as not seen until a replay
+// applies it. A replay moves the cursor as its live delivery would have (GiveUps.replayOne).
 type seenEvent struct {
 	key string
 	seq int64

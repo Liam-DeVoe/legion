@@ -535,7 +535,12 @@ func (w *workflowRuntime) finishHandOver(ctx context.Context, tx pgx.Tx, issue r
 		return fmt.Errorf("write the plan of %s's carried run: %w", issue.Key, err)
 	}
 	if pr != nil {
-		pr.Generation, pr.Run = int64(issue.Generation), nil
+		// The carried pull request keeps its CI settlement fence: its Generation is the listener's
+		// generation of the settlement that stands, not the issue's, so a settlement of its head
+		// from before the carry, delivered late or replayed, is as stale after it as it was before.
+		// Its head run goes, as with a new generation (record.ClearGeneration), since its replay
+		// would put the old fence back; the write deletes the run's own memory.
+		pr.Run = nil
 		if err := w.records.PutPullRequest(ctx, tx, *pr); err != nil {
 			return fmt.Errorf("carry the pull request of %s into its new generation: %w", issue.Key, err)
 		}
