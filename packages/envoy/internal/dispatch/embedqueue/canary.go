@@ -8,29 +8,35 @@ import (
 )
 
 // embedCanary is a fixed, short, known-good text, never stored: the probe that finds out whether
-// the embedder itself - the service, the credentials, the model - is working at that exact
-// moment. confirmSoloFailure sends it right after a solo row's own embed call fails, and the
-// coverage pass sends it (proveEmbedder) before it acts on rows another identity left while
-// nothing this process embedded has proven the embedder yet. It is safe to send on every such
-// occasion because it names nothing about any row's own content, costs a negligible, constant
-// number of tokens (reserved from the same shared budget as any other background call), and is
-// never written to embeddings or returned to a caller - its only use is the one Embed call's own
-// success or failure.
+// the embedder itself - the service, the credentials, the model - is working when it is answered.
+// confirmSoloFailure sends it after a solo row's own embed call fails, and the coverage pass sends
+// it (proveEmbedder) before it acts on rows another identity left while nothing this process
+// embedded has proven the embedder yet. It is safe to send on every such occasion because it
+// names nothing about any row's own content, costs a negligible, constant number of tokens
+// (reserved from the same shared budget as any other background call), and is never written to
+// embeddings or returned to a caller - its only use is the one Embed call's own success or
+// failure.
 const embedCanary = "dispatch embedqueue confirmation canary"
 
 // confirmSoloFailure decides whether a solo row's own non-throttled failure is this row's own
-// fault or a systemic condition, by immediately probing embedCanary - right after the row's own
-// failed call, in the same call context, drawing its own token reservation like any other
-// background call since it is a real (if tiny) request to the model service. A canary success
-// proves the service, credentials and model were all working at that exact moment, so the row's
-// own failure is confirmed permanent. A canary failure - including a throttle - means the
-// condition is systemic, not this row's fault: nothing is confirmed, the row goes back to retry,
-// and if the canary itself was throttled, throttled is reported too, so the caller backs off
-// exactly as an outright-throttled call would. A canary that meets an outage (embed.IsOutage: the
-// service failing, or not answering in time, on the known-good text too) backs the shared pace off
-// (embed.RateLimitedEmbedder.BackOff, when the embedder is one, as cmd/dispatch makes it), the one
-// place an outage does: the failing halves of a bisection before it say nothing of the service,
-// since one text the service fails on every time gives them as well. The confirmation is
+// fault or a systemic condition, by probing embedCanary after the row's own failed call, in the
+// same call context, drawing its own token reservation like any other background call since it is
+// a real (if tiny) request to the model service. A canary success proves the service, credentials
+// and model were all working when the canary was answered, so the row's own failure is confirmed
+// permanent. The canary waits out the token budget and the shared pace first, as every call this
+// package makes does, so once an outage has backed the pace off it goes out up to retry.MaxDelay
+// (5 minutes) after the row's own call. If the service recovers inside that wait, the canary
+// passes and confirms a good row whose failure was the outage's: one confirmed failure and an
+// ERROR line. That alone never dead-letters the row: its next successful embed sets
+// confirmed_failures back to 0 (commitEmbeddings), and it dies only at retry.DeadLetterAttempts
+// confirmed failures with no success between them. A canary failure - including a throttle -
+// means the condition is systemic, not this row's fault: nothing is confirmed, the row goes back
+// to retry, and if the canary itself was throttled, throttled is reported too, so the caller backs
+// off exactly as an outright-throttled call would. A canary that meets an outage (embed.IsOutage:
+// the service failing, or not answering in time, on the known-good text too) backs the shared pace
+// off (embed.RateLimitedEmbedder.BackOff, when the embedder is one, as cmd/dispatch makes it), the
+// one place an outage does: the failing halves of a bisection before it say nothing of the
+// service, since one text the service fails on every time gives them as well. The confirmation is
 // local to this one row and its own fresh canary call, never reasoning about any other row's
 // result in the same batch or bisection.
 func confirmSoloFailure(ctx context.Context, deps Deps, group []pendingRow, rowErr error, renewal *claimRenewal) bisectResult {

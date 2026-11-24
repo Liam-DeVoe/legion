@@ -342,10 +342,12 @@ type pendingRow struct {
 // about this batch's own content *might* have broken the request (a text the API refuses
 // outright, say), and handleGroupFailure isolates which row(s) via bisectSplit, splitting the
 // batch and re-embedding each half, recursively. A failure isolated down to a single row is
-// decided by confirmSoloFailure: a fixed, known-good embedCanary probe sent immediately after
-// that row's own failed call. Canary success proves the service, credentials and model were all
-// working at that exact moment, so the row's own failure is confirmed permanent (dead-lettered
-// once confirmed often enough); canary failure - including a throttle - means the condition is
+// decided by confirmSoloFailure: a fixed, known-good embedCanary probe sent after that row's own
+// failed call, through the same token budget and pace. Canary success proves the service,
+// credentials and model were all working when the canary was answered, so the row's own failure is
+// confirmed permanent (dead-lettered once confirmed often enough with no success between; a canary
+// that goes out after the service recovered from the outage the row met confirms that good row
+// once, as confirmSoloFailure says); canary failure - including a throttle - means the condition is
 // systemic, not this row's fault, and the row goes back to retry instead. This confirmation is
 // local to the one row and its own canary call: it never depends on any other row in the batch,
 // so a batch that was already exactly one row with no siblings at all is confirmed and
@@ -357,7 +359,8 @@ type pendingRow struct {
 // 408, or a 5xx but its 503, Bedrock's outage codes, or a call that ran out of time while this
 // call's ctx was live) is a non-throttled failure like any other here: it may be one text the
 // service fails on every time, which the canary confirms, or the service failing, whose canary
-// fails too, so nothing is counted against any row while it lasts.
+// fails too, so nothing is counted against any row while it lasts (at its end, see
+// confirmSoloFailure).
 func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocked, throttled bool, err error) {
 	if active, _, err := deps.embedderActive(ctx); err != nil || !active {
 		return 0, 0, false, false, err
@@ -399,14 +402,14 @@ func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocke
 
 // bisectResult is embedRows' own report (and handleGroupFailure's, and bisectSplit's): every row
 // given to one of them ends up in exactly one of succeeded (committed), permanent (a solo row's
-// own non-throttled failure immediately confirmed by a successful embedCanary probe right after
-// it - proof the service was working at that exact moment, so the failure is this row's own
-// content), or retry (not confirmed - a throttle, a cancellation, a multi-row group not yet split
-// down to one, or a solo failure whose own canary probe also failed, which is never evidence
-// about this row and means the whole subtree backs off instead). throttledGroups are the groups of
-// retry the model service throttled, each with its error, whose WARN ProcessBatch writes once
-// their retry is written (warnThrottledGroup). err is a genuine infrastructure failure
-// (commitEmbeddings' own), never a reason to call any row permanent.
+// own non-throttled failure confirmed by a successful embedCanary probe sent after it
+// (confirmSoloFailure): proof the service was working when the canary was answered, so the failure
+// is taken as this row's own content), or retry (not confirmed - a throttle, a cancellation, a
+// multi-row group not yet split down to one, or a solo failure whose own canary probe also failed,
+// which is never evidence about this row and means the whole subtree backs off instead).
+// throttledGroups are the groups of retry the model service throttled, each with its error, whose
+// WARN ProcessBatch writes once their retry is written (warnThrottledGroup). err is a genuine
+// infrastructure failure (commitEmbeddings' own), never a reason to call any row permanent.
 type bisectResult struct {
 	succeeded       int
 	permanent       []pendingRow
