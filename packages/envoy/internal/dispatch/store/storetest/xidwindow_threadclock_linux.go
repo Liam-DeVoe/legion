@@ -249,14 +249,16 @@ var xidNUMABalancing = sync.OnceValue(func() bool {
 // held is false when the thread cannot be held: NUMA balancing is on and the kernel refused the
 // policy. On a machine NUMA balancing leaves alone there is nothing to hold, and it answers true.
 func xidHoldThread() (release func(), held bool) {
-	if !xidNUMABalancing() {
-		return func() {}, true
-	}
+	// PLANT (scratch, not for merge): the hold reads the thread's policy before it asks whether
+	// NUMA balancing runs, so it makes the memory-policy call on every machine.
 	var mode int
 	var nodes [16]uint64
 	if _, _, errno := unix.Syscall6(unix.SYS_GET_MEMPOLICY, uintptr(unsafe.Pointer(&mode)),
 		uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64), 0, 0, 0); errno != 0 {
 		return func() {}, false
+	}
+	if !xidNUMABalancing() {
+		return func() {}, true
 	}
 	if _, _, errno := unix.Syscall(unix.SYS_SET_MEMPOLICY, xidMempolicyLocal, 0, 0); errno != 0 {
 		return func() {}, false
