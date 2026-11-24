@@ -20,18 +20,10 @@ func TestAnAcceptanceStartNamesTheAgentThatDoesIt(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		words []string
-		want  func(t *testing.T) string
+		want  string
 	}{
-		{"the owner's acceptance", []string{"implementer", "acceptance:owner"}, func(t *testing.T) string {
-			return treeRoleToken(t, "LEGION-208", claim.RoleArchitect)
-		}},
-		{"the fresh agent's acceptance", []string{"implementer", "acceptance"}, func(t *testing.T) string {
-			token, err := claim.AgentToken("legion", "LEGION-208", "acceptance")
-			if err != nil {
-				t.Fatalf("the fresh agent's token: %v", err)
-			}
-			return string(token)
-		}},
+		{"the owner's acceptance", []string{"implementer", "acceptance:owner"}, treeRoleToken(t, "LEGION-208", claim.RoleArchitect)},
+		{"the fresh agent's acceptance", []string{"implementer", "acceptance"}, treeRoleToken(t, "LEGION-208", "acceptance")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -39,9 +31,8 @@ func TestAnAcceptanceStartNamesTheAgentThatDoesIt(t *testing.T) {
 			root := stepRoot(t, pool, phase.Accepting)
 			seedStepsAt(t, pool, root.Key, root.Generation, 2, nil, tc.words...)
 			issue := issueOf(t, pool, engine, root.Key)
-			got := startAgentOf(t, pool, engine, issue, phase.Accepting)
-			if want := tc.want(t); string(got) != want {
-				t.Fatalf("the agent of %s's acceptance = %q, want %q", root.Key, got, want)
+			if got := startAgentOf(t, pool, engine, issue, phase.Accepting); string(got) != tc.want {
+				t.Fatalf("the agent of %s's acceptance = %q, want %q", root.Key, got, tc.want)
 			}
 		})
 	}

@@ -24,11 +24,7 @@ func coderEngine() *Engine {
 // coderToken is the claim token of the agent coder of key, the agent of its step coder.
 func coderToken(t *testing.T, key string) claim.Token {
 	t.Helper()
-	token, err := claim.AgentToken("legion", key, "coder")
-	if err != nil {
-		t.Fatalf("AgentToken(%s, coder): %v", key, err)
-	}
-	return token
+	return claim.Token(treeRoleToken(t, key, "coder"))
 }
 
 // coderCheckerAtStep2 is the root standing at step 2 of `coder checker`, coder of the type
