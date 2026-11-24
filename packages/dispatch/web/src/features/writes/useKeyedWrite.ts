@@ -24,7 +24,7 @@ import {
   SendStoppedError,
   stoppedWriteNote,
 } from "./keyed-write";
-import { plainWrite, useWrites } from "./write-store";
+import { plainWrite, useWriteSelection, useWrites } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
  *  the write path makes from `write` or `request` and `label`. Its data is Dispatch's answer, or
@@ -158,6 +158,13 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
    *  it a second time (`endedStopped`, `stoppedWriteNote`); `undefined` while the newest press did
    *  not end stopped. */
   readonly method: WriteMethod | undefined;
+  /** Whether the newest press is past a deadline: its write is out past its own
+   *  (`SEND_DEADLINE_MS`), or waits its turn behind a write to its target that is. Either way it
+   *  is still pending, tried under its key - or, waiting, to be - until Dispatch decides it or the
+   *  reader stops it at the shell's indicator. A surface that holds its controls while its write
+   *  is out lets them go here, so a write that never answers - offline, its tries waiting out the
+   *  network - locks none of them, and a press made then, waiting behind it, locks none again. */
+  readonly late: boolean;
 };
 
 /** Whether the newest press of `write` ended with the reader's stop: its `error` is then that
@@ -454,6 +461,20 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     [makePress]
   );
   const newest = mutation.variables;
+  // The newest press's write as the store holds it, by the key the press made it under, and the
+  // writes ahead of it on its target's line.
+  const late = useWriteSelection(`late:${newest?.key ?? ""}`, (rows) => {
+    const own = rows.find((row) => row.key === newest?.key);
+    if (own === undefined) return false;
+    if (own.status === "late") return true;
+    return (
+      own.status === "queued" &&
+      own.target !== undefined &&
+      rows.some(
+        (row) => row.target === own.target && row.joined < own.joined && row.status === "late"
+      )
+    );
+  });
   // Built only once the newest press ended stopped, when its request went out: a press whose
   // request could not be built ended with that error instead, which building it here would throw.
   const newestMethod =
@@ -484,6 +505,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     ...mutation,
     again,
     forgetUnanswered,
+    late,
     method: newestMethod,
     mutate,
     mutateAsync,

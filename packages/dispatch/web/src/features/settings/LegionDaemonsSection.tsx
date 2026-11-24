@@ -15,7 +15,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { apiErrorMessage, legionDaemonRemovalRequest, legionDaemonRequest } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { LegionSetting } from "../../api/types";
@@ -122,10 +122,12 @@ export function LegionDaemonsSection(): ReactNode {
   // until this write's answer, however late. A read already out at the press is given up in the
   // step the press shows its row, so no second press reads the row from before it; one Dispatch
   // answers before it takes the write can still show the old row until the write settles and the
-  // project is read again.
+  // project is read again. Both go on one line per daemon (`target`), in press order: a Save or a
+  // Remove pressed while an earlier one of the same daemon is late waits its turn behind it, so
+  // the daemon ends as the later press left it, however each one's tries wait out the network.
   const saveDaemon = useKeyedWrite<LegionSetting, DaemonInput, PreviousDaemon>({
-    method: "PUT",
-    write: ({ project: named, state_url: url }, bounds) => api.putLegionDaemon(named, url, bounds),
+    target: ({ project: named }) => `legion-daemon:${named}`,
+    request: ({ project: named, state_url: url }) => legionDaemonRequest(named, url),
     inline: true,
     label: ({ project: named }) => `${named}'s Legion daemon`,
     onError: (error, variables, context) => {
@@ -173,8 +175,8 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.invalidateQueries({ queryKey: daemonKey(variables.project) }),
   });
   const removeDaemon = useKeyedWrite<void, string, PreviousDaemon>({
-    method: "DELETE",
-    write: (named: string, bounds) => api.deleteLegionDaemon(named, bounds),
+    target: (named) => `legion-daemon:${named}`,
+    request: (named) => legionDaemonRemovalRequest(named),
     inline: true,
     label: (named) => `${named}'s Legion daemon removed`,
     onError: (error, named, context) => {
@@ -205,10 +207,10 @@ export function LegionDaemonsSection(): ReactNode {
   });
 
   // The refusal on screen is the newest press of its write: a later press of either write that
-  // lands lets it go, and Retry waits while either is out. So Retry is that write's own (`retry`),
-  // which makes a press the reader stopped again as that press. Both are a `PUT` or a `DELETE`,
-  // which sends no key, so that is the same change sent again. The field's own refusal of a URL
-  // made no press, and offers no Retry.
+  // lands lets it go, and Retry waits while either holds the form (`writing`). So Retry is that
+  // write's own (`retry`), which makes a press the reader stopped again as that press. Both are a
+  // `PUT` or a `DELETE`, which sends no key, so that is the same change sent again. The field's
+  // own refusal of a URL made no press, and offers no Retry.
   const retry = () => {
     if (failedAction?.kind === "save") {
       saveDaemon.retry();
@@ -218,11 +220,15 @@ export function LegionDaemonsSection(): ReactNode {
       removeDaemon.retry();
     }
   };
-  // While either write is out, Save Legion daemon and every row's Remove are held by
-  // `aria-disabled` (`heldPress`), and the address box by `aria-disabled` and read-only, never
-  // disabled: the control the reader pressed or submitted from keeps the focus, and a press or a
-  // submit then sends nothing.
-  const writing = saveDaemon.isPending || removeDaemon.isPending;
+  // While either write is out within its deadline, Save Legion daemon and every row's Remove are
+  // held by `aria-disabled` (`heldPress`), and the address box by `aria-disabled` and read-only,
+  // never disabled: the control the reader pressed or submitted from keeps the focus, and a press
+  // or a submit then sends nothing. A write past its deadline (`late`) holds them no longer: it is
+  // still tried under its key, and the shell's indicator offers to stop it, but one that never
+  // answers - the browser offline - would otherwise hold the form for good. Nor does a press made
+  // then hold them, which waits its turn behind that write (`late` as well) until it is decided.
+  const writing =
+    (saveDaemon.isPending && !saveDaemon.late) || (removeDaemon.isPending && !removeDaemon.late);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (writing) return;

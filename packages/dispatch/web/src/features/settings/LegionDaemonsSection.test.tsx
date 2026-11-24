@@ -1,20 +1,23 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the in-the-step row submits and checks in one synchronous step, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { realClock, settle } from "../../__tests__/fake-clock";
-import { pressHeld } from "../../__tests__/held-press";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
+import { answerRoute } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, type WriteBounds } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { AuthenticatedUser, LegionSetting } from "../../api/types";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
+import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
 
 /** Every spy a test installed, put back when it ends, so one test's identity or answers are
@@ -103,6 +106,23 @@ async function renderSection(
   return within(await screen.findByRole("region", { name: "Legion" }));
 }
 
+/** `PUT /api/v1/projects/{key}/legion/daemon`, as Save makes it from its request alone
+ *  (`legionDaemonRequest`): called with the project, the body and the attempt's bounds. */
+function answerDaemonSaves() {
+  return answerRoute<
+    (project: string, body: { state_url: string }, bounds: WriteBounds) => Promise<LegionSetting>
+  >("PUT", "/api/v1/projects/*/legion/daemon");
+}
+
+/** `DELETE /api/v1/projects/{key}/legion/daemon`, as a row's Remove makes it from its request
+ *  alone (`legionDaemonRemovalRequest`): called with the project, no body and the bounds. */
+function answerDaemonRemovals() {
+  return answerRoute<(project: string, body: undefined, bounds: WriteBounds) => Promise<void>>(
+    "DELETE",
+    "/api/v1/projects/*/legion/daemon"
+  );
+}
+
 test("every project that names a daemon is a row of its own", async () => {
   const section = await renderSection(
     legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
@@ -139,8 +159,9 @@ test("a project whose daemon cannot be read fails the list rather than dropping 
 test("naming a project's daemon sends the PUT and lists what the server stored", async () => {
   const user = userEvent.setup();
   const server = legionServer([]);
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(server.put);
-  spies.push(putLegionDaemon);
+  const putLegionDaemon = answerDaemonSaves().mockImplementation((project, body) =>
+    server.put(project, body.state_url)
+  );
   const section = await renderSection(server);
 
   await pickFromLabelled(user, "Legion project", "ACME · ACME");
@@ -149,7 +170,11 @@ test("naming a project's daemon sends the PUT and lists what the server stored",
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
 
   await waitFor(() =>
-    expect(putLegionDaemon).toHaveBeenLastCalledWith("ACME", "http://127.0.0.1:9731", keyedAttempt)
+    expect(putLegionDaemon).toHaveBeenLastCalledWith(
+      "ACME",
+      { state_url: "http://127.0.0.1:9731" },
+      keyedAttempt
+    )
   );
   expect(await section.findByRole("cell", { name: "http://127.0.0.1:9731" })).toBeDefined();
   // The form is empty again, ready for the next project's daemon.
@@ -159,15 +184,18 @@ test("naming a project's daemon sends the PUT and lists what the server stored",
 test("removing a project's daemon sends the DELETE and drops its row", async () => {
   const user = userEvent.setup();
   const server = legionServer([setting]);
-  const deleteLegionDaemon = spyOn(api, "deleteLegionDaemon").mockImplementation(server.remove);
-  spies.push(deleteLegionDaemon);
+  const deleteLegionDaemon = answerDaemonRemovals().mockImplementation((project) =>
+    server.remove(project)
+  );
   const section = await renderSection(server);
 
   await user.click(
     await section.findByRole("button", { name: "Remove the Legion daemon of ACME" })
   );
 
-  await waitFor(() => expect(deleteLegionDaemon).toHaveBeenLastCalledWith("ACME", keyedAttempt));
+  await waitFor(() =>
+    expect(deleteLegionDaemon).toHaveBeenLastCalledWith("ACME", undefined, keyedAttempt)
+  );
   expect(await section.findByText("No project names a Legion daemon yet.")).toBeDefined();
 });
 
@@ -192,10 +220,9 @@ test.each([
   // The writes' answer, held until the case refuses it inside `act`.
   const answer = Promise.withResolvers<never>();
   const writes = [
-    spyOn(api, "putLegionDaemon").mockReturnValue(answer.promise),
-    spyOn(api, "deleteLegionDaemon").mockReturnValue(answer.promise),
+    answerDaemonSaves().mockReturnValue(answer.promise),
+    answerDaemonRemovals().mockReturnValue(answer.promise),
   ];
-  spies.push(...writes);
   const section = await renderSection(
     legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
   );
@@ -214,16 +241,81 @@ test.each([
   }
 });
 
+// Offline, a write of the section is tried under its key until Dispatch answers it: each try
+// fails at the network, and the next waits out its backoff, whatever the browser says of the
+// network (`networkMode: "always"`). At its deadline (`SEND_DEADLINE_MS`) the write goes late,
+// still tried and now stoppable at the shell's indicator, and the section's hold ends there, so a
+// write that never answers locks none of its controls. The control the reader pressed keeps the
+// focus while it is held and once it is let go, under `emulateChromiumFocusFixup` throughout. A
+// Remove takes its row away at the press, so its hold is read on the other row's Remove, which
+// the reader moves to.
+test.each([
+  { label: "Save Legion daemon", start: undefined },
+  { label: "Remove the Legion daemon of CORE", start: "Remove the Legion daemon of ACME" },
+] as const)("offline, $label is held until its write's deadline, let go there, and keeps the focus throughout", async ({
+  label,
+  start,
+}) => {
+  const failsAtTheNetwork = () =>
+    Promise.reject(
+      new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
+    );
+  const writes = [
+    answerDaemonSaves().mockImplementation(failsAtTheNetwork),
+    answerDaemonRemovals().mockImplementation(failsAtTheNetwork),
+  ];
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(
+    legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
+    true,
+    queryClient
+  );
+  await section.findByRole("cell", { name: "CORE" });
+  // The form is filled on the real clock, so every read the section makes has answered before
+  // the clock is held for the write.
+  if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+  const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+  const online = onlineManager.isOnline();
+  jest.useFakeTimers();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    onlineManager.setOnline(false);
+    await pressHeld(userOnFakeClock(), pressed, {
+      name: label,
+      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+    });
+
+    // A second short of the deadline the write is still within it, and the control still held.
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(writesOf(queryClient).rows()[0]?.status).toBe("sending");
+    expect(heldNotDisabled(pressed, label)).toBe(true);
+    expect(pressed).toHaveFocus();
+
+    // Past it the write is late and still tried, and the control is let go with the focus on it.
+    await tick(1_000);
+    expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
+    expect(heldNotDisabled(pressed, label)).toBe(false);
+    expect(pressed).toHaveFocus();
+  } finally {
+    // The section and its reads go before the network returns, so no read goes on after the row.
+    cleanup();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
+  }
+});
+
 test("a refusal the server made is shown as the server wrote it, and the row goes back", async () => {
   const user = userEvent.setup();
   const server = legionServer([]);
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockRejectedValue(
+  answerDaemonSaves().mockRejectedValue(
     new ApiError(403, {
       code: "SCOPE_FORBIDDEN",
       error: "this credential names one project and cannot write a deployment setting",
     })
   );
-  spies.push(putLegionDaemon);
   const section = await renderSection(server);
 
   await pickFromLabelled(user, "Legion project", "ACME · ACME");
@@ -245,8 +337,9 @@ test("a refusal the server made is shown as the server wrote it, and the row goe
 test("a URL with a path is refused by the field, in the words the route uses", async () => {
   const user = userEvent.setup();
   const server = legionServer([]);
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(server.put);
-  spies.push(putLegionDaemon);
+  const putLegionDaemon = answerDaemonSaves().mockImplementation((project, body) =>
+    server.put(project, body.state_url)
+  );
   const section = await renderSection(server);
 
   await pickFromLabelled(user, "Legion project", "ACME · ACME");
@@ -268,8 +361,9 @@ test("a URL with a path is refused by the field, in the words the route uses", a
 test("with no project picked, Save Legion daemon files nothing and says to choose a project", async () => {
   const user = userEvent.setup();
   const server = legionServer([]);
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(server.put);
-  spies.push(putLegionDaemon);
+  const putLegionDaemon = answerDaemonSaves().mockImplementation((project, body) =>
+    server.put(project, body.state_url)
+  );
   const section = await renderSection(server);
 
   expect(await section.findByLabelText("Legion project")).toHaveTextContent("Choose a project");
@@ -284,7 +378,11 @@ test("with no project picked, Save Legion daemon files nothing and says to choos
   expect(section.queryByRole("alert")).toBeNull();
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
   await waitFor(() =>
-    expect(putLegionDaemon).toHaveBeenLastCalledWith("ACME", "http://127.0.0.1:9731", keyedAttempt)
+    expect(putLegionDaemon).toHaveBeenLastCalledWith(
+      "ACME",
+      { state_url: "http://127.0.0.1:9731" },
+      keyedAttempt
+    )
   );
   expect(putLegionDaemon).toHaveBeenCalledTimes(1);
 });
@@ -324,10 +422,9 @@ test("the Legion daemon's project list holds a text box that narrows its project
 // and its project picked, on the real clock, so every read it makes has answered before the clock
 // is held for the save.
 test("a daemon save the reader stopped says Retry sends it again, not that it failed", async () => {
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockRejectedValue(
+  answerDaemonSaves().mockRejectedValue(
     new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
   );
-  spies.push(putLegionDaemon);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const section = await renderSection(legionServer([]), true, queryClient);
   await pickFromLabelled(userEvent.setup(), "Legion project", "ACME · ACME");
@@ -356,10 +453,9 @@ test("a daemon save the reader stopped says Retry sends it again, not that it fa
 // failed write from the write's own error handler (`onError`), so a stopped one is told apart
 // there: the section says what Retry does with it, not that the removal failed.
 test("a daemon removal the reader stopped says Retry makes it again, not that it failed", async () => {
-  const deleteLegionDaemon = spyOn(api, "deleteLegionDaemon").mockRejectedValue(
+  answerDaemonRemovals().mockRejectedValue(
     new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
   );
-  spies.push(deleteLegionDaemon);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const section = await renderSection(legionServer([setting]), true, queryClient);
   const remove = await section.findByRole("button", { name: "Remove the Legion daemon of ACME" });
@@ -485,15 +581,20 @@ test("another browser's daemon of the project shows while this page's save is ou
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const server = legionServer([setting]);
   const held = heldWrites(server, { savedFirst: true });
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(held.server.put);
-  spies.push(putLegionDaemon);
+  const putLegionDaemon = answerDaemonSaves().mockImplementation((project, body) =>
+    held.server.put(project, body.state_url)
+  );
   const section = await renderSection(held.server, true, queryClient);
 
   await section.findByRole("cell", { name: "http://127.0.0.1:9731" });
   await fillDaemonForm("https://daemon.example");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
   await waitFor(() =>
-    expect(putLegionDaemon).toHaveBeenCalledWith("ACME", "https://daemon.example", keyedAttempt)
+    expect(putLegionDaemon).toHaveBeenCalledWith(
+      "ACME",
+      { state_url: "https://daemon.example" },
+      keyedAttempt
+    )
   );
   expect(shownUrls()).toEqual(["https://daemon.example"]);
 
@@ -524,16 +625,17 @@ test("another browser's daemon of the project shows while this page's removal is
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const server = legionServer([setting]);
   const held = heldWrites(server, { savedFirst: true });
-  const deleteLegionDaemon = spyOn(api, "deleteLegionDaemon").mockImplementation(
-    held.server.remove
+  const deleteLegionDaemon = answerDaemonRemovals().mockImplementation((project) =>
+    held.server.remove(project)
   );
-  spies.push(deleteLegionDaemon);
   const section = await renderSection(held.server, true, queryClient);
 
   await user.click(
     await section.findByRole("button", { name: "Remove the Legion daemon of ACME" })
   );
-  await waitFor(() => expect(deleteLegionDaemon).toHaveBeenCalledWith("ACME", keyedAttempt));
+  await waitFor(() =>
+    expect(deleteLegionDaemon).toHaveBeenCalledWith("ACME", undefined, keyedAttempt)
+  );
   expect(shownUrls()).toEqual([]);
 
   // The other browser's save, and the event's refresh of this page's project.
@@ -560,8 +662,9 @@ test("another browser's daemon of the project shows while this page's removal is
 test("a daemon's save is in the project's query in the step of the press", async () => {
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const held = heldWrites(legionServer([setting]));
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(held.server.put);
-  spies.push(putLegionDaemon);
+  answerDaemonSaves().mockImplementation((project, body) =>
+    held.server.put(project, body.state_url)
+  );
   const section = await renderSection(held.server, true, queryClient);
 
   await section.findByRole("cell", { name: "http://127.0.0.1:9731" });
@@ -590,8 +693,9 @@ test("a read of a project out when its daemon's save is answered does not put ba
   const user = userEvent.setup();
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const held = heldWrites(legionServer([setting]));
-  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(held.server.put);
-  spies.push(putLegionDaemon);
+  const putLegionDaemon = answerDaemonSaves().mockImplementation((project, body) =>
+    held.server.put(project, body.state_url)
+  );
   const section = await renderSection(held.server, true, queryClient);
 
   await section.findByRole("cell", { name: "http://127.0.0.1:9731" });
@@ -600,7 +704,11 @@ test("a read of a project out when its daemon's save is answered does not put ba
   await user.paste("https://daemon.example");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
   await waitFor(() =>
-    expect(putLegionDaemon).toHaveBeenCalledWith("ACME", "https://daemon.example", keyedAttempt)
+    expect(putLegionDaemon).toHaveBeenCalledWith(
+      "ACME",
+      { state_url: "https://daemon.example" },
+      keyedAttempt
+    )
   );
 
   // Asked while the save is out, as an event's refresh would ask it.
@@ -631,4 +739,119 @@ test("a read of a project out when its daemon's save is answered does not put ba
   });
   await waitFor(() => expect(queryClient.isFetching()).toBe(0));
   expect(shownUrls()).toEqual(["https://daemon.example"]);
+});
+
+/**
+ * The two presses of a row where Save of ACME's daemon is made behind an earlier write of it that
+ * is late: `first` - Save of `https://first.example`, or ACME's Remove - and then, past that
+ * write's deadline and past the try it makes a second after it, Save of `https://second.example`,
+ * each pressed with Enter from the focus. Dispatch cannot be reached meanwhile: each try of a
+ * write fails at the network, until `reach`, after which each try is taken by the server's rows
+ * and named in `taken`, in the order Dispatch took it. Nothing tells the page it can be reached
+ * again - no `online`, as when the browser's network was never lost and a gateway comes back - so
+ * each write that waits tries again at the end of its own backoff. The section is drawn and filled
+ * on the real clock and pressed on the fake one, which the row puts back (`realClock`).
+ */
+async function saveBehindLateWrite(
+  first: "Save Legion daemon" | "Remove the Legion daemon of ACME"
+) {
+  const server = legionServer([setting]);
+  const taken: string[] = [];
+  let reachable = false;
+  const unreachable = () =>
+    Promise.reject(
+      new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
+    );
+  answerDaemonSaves().mockImplementation((project, body) => {
+    if (!reachable) return unreachable();
+    taken.push(`PUT ${body.state_url}`);
+    return server.put(project, body.state_url);
+  });
+  answerDaemonRemovals().mockImplementation((project) => {
+    if (!reachable) return unreachable();
+    taken.push("DELETE");
+    return server.remove(project);
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(server, true, queryClient);
+  await section.findByRole("cell", { name: "ACME" });
+  await fillDaemonForm(
+    first === "Save Legion daemon" ? "https://first.example" : "https://second.example"
+  );
+  const save = section.getByRole("button", { name: "Save Legion daemon" }) as HTMLButtonElement;
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  act(() => section.getByRole("button", { name: first }).focus());
+  await user.keyboard("{Enter}");
+  // The write tries at 0, 1, 3, 7, 15 and 31 s, each failing at the network; its next try waits
+  // its longest backoff, half a minute.
+  await tick(SEND_DEADLINE_MS + 2_000);
+  expect(writesOf(queryClient).rows()[0]?.status).toBe("late");
+  if (first === "Save Legion daemon") {
+    await user.clear(section.getByLabelText("Legion daemon state URL"));
+    await user.paste("https://second.example");
+  }
+  act(() => save.focus());
+  await user.keyboard("{Enter}");
+  await tick(0);
+  return {
+    queryClient,
+    reach: () => {
+      reachable = true;
+    },
+    save,
+    taken,
+  };
+}
+
+// A write of the section past its deadline holds the form no longer, so the reader can make
+// another write of the same daemon while the first is still tried. Both go on the daemon's line,
+// in press order: the later press waits its turn behind the late write and goes once that one is
+// decided. Off the line, the later press would try again a second after Dispatch can be reached,
+// long before the late write's next try, half a minute on, which would then land last and undo
+// it. On the line, Dispatch takes the two in press order, the section ends on the later press's
+// URL, and the focus is on the Save the reader pressed last.
+test.each([
+  {
+    first: "Save Legion daemon",
+    inPressOrder: ["PUT https://first.example", "PUT https://second.example"],
+  },
+  {
+    first: "Remove the Legion daemon of ACME",
+    inPressOrder: ["DELETE", "PUT https://second.example"],
+  },
+] as const)("a Save pressed while $first's write of the daemon is late goes after it, and the daemon ends as the Save left it", async ({
+  first,
+  inPressOrder,
+}) => {
+  try {
+    const { queryClient, reach, save, taken } = await saveBehindLateWrite(first);
+    reach();
+    // Past the late write's next try, and the later press's write after it.
+    await tick(SEND_DEADLINE_MS);
+    expect(taken).toEqual([...inPressOrder]);
+    expect(writesOf(queryClient).rows()).toEqual([]);
+    expect(shownUrls()).toEqual(["https://second.example"]);
+    expect(save).toHaveFocus();
+  } finally {
+    realClock();
+  }
+});
+
+// The later press waits its turn behind the late write, and no deadline of its own runs while it
+// waits: it holds the form no more than the late write does, so a write that never answers locks
+// the form no more by a second press than by the first. Save is free, with the focus on it.
+test("a Save pressed while an earlier write of its daemon is late waits its turn, and holds the form no more than that write does", async () => {
+  try {
+    const { queryClient, save } = await saveBehindLateWrite("Save Legion daemon");
+    expect(
+      writesOf(queryClient)
+        .rows()
+        .map((row) => row.status)
+    ).toEqual(["late", "queued"]);
+    expect(heldNotDisabled(save, "Save Legion daemon")).toBe(false);
+    expect(save).toHaveFocus();
+  } finally {
+    realClock();
+  }
 });
