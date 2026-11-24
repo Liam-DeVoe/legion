@@ -2572,8 +2572,9 @@ check "the report names the go env write" "$(contains "$out" 'which this check d
 # variable of each other kind, and the fixture shows what each would do: GOFLAGS, and GOFLAGS
 # again in the default `go env -w` file under XDG_CONFIG_HOME, which an empty GOFLAGS does not
 # override, set the tag that compiles mod/lib/polluted.go, and GOOS compiles mod/lib/lib_plan9.go,
-# each of which imports mod/other, a package the filter leaves out; GO111MODULE=off lists in GOPATH
-# mode, which cannot find mod/dep, the package mod/lib/dep.go imports; GOWORK=off leaves go.work
+# each of which imports mod/other, a package the clean closure leaves out, so the filter computed
+# from it would take it and the report count it; GO111MODULE=off lists in GOPATH mode, which cannot
+# find mod/dep, the package mod/lib/dep.go imports; GOWORK=off leaves go.work
 # out of the module files; GOEXPERIMENT names an experiment no go knows. CGO_ENABLED=0 and
 # GOTOOLCHAIN=local are set too with no file of their own: the next case holds cgo, and this
 # fixture's go line is below every go's. Both runs start from a go binary, not a version
@@ -2586,7 +2587,6 @@ printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_pl
 mkdir -p "$root/mod/dep"
 printf 'package dep\n' > "$root/mod/dep/dep.go"
 printf 'package lib\n\nimport _ "example.com/m/dep"\n' > "$root/mod/lib/dep.go"
-replace "$root/.github/ci-filters.yaml" "  - 'mod/lib/*'" $'  - \'mod/lib/*\'\n  - \'mod/dep/*\''
 go_bin="$(cd "$work" && go env GOROOT)/bin"
 python=$(python3 -c 'import sys; print(sys.executable)')
 standin="$work/standin-goroot"
@@ -2613,7 +2613,7 @@ polluted_status=$?
 set -e
 answer() { grep -Ev '^::stop-commands::[0-9a-f]{32}$|^::[0-9a-f]{32}::$' <<<"$1" || true; }
 check "passes clean" "$(is "$clean_status" 0)"
-check "counts the job's files clean" "$(contains "$clean" '^report: app: [0-9]* files, 0 uncovered (filter app)$')"
+check "counts the job's files clean" "$(contains "$clean" '^report: app: [0-9]* files (filter app)$')"
 check "the polluted run's Python is the one the shim started" \
   "$(is "$(test -e "$shim/started" && echo started || echo missing)" started)"
 check "gives the clean answer under the caller's variables and the shim's GOROOT and PATH" \
