@@ -328,7 +328,8 @@ func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 // BEGIN that locks, not the measured operation, because an operation sends a transaction from any
 // goroutine it starts - a broadcast delivers to each session on a goroutine of its own. A thread
 // the rig could not hold is not recorded as held, so its gaps are read off no thread's clocks and
-// are a rig problem (analyzeXidWindows).
+// are a rig problem (analyzeXidWindows); so is one whose BEGIN could not hold the memory, such as a
+// hold that found none of the execution tracer's memory to make present.
 func (x *XidTracer) lockTransaction(pid uint32) {
 	runtime.LockOSThread()
 	held := xidHeldThread{thread: xidThread()}
@@ -343,7 +344,10 @@ func (x *XidTracer) lockTransaction(pid uint32) {
 				release()
 			}
 		}
-		xidHoldMemory()
+		if !xidHoldMemory() && held.release != nil {
+			held.release()
+			held.release = nil
+		}
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()

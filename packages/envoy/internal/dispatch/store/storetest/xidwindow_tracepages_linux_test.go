@@ -20,6 +20,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // xidBurstLogs is how many trace events the burst of TestTheTracersEventsInAWindowTouchNoFreshPage
@@ -46,18 +47,37 @@ const xidGenerationWait = 10 * time.Second
 // next is a second away, so no generation begins inside it and remakes the trace's tables on blocks
 // the runtime maps then. The test runs once; a burst that a generation still begins inside fails,
 // since it proves nothing about the hold.
+//
+// The hold finds the tracer's memory by the runtime's names where the kernel keeps them, and by
+// what was mapped since the trace started where it keeps none (xidTracerRanges). A hold that found
+// none leaves the two page checks nothing to read, so the test fails as UNKNOWN rather than pass
+// over an empty list; on a kernel that keeps no names the hold before this rule found none, and the
+// burst faulted on buffers it never made present (16 to 67 of 100 runs on such a kernel). The fault
+// count is the third check, and it holds only where the kernel counts a thread's faults: where it
+// does not (gVisor's counter stays still when a thread writes a fresh page), the test stops by the
+// repository's rule for a machine that cannot run it (xidRequireFaultCounter).
+//
+// Nothing but the tracer's writes may fault in the burst. The runtime preempts a goroutine that has
+// run for 10 ms (sysmon's forcePreemptNS) with a signal, and the kernel writes the signal's frame
+// onto the thread's signal stack, which a thread that never took a signal has not touched: that was
+// the fault left in about 3 of 400 runs once the tracer's pages were present. So, after the hold
+// and its checks, the goroutine yields, and the burst starts a whole time slice of its own, which
+// it takes 2 to 18 ms of; and before the hold the thread takes one signal (xidTouchSignalStack), so
+// a preemption of a burst that runs past its slice lands on pages already touched.
 func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 	if trace.IsEnabled() {
 		t.Fatal("an execution trace is already running - go test -trace takes one - and this test takes its own; run it without go test -trace")
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	xidRequireFaultCounter(t)
 	ctx := context.Background()
 	var traced *xidTrace
 	var before, after unix.Rusage
 	var warmed, from, to time.Time
 	var absent []string
 	var mapped, grown []xidTracerRange
+	var named bool
 	var waited time.Duration
 	// As Measure does, with the collector held off, so none of its workers writes events.
 	runWithoutCollector(func() {
@@ -75,9 +95,11 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 		warmed = time.Now()
 		for i := range xidBurstLogs + 1 {
 			if i == 1 {
+				xidTouchSignalStack()
 				xidHoldMemory()
-				mapped = xidTracerMappings(t)
+				mapped, named = xidTracerMappings(t)
 				absent = xidAbsentPages(mapped)
+				runtime.Gosched()
 				xidThreadRusage(&before)
 				from = time.Now()
 			}
@@ -85,8 +107,11 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 		}
 		to = time.Now()
 		xidThreadRusage(&after)
-		grown = xidTracerMappings(t)
+		grown, _ = xidTracerMappings(t)
 	})
+	if len(mapped) == 0 {
+		t.Fatalf("UNKNOWN: the hold found none of the execution tracer's memory - no mapping is named the tracer's, and none was mapped since the trace started - so the checks that its pages are present and that no buffer was mapped for the burst would read an empty list")
+	}
 	reading, err := traced.read()
 	if err != nil {
 		t.Fatalf("read the execution trace: %v", err)
@@ -97,11 +122,50 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 			to.Sub(warmed), waited)
 	}
 	faults := after.Minflt - before.Minflt
-	if len(absent) > 0 || faults != 0 || !slices.Equal(grown, mapped) {
-		t.Fatalf("after the hold %d pages of the tracer's memory were not present (%v); the thread took %d page faults writing %d trace events; the tracer's mappings were %v before the events and %v after",
-			len(absent), absent, faults, xidBurstLogs, mapped, grown)
+	// By name, a mapping added for the burst is the tracer's. Found as what was mapped since the
+	// trace started, it may be anything another thread mapped meanwhile, so there a buffer mapped
+	// for the burst shows as the fault its header's first write is.
+	if len(absent) > 0 || faults != 0 || (named && !slices.Equal(grown, mapped)) {
+		t.Fatalf("after the hold %d pages of the tracer's memory were not present (%v); the thread took %d page faults writing %d trace events; the tracer's mappings (%s) were %v before the events and %v after",
+			len(absent), absent, faults, xidBurstLogs, xidTracerFound(named), mapped, grown)
 	}
-	t.Logf("%d trace events in %s, begun %s into the wait for a generation: 0 page faults, the tracer's mappings %v unchanged", xidBurstLogs, to.Sub(from), waited, mapped)
+	t.Logf("%d trace events in %s, begun %s into the wait for a generation: 0 page faults, the tracer's mappings (%s) %v unchanged", xidBurstLogs, to.Sub(from), waited, xidTracerFound(named), mapped)
+}
+
+// xidTracerFound says how the hold found the tracer's memory (xidTracerRanges).
+func xidTracerFound(named bool) string {
+	if named {
+		return "found by the runtime's names"
+	}
+	return "found as what was mapped since the trace started, this kernel naming no anonymous mapping"
+}
+
+// xidRequireFaultCounter stops the calling test where the kernel does not count the calling
+// thread's page faults: it writes one byte to a page it has just mapped, which is a fault on every
+// kernel that counts them, and reads the thread's ru_minflt either side. A count that did not move
+// is a counter that cannot fail a check of none, so the test skips naming it, and fails on GitHub
+// Actions, whose runners count faults (testdb.SkipOutsideCI).
+func xidRequireFaultCounter(t *testing.T) {
+	t.Helper()
+	page, err := unix.Mmap(-1, 0, os.Getpagesize(), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
+	if err != nil {
+		t.Fatalf("map a page to count this thread's faults on: %v", err)
+	}
+	defer unix.Munmap(page)
+	var before, after unix.Rusage
+	xidThreadRusage(&before)
+	page[0] = 1
+	xidThreadRusage(&after)
+	if after.Minflt == before.Minflt {
+		testdb.SkipOutsideCI(t, "this kernel does not count a thread's page faults: ru_minflt stayed %d when this thread wrote a page it had just mapped, so a burst's count of none would prove nothing", before.Minflt)
+	}
+}
+
+// xidTouchSignalStack sends the calling thread a SIGURG, which the runtime takes as a preemption
+// request, and, with none made, ignores: the kernel writes the signal's frame onto the thread's
+// signal stack, so the frame of a later preemption lands on pages already present.
+func xidTouchSignalStack() {
+	unix.Tgkill(unix.Getpid(), unix.Gettid(), unix.SIGURG)
 }
 
 // xidAwaitGeneration waits until the trace the sink holds shows a generation it did not show at
@@ -145,26 +209,15 @@ func xidGenerationsIn(traced *xidTrace) int {
 	}
 }
 
-// xidTracerRange is one of the execution tracer's mappings.
-type xidTracerRange struct{ start, end uintptr }
-
-// xidTracerMappings lists the execution tracer's mappings (xidTracerMapping).
-func xidTracerMappings(t *testing.T) []xidTracerRange {
+// xidTracerMappings lists the execution tracer's memory as the hold finds it (xidTracerRanges),
+// and whether it found it by the runtime's names.
+func xidTracerMappings(t *testing.T) (ranges []xidTracerRange, named bool) {
 	t.Helper()
 	maps, err := os.ReadFile("/proc/self/maps")
 	if err != nil {
 		t.Fatalf("read /proc/self/maps: %v", err)
 	}
-	var ranges []xidTracerRange
-	for line := range bytes.Lines(maps) {
-		if !xidTracerMapping(line) {
-			continue
-		}
-		if start, end, ok := xidMappingRange(bytes.Fields(line)[0]); ok {
-			ranges = append(ranges, xidTracerRange{start, end})
-		}
-	}
-	return ranges
+	return xidTracerRanges(maps), xidRuntimeNamesMappings(maps)
 }
 
 // xidAbsentPages names each page of ranges that is not present (mincore).
