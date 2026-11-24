@@ -140,9 +140,7 @@ var podRuleForArchitect = []string{
 	"Your subagents run their commands in your own issue pod",
 	ruleSandboxEndsTheContainer,
 	ruleEveryRolesTurn,
-	ruleCIsWork,
 	"what may run in the pod is what `skill://legion-worker/references/tools.md` names",
-	"every other heavy run goes where your deployment's instructions say and instructions that name no such route are a gap to report, and you put these facts in the context of each subagent you start",
 }
 
 // What a child's architect is launched with and a root architect is not. The heading opens the
