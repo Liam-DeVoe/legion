@@ -2309,7 +2309,7 @@ func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error
 // (BROKER_EXCHANGE_RESULT_WORKFLOWS, resultWorkflows) need that profile, since each result entry's
 // run is granted a placeholder its block carries. With neither, any rules pass. Each refusal names
 // BROKER_PROFILES_FILE and the profile, and BROKER_EXCHANGE_RESULT_WORKFLOWS only when it is set.
-// cmd/cipherd runs it on every broker after ProxyMintedRules, and `profiles check` runs it with no
+// cmd/cipherd runs it on every broker before ProxyMintedRules, and `profiles check` runs it with no
 // result entries.
 func ResultsEntryRules(rules proxyrules.Rules, resultWorkflows bool) error {
 	name := oauthwire.AirlockResultsName
