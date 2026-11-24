@@ -1,12 +1,18 @@
 import { routePath } from "../web/src/api/paths";
 import { baseUrl, createIssue, createProject } from "./api";
-import { expect, rowKey, rowPerson, test } from "./test";
+import { expect, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 async function createAskWithToken(issue: string, token: string): Promise<Response> {
   return fetch(new URL(routePath("post", "/api/v1/issues/{key}/asks", { key: issue }), baseUrl), {
     body: JSON.stringify({
-      actor: { id: "architect-session", kind: "session", origin: { session_title: "Architect" } },
+      // The row's own session (`rowSessionId`, e2e/test.ts): Dispatch keeps what a session
+      // authors by its id, for every person at once.
+      actor: {
+        id: rowSessionId("architect"),
+        kind: "session",
+        origin: { session_title: "Architect" },
+      },
       question: "Which release gate should we use?",
     }),
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },

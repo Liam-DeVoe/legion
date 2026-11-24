@@ -1,3 +1,4 @@
+// runId, stopId and untitledId are fixed by the recording agent-name.stub.e2e.ts replays (`seed`).
 import {
   agentIn,
   expectAgent,

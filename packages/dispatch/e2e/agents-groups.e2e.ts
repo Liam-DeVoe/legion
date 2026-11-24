@@ -38,15 +38,11 @@ import { asUser } from "./users";
  * The windowed list of six hundred sessions is `agents-window.e2e.ts`, and the time that list
  * takes to paint is `agent-workspace-timing.e2e.ts` (D14). How tall one of those rows is, which
  * is what the six hundred cost in room, is the last row of this file.
+ *
+ * Every session a row seeds is the row's own (`rowSessionId`, e2e/test.ts): which group a session
+ * is in is read off what Dispatch keeps under its id - its open asks, its activity, its replies -
+ * for every person at once, so under an id another row wrote with a quiet session is `Active`.
  */
-
-/** The sessions these rows read, by id. Each is a UUID, which Dispatch's agent routes require. */
-const ASKER = "01a0e812-0c07-7000-8000-000000000001";
-const TALKER = "01a0e812-0c07-7000-8000-000000000002";
-const SILENT = "01a0e812-0c07-7000-8000-000000000003";
-const DOZING = "01a0e812-0c07-7000-8000-000000000004";
-const SLEEPER = "01a0e812-0c07-7000-8000-000000000005";
-const ENDED = "01a0e812-0c07-7000-8000-000000000006";
 
 /** How long the registry's silence has to run before a session is `Quiet` (`agent-groups.ts`'s
  *  `QUIET_AFTER_MS`), which the rows below seed either side of. */
@@ -152,23 +148,28 @@ test("the Agents page lists its sessions in four collapsible counted groups", as
   browser,
 }) => {
   const core = rowKey("CORE");
+  const asker = rowSessionId("asker");
+  const talker = rowSessionId("talker");
+  const silent = rowSessionId("silent");
+  const dozing = rowSessionId("dozing");
+  const sleeper = rowSessionId("sleeper");
   await setLiveSessions([
-    session(ASKER, "Asker"),
-    session(TALKER, "Talker"),
-    session(SILENT, "Silent"),
-    session(DOZING, "Dozing", 5 * 60_000),
-    session(SLEEPER, "Sleeper", 60 * 60_000),
+    session(asker, "Asker"),
+    session(talker, "Talker"),
+    session(silent, "Silent"),
+    session(dozing, "Dozing", 5 * 60_000),
+    session(sleeper, "Sleeper", 60 * 60_000),
   ]);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Grouping" });
-  await seedOpenAsk(ASKER, issue.key, "Which release do we cut?");
-  await seedActivity(TALKER, issue.key, 60_000);
+  await seedOpenAsk(asker, issue.key, "Which release do we cut?");
+  await seedActivity(talker, issue.key, 60_000);
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
     await page.goto("/agents");
-    await expect(agentRow(page, ASKER)).toBeVisible();
+    await expect(agentRow(page, asker)).toBeVisible();
 
     // The four groups are there, named and counted, in the order a person reads them.
     for (const [group, name] of [
@@ -185,11 +186,11 @@ test("the Agents page lists its sessions in four collapsible counted groups", as
     await expect(agentGroupToggle(page, "quiet")).toHaveAccessibleName("Quiet (1)");
 
     // Each session is in the group its own state earns, and the rows are drawn group by group.
-    await expect(agentRow(page, ASKER)).toHaveAttribute("data-agent-section", "needs-you");
-    await expect(agentRow(page, TALKER)).toHaveAttribute("data-agent-section", "active");
-    await expect(agentRow(page, SILENT)).toHaveAttribute("data-agent-section", "idle");
-    await expect(agentRow(page, DOZING)).toHaveAttribute("data-agent-section", "idle");
-    await expect(agentRow(page, SLEEPER)).toHaveAttribute("data-agent-section", "quiet");
+    await expect(agentRow(page, asker)).toHaveAttribute("data-agent-section", "needs-you");
+    await expect(agentRow(page, talker)).toHaveAttribute("data-agent-section", "active");
+    await expect(agentRow(page, silent)).toHaveAttribute("data-agent-section", "idle");
+    await expect(agentRow(page, dozing)).toHaveAttribute("data-agent-section", "idle");
+    await expect(agentRow(page, sleeper)).toHaveAttribute("data-agent-section", "quiet");
     // Group by group, and inside a group by name, which is the order `orderAgents` leaves rows
     // nobody has pinned, nothing waits on and Dispatch has not heard from.
     await expect(shownAgentRows(page).locator("h2")).toHaveText([
@@ -204,8 +205,8 @@ test("the Agents page lists its sessions in four collapsible counted groups", as
     // A group folds its rows away - the windowed list draws no row of a closed group, so they
     // are in no part of the page - and opens them again.
     await toggleAgentGroup(page, "idle");
-    await expect(agentRow(page, SILENT)).toHaveCount(0);
-    await expect(agentRow(page, DOZING)).toHaveCount(0);
+    await expect(agentRow(page, silent)).toHaveCount(0);
+    await expect(agentRow(page, dozing)).toHaveCount(0);
     await expect(agentGroupToggle(page, "idle")).toHaveAccessibleName("Idle (2)");
     await expect(shownAgentRows(page).locator("h2")).toHaveText(["Asker", "Talker", "Sleeper"]);
     await toggleAgentGroup(page, "idle");
@@ -231,16 +232,17 @@ test("a session with an open ask is in Needs you however long the registry has b
   browser,
 }) => {
   const core = rowKey("CORE");
-  await setLiveSessions([session(ASKER, "Asker", 2 * 60 * 60_000)]);
+  const asker = rowSessionId("asker");
+  await setLiveSessions([session(asker, "Asker", 2 * 60 * 60_000)]);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Precedence" });
-  await seedOpenAsk(ASKER, issue.key, "Which of the two do we keep?");
+  await seedOpenAsk(asker, issue.key, "Which of the two do we keep?");
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
     await page.goto("/agents");
-    const row = agentRow(page, ASKER);
+    const row = agentRow(page, asker);
     await expect(row).toBeVisible();
 
     // The silence is real: it is longer than the one that makes a session quiet.
@@ -271,19 +273,21 @@ test("an ended session that replied is under Replied, no longer connected and in
   // the person who asked, and the worker's review corpus leaves alice an unread reply of its
   // planner's (`reviewCorpus`), which no longer connected sessions list beside this row's.
   const me = rowPerson("alice");
-  await setLiveSessions([session(ENDED, "Ended"), session(SILENT, "Silent")]);
-  await seedUnreadReply(ENDED, me);
+  const endedId = rowSessionId("ended");
+  const silent = rowSessionId("silent");
+  await setLiveSessions([session(endedId, "Ended"), session(silent, "Silent")]);
+  await seedUnreadReply(endedId, me);
   // The listener no longer lists it: the session exited after answering.
-  await setSessionLive(ENDED, false);
+  await setSessionLive(endedId, false);
 
   const context = await asUser(browser, me);
   const page = await context.newPage();
   try {
     await page.goto("/agents");
-    await expect(agentRow(page, SILENT)).toBeVisible();
+    await expect(agentRow(page, silent)).toBeVisible();
 
     // In no group: not drawn, not kept hidden, and counted in none of the four.
-    await expect(agentRow(page, ENDED)).toHaveCount(0);
+    await expect(agentRow(page, endedId)).toHaveCount(0);
     await expect(agentGroupToggle(page, "needs-you")).toHaveAccessibleName("Needs you (0)");
     await expect(agentGroupToggle(page, "active")).toHaveAccessibleName("Active (0)");
     await expect(agentGroupToggle(page, "idle")).toHaveAccessibleName("Idle (1)");
@@ -292,7 +296,7 @@ test("an ended session that replied is under Replied, no longer connected and in
     // And in the section under them, with the reply the reader has not read.
     const ended = page.getByRole("region", { name: "Replied, no longer connected" });
     await expect(ended).toBeVisible();
-    await expect(ended.locator(`[data-agent-name="${ENDED}"]`)).toHaveCount(1);
+    await expect(ended.locator(`[data-agent-name="${endedId}"]`)).toHaveCount(1);
     await expect(ended).toContainText("New reply 1");
     const quiet = page.getByTestId("agents-group-quiet");
     await expect(quiet).toBeVisible();
@@ -315,9 +319,6 @@ test("an ended session that replied is under Replied, no longer connected and in
 test("each filter on the Agents page is a multi-select with a text box, a count and a clear", async ({
   browser,
 }) => {
-  // Sessions of the row's own (`rowSessionId`, e2e/test.ts): which group a session is in is
-  // read off its Dispatch activity, which Dispatch keeps by the session's id for every person
-  // at once, so under an id another row wrote with a quiet session is `Active`.
   const silent = rowSessionId("silent");
   await setLiveSessions([
     session(silent, "Silent"),
@@ -401,7 +402,7 @@ test("the machine filter narrows forty machines to the ones typed, and two picks
       last_seen: Date.now() - 5_000,
       machine_id: machine,
       roles: [],
-      session_id: `01a0e812-0c07-7000-8000-1${String(index).padStart(11, "0")}`,
+      session_id: rowSessionId(`worker${index}`),
       title: `Worker ${index}`,
     }))
   );
@@ -441,10 +442,11 @@ test("an agent row carries its state, its name, its age, its directory and its p
   browser,
 }) => {
   const core = rowKey("CORE");
-  await setLiveSessions([session(TALKER, "Talker")]);
+  const talker = rowSessionId("talker");
+  await setLiveSessions([session(talker, "Talker")]);
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Row shape" });
-  await seedActivity(TALKER, issue.key, 60_000);
+  await seedActivity(talker, issue.key, 60_000);
 
   // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): a pin is the person's,
   // and the rail lists every agent its reader pinned, so alice's holds what other rows pinned.
@@ -452,7 +454,7 @@ test("an agent row carries its state, its name, its age, its directory and its p
   const page = await context.newPage();
   try {
     await page.goto("/agents");
-    const row = agentRow(page, TALKER);
+    const row = agentRow(page, talker);
     await expect(row).toBeVisible();
 
     await expect(row.getByRole("img", { exact: true, name: "Running" })).toBeVisible();
@@ -485,7 +487,7 @@ test("an agent row carries its state, its name, its age, its directory and its p
     // Pinning here puts the agent in the rail, where it stays for every page.
     await pin.click();
     await expect(row.getByRole("button", { exact: true, name: "Unpin Talker" })).toBeVisible();
-    await expectRailAgents(page, [TALKER]);
+    await expectRailAgents(page, [talker]);
   } finally {
     await context.close();
   }
@@ -499,20 +501,22 @@ test("an agent row carries its state, its name, its age, its directory and its p
 test("ticking two rows reads two selected, the composer names them, and a pill removes one", async ({
   browser,
 }) => {
+  const silent = rowSessionId("silent");
+  const dozing = rowSessionId("dozing");
   await setLiveSessions([
-    session(SILENT, "Silent"),
-    session(DOZING, "Dozing", 5 * 60_000),
-    session(SLEEPER, "Sleeper", 60 * 60_000),
+    session(silent, "Silent"),
+    session(dozing, "Dozing", 5 * 60_000),
+    session(rowSessionId("sleeper"), "Sleeper", 60 * 60_000),
   ]);
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
     await page.goto("/agents");
-    await expect(agentRow(page, SILENT)).toBeVisible();
+    await expect(agentRow(page, silent)).toBeVisible();
 
-    await agentRow(page, SILENT).getByRole("checkbox", { name: "Select Silent" }).check();
-    await agentRow(page, DOZING).getByRole("checkbox", { name: "Select Dozing" }).check();
+    await agentRow(page, silent).getByRole("checkbox", { name: "Select Silent" }).check();
+    await agentRow(page, dozing).getByRole("checkbox", { name: "Select Dozing" }).check();
     await expect(page.getByText("2 of 3 matching selected")).toBeVisible();
     await expect(agentGroupToggle(page, "idle")).toHaveAccessibleName("Idle (2, 2 selected)");
 
@@ -530,7 +534,7 @@ test("ticking two rows reads two selected, the composer names them, and a pill r
     await expect(composer.getByRole("heading")).toHaveText("Broadcast to 1 of 1 selected");
     await expect(page.getByText("1 of 3 matching selected")).toBeVisible();
     await expect(
-      agentRow(page, DOZING).getByRole("checkbox", { name: "Select Dozing" })
+      agentRow(page, dozing).getByRole("checkbox", { name: "Select Dozing" })
     ).not.toBeChecked();
   } finally {
     await context.close();
@@ -553,7 +557,8 @@ test("an agent row stands at the height recorded for its width @phone", async ({
   browser,
 }, testInfo) => {
   const isPhone = testInfo.project.name === "iphone";
-  await setLiveSessions([session(TALKER, "Talker")]);
+  const talker = rowSessionId("talker");
+  await setLiveSessions([session(talker, "Talker")]);
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -561,7 +566,7 @@ test("an agent row stands at the height recorded for its width @phone", async ({
     // The laptop width the Design's figure was read at; the phone project is 390 pixels already.
     if (!isPhone) await page.setViewportSize({ height: 900, width: 1440 });
     await page.goto("/agents");
-    const row = agentRow(page, TALKER);
+    const row = agentRow(page, talker);
     await expect(row).toBeVisible();
 
     const rowBox = await boxOf(row);

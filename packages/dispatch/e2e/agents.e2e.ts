@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { shortSessionId } from "@legion/contracts";
 
 import type { Result } from "../web/src/api/paths";
 import type { CreateBroadcastInput, Message } from "../web/src/api/types";
@@ -53,7 +54,9 @@ const ABSENCE_MARGIN_MS = 150;
 // e2e/test.ts), read where a row names it, so it is a getter: Dispatch keeps what a session said
 // and what was said to it by the session's id, for every person at once, so a fixed id would
 // give each row's conversation, unread replies and open asks every earlier row's as well. A
-// spread or a JSON body of the session takes the row's id with it.
+// spread or a JSON body of the session takes the row's id with it. Every other session a row seeds
+// here takes an id of the row's own too, for the same reason, and because the page groups and
+// orders a session by what Dispatch keeps under its id.
 const planner: FakeSession = {
   capabilities: ["aside", "btw"],
   dir: "/workspaces/planner",
@@ -734,12 +737,12 @@ test("the header checkbox selects and clears only the rows the filters match, by
     dir: `/workspaces/${id}`,
     machine_id: "build-host",
     roles: [role],
-    session_id: `${id}-session`,
+    session_id: rowSessionId(id),
     title,
   });
   await setLiveSessions([
-    session("planner-a", "Planner A", "planner"),
-    session("planner-b", "Planner B", "planner"),
+    session("plannera", "Planner A", "planner"),
+    session("plannerb", "Planner B", "planner"),
     session("reviewer", "Reviewer", "reviewer"),
     session("tester", "Tester", "tester"),
   ]);
@@ -830,7 +833,9 @@ test("the header checkbox selects and clears only the rows the filters match, by
     await expect(view.getByRole("article", { name: "Tester" })).toHaveCount(0);
     await expect
       .poll(async () => (await getSentMessages()).map((entry) => entry.target_session).sort())
-      .toEqual(["planner-a-session", "planner-b-session", "reviewer-session"]);
+      .toEqual(
+        [rowSessionId("plannera"), rowSessionId("plannerb"), rowSessionId("reviewer")].sort()
+      );
   } finally {
     await alice.close();
   }
@@ -848,7 +853,7 @@ test("select-all ticks the rows in the order the page shows them, not the order 
     dir: `/workspaces/${id}`,
     machine_id: "build-host",
     roles: ["planner"],
-    session_id: `${id}-session`,
+    session_id: rowSessionId(id),
     title,
   });
   // Each speaks on an issue, oldest first, so the page lists them newest-activity-first - Alpha,
@@ -860,7 +865,7 @@ test("select-all ticks the rows in the order the page shows them, not the order 
     await createComment(
       issue.key,
       { body: `${id} reporting.` },
-      { actor: { id: `${id}-session`, kind: "session" }, as: "agent" }
+      { actor: { id: rowSessionId(id), kind: "session" }, as: "agent" }
     );
   }
   await setLiveSessions([
@@ -908,7 +913,7 @@ test("the header checkbox stays under the pointer on a phone when its click open
       dir: `/workspaces/${id}`,
       machine_id: "build-host",
       roles: ["planner"],
-      session_id: `${id}-session`,
+      session_id: rowSessionId(id),
       title: `Planner ${id.toUpperCase()}`,
     }))
   );
@@ -950,7 +955,7 @@ function planners(count: number, capable: number): FakeSession[] {
       dir: `/workspaces/planner-${number}`,
       machine_id: "build-host",
       roles: ["planner"],
-      session_id: `planner-${number}-session`,
+      session_id: rowSessionId(`planner${number}`),
       title: `Planner ${number}`,
     };
   });
@@ -1761,7 +1766,7 @@ function builder(id: string, capabilities: string[]): FakeSession {
     dir: `/workspaces/${id}`,
     machine_id: "build-host",
     roles: ["builder"],
-    session_id: `${id}-session`,
+    session_id: rowSessionId(id),
     title: `Builder ${id.toUpperCase()}`,
   };
 }
@@ -1858,7 +1863,7 @@ test("a selected agent gone from the registry stays in the send, with no reason 
     // TanStack's notifyManager batches its delivery on a zero-delay page timer.
     await page.clock.runFor(1);
     await expect(
-      composer.getByRole("button", { exact: true, name: "session:bravo-se… ✕" })
+      composer.getByRole("button", { exact: true, name: `${shortSessionId(bravo.session_id)} ✕` })
     ).toBeVisible();
     const send = composer.getByRole("button", { name: "Send to 2" });
     await expect(send).toBeEnabled();
@@ -1877,7 +1882,7 @@ test("a session that registers under the filter after select-all is not swept in
     dir: `/workspaces/${id}`,
     machine_id: "build-host",
     roles: ["planner"],
-    session_id: `${id}-session`,
+    session_id: rowSessionId(id),
     title: `Planner ${id.toUpperCase()}`,
   });
   await setLiveSessions([planner("a"), planner("b")]);
@@ -1913,7 +1918,7 @@ test("a session that registers under the filter after select-all is not swept in
     await page.waitForURL(/\/agents\/broadcasts\/[0-9a-f-]+$/);
     await expect
       .poll(async () => (await getSentMessages()).map((entry) => entry.target_session).sort())
-      .toEqual(["a-session", "b-session"]);
+      .toEqual([rowSessionId("a"), rowSessionId("b")].sort());
   } finally {
     await alice.close();
   }
@@ -1973,7 +1978,7 @@ test("an agent row is one line at 1440, and at 390 puts the age and the whole pa
     last_seen: Date.now(),
     machine_id: "build-host",
     roles: ["implementer"],
-    session_id: "long-name-session",
+    session_id: rowSessionId("longname"),
     title: name64,
   };
   const unbrokenName: FakeSession = {
@@ -1982,11 +1987,15 @@ test("an agent row is one line at 1440, and at 390 puts the age and the whole pa
     last_seen: Date.now(),
     machine_id: "build-host",
     roles: ["implementer"],
-    session_id: "unbroken-name-session",
+    session_id: rowSessionId("unbrokenname"),
     title: unbroken64,
   };
   // The control the two long rows are measured against: the same row with little in it.
-  const shortName: FakeSession = { ...unbrokenName, session_id: "short-name-session", title: "S" };
+  const shortName: FakeSession = {
+    ...unbrokenName,
+    session_id: rowSessionId("shortname"),
+    title: "S",
+  };
   await setLiveSessions([longName, unbrokenName, shortName]);
 
   // Each session comments once, so all three are Active and none is grouped by an activity the
@@ -2118,12 +2127,16 @@ test("an agent row's directory is still shown beside the longest name in use, so
     last_seen: Date.now(),
     machine_id: "build-host",
     roles: ["implementer"],
-    session_id: "long-name-row",
+    session_id: rowSessionId("longname"),
     title: name64,
   };
   // The same row with a short name, as the control: whatever width this one's directory gets is
   // width the row has, so a directory of nothing beside the long name is the name taking it.
-  const shortName: FakeSession = { ...longName, session_id: "short-name-row", title: "Short" };
+  const shortName: FakeSession = {
+    ...longName,
+    session_id: rowSessionId("shortname"),
+    title: "Short",
+  };
   await setLiveSessions([longName, shortName]);
 
   // Dispatch activity of its own, so both rows sit under `Active`, at the top of the list where

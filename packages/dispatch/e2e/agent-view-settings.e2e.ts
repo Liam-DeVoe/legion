@@ -16,7 +16,15 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { settledState } from "./settled";
-import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
+import {
+  type Browser,
+  type BrowserContext,
+  expect,
+  type Locator,
+  type Page,
+  rowSessionId,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 /**
@@ -54,15 +62,17 @@ const PENDING_PLACEHOLDER = "Waiting for the session to answer the switch…";
  *  one eight times over. */
 const PROBE = { intervals: [50, 50, 100, 100, 250] };
 
-/** A live session of the row's own: the relay's replay and responder are process-global, so a
- *  session another row seeded would carry that row's frames into this one. */
+/** A live session of the row's own (`rowSessionId`, e2e/test.ts), `row` telling a row's sessions
+ *  apart: the relay's replay and responder are process-global, so a session another row seeded
+ *  would carry that row's frames into this one, and Dispatch keeps the switches sent to a session
+ *  and its answers by its id, for every person at once. */
 function liveSession(row: number): FakeSession {
   return {
     capabilities: ["aside", "btw", "steer"],
     dir: "/workspaces/settings",
     machine_id: "settings-host",
     roles: [],
-    session_id: `01a0e0c1-0195-7000-8000-${String(row).padStart(12, "0")}`,
+    session_id: rowSessionId(`settings${row}`),
     title: `Settings ${row}`,
   };
 }
@@ -647,8 +657,9 @@ test("a person's own token sends a switch recorded as them with the agent beside
   await setLiveSessions([session]);
   await publishAgentStreamFrame(id, freshReplay(id), "replay");
   const personal = await mintAgentToken("switcher", "alice");
-  /** The agent the person's token acts through, which `session=` names on the send. */
-  const agentSession = "e2e-switch-agent";
+  /** The agent the person's token acts through, which `session=` names on the send: the row's
+   *  own (`rowSessionId`), since Dispatch records the act under that id on what it stores. */
+  const agentSession = rowSessionId("switcher");
   expect(await getSentMessages()).toEqual([]);
 
   const messagesPath = routePath("post", "/api/v1/agents/{session_id}/messages", {
