@@ -1586,7 +1586,7 @@ A claim whose session is being compacted takes that code too: it is answered bef
 A claim whose process the runtime would not answer for is refused `CLAIM_UNSETTLED`, and the refusal says the read was not answered: an unread process may be a running one, and it may be a dead one, so the claim is left exactly as the request found it, with nothing suspended, nothing forgotten and nothing started.
 A claim stored working that records no process to read takes that code too, and its refusal says no process is recorded.
 So does a claim that moved under the request where the daemon finds it no longer working or its process gone once more: the fresh session reads its process again when the machine refuses its suspension and otherwise answers what that second read finds, and the compaction gives that code where the machine refused it as working and the claim is no longer stored working; either says the claim moved and changes nothing of it.
-Both refuse a claim between states, queued or with a launch in flight, and a claim left working under a relaunch the daemon's wake pacing parked, which has a launch in flight as much as those two (`CLAIM_UNSETTLED`).
+Both refuse a claim between states, queued or with a launch in flight, and a claim left working under a relaunch the daemon's wake pacing delayed, which has a launch in flight as much as those two (`CLAIM_UNSETTLED`).
 Both refuse a claim a suspension is held over as well, in whatever state the hold found it, since what such a claim waits for is that hold's end rather than anything either recovery would do.
 Where the read finds no process behind a claim stored working the two part: the fresh session reaches that claim, and the compaction refuses it `CLAIM_NOT_RUNNING`, naming `fresh_session` (`legion claims retry --fresh-session`) as what starts it again, because it has no agent to ask and no session to compact.
 The project's own controller claim is the one exception: the fresh session refuses it in every state, and the daemon's controller keeper does nothing for a controller stored working, so the compaction names the operator's `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>` instead.
@@ -7390,8 +7390,8 @@ a role's process starts only when no other role of that pod is loading its sessi
 
 - **Waiting** runs from the moment the daemon asks for a role's start into the pod until its process starts, its launch fails, or its claim is suspended or retired.
   The wait sits in the daemon's own start path, before the runtime is called, and not in the pod's launch turn, which a suspension and a release take too and which never waits for a load.
-  A waiting launch is parked on its claim, written as launching with no process, as a launch the wake pacing holds over no process is, so nothing that reads or stops the claim waits for it, and the outbox row that asked for the start is done.
-  A launch that replaces a running process, as a relaunch after a stall or onto a new plugin does, stops that process before it parks, so the old process neither runs nor holds memory while the other role loads.
+  A waiting launch stays on its claim, written as launching with no process, as a launch the wake pacing holds over no process is, so nothing that reads or stops the claim waits for it, and the outbox row that asked for the start is done.
+  A launch that replaces a running process, as a relaunch after a stall or onto a new plugin does, stops that process before it waits, so the old process neither runs nor holds memory while the other role loads.
   A suspension, a release, a close or a retirement of a waiting role, or a pause's stop of it, ends its wait at once, and its process is never started.
   A waiting start that the gate lets through while the project is paused starts no process either: the pause holds its launch and stops the role for the pause, owed a launch at the resume, as it holds every launch asked during a pause, and the next role's start goes on.
 
@@ -7991,7 +7991,7 @@ The wakes are these:
   Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role, except one that a project's pause held for a role that a pause stopped, which it publishes after the resume and sends again until the role's session holds its topic ([Pausing a project](#pausing-a-project)).
   Its other messages to a role (a notice, a hook prompt, a merge-queue removal message, a merge-forward message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
   While the wake pacing holds such a resume for its turn, the claim reads `launching` with no process, and each of these messages waits rather than publishing, because a kept copy's hour runs from its publish and can end before the pod starts.
-  It looks again at its turn or five minutes later, whichever comes first, so a park that ends early, through an operator's resume or a restart, delays the message by five minutes at most.
+  It looks again at its turn or five minutes later, whichever comes first, so a pacing delay that ends early, through an operator's resume or a restart, holds the message back by five minutes at most.
   A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps it for that session; a merge-queue removal message and a merge-forward message wait instead until the woken session holds the role.
   A listener before #4079 keeps nothing for a claim whose holder is not live and answers a hook prompt `404`: its outbox row ends with it undelivered when that holder is `gone`, and retries while it is `unresponsive`;
 
@@ -8230,7 +8230,7 @@ It writes the claim and the stop's record, and with them:
 - the hold of the role's pod (below);
 
 - for a role that is owed a launch, a held `start` row, which the resume launches through the wake pacing.
-  A role is owed a launch when it holds a task that no turn has taken, or when the stop met a launch of it: a wake parked in the pacing, a start that the stop cancelled, a launch held until its agent was ready, a relaunch waiting for its retry, or a launch that the gate held.
+  A role is owed a launch when it holds a task that no turn has taken, or when the stop met a launch of it: a wake delayed in the pacing, a start that the stop cancelled, a launch held until its agent was ready, a relaunch waiting for its retry, or a launch that the gate held.
   An operator's spawn, whose issue the daemon keeps no record of, gets no `start` row, and the resume launches it itself (below).
   A record of the issue that another project's daemon keeps on the same database is no record of this daemon's, because its project is another: every read of an issue record by its key goes through the daemon's project-scoped records (`projectRecords.Issue`, `internal/daemon/daemon.go`), so the pause, its stop, a wake, the resume, a launch's ready and each failure after it read no such record.
   The daemon also queues no outbox row keyed by another project's issue, since only that project's daemon runs such a row, against its own claims: every write of an outbox row by its key takes one rule (`claim.KeyOfProject`, `internal/claim/token.go`), so neither the stop of such a spawn nor its agent's ready queues a row of that issue or changes one;

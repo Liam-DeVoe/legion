@@ -274,10 +274,10 @@ func TestAPauseHoldWaitsForTheTurnsResultAndKeepsATaskAProviderRefused(t *testin
 
 // A pause's stop of a claim whose relaunch waits in the pacing over the process that died is
 // decided where it arrives (holdSuspendUntilReady): the process the claim still records is
-// stopped, the claim is suspended through the stop transaction with the parked launch owed, and
+// stopped, the claim is suspended through the stop transaction with the delayed launch owed, and
 // the wake's turn, when it comes, launches nothing. Held until a ready instead, the stop landed
 // only at that turn, which a wave puts tens of minutes out (decision 4 of dispatch://INFRA-3759: a
-// parked wake with no process is stopped at once; check k1, role E).
+// delayed wake with no process is stopped at once; check k1, role E).
 func TestAPauseStopsAClaimWhoseRelaunchWaitsOverItsDeadProcessAtOnce(t *testing.T) {
 	h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate))
 	h.must(RequestSpawn{Claim: h.token})
@@ -1224,7 +1224,7 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 }
 
 // Every reservation of a paced launch is told to the daemon as the moment the pacing lets it out
-// (decision 14): the one that lets it out now, and the one that parks it, whose moment is the
+// (decision 14): the one that lets it out now, and the one that delays it, whose moment is the
 // wake's own.
 func TestTheWakeLetOutStampIsTheMomentOfEachReservation(t *testing.T) {
 	type stamp struct {
@@ -1247,7 +1247,7 @@ func TestTheWakeLetOutStampIsTheMomentOfEachReservation(t *testing.T) {
 
 	waiting := second.View().WakeWaiting
 	if waiting == nil || !waiting.At.After(h.clock.Now()) {
-		t.Fatalf("the second claim holds wake %+v, want one parked behind the first", waiting)
+		t.Fatalf("the second claim holds wake %+v, want one delayed behind the first", waiting)
 	}
 	mu.Lock()
 	defer mu.Unlock()

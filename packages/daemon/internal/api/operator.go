@@ -448,7 +448,8 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	// The operator is waiting on this answer, so the wake pacing never holds this launch
 	// (supervise's reserveWake): one person's spawn is not the wave the pacing exists for, and a
-	// route that answered with a claim parked launching would read as a daemon that did nothing.
+	// route that answered with a claim left launching under a delayed wake would read as a daemon
+	// that did nothing.
 	if err := m.Handle(ctx, supervise.RequestSpawn{Claim: token, Exempt: true}); err != nil {
 		s.operatorFailure(w, r, "spawn", token, err)
 		return

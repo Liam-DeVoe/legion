@@ -41,7 +41,7 @@ type PauseStop struct {
 	// may have ended by the time the transaction runs.
 	Pause int64
 	// LaunchOwed is whether the role is owed a launch at the resume (decision 6): it holds a task
-	// no turn has taken (holdsTask), or the stop met a launch — a wake parked in the pacing, a
+	// no turn has taken (holdsTask), or the stop met a launch — a wake delayed in the pacing, a
 	// start the stop cancelled, a launch held until its agent is ready, a relaunch waiting its
 	// retry, or a launch the pause's gate held (suspendedFor, launchMet). The stop transaction
 	// owes one besides to every stopped role whose stop commits after its pause has ended with no
@@ -117,7 +117,7 @@ func (m *Machine) dropEndedPauseHold() {
 	m.dropHeld()
 }
 
-// launchMet is whether a launch of the claim waits on the machine now: a wake parked in the pacing,
+// launchMet is whether a launch of the claim waits on the machine now: a wake delayed in the pacing,
 // held by the pause's gate or waiting at its issue pod's gate (Machine.wake), or a relaunch waiting
 // its retry (Machine.relaunch). A pause's stop that meets one owes the role that launch
 // (PauseStop.LaunchOwed), and it is read before the stop lets the process go, which drops both
@@ -133,10 +133,10 @@ func (m *Machine) holdsTask() bool {
 }
 
 // pauseGate is the gate's hold of a launch while the project is paused (decision 7), reached from
-// the wake gate before its exempt return (reserveWake), from a parked wake's turn (wakeNow), from a
-// dropped wake taken up again (reparkWake), and from the grant of a start parked at its issue pod's
+// the wake gate before its exempt return (reserveWake), from a delayed wake's turn (wakeNow), from a
+// dropped wake taken up again (delayWakeAgain), and from the grant of a start waiting at its issue pod's
 // gate (podStartDue). The launch runs nothing, takes no token from
-// the pacing and arms no retry: it waits on the machine as a parked wake does (waitOnMachine),
+// the pacing and arms no retry: it waits on the machine as a delayed wake does (waitOnMachine),
 // with no timer and no moment (wake.pause). A claim that records no process is written launching
 // and persisted, so a restart finds a launch to relaunch, which meets the gate again
 // (relaunchUnfinished in internal/daemon); one whose process runs keeps its state, since the
@@ -157,7 +157,7 @@ func (m *Machine) pauseGate(ctx context.Context, waiting *wake, pause int64) err
 
 // pauseStopDue is the gate's own stop (TimerPause): the machine posting itself the suspension of
 // the claim whose launch the pause's gate held (decision 7) — By released, the pause's id, and a
-// deadline of now. It meets the claim as the pause's own stop meets a parked wake: a claim that
+// deadline of now. It meets the claim as the pause's own stop meets a delayed wake: a claim that
 // records no process is stopped at once (holdSuspendUntilReady), and so is one whose process is
 // registered, ready or idle (suspend) or still booting, since the launch the gate holds was to
 // replace that process and a hold until ready would protect a process nothing wants; a claim in a
@@ -214,7 +214,7 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 // letOutHeldLaunch takes the launch the pause's gate holds into the wake pacing once the pause it
 // was held for has ended (decision 7): a reservation from the limiter, told to the daemon as the
 // moment the pacing lets it out (wakeLetOut, decision 14), then its timer, exactly as the wake gate
-// parks a launch (reserveWake, parkWake). A launch the reservation lets out now runs now, and a
+// delays a launch (reserveWake, delayWake). A launch the reservation lets out now runs now, and a
 // daemon whose pacing is off runs it now, unpaced. So does a launch that passed the wake gate
 // before the pause's gate held it (wake.ran): it took its token there. Its callers are the gate's
 // own stop finding no pause open (pauseStopDue) and the resume's event (resumePause).
@@ -236,7 +236,7 @@ func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 		m.wake = nil
 		return m.runWake(ctx, waiting, true)
 	}
-	return m.parkWake(ctx, waiting, at.Sub(now))
+	return m.delayWake(ctx, waiting, at.Sub(now))
 }
 
 // resumePause is the resume's event (ResumePause): what this claim holds of the pause that ended

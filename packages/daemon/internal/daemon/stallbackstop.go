@@ -45,7 +45,7 @@ import (
 // name the call the agent is actually in (supervise.StallBackstop.Step).
 //
 // Nobody is told from here. What this pass asks for is not what happens — the machine's own
-// fence can leave the turn alone, a wake already parked over the claim takes it, and a
+// fence can leave the turn alone, a wake already delayed over the claim takes it, and a
 // suspension held for that turn ends the process rather than replacing it — so the owner is told
 // by the machine's own report of the end it made (stallBackstopped), and a sweep that posts over
 // a claim already told nothing tells nothing. The one thing left here is the notice a store
@@ -232,7 +232,7 @@ const stallBackstopNotice = "worker-stalled"
 // never what the sweep asked for and never what the machine set out to do: a turn a suspension
 // was already waiting for ends in that suspension, with nothing launched in its place, and an
 // owner told that the session had come back would go looking for a process that is not there.
-// Every other end reads the same way — a replacement the pacing parked has taken the task back
+// Every other end reads the same way — a replacement the pacing delayed has taken the task back
 // and not replaced the process yet, one the store would not write has stopped the worker and
 // not brought it back, and one whose every try the runtime refused has failed the claim — so
 // each says what is running for the claim now and what the owner is waiting on
@@ -301,7 +301,7 @@ func stallRecordInWords(c supervise.Claim, stop supervise.StallBackstopStop, sil
 // running that turn still; what the daemon has done to it is take the turn off the claim, which
 // is what this says instead.
 //
-// An end that kept the claim's process kept the turn on it (supervise.EndRelaunchParked): the
+// An end that kept the claim's process kept the turn on it (supervise.EndRelaunchDelayed): the
 // task the turn was serving went back to waiting and the process runs on. An end this daemon
 // has no row for says neither, and names the turn alone (stallFateUnsaid, stallBackstopEnd).
 func stallTurnClause(process stallProcessFate, stop supervise.StallBackstopStop) string {
@@ -329,7 +329,7 @@ const (
 // stallStopClause is what the notice says of the stalled process itself, and the whole of what
 // it says of it. For an end that let that process go: that it was stopped, or that the runtime
 // would not stop it and it may be running still. For the one end that kept it — the relaunch
-// the pacing parked, whose claim goes on recording its process (supervise.EndRelaunchParked) —
+// the pacing delayed, whose claim goes on recording its process (supervise.EndRelaunchDelayed) —
 // that the daemon made no stop of it, which is what that owner acts on while the queued launch
 // waits. An end this daemon has no row for has no such sentence, since it says nothing of a
 // process it cannot name (stallBackstopEnd).
@@ -362,7 +362,7 @@ func stallStopClause(words stallEndWords, stop supervise.StallBackstopStop) stri
 // ends it (supervise's endHeld, stopPrevious). stallProcessNotStopped is the end that asked
 // for no stop at all, where that room and that disk are what nothing of the daemon's has given
 // back, and where the claim goes on recording the process until the queued launch comes due
-// (supervise's reserveWake, parkWake).
+// (supervise's reserveWake, delayWake).
 const (
 	stallProcessStopped    = "Its stalled process was stopped."
 	stallProcessNotStopped = "The daemon made no stop of its stalled process, and the claim records that process still, so nothing the daemon has done has taken away what that process holds."
@@ -370,7 +370,7 @@ const (
 )
 
 // stallFill fills the two values a clause of the notice names where it names them: the claim's
-// role, and the moment the launch a park queued is due to run
+// role, and the moment the launch a delay queued is due to run
 // (supervise.StallBackstopStop.WakeDue). They are written into the clauses as words rather than
 // handed to a format string so that each row of stallBackstopEnds reads as the sentence the
 // owner gets, and so that a clause naming neither needs nothing of its caller.
@@ -464,12 +464,12 @@ func stallChargeClause(stop supervise.StallBackstopStop) string {
 // Each row is held to one rule: it states what the daemon has already done, and names what the
 // claim waits on for anything it has not. Only the relaunched row ends in something running,
 // because only there has a process been started (supervise's launchTries records the locator the
-// runtime answered with). Where the daemon has queued work — the parked launch, the launch waiting
+// runtime answered with). Where the daemon has queued work — the delayed launch, the launch waiting
 // at its issue pod's start gate, the retry of a launch the store refused — the row says what is
 // queued and what can end the claim before that work runs, since nothing writes this owner a
 // second notice when it does: a suspension already waiting ends the wake's turn in a stop
 // (supervise's wakeNow, endHeld), a suspension or a close takes a launch out of the pod's gate
-// (supervise's endPodPark), a lifecycle recheck refuses the launch and leaves the process as it
+// (supervise's endPodStartWait), a lifecycle recheck refuses the launch and leaves the process as it
 // stands (runWake, relaunchRefused), a tree's close drops the queued launch with the process
 // (letGo), and a retry of a launch can run the claim's budget out and fail it (launchTries, fail).
 // Where nothing is queued — suspended, failed — the row says so and names what can bring the
@@ -498,11 +498,11 @@ var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 		did:     "and started a replacement in its place",
 		end:     "its session was brought back on the replacement the daemon started",
 		process: stallProcessLetGo},
-	supervise.EndRelaunchParked: {
+	supervise.EndRelaunchDelayed: {
 		did: "and queued the replacement launch",
 		end: "the launch that replaces it is queued in the daemon's wake pacing and is due at " + stallDueWord +
-			": what the park settled is that launch queued and the claim waiting on it until then. What comes due at " + stallDueWord +
-			" may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
+			": what the delay settled is that launch queued and the claim waiting on it until then. What comes due at " + stallDueWord +
+			" may be nothing at all, or not the launch the delay queued — a suspension waiting for this claim, " +
 			"the lifecycle recheck every launch makes refusing this one, the tree's close dropping the queued launch, a take-back the store refuses when that launch comes due, a launch whose own write or start the daemon cannot make, " +
 			"and an operator's task that runs this launch before it is due are among the things that can change it",
 		process: stallProcessKept},

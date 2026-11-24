@@ -125,7 +125,7 @@ type compacting struct {
 // — a session too small, one already compacted, a summarizer that failed — carries its words
 // (runtime.RefusalReason); a wait that ran out, or a transport that failed, is an error of its
 // own. The claim is given back in every one of those cases, and the task it owes goes with it —
-// or waits for the turn of a launch the pacing parked over its process, where every send of
+// or waits for the turn of a launch the pacing delayed over its process, where every send of
 // such a claim waits (sendPending) — and only a compaction that ran puts the claim's run of
 // provider-error turns back to zero (compactEnded). A take that did not happen at all is
 // ErrCompactNotTaken or a *RefusedError, and leaves the claim where it was with its task unsent.
@@ -213,7 +213,7 @@ func (m *Machine) compaction() (compacting, bool) {
 // a process found gone each drop it (letGo, compactionLostProcess), and when it is the one this
 // end names, since launchTries' bump leaves an earlier generation's behind.
 //
-// A process still running that a parked launch is to replace is no such loss: the compaction
+// A process still running that a delayed launch is to replace is no such loss: the compaction
 // ran over a live session, so the claim records it to the end, that end gives the claim back
 // (compactEnded), and the task it owes waits for the launch's turn where every send of such a
 // claim waits (sendPending's launchWaits).
@@ -228,18 +228,18 @@ func (m *Machine) ownsCompaction(generation uint64) bool {
 // verdict splits into — a death and a displacement (died, displaced) — and neither of the two
 // that replace a process still running (repoint, refreshPlugin), whose compaction keeps the
 // session it is compacting. A death the machine acts on at once drops the compaction with the
-// process anyway (letGo); this is the drop a death whose relaunch the pacing parks needs, since
-// the park writes nothing of the claim at all (reserveWake).
+// process anyway (letGo); this is the drop a death whose relaunch the pacing delays needs, since
+// the delay writes nothing of the claim at all (reserveWake).
 //
 // The compaction is dropped rather than marked as having lost its process, so nothing of it is
-// left for the rest of the daemon to read: a claim the park leaves working over the dead process
+// left for the rest of the daemon to read: a claim the delay leaves working over the dead process
 // would otherwise report itself being compacted until the wake's turn, and a second compaction
 // asked for in that window would be refused as one already running, after Machine.Compact had
 // already answered the first caller that its compaction was over (api's refuseState).
 //
 // The one reader it is kept for is the record of what the process's end cut off (recordEnd),
 // which runs after the drop: in the death or the displacement that follows it, and again at the
-// let-go, which a parked relaunch makes at the wake's turn. The compaction put the claim in
+// let-go, which a delayed relaunch makes at the wake's turn. The compaction put the claim in
 // working with no turn running (compactStart), and with nothing left to say so that record would
 // read the working as a turn cut off and tell the next process its turn was interrupted. So the
 // dropped compaction stays on the machine for that record alone until the let-go clears it

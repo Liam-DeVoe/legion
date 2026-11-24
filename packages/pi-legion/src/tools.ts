@@ -599,7 +599,7 @@ export function createLegionTool(deps: {
         "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
         "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
         "one queued, one whose launch is in flight, and one left working under a relaunch the " +
-        "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
+        "wake pacing delayed (CLAIM_UNSETTLED) — and for role controller. " +
         "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
         "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
         "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
@@ -615,7 +615,7 @@ export function createLegionTool(deps: {
         "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
         "where it is not), for a claim between states — one queued, one whose launch is in " +
         "flight, one whose agent has registered and is not ready yet, which fresh_session " +
-        "reaches, and one left working under a relaunch the wake pacing parked " +
+        "reaches, and one left working under a relaunch the wake pacing delayed " +
         "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
         "and for role controller. " +
         "Each refusal says what the claim does now and which operation reaches each state. It " +

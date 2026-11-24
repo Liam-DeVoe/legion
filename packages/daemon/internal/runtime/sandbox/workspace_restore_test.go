@@ -403,8 +403,8 @@ func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T)
 // and is refused. Refusing is the direction to fail in — the work stays in the database and the
 // pod starts on what its fetch provisioned — but the refusal has to close the bundle. That pod
 // stands for hours with its roles working and pushing to the issue's branch, and the pod made
-// after it, by an eviction or an update round or a park and unpark, has a workspace provisioned
-// from everything they pushed: sending it the bundle would run `jj edit` and
+// after it, by an eviction or an update round or a move to backlog or icebox and back, has a
+// workspace provisioned from everything they pushed: sending it the bundle would run `jj edit` and
 // `jj bookmark set --allow-backwards` back over all of it.
 func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testing.T) {
 	st := bundleStore(t)

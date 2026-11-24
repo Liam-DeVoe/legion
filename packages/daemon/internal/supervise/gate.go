@@ -35,16 +35,16 @@ package supervise
 //     another claim — comes back at the end of that decision (Machine.Handle, settleUntakenCredit),
 //     and so does the post that reaches a machine already holding a credit, which refreshPlugin
 //     releases at once because one machine holds one credit (the arrival rule).
-//   - A machine holds a credit only while a WakePluginRefresh wake of its own is parked or is
+//   - A machine holds a credit only while a WakePluginRefresh wake of its own is delayed or is
 //     having its turn, and every decision that ends with no such wake on the machine gives the
 //     credit back as it ends (Machine.unlock, endRefreshLane). Every path that drops, spends or
 //     never raises such a wake is covered by that one check without naming the lane at all — the
 //     branches of refreshPlugin that raise no relaunch, the refusal of every launch there is, the
-//     park of another kind over this lane's wake, the wake's own turn, and the process let go with
-//     the wake parked over it.
+//     delay of another kind over this lane's wake, the wake's own turn, and the process let go with
+//     the wake delayed over it.
 //
 // A credit that outlived its wake would cost the lane more than the credit: the machine goes on
-// reading it as held, so its next uncredited post skips the gate and parks a wake the gate never
+// reading it as held, so its next uncredited post skips the gate and delays a wake the gate never
 // granted, which is the one thing this bound promises cannot happen (Machine.refreshCredit,
 // refreshPlugin).
 //
@@ -367,7 +367,7 @@ func (m *Machine) reclaimCredit(credit *RefreshCredit) {
 
 // endRefreshLane holds the stale-plugin lane to its invariants, at the one line every decision of
 // a machine ends on (Machine.unlock): the credit goes back unless a refresh wake of this machine's
-// own is waiting in the pacing, which is the one thing a credit is held for, from the park that
+// own is waiting in the pacing, which is the one thing a credit is held for, from the delay that
 // raises it to the end of the turn that runs it (laneWakeWaiting). The intent goes whatever the
 // decision did with it: it names one launch and no other, and a retry that still owes one carries
 // it in its own closure (retryHolding).

@@ -748,7 +748,7 @@ role, and the daemon's controller keeper for the project's own controller claim,
 operator's own suspension holds.
 It also refuses a claim a suspension is held over, a claim whose launch is in flight, a claim
 whose agent has registered and is not ready yet, which `--fresh-session` reaches, a claim left
-working under a relaunch the wake pacing parked, and a claim whose role runs on Claude Code,
+working under a relaunch the wake pacing delayed, and a claim whose role runs on Claude Code,
 which has no Oh My Pi session.
 For a claim the daemon records as working it reads that claim's process at the runtime, at the
 moment of the request, rather than the daemon's memory of an older report, which a daemon restart

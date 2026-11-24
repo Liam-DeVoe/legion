@@ -190,12 +190,12 @@ const (
 	// no process of its own waits launching until it fires; one whose process runs waits as the
 	// gate found it.
 	TimerPause TimerKind = "pause"
-	// TimerPodStart is the grant of its issue pod's start to a launch parked at the pod's gate
+	// TimerPodStart is the grant of its issue pod's start to a launch waiting at the pod's gate
 	// (askPod): no wait of the clock's, but the gate's grant, posted to the machine as a timer's
 	// firing is (podHold.notify, fire). The launch asks the runtime for its process when it fires
 	// (podStartDue). The claim waits launching with no process until then, and whatever drops the
-	// parked launch's wake takes its start out of the gate at the end of that decision, naming
-	// that end, and disarms it (endPodPark).
+	// waiting launch's wake takes its start out of the gate at the end of that decision, naming
+	// that end, and disarms it (endPodStartWait).
 	TimerPodStart TimerKind = "pod_start"
 )
 
@@ -766,7 +766,7 @@ const (
 	onPromptRetryTimer eventKind = timerPrefix + eventKind(TimerPromptRetry)
 	// The gate's own stop of a launch it held while the project is paused (pauseGate).
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
-	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod).
+	// The grant of its issue pod's start to a launch waiting at the pod's gate (askPod).
 	onPodStartTimer eventKind = timerPrefix + eventKind(TimerPodStart)
 
 	onSpawn         eventKind = "request_spawn"
@@ -1132,16 +1132,16 @@ func fillTable(t *builder) {
 	t.ignore(onPauseTimer, "no launch is held by the pause's gate: a claim with no process it holds is written launching, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
 		processless...)
 
-	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod). The park
+	// The grant of its issue pod's start to a launch waiting at the pod's gate (askPod). The wait
 	// keeps the claim launching with no process, and every decision that moves the claim out of
-	// launching drops the parked launch's wake, and its end takes the start out of the gate for
-	// what it left of the claim and disarms this timer (endPodPark, after suspended, retire, and
+	// launching drops the waiting launch's wake, and its end takes the start out of the gate for
+	// what it left of the claim and disarms this timer (endPodStartWait, after suspended, retire, and
 	// letGo, which a failure makes), so the grant reaches a launching claim alone. Its launch ends
 	// as any launch does: started and launching, failed, or launching again for a retry; or held
 	// by the pause's gate, where the project is paused at the grant (pauseGate).
-	t.row(onPodStartTimer, "the issue pod's gate granted this claim's parked launch its start: ask the runtime for its process now", podStartDue,
+	t.row(onPodStartTimer, "the issue pod's gate granted this claim's waiting launch its start: ask the runtime for its process now", podStartDue,
 		[]ClaimState{StateLaunching, StateFailed}, StateLaunching)
-	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a parked launch keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its park",
+	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a launch waiting at the gate keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its wait",
 		StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle,
 		StateSuspended, StateFailed, StateRetired)
 
@@ -2755,7 +2755,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // so zeroing the counts alone would serve the cause and the sentence of the failure being
 // retried beside `attempts` of zeroes — a record of zeroes, which is what a notice of the same
 // failure refuses to carry (workflow.noticeFailure) — for as long as this run has not reached
-// its launch, which the wake pacing may park and a refused lifecycle recheck may leave
+// its launch, which the wake pacing may delay and a refused lifecycle recheck may leave
 // unwritten. The claim being run again is what clears the record; the launch clearing it a
 // second time (launchTries) costs nothing.
 //
@@ -2764,7 +2764,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // refused relaunch does (relaunchRefused): the claim is left exactly as it was, with the record of
 // the failure it still carries, which is what `legion claims list` reads off the live machine and
 // what the next persist writes. A launch check that refuses after the admission — launchAfter's
-// own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
+// own, or a delayed wake's recheck when its turn comes — finds the record already cleared on the
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
 	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {

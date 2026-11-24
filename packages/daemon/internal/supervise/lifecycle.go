@@ -73,40 +73,40 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // that a refused launch raises no wake, so nothing of that refresh waits in the pacing past
 // this line.
 //
-// No refresh wake can be waiting on the machine when this runs, and the refusal parks none, so
+// No refresh wake can be waiting on the machine when this runs, and the refusal delays none, so
 // the credit of a refused launch of this lane is one nothing is left waiting for: a credit is
-// taken over a claim that holds no wake at all (refreshPlugin's own guard), the turn of a parked
-// wake takes it off the machine before anything is rechecked (wakeNow, runParkedLaunchNow), and
-// no decision of this package raises a launch over one still waiting (parkWake lists them).
+// taken over a claim that holds no wake at all (refreshPlugin's own guard), the turn of a delayed
+// wake takes it off the machine before anything is rechecked (wakeNow, runDelayedLaunchNow), and
+// no decision of this package raises a launch over one still waiting (delayWake lists them).
 //
 // Why the retry such a refusal may arm carries the intent, and what it costs the gate, is where
 // retryHolding and the gate state it (retryHolding, RefreshGate, Correct): the launch that retry
 // makes then waits under the lane that raised it rather than under the launch kind every other
 // launch takes (reserveWake, dispatch://INFRA-2712 R4). A retry armed here with the bare
-// relaunch would park under `launch`, where the reader this kind exists for counts no refresh of
+// relaunch would be delayed under `launch`, where the reader this kind exists for counts no refresh of
 // a claim the lane is still working through, and where the correction the sweep makes from the
-// lane's own parked wakes never counts it at all (api.State.ClaimsToRefresh,
+// lane's own delayed wakes never counts it at all (api.State.ClaimsToRefresh,
 // refreshStalePlugins in internal/daemon).
 //
 // Two roads reach this line with an intent on the machine, and each is a retry of this lane
 // refused a second time: the retry a failed write of StateLaunching armed (launchTries), and the
-// retry the refused turn of this lane's own parked wake armed (runWake). Both put the intent
+// retry the refused turn of this lane's own delayed wake armed (runWake). Both put the intent
 // back as they run and raise the same launch anew from the top, whose own lifecycle check is
 // refused here (launchAfter, retryHolding).
 //
 // The other two callers hold no intent where they refuse, so the wrapping is inert for them.
-// The wake's turn took the intent off the wake it was parked with and puts it back only past
+// The wake's turn took the intent off the wake it was delayed with and puts it back only past
 // both steps, which is past this refusal, so that caller wraps the intent its own wake carried
 // (runWake, holdPluginRelaunch). A relaunch after a launch failure is no relaunch of this lane
 // at all: the charged road a stale registration takes raises none, and nothing else of that
 // path does either (relaunchAfterFailure, staleRegistration).
 //
 // What one refused relaunch leaves behind is put right by the caller that left it, never here.
-// The one such thing is the watch a park took off the process the relaunch was to replace, and
+// The one such thing is the watch a delay took off the process the relaunch was to replace, and
 // it belongs to the launch the wake pacing held: that turn is where it is armed again (runWake,
 // watchAgain). This is the refusal of every launch there is — launchAfter's own pre-check, a
 // relaunch after a failure, a refused retry or resume over a claim that runs no process — and
-// those launches park nothing, so arming a timer for one would arm what the fence has just
+// those launches delay nothing, so arming a timer for one would arm what the fence has just
 // fired.
 //
 // No plugin mark is touched here, by this refusal or by any other. A stale-plugin relaunch
@@ -138,10 +138,10 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 // watchAgain arms again what watches the process the claim records, where that is not armed: the
 // timers the claim's state calls for, which are the ones a restart reading this claim back from
 // the store would arm for it (NewMachine), and the bound an acknowledged prompt waits for its
-// turn on. Its one caller is the refusal a parked launch's turn meets (runWake), over a claim
-// that keeps its process with the launch that was to replace it gone: the park disarmed the boot
+// turn on. Its one caller is the refusal a delayed launch's turn meets (runWake), over a claim
+// that keeps its process with the launch that was to replace it gone: the delay disarmed the boot
 // interval, the registration deadline, the probe interval and the turn bound of that process
-// (parkWake), the claim keeps it and the wake is spent, so a booting process whose agent never
+// (delayWake), the claim keeps it and the wake is spent, so a booting process whose agent never
 // registers would meet no deadline and a prompt the agent acknowledged would wait for its turn
 // on nothing.
 //
@@ -153,7 +153,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 // turn has started on (acked, Machine.outstanding), for the same RPC wait that prompt was given,
 // so one the agent read and never turned on still fails rather than waiting for ever (noTurn).
 //
-// A timer already armed keeps the moment it already holds: the park takes only the four timers
+// A timer already armed keeps the moment it already holds: the delay takes only the four timers
 // above, so whatever the claim still holds is a watch nothing of this launch disturbed, and
 // arming again over it would hand the process a fresh boot interval and a fresh deadline at
 // every refusal.
