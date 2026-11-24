@@ -18,8 +18,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -31,14 +34,14 @@ const owedAskHead = "sha-1"
 // newOwedAskRig is freshSessionRig's issue moved on into testing while the implementer's session
 // of its first launch still runs: its pull request #86 is open at owedAskHead onto main, and the
 // record holds the implementer's ask, made in testing, to merge main forward onto it, so the
-// tester is held. The ask was written after that launch's ready, as the act writes it while the
-// claim runs, so no ready has sent it.
+// tester is held. The ask's row was delivered to that launch, which the record keeps, and left the
+// outbox, as a delivered row does.
 func newOwedAskRig(t *testing.T) *freshSessionRig {
 	t.Helper()
 	rig := newFreshSessionRig(t)
 	rig.issue.Phase, rig.issue.Status = phase.Testing, "testing"
 	asked := &record.MergeForward{Head: owedAskHead, Base: "main", Role: claim.RoleImplementer, Phase: phase.Testing,
-		Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
+		Why: record.ConflictCheckNotGreen, AskedAt: time.Now(), SentLaunch: rig.machine.Claim().Generation}
 	if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := rig.records.PutIssue(ctx, tx, rig.issue); err != nil {
 			return err
@@ -50,6 +53,109 @@ func newOwedAskRig(t *testing.T) *freshSessionRig {
 		t.Fatalf("move %s into testing with the implementer's ask: %v", rig.issue.Key, err)
 	}
 	return rig
+}
+
+// owedAsk is the implementer's ask of owedAskHead on #86 in testing, as the act queues it.
+var owedAsk = record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
+	Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
+
+// wokenByTheAsk is mergeForwardRunner's LEGION-208 in testing with the implementer's ask of
+// owedAskHead owed and its row queued, the implementer's claim as an idle release left it, and the
+// workflow behind the supervisor, so each launch's ready is applied as the daemon applies it
+// (workflowRuntime.terminal). The ask's first attempt has run: it woke the implementer, whose new
+// launch is coming up, and published nothing, since no session holds the role yet.
+func wokenByTheAsk(t *testing.T) (*outbox, *store.Pool, *holderPublisher, *supervise.Machine) {
+	t.Helper()
+	publisher := &holderPublisher{}
+	asked := &record.MergeForward{Head: owedAskHead, Base: "main", Role: claim.RoleImplementer, Phase: phase.Testing,
+		Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
+	runner, sup, pool, _ := mergeForwardRunner(t, publisher, asked)
+	engine := workflow.New(runner.records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	sup.OnDurableState((&workflowRuntime{pool: pool, records: runner.records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	publisher.setAbsent(notify.RoleTopicPrefix + string(token))
+	machine := releasedClaim(t, sup, claim.RoleImplementer)
+	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", owedAsk, time.Now().Add(-time.Minute)))
+	drainAt(t, runner, 0, "the ask's first attempt")
+	machine.Wait()
+	if held := machine.Claim(); held.Released() || held.Generation < 2 {
+		t.Fatalf("after the ask's first attempt the implementer is %s at launch %d, want it woken into a new launch", held.State, held.Generation)
+	}
+	return runner, pool, publisher, machine
+}
+
+// comesUp drives machine's current launch through its shim's hello and its agent's registration,
+// and its ready too where ready is set.
+func comesUp(t *testing.T, machine *supervise.Machine, ready bool) {
+	t.Helper()
+	c := machine.Claim()
+	events := []supervise.Event{
+		supervise.StreamHello{Claim: c.Token, Generation: c.Generation},
+		supervise.RequestRegister{Claim: c.Token, Generation: c.Generation, Session: c.Session, SessionFile: c.SessionFile},
+	}
+	if ready {
+		events = append(events, supervise.RequestReady{Claim: c.Token, Generation: c.Generation, Session: c.Session})
+	}
+	for _, ev := range events {
+		if err := machine.Handle(context.Background(), ev); err != nil {
+			t.Fatalf("bring up the implementer's launch %d: handle %T: %v", c.Generation, ev, err)
+		}
+	}
+	machine.Wait()
+}
+
+// askToldOnce fails the test unless the implementer was told the ask once in all, the outbox holds no
+// merge-forward row of LEGION-208 any more, and the record's ask keeps launch as the one it was
+// delivered to.
+func askToldOnce(t *testing.T, pool *store.Pool, publisher *holderPublisher, launch uint64) {
+	t.Helper()
+	_, delivered := publisher.snapshot()
+	if len(delivered) != 1 || delivered[0].message != owedAsk.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"}) {
+		t.Errorf("the implementer was told %d messages (%+v), want the ask once", len(delivered), delivered)
+	}
+	if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
+		t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none: no second ask", rows)
+	}
+	var sent uint64
+	if err := pool.QueryRow(context.Background(), `select coalesce((merge_forward->>'sentLaunch')::bigint, 0) from pull_requests where issue = 'LEGION-208'`).
+		Scan(&sent); err != nil {
+		t.Fatalf("read the record's ask: %v", err)
+	}
+	if sent != launch {
+		t.Errorf("the record's ask was sent at launch %d, want launch %d, the one its row reached", sent, launch)
+	}
+}
+
+// The ask's own row wakes the released implementer, and the woken launch comes ready while the row
+// is still queued: the row reaches that launch by its own delivery, so its ready writes no second
+// ask, and the implementer is told the ask once.
+func TestAnAskWhoseRowWakesItsRoleIsToldOnce(t *testing.T) {
+	t.Parallel()
+	runner, pool, publisher, machine := wokenByTheAsk(t)
+	comesUp(t, machine, true)
+	publisher.setAbsent()
+	drainAt(t, runner, 10*time.Minute, "the attempt once the woken session holds the role")
+	drainAt(t, runner, 20*time.Minute, "a later attempt")
+	askToldOnce(t, pool, publisher, machine.Claim().Generation)
+}
+
+// The ask's row reaches the woken launch before that launch's ready: the delivery records the
+// launch on the record's ask, so the ready of the same launch sends nothing more.
+func TestTheReadyOfTheLaunchAnAskWasDeliveredToSendsNothing(t *testing.T) {
+	t.Parallel()
+	runner, pool, publisher, machine := wokenByTheAsk(t)
+	comesUp(t, machine, false)
+	publisher.setAbsent()
+	drainAt(t, runner, 10*time.Minute, "the attempt once the woken session holds the role")
+	launch := machine.Claim().Generation
+	if err := machine.Handle(context.Background(), supervise.RequestReady{Claim: machine.Claim().Token, Generation: launch,
+		Session: machine.Claim().Session}); err != nil {
+		t.Fatalf("the implementer's ready: %v", err)
+	}
+	machine.Wait()
+	drainAt(t, runner, 20*time.Minute, "a later attempt")
+	askToldOnce(t, pool, publisher, launch)
 }
 
 // An operator's stop of the implementer, asked to merge the base forward while the issue stays in
