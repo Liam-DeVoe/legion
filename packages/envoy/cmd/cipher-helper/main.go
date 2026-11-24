@@ -175,8 +175,10 @@ environment:
   AGENT_SECRETS_MACHINE_IDENTITY
                                the identity this machine proves at the broker's token exchange:
                                kubernetes (AGENT_SECRETS_MACHINE_TOKEN_FILE), metadata
-                               (AGENT_SECRETS_MACHINE_AUDIENCE) or pool (both, with
-                               AGENT_SECRETS_POOL_AUDIENCE and AGENT_SECRETS_POOL_ACCOUNT).
+                               (AGENT_SECRETS_MACHINE_AUDIENCE), pool (both, with
+                               AGENT_SECRETS_POOL_AUDIENCE and AGENT_SECRETS_POOL_ACCOUNT) or
+                               github-actions (ACTIONS_ID_TOKEN_REQUEST_URL,
+                               ACTIONS_ID_TOKEN_REQUEST_TOKEN and AGENT_SECRETS_MACHINE_AUDIENCE).
                                With it the helper's launcher credential is the one that exchange
                                mints, traded again before it lapses with the key it kept, and no
                                person approves this machine; unset, a person logs it in as before

@@ -9,6 +9,11 @@ import { isHttpUrl } from "@legion/contracts/log-text";
 import { DeviceLoginIdentity, deviceLoginSessionName } from "./device-login";
 import { DEVICE_LOGIN_FILE_VAR, deviceLoginFile } from "./device-login-file";
 import { importDpopKey, newDpopKey } from "./dpop";
+import {
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR,
+  ACTIONS_ID_TOKEN_REQUEST_URL_VAR,
+  githubActionsIdentity,
+} from "./github-actions-identity";
 import { metadataIdentity } from "./metadata-identity";
 import { personIdentity } from "./person-identity";
 import { poolIdentity } from "./pool-identity";
@@ -37,8 +42,9 @@ export const IDENTITY_VAR = "AGENT_SECRETS_MACHINE_IDENTITY";
 /** The projected Kubernetes service-account token file, which {@link IDENTITY_KUBERNETES} reads
  *  and {@link IDENTITY_POOL} federates. */
 export const MACHINE_TOKEN_FILE_VAR = "AGENT_SECRETS_MACHINE_TOKEN_FILE";
-/** The audience of this machine's Google identity token: the metadata server mints it for that
- *  audience, and a pool mint names it as the minted token's own. */
+/** The audience of this machine's identity token: the metadata server mints it for that
+ *  audience, a pool mint names it as the minted token's own, and GitHub mints a GitHub Actions
+ *  run's for it. */
 export const MACHINE_AUDIENCE_VAR = "AGENT_SECRETS_MACHINE_AUDIENCE";
 /** The session a trade writes under for a caller that acts as no session of its own, which a
  *  daemon, a command and a helper are ({@link tradeSession}). */
@@ -63,6 +69,10 @@ export const IDENTITY_METADATA = "metadata";
  *  {@link MACHINE_TOKEN_FILE_VAR} names (`pool-identity.ts`): a machine with no Google service
  *  account of its own. */
 export const IDENTITY_POOL = "pool";
+/** A GitHub Actions run's OIDC token, asked of GitHub at {@link ACTIONS_ID_TOKEN_REQUEST_URL_VAR}
+ *  with {@link ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR} for {@link MACHINE_AUDIENCE_VAR}
+ *  (`github-actions-identity.ts`): a job that holds `id-token: write`. */
+export const IDENTITY_GITHUB_ACTIONS = "github-actions";
 /** A machine's device login at the broker's device grant, kept in the file
  *  `AGENT_SECRETS_DEVICE_LOGIN_FILE` names (`device-login.ts`), which `dispatch login --device`
  *  makes: a machine with no platform identity of its own, such as a person's laptop. Only this
@@ -70,7 +80,8 @@ export const IDENTITY_POOL = "pool";
 export const IDENTITY_DEVICE_LOGIN = "device-login";
 
 /**
- * The variables this package reads, by name: this module's, `device-login.ts`'s
+ * The variables this package reads, by name: this module's, `github-actions-identity.ts`'s
+ * `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, `device-login.ts`'s
  * `AGENT_SECRETS_DEVICE_LOGIN_FILE`, and those `signins.ts` reads to find a person's sign-in on
  * this machine and the client that renews it, whose names that module
  * holds (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`, `SIGNIN_CLIENT_ID_VAR` and
@@ -89,6 +100,8 @@ export const BROKER_VARIABLES = [
   PROJECTS_VAR,
   POOL_AUDIENCE_VAR,
   POOL_ACCOUNT_VAR,
+  ACTIONS_ID_TOKEN_REQUEST_URL_VAR,
+  ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR,
   DEVICE_LOGIN_FILE_VAR,
   SIGNIN_DIR_VAR,
   "XDG_STATE_HOME",
@@ -150,6 +163,17 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
         tokenAudience,
       });
     }
+    case IDENTITY_GITHUB_ACTIONS: {
+      const requestUrl = required(env, ACTIONS_ID_TOKEN_REQUEST_URL_VAR, kind);
+      const requestToken = required(env, ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR, kind);
+      const audience = required(env, MACHINE_AUDIENCE_VAR, kind);
+      return githubActionsIdentity({
+        requestUrl,
+        requestToken,
+        audience,
+        audienceSetting: MACHINE_AUDIENCE_VAR,
+      });
+    }
     case IDENTITY_DEVICE_LOGIN: {
       const brokerUrl = required(env, BROKER_URL_VAR, kind);
       return new DeviceLoginIdentity({ path: deviceLoginFile(env), brokerUrl });
@@ -157,7 +181,7 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
     default:
       // Its value is not quoted: a secret pasted into the wrong variable would be printed.
       throw new Error(
-        `${IDENTITY_VAR} names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA}, ${IDENTITY_POOL} or ${IDENTITY_DEVICE_LOGIN}`
+        `${IDENTITY_VAR} names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA}, ${IDENTITY_POOL}, ${IDENTITY_GITHUB_ACTIONS} or ${IDENTITY_DEVICE_LOGIN}`
       );
   }
 }

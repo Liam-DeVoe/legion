@@ -30,16 +30,19 @@ type (
 // The variables a program reads to build this machine's identity; internal/cipherclient's
 // environment.go documents each.
 const (
-	BrokerURLVar        = internal.BrokerURLVar
-	IdentityVar         = internal.IdentityVar
-	MachineTokenFileVar = internal.MachineTokenFileVar
-	MachineAudienceVar  = internal.MachineAudienceVar
-	PoolAudienceVar     = internal.PoolAudienceVar
-	PoolAccountVar      = internal.PoolAccountVar
-	SessionVar          = internal.SessionVar
-	IdentityKubernetes  = internal.IdentityKubernetes
-	IdentityMetadata    = internal.IdentityMetadata
-	IdentityPool        = internal.IdentityPool
+	BrokerURLVar                  = internal.BrokerURLVar
+	IdentityVar                   = internal.IdentityVar
+	MachineTokenFileVar           = internal.MachineTokenFileVar
+	MachineAudienceVar            = internal.MachineAudienceVar
+	PoolAudienceVar               = internal.PoolAudienceVar
+	PoolAccountVar                = internal.PoolAccountVar
+	ActionsIDTokenRequestURLVar   = internal.ActionsIDTokenRequestURLVar
+	ActionsIDTokenRequestTokenVar = internal.ActionsIDTokenRequestTokenVar
+	SessionVar                    = internal.SessionVar
+	IdentityKubernetes            = internal.IdentityKubernetes
+	IdentityMetadata              = internal.IdentityMetadata
+	IdentityPool                  = internal.IdentityPool
+	IdentityGitHubActions         = internal.IdentityGitHubActions
 )
 
 // New forwards to internal/cipherclient.New.

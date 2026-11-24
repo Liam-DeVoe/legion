@@ -16,11 +16,12 @@ import (
 // Source is one platform identity this process can prove, read fresh each time it is asked: the
 // subject token of the broker's RFC 8693 exchange, and the type the exchange reads it under. The
 // grant issues no refresh token, so every renewal asks its Source again — a projected token the
-// kubelet rewrote in place, a metadata token minted anew, a pool token traded again — and a
-// Source that caches must cache for less than the token it answers lives.
+// kubelet rewrote in place, a metadata token minted anew, a pool token traded again, a GitHub
+// Actions run's token asked of GitHub again — and a Source that caches must cache for less than
+// the token it answers lives.
 //
-// Three implementations are the three identities a machine of this deployment holds. Each is a
-// Source so one client serves all three and a caller names which it has in one line.
+// Four implementations are the four identities a machine of this deployment holds. Each is a
+// Source so one client serves all four and a caller names which it has in one line.
 type Source interface {
 	// Token is a subject token to present and the subject_token_type it is presented under, or
 	// an error that never reached the broker: an identity this machine could not read is never
