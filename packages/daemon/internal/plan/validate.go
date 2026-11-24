@@ -41,16 +41,12 @@ const MostQuotedBytes = 128
 
 // quoted is word as a reason quotes it: whole within MostQuotedBytes, else its first bytes up to
 // that bound, cut at the start of a character, and a mark that it was cut, with its length.
+// Acceptance control (scratch, not for merge): each word is quoted whole.
 func quoted(word string) string {
-	if len(word) <= MostQuotedBytes {
-		return word
-	}
-	cut := MostQuotedBytes
-	for cut > 0 && !utf8.RuneStart(word[cut]) {
-		cut--
-	}
-	return fmt.Sprintf("%s… (cut from %d bytes)", word[:cut], len(word))
+	return word
 }
+
+var _ = utf8.RuneStart
 
 // listed is ids as a reason lists them: the first MostReasons, joined by ", ", and past them a
 // count of the rest.
