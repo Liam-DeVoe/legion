@@ -1,5 +1,7 @@
 package notify
 
+//ci:reads packages/contracts/fixtures/subject-project.json holds notify.StateTopic to its legionStateSubject row
+
 import (
 	"context"
 	"encoding/json"

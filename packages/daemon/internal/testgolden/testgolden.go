@@ -7,6 +7,16 @@
 // for rewriting what it writes, which is all that differs between them.
 package testgolden
 
+// This row and two of the envoy rows below it - internal/dispatch/outbox/
+// expects_reply_never_false_test.go and internal/dispatch/api/live_events_test.go - declare a
+// read every filter gating a job that compiles them already matches. They are here so that a
+// later narrowing of one of those filters is refused by rule 1 rather than dropping the read
+// with nobody noticing (dispatch://INFRA-1413). This one is the helper every daemon test that
+// pins a daemon API fixture reads its fixture through (the golden tests of internal/api,
+// internal/config, internal/daemon and internal/projection), so it is compiled into each of
+// those test runs and the read is declared once, on the file that makes it.
+//ci:reads packages/contracts/fixtures/daemon-api/* os.ReadFile of the fixture Check names (the path, ../../../contracts/fixtures/daemon-api); the write is under -update, which CI never passes
+
 import (
 	"bytes"
 	"encoding/json"

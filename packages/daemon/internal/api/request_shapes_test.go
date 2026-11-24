@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/daemon-api/request-shapes.json sortedRequestShapes (path from testgolden.Path)
+
 import (
 	"encoding/json"
 	"fmt"

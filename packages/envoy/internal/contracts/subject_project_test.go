@@ -1,5 +1,7 @@
 package contracts
 
+//ci:reads packages/contracts/fixtures/subject-project.json readSubjectProjectFixture reads the shared cases the generated subject builders and readers are held to
+
 import (
 	"encoding/json"
 	"os"
