@@ -3616,7 +3616,13 @@ Store migration 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`
 every row it finds takes the default, false, which the sweep derives again.
 The same mark keeps a root that the answer's own admission pass promoted past `admitted` in the sweep's reach until its architect's claim is given that entry, so a start of the resume that reaches no claim is written again.
 
-To roll a release at contract 146 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `phases`, `claims`, `pending_task_deliveries`, `outbox` and `schema_version` are one table each for all of them.
+The two blocks below drop columns of `phases`, `claims` and `pending_task_deliveries` and the table `architect_stalled_notices`, which every project's daemon of this release reads, delete version rows that every daemon's `Migrate` reads, and their row statements act on the rows of every project.
+So a daemon left on this release while another rolls back fails each read of a dropped column or table, and one that boots on the database again runs the deleted migrations under the daemons that rolled back (`versionRecorded` in `internal/store/store.go` decides each migration on its own row).
+Stop every daemon of one database, run each block once, and pin the earlier image for all of them in the same change.
+
+To roll a release at contract 146 back to contract 87, stop every daemon of the database and run two blocks in this order: the block below, then the phase entry's block after it.
 A rollback from a release above contract 146 takes first the steps of each release it crosses above 146: "Rolling back below the release that guards the controller's pod's memory" above gives those of the release whose `version.go` carries the entry for `dispatch://INFRA-3531`, which are to take `controller_pod` out of `legion.yaml` and to delete the unsent `memory-guard-kill` notices.
 cybermonklabs/legion#3995, the release that tells a holder of an approved new version, changes no contract number, so it carries the number of the release before it, and a rollback that crosses it runs its four statements before both blocks ("Rolling back the release that tells a holder of an approved new version" above).
 Those statements and the two blocks touch no row, column or version row in common.
@@ -3709,7 +3715,7 @@ The test runs no way back but the two blocks.
 A rollback of a store that #4903's release migrated runs the way back in the header of `20261121170714_dispatch_issue_applied_seq.up.sql` first, which deletes that version's row, so that store reports 20261120055717 after the two blocks, as one that #4598's release migrated does.
 A store that #5278's release migrated reports 20261123212127 after them: `20261123212127_claim_start_failure_after_ready.up.sql` carries no way back, since an earlier release reads the start failures it emptied as none recorded.
 
-To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
+To roll a release at contract 94 back to contract 87, stop every daemon of the database and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
 On a store that cybermonklabs/legion#4598 migrated, run that release's one statement ([Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues)) before every one of these, on one that cybermonklabs/legion#4581 migrated, the way back in the header of its `20261120042902_claim_agent_resume_generation.up.sql` before every one of these too, and on one that cybermonklabs/legion#4573 migrated, the statement of [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand) before every one of these too, each with the daemon stopped and before the earlier image is pinned.
 Those three touch no row in common, so any of them runs first.
