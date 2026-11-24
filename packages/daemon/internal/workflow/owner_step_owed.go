@@ -72,19 +72,14 @@ func (e *Engine) owedOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Iss
 	// place's worker (record.PlaceWorker), the plan's step's role at a step and the retro's role at
 	// the retro, at the step's own place of the task.
 	worker, _ := w.workerAt(w.Place)
-	role := worker.Role
 	var task string
-	for _, row := range rows {
-		if row.Role == role && row.StepTask == step.place.Task && row.StepPlace == step.place.Place {
-			task = row.EntryTask
-		}
+	if row, found := record.StepRowOf(rows, worker.Role, step.place.Task, step.place.Place); found == record.RowOfTheStep {
+		task = row.EntryTask
 	}
 	if task == "" {
-		at, err := e.standingPart(ctx, tx, issue, w)
-		if err != nil {
+		if task, err = e.resumeTaskOn(ctx, tx, issue, w); err != nil {
 			return owedStep{}, false, err
 		}
-		task = resumeText(issue, at)
 	}
 	return owedStep{step: step, run: runs[open], task: task}, true, nil
 }
