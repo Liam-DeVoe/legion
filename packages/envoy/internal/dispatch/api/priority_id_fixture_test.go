@@ -6,6 +6,8 @@
 // (newTestHandlerWithStore). Every failure names the title of its case.
 package api
 
+//ci:reads packages/contracts/fixtures/priority-ids.json readPriorityIDCases reads the shared list of the rule's cases through priorityIDFixturePath (../../../../contracts/fixtures)
+
 import (
 	"bytes"
 	"context"
