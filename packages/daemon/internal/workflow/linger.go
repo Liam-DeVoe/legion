@@ -28,9 +28,10 @@ import (
 // closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
 // the disk it ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while
 // its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
-// production check, where the project opens one (Engine.checkRole): five of its claims are
-// closed, the checking role's is not, no IssueSuspend is written, and the check opens in that
-// role's live session; the check's close writes the suspension (closeCheck). A project whose
+// production check, where the project opens one (Engine.checkRole): every claim of it is closed
+// but the claim of the worker on the checking role's step (record.WorkerClaim), no IssueSuspend
+// is written, and the check opens in that claim's live session; the check's close writes the
+// suspension (closeCheck). A project whose
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
 // A done child set back to todo opens a new run, and each of its claims comes back on the session

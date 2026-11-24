@@ -2684,9 +2684,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 	}
 	// No transition stops a worker: the claim whose phase this ends keeps its process, its role and
-	// its session until its issue closes (leave), or until its agent's next step is of another
-	// role, which the start of that step waits for its turn to end to give it (the outbox's
-	// prepareClaimForStep), and its phase entry ends here, not its process. The workspace passes
+	// its session until its issue closes (leave), or until its next step is of another role or of
+	// another agent, which the start of that step waits for its turn to end to give it (the outbox's
+	// prepareClaimForStep), and its phase entry ends here, not its process. The start of another
+	// agent leaves the claim's session behind, and that agent begins a session of its own
+	// (supervise.StartWork.Agent). The workspace passes
 	// to the next role at the completion this move records, which the worker reports once its
 	// handoff is committed and pushed, so the next role's start may run while that worker's turn
 	// is still finishing (the issue's lifecycle lane runs its supervise rows one at a time, oldest
