@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -41,6 +42,12 @@ const keptDecisionsMigrationSuffix = "_kept_decisions.up.sql"
 // built from the pull request's base. Step 5 of the test boots it on the database the way back
 // left; where it is unset, the test says so and goes on.
 const keptDecisionsBaseLegion = "LEGION_KEPT_DECISIONS_BASE_LEGION"
+
+// keptDecisionsBaseTree is the variable that names a source tree of the release before, the pull
+// request's base as `git archive` writes it. Step 5 of the test builds keptDecisionsBaseReader in
+// that tree's daemon module and reads, with that release's own readers, what the way back left;
+// where it is unset, the test says so and goes on.
+const keptDecisionsBaseTree = "LEGION_KEPT_DECISIONS_BASE_TREE"
 
 // keptDecisionsMigration is the version of the migration keptDecisionsMigrationSuffix names, and 0
 // where the daemon embeds no such migration.
@@ -97,8 +104,14 @@ type keptDecisionsRig struct {
 // notice path, which finds the decision handled before under its key, so the one notice the
 // release before wrote is the only one; then it composes the root's start, which names the kept
 // decision once and not the one a catch-up claims, and a second composition names nothing. Step 4
-// runs the way back as an operator runs it. Step 5 boots the release before on that database where
-// keptDecisionsBaseLegion names its binary. Step 6 rolls forward.
+// runs the way back as an operator runs it. Step 5 reads what the way back left with the release
+// before's own readers, built from the source tree keptDecisionsBaseTree names: its kept decisions
+// of the root's tree, each seeded outbox row decoded, and the mark under its source; then it boots
+// the release before's daemon, the binary keptDecisionsBaseLegion names, as the seeded project on
+// that database, and finds the root and its child in its state. That boot drives no outbox row,
+// since the release before's outbox runner lives in its workflow, which needs Dispatch, Envoy and
+// both GitHub Apps; the rows of the outbox and processed_events are read under the old names by
+// step 4's assertions and step 5's readers. Step 6 rolls forward.
 //
 // Where the daemon embeds no migration of keptDecisionsMigrationSuffix, the store withholds
 // nothing and the test goes on: step 2 then fails, naming the table it cannot read, which is the
@@ -173,11 +186,16 @@ func TestKeptDecisionsTheReleaseBeforeLeftAreToldOnceAfterTheRenameAndComeBackOn
 	}
 	r.assertTheOldNames("step 4", told)
 
-	// Step 5: the release before boots on what the way back left.
+	// Step 5: the release before reads what the way back left, and boots on it.
+	if tree := os.Getenv(keptDecisionsBaseTree); tree == "" {
+		t.Logf("step 5's read skipped: %s names no source tree of the release before to build its readers from", keptDecisionsBaseTree)
+	} else {
+		r.readWithTheReleaseBefore(tree, dsn, told)
+	}
 	if binary := os.Getenv(keptDecisionsBaseLegion); binary == "" {
 		t.Logf("step 5 skipped: %s names no legion binary of the release before to boot on the database the way back left", keptDecisionsBaseLegion)
 	} else {
-		bootTheReleaseBefore(t, binary, dsn)
+		bootTheReleaseBefore(t, binary, dsn, "LEGION", "LEGION-1", "LEGION-2")
 	}
 
 	// Step 6: the roll forward.
@@ -512,13 +530,253 @@ var keptDecisionsRequiredContract = regexp.MustCompile(`this daemon requires (?:
 // find.
 var keptDecisionsUndefinedTable = regexp.MustCompile(`relation "[^"]+" does not exist|SQLSTATE 42P01`)
 
+// keptDecisionsBaseReader is the main package step 5 builds in the release before's daemon module,
+// so that the rows the way back left are read by that release's own readers: the kept decisions
+// owed to a tree (record.Postgres.ParkedDecisions), each outbox row it is asked for decoded
+// (record.DecodeOutboxPayload), and whether each event it is asked for is marked processed under
+// its source (record.Postgres.Processed). It reads what to read as one JSON object on stdin and
+// writes what it read, each read in a transaction of its own with its error beside it, as one JSON
+// object on stdout. Being a raw string, it holds no struct tag: both objects take Go's field names.
+const keptDecisionsBaseReader = `package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+type event struct{ Source, Event string }
+
+type ask struct {
+	DSN       string
+	Tree      string
+	Outbox    []int64
+	Processed []event
+}
+
+type decoded struct {
+	ID      int64
+	Type    string
+	Payload record.OutboxPayload
+	Error   string
+}
+
+type marked struct {
+	Source, Event string
+	Processed     bool
+	Error         string
+}
+
+type read struct {
+	Decisions      []record.ParkedDecision
+	DecisionsError string
+	Outbox         []decoded
+	Processed      []marked
+}
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	var asked ask
+	if err := json.NewDecoder(os.Stdin).Decode(&asked); err != nil {
+		return fmt.Errorf("read what to read: %w", err)
+	}
+	ctx := context.Background()
+	// A pool, as the daemon's store opens one, since the test's DSN carries pgxpool's parameters.
+	pool, err := pgxpool.New(ctx, asked.DSN)
+	if err != nil {
+		return fmt.Errorf("connect to the database: %w", err)
+	}
+	defer pool.Close()
+	records := record.NewStore()
+	// Each read runs in a transaction of its own, so a read that fails aborts none of the others.
+	inTx := func(read func(pgx.Tx) error) error {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		return read(tx)
+	}
+	var out read
+	if err := inTx(func(tx pgx.Tx) (err error) {
+		out.Decisions, err = records.ParkedDecisions(ctx, tx, asked.Tree)
+		return err
+	}); err != nil {
+		out.DecisionsError = err.Error()
+	}
+	for _, id := range asked.Outbox {
+		one := decoded{ID: id}
+		if err := inTx(func(tx pgx.Tx) error {
+			row := record.OutboxRow{ID: id}
+			if err := tx.QueryRow(ctx, "select kind, issue, payload from outbox where id = $1", id).Scan(&row.Kind, &row.Issue, &row.Payload); err != nil {
+				return fmt.Errorf("read outbox row %d: %w", id, err)
+			}
+			payload, err := record.DecodeOutboxPayload(row)
+			if err != nil {
+				return err
+			}
+			one.Type, one.Payload = fmt.Sprintf("%T", payload), payload
+			return nil
+		}); err != nil {
+			one.Error = err.Error()
+		}
+		out.Outbox = append(out.Outbox, one)
+	}
+	for _, e := range asked.Processed {
+		one := marked{Source: e.Source, Event: e.Event}
+		if err := inTx(func(tx pgx.Tx) (err error) {
+			one.Processed, err = records.Processed(ctx, tx, e.Source, e.Event)
+			return err
+		}); err != nil {
+			one.Error = err.Error()
+		}
+		out.Processed = append(out.Processed, one)
+	}
+	return json.NewEncoder(os.Stdout).Encode(out)
+}
+`
+
+// keptDecisionsBaseRead is what keptDecisionsBaseReader writes, under Go's field names.
+type keptDecisionsBaseRead struct {
+	Decisions []struct {
+		Issue, Ref, Decision, Actor string
+		At                          time.Time
+		ClaimedBy                   int64
+		HeldBy                      struct{ Claim, Delivery string }
+	}
+	DecisionsError string
+	Outbox         []struct {
+		ID          int64
+		Type, Error string
+		Payload     json.RawMessage
+	}
+	Processed []struct {
+		Source, Event, Error string
+		Processed            bool
+	}
+}
+
+// readWithTheReleaseBefore is step 5's read: keptDecisionsBaseReader, built in the daemon module of
+// tree, the release before's source, reads the database dsn names with that release's own readers
+// and finds what the way back left under the old names: the kept decisions of the root's tree as
+// told, each seeded outbox row decoded (the controller notice of the old kind, and the tick whose
+// held child carries the old reason, each as step 1 wrote it), and the mark of the architect
+// notice under the old source. The package is written into a fresh directory inside that module,
+// since only a package of the module may import its internal packages, and the directory is
+// removed once the reader is built.
+func (r *keptDecisionsRig) readWithTheReleaseBefore(tree, dsn string, told []keptDecisionRow) {
+	r.t.Helper()
+	module := filepath.Join(tree, "packages", "daemon")
+	source, err := os.MkdirTemp(module, "kept-decisions-reader-")
+	if err != nil {
+		r.t.Fatalf("step 5: %s names %s, which holds no daemon module to build the release before's readers in: %v", keptDecisionsBaseTree, tree, err)
+	}
+	reader := filepath.Join(r.t.TempDir(), "reader")
+	var built []byte
+	if err = os.WriteFile(filepath.Join(source, "main.go"), []byte(keptDecisionsBaseReader), 0o644); err == nil {
+		built, err = exec.Command("go", "build", "-C", module, "-o", reader, "./"+filepath.Base(source)).CombinedOutput()
+	}
+	if removed := os.RemoveAll(source); removed != nil {
+		r.t.Errorf("step 5: remove the readers' source %s: %v", source, removed)
+	}
+	if err != nil {
+		r.t.Fatalf("step 5: build the release before's readers in %s: %v\n%s", module, err, built)
+	}
+	mark := record.OutboxKey(r.design)
+	ask, err := json.Marshal(map[string]any{
+		"DSN": dsn, "Tree": "LEGION-1", "Outbox": []int64{r.design, r.catchUp, r.notice, r.tick},
+		"Processed": []map[string]string{{"Source": "parked-decision", "Event": mark}},
+	})
+	if err != nil {
+		r.t.Fatalf("step 5: %v", err)
+	}
+	run := exec.Command(reader)
+	run.Stdin = bytes.NewReader(ask)
+	var stderr bytes.Buffer
+	run.Stderr = &stderr
+	written, err := run.Output()
+	if err != nil {
+		r.t.Fatalf("step 5: the release before's readers ended on the database the way back left: %v\n%s", err, stderr.String())
+	}
+	var read keptDecisionsBaseRead
+	if err := json.Unmarshal(written, &read); err != nil {
+		r.t.Fatalf("step 5: the release before's readers wrote %s: %v", written, err)
+	}
+	var unread []string
+	if read.DecisionsError != "" {
+		unread = append(unread, "record.ParkedDecisions of LEGION-1: "+read.DecisionsError)
+	} else {
+		got := make([]keptDecisionRow, 0, len(read.Decisions))
+		for _, kept := range read.Decisions {
+			got = append(got, keptDecisionRow{Issue: kept.Issue, Ref: kept.Ref, Decision: kept.Decision, Actor: kept.Actor, At: kept.At.UTC(),
+				ClaimedBy: kept.ClaimedBy, HeldByClaim: kept.HeldBy.Claim, HeldByDelivery: kept.HeldBy.Delivery})
+		}
+		// In the order keptRows reads them.
+		slices.SortFunc(got, func(a, b keptDecisionRow) int { return strings.Compare(b.Ref, a.Ref) })
+		if !reflect.DeepEqual(got, told) {
+			unread = append(unread, fmt.Sprintf("record.ParkedDecisions of LEGION-1 read %+v, want the kept decisions the way back left, %+v", got, told))
+		}
+	}
+	// Each seeded outbox row, by the type it decodes as and, for the two the migration rewrote, the
+	// payload step 1 wrote.
+	want := map[int64]struct{ decodes, payload string }{
+		r.design:  {decodes: "record.Notice"},
+		r.catchUp: {decodes: "record.Notice"},
+		r.notice:  {decodes: "record.ControllerNotice", payload: keptOldNotice},
+		r.tick:    {decodes: "record.ControllerNotice", payload: keptOldTick},
+	}
+	for _, row := range read.Outbox {
+		wanted := want[row.ID]
+		var got, seeded any
+		if wanted.payload != "" && row.Error == "" {
+			_ = json.Unmarshal(row.Payload, &got)
+			_ = json.Unmarshal([]byte(wanted.payload), &seeded)
+		}
+		switch {
+		case row.Error != "":
+			unread = append(unread, fmt.Sprintf("record.DecodeOutboxPayload of outbox row %d: %s", row.ID, row.Error))
+		case row.Type != wanted.decodes:
+			unread = append(unread, fmt.Sprintf("record.DecodeOutboxPayload of outbox row %d decoded a %s, want a %s", row.ID, row.Type, wanted.decodes))
+		case !reflect.DeepEqual(got, seeded):
+			unread = append(unread, fmt.Sprintf("record.DecodeOutboxPayload of outbox row %d decoded %s, want %s as step 1 wrote it", row.ID, row.Payload, wanted.payload))
+		}
+	}
+	for _, marked := range read.Processed {
+		if marked.Error != "" || !marked.Processed {
+			unread = append(unread, fmt.Sprintf("record.Processed of the %s event %s answered %t (error %q), want true, the mark the way back left",
+				marked.Source, marked.Event, marked.Processed, marked.Error))
+		}
+	}
+	if len(unread) != 0 {
+		r.t.Fatalf("step 5: the release before's own readers did not read what the way back left under the old names:\n%s", strings.Join(unread, "\n"))
+	}
+	r.t.Logf("step 5: the release before's own readers, built from %s, read the kept decisions of LEGION-1, decoded outbox rows %d, %d, %d and %d, and read the mark of %s under the old names",
+		tree, r.design, r.catchUp, r.notice, r.tick, mark)
+}
+
 // bootTheReleaseBefore is step 5: binary, the release before's `legion`, starts on the database dsn
-// names with the minimal legion.yaml scripts/e2e/stage1-skeleton.sh writes, under the stub OMP and
-// the plugin manifests that script gives it, and answers GET /readyz and GET /legion/v1/state with
-// 200; then it stops, and its log holds no error naming a table. The manifest declares the
-// contract this checkout's pi-legion declares; where the binary's boot gate refuses it and names
-// the contract it requires, the manifest takes that one and the binary starts once more.
-func bootTheReleaseBefore(t *testing.T, binary, dsn string) {
+// names as project, the Dispatch project step 1 seeds its issues under, with the minimal
+// legion.yaml scripts/e2e/stage1-skeleton.sh writes, under the stub OMP and the plugin manifests
+// that script gives it, and answers GET /readyz and GET /legion/v1/state with 200, a state that
+// holds each of issues; then it stops, and its log holds no error naming a table. The manifest
+// declares the contract this checkout's pi-legion declares; where the binary's boot gate refuses
+// it and names the contract it requires, the manifest takes that one and the binary starts once
+// more. Its private tmux server, `legion-<project's claim token>`, is a real daemon's name for a
+// seeded project such as LEGION, so the daemon runs under a TMUX_TMPDIR of its own, and the
+// cleanup stops that server alone.
+func bootTheReleaseBefore(t *testing.T, binary, dsn, project string, issues ...string) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Fatalf("step 5: %s names %s, and a daemon refuses to start without tmux on PATH: %v", keptDecisionsBaseLegion, binary, err)
@@ -530,13 +788,16 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn string) {
 		t.Fatalf("step 5: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(work) })
-	home, state := filepath.Join(work, "home"), filepath.Join(work, "state")
-	for _, dir := range []string{home, state, filepath.Join(work, "xdg")} {
+	home, state, tmuxDir := filepath.Join(work, "home"), filepath.Join(work, "state"), filepath.Join(work, "tmux")
+	for _, dir := range []string{home, state, tmuxDir, filepath.Join(work, "xdg")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("step 5: %v", err)
 		}
 	}
-	project := "E2EKEPT" + strconv.FormatInt(time.Now().UnixNano()%1_000_000_000, 10)
+	projectToken, err := claim.ProjectToken(project)
+	if err != nil {
+		t.Fatalf("step 5: %v", err)
+	}
 	token, omp := filepath.Join(work, "operator-token"), filepath.Join(work, "omp")
 	if err := os.WriteFile(token, []byte("kept-decisions-operator-"+project+"\n"), 0o600); err != nil {
 		t.Fatalf("step 5: %v", err)
@@ -573,15 +834,15 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn string) {
 	for _, pair := range os.Environ() {
 		name, _, _ := strings.Cut(pair, "=")
 		switch name {
-		case "OMP_PROFILE", "PI_PROFILE", "HOME", "XDG_STATE_HOME", "LEGION_OMP_PATH", "LEGION_LISTEN_FD":
+		case "OMP_PROFILE", "PI_PROFILE", "HOME", "XDG_STATE_HOME", "LEGION_OMP_PATH", "LEGION_LISTEN_FD", "TMUX_TMPDIR":
 			continue
 		}
 		env = append(env, pair)
 	}
-	env = append(env, "HOME="+home, "XDG_STATE_HOME="+filepath.Join(work, "xdg"), "LEGION_OMP_PATH="+omp)
+	env = append(env, "HOME="+home, "XDG_STATE_HOME="+filepath.Join(work, "xdg"), "LEGION_OMP_PATH="+omp, "TMUX_TMPDIR="+tmuxDir)
 	t.Cleanup(func() {
-		// The daemon's private tmux server (`legion-<project>`), should its boot have started one.
-		stop := exec.Command("tmux", "-L", "legion-"+project, "kill-server")
+		// The daemon's private tmux server under its own TMUX_TMPDIR, should its boot have started one.
+		stop := exec.Command("tmux", "-L", "legion-"+projectToken, "kill-server")
 		stop.Env = env
 		_ = stop.Run()
 	})
@@ -653,7 +914,24 @@ func bootTheReleaseBefore(t *testing.T, binary, dsn string) {
 		if len(named) != 0 {
 			t.Fatalf("step 5: the log of %s names a table it cannot read:\n%s", binary, strings.Join(named, "\n"))
 		}
-		t.Logf("step 5: %s booted on the database the way back left, answered GET /readyz and GET /legion/v1/state with 200, and stopped", binary)
+		var answered struct {
+			Issues map[string]json.RawMessage `json:"issues"`
+		}
+		if err := json.Unmarshal([]byte(body), &answered); err != nil {
+			t.Fatalf("step 5: GET /legion/v1/state of %s answered %s, which holds no issues: %v", binary, body, err)
+		}
+		var unread []string
+		for _, issue := range issues {
+			if _, read := answered.Issues[issue]; !read {
+				unread = append(unread, issue)
+			}
+		}
+		if len(unread) != 0 {
+			t.Fatalf("step 5: %s booted as project %s did not read the seeded issues %v: its GET /legion/v1/state lists the issues %v",
+				binary, project, unread, slices.Sorted(maps.Keys(answered.Issues)))
+		}
+		t.Logf("step 5: %s booted as project %s on the database the way back left, answered GET /readyz and GET /legion/v1/state with 200, listed %v in its state, and stopped",
+			binary, project, issues)
 		return
 	}
 }

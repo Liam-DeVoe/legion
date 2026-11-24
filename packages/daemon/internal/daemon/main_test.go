@@ -41,8 +41,9 @@ var processDSN string
 // keeps the news record's model test's four the same way (TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold):
 // LEGION_NEWS_MODEL_SEED, LEGION_NEWS_MODEL_RUNS, LEGION_NEWS_MODEL_STEPS and
 // LEGION_NEWS_MODEL_TRACE, which prints each seed's steps. It keeps
-// LEGION_KEPT_DECISIONS_BASE_LEGION too, the `legion` binary of the release before that the kept
-// decisions' migration test boots on the database its way back left
+// LEGION_KEPT_DECISIONS_BASE_LEGION and LEGION_KEPT_DECISIONS_BASE_TREE too, the `legion` binary
+// and the source tree of the release before, which the kept decisions' migration test boots and
+// builds its readers from on the database its way back left
 // (TestKeptDecisionsTheReleaseBeforeLeftAreToldOnceAfterTheRenameAndComeBackOnTheWayBack). It
 // drops the migrated template testDSN and isolatedOutboxPool clone their databases from
 // (testpg.Main), removes the directory the tests' Envoy binaries were built into
@@ -78,7 +79,7 @@ func TestMain(m *testing.M) {
 	}
 	fixtureenv.MustGuard("LEGION_KEPT_PROPERTY_SEED", "LEGION_KEPT_PROPERTY_RUNS", "LEGION_KEPT_PROPERTY_STEPS",
 		"LEGION_NEWS_MODEL_SEED", "LEGION_NEWS_MODEL_RUNS", "LEGION_NEWS_MODEL_STEPS", "LEGION_NEWS_MODEL_TRACE",
-		keptDecisionsBaseLegion)
+		keptDecisionsBaseLegion, keptDecisionsBaseTree)
 	processDSN = os.Getenv("LEGION_TEST_PG_DSN")
 	executable, err := os.Executable()
 	if err == nil {
