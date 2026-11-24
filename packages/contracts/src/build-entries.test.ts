@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { buildInto, underDist } from "@legion/test-fixtures/package-build";
 
 /**
  * Every file `package.json` names is a file the package has. The `types` and `bun` conditions of
@@ -23,13 +24,6 @@ type Manifest = {
 const manifest = (await Bun.file(join(packageDir, "package.json")).json()) as Manifest;
 const entries = Object.values(manifest.exports);
 
-/** A path package.json gives under `dist/`, as a path inside the build's output directory. */
-function underDist(path: string): string {
-  const inside = posix.relative("dist", path);
-  if (inside.startsWith("..")) throw new Error(`${path} is not under dist/`);
-  return inside;
-}
-
 const defaults = [...new Set(entries.map((entry) => underDist(entry.default)))].sort();
 
 /** Every scratch directory a build of this file made. `afterAll` removes them, so one whose test
@@ -43,17 +37,7 @@ afterAll(() => {
 async function build(script: string): Promise<string[]> {
   const out = mkdtempSync(join(tmpdir(), "contracts-build-"));
   scratch.push(out);
-  const spawned = Bun.spawn(["bun", "run", script, "--outdir", out], {
-    cwd: packageDir,
-    stderr: "pipe",
-    stdout: "ignore",
-  });
-  const [stderr, exitCode] = await Promise.all([
-    new Response(spawned.stderr).text(),
-    spawned.exited,
-  ]);
-  if (exitCode !== 0) throw new Error(`bun run ${script} exited ${exitCode}: ${stderr}`);
-  return [...new Bun.Glob("**/*").scanSync({ cwd: out, onlyFiles: true })].sort();
+  return buildInto(packageDir, script, out);
 }
 
 describe("package.json's entry points", () => {

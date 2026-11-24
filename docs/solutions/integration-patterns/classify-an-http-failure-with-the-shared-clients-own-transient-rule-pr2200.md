@@ -1,5 +1,5 @@
 ---
-title: "Classify an HTTP failure with the shared client's own transient rule"
+title: "Classify an HTTP failure with the shared outage rule"
 category: integration-patterns
 tags:
   - http
@@ -8,17 +8,17 @@ tags:
   - envoy-client
 date: 2026-10-28
 status: active
-module: packages/envoy-client
+module: packages/contracts
 ---
 
-# Classify an HTTP failure with the shared client's own transient rule
+# Classify an HTTP failure with the shared outage rule
 
 - When code sorts an HTTP failure into categories, ask the shared retry rule first (`outage` in
   `packages/contracts/src/http-status.ts`, imported as `@legion/contracts/http-status`: a 5xx, 408
   or 429; its Go twin is `httpoutage.Is`). Do not write a second status table next to it. Import
   the function, so the two rules cannot drift apart.
 - A category that tells the reader to change the request (`refused`, `invalid`) never covers a
-  status the client would retry. Check the transient rule before any 4xx branch.
+  status the client would retry. Check `outage` before any 4xx branch.
 - `DispatchGatewayError` extends `DispatchServiceError`, so a branch on `DispatchServiceError`
   and its status also catches a proxy's timeout and rate limit. Test a gateway 408 and 429, not
   only Dispatch's own refusals.

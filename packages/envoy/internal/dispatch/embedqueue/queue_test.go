@@ -654,14 +654,12 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 	database := storetest.Open(t)
 	seedIssue(t, database, "LONG", "LONG-1", "A title")
 	ctx := context.Background()
-	const segment = 300 * time.Millisecond
-	oldInterval := renewClaimInterval
-	renewClaimInterval = segment
-	t.Cleanup(func() { renewClaimInterval = oldInterval })
+	const interval = 300 * time.Millisecond
+	shortenForTest(t, &renewClaimInterval, interval)
 	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "LONG-1", contentHash: contentHashOf(t, database, "issue", "LONG-1")}})
 
 	before := time.Now()
-	waitOutDebt(ctx, 4*segment, renewal)
+	waitOutDebt(ctx, 4*interval, renewal)
 
 	if !renewal.last.After(before) {
 		t.Error("renewal.last was never updated - waitOutDebt never actually renewed during its wait")
@@ -675,6 +673,16 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 	if !nextAttempt.After(before.Add(claimWindow - time.Second)) {
 		t.Errorf("next_attempt_at = %v, want at least claimWindow (%v) past %v - the mid-wait renewal should have pushed it out, so a concurrent scanner never reclaims LONG-1 while this reservation is still waiting", nextAttempt, claimWindow, before)
 	}
+}
+
+// shortenForTest sets *setting, a duration of the package a test may shrink (renewClaimInterval),
+// to d until t ends. No test of this package runs in parallel, so
+// nothing else reads the setting meanwhile.
+func shortenForTest(t *testing.T, setting *time.Duration, d time.Duration) {
+	t.Helper()
+	healthy := *setting
+	*setting = d
+	t.Cleanup(func() { *setting = healthy })
 }
 
 // TestClaimRenewalResolveStopsRenewingACommittedRow proves resolve removes a row from the set a
@@ -1298,9 +1306,7 @@ func TestProcessBatchActuallyCallsRenewalAndReservesTokens(t *testing.T) {
 	for i, id := range ids {
 		seedIssue(t, database, "WIRE", id, fmt.Sprintf("Title %d", i))
 	}
-	oldInterval := renewClaimInterval
-	renewClaimInterval = 10 * time.Millisecond
-	t.Cleanup(func() { renewClaimInterval = oldInterval })
+	shortenForTest(t, &renewClaimInterval, 10*time.Millisecond)
 
 	var tokensBefore float64
 	if err := database.Pool.QueryRow(context.Background(),

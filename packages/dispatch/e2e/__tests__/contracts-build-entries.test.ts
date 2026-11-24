@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { posix } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildInto, underDist } from "@legion/test-fixtures/package-build";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 // Playwright's config loader and the browser suite's Node side load `@legion/contracts` and each
@@ -44,21 +44,9 @@ test("build:dispatch writes the file of every contracts subpath the dashboard an
   const unexported = imported.filter((subpath) => manifest.exports[subpath] === undefined);
   expect(unexported).toEqual([]);
 
-  const out = scratch();
-  const build = Bun.spawn(["bun", "run", "build:dispatch", "--outdir", out], {
-    cwd: contracts,
-    stderr: "pipe",
-    stdout: "ignore",
-  });
-  const [stderr, exitCode] = await Promise.all([new Response(build.stderr).text(), build.exited]);
-  expect({ exitCode, stderr: exitCode === 0 ? "" : stderr }).toEqual({ exitCode: 0, stderr: "" });
-  const written = new Set(new Bun.Glob("**/*").scanSync({ cwd: out, onlyFiles: true }));
-
+  const written = new Set(await buildInto(contracts, "build:dispatch", scratch()));
   const missing = imported
-    .map((subpath) => ({
-      subpath,
-      file: posix.relative("dist", manifest.exports[subpath].default),
-    }))
+    .map((subpath) => ({ subpath, file: underDist(manifest.exports[subpath].default) }))
     .filter(({ file }) => !written.has(file));
   expect(missing).toEqual([]);
 }, 60_000);

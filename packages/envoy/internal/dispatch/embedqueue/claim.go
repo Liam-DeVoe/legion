@@ -34,8 +34,9 @@ func newClaimRenewal(deps Deps, rows []pendingRow) *claimRenewal {
 	}}
 }
 
+// renew renews c's claim once it is due (due).
 func (c *claimRenewal) renew(ctx context.Context) {
-	if c == nil || ctx.Err() != nil || time.Since(c.last) < renewClaimInterval {
+	if c == nil || ctx.Err() != nil || c.due() > 0 {
 		return
 	}
 	c.last = time.Now()

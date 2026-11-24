@@ -35,37 +35,57 @@ func TestAClaimIsRenewedThroughThePacesWaitAtItsSlowest(t *testing.T) {
 	}
 }
 
-// A wrapper of the embedder (metrics, tracing) leaves the queue's pace in force: Paced puts the
-// pace around whatever Embedder holds, so the wrapper sees every call, the pace's wait still renews
-// the claim, and a canary that meets an outage still backs the pace off. Found by Embedder's type,
-// the pace was lost to a wrapper around it, and both stopped with nothing failing.
+// A wrapper of the embedder (metrics, tracing) leaves the queue's pace in force, wherever it goes.
+// Given to Paced, it sits inside the pace and sees every call. Put around Embedder after Paced, it
+// is not on the call path, since the queue calls its pace (Deps.pace), but Embedder's type is then
+// the wrapper's: a queue that found its pace by Embedder's type lost it there, and the claim's
+// renewal through the pace's wait and the canary's back-off both stopped with nothing failing. In
+// either place the wait renews the claim and a canary that meets an outage backs the pace off.
 func TestAWrappedEmbedderIsStillPaced(t *testing.T) {
-	t.Run("the pace's wait renews the claim", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			wrapper := &passThrough{Embedder: &fakeEmbedder{}}
-			requireRenewedThroughTheSlowestWait(t, Deps{Embedder: wrapper}.Paced(), renewClaimInterval-100*time.Millisecond)
-			if wrapper.calls != 2 {
-				t.Errorf("the wrapper saw %d calls, want 2", wrapper.calls)
+	for _, place := range []struct {
+		name string
+		wrap func(inner embed.Embedder) (Deps, *passThrough)
+		// calls is how many of the queue's two calls reach the wrapper.
+		calls int
+	}{
+		{"given to Paced", func(inner embed.Embedder) (Deps, *passThrough) {
+			wrapper := &passThrough{Embedder: inner}
+			return Deps{Embedder: wrapper}.Paced(), wrapper
+		}, 2},
+		{"put around the pace after Paced", func(inner embed.Embedder) (Deps, *passThrough) {
+			deps := Deps{Embedder: inner}.Paced()
+			wrapper := &passThrough{Embedder: deps.Embedder}
+			deps.Embedder = wrapper
+			return deps, wrapper
+		}, 0},
+	} {
+		t.Run(place.name+": the pace's wait renews the claim", func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				deps, wrapper := place.wrap(&fakeEmbedder{})
+				requireRenewedThroughTheSlowestWait(t, deps, renewClaimInterval-100*time.Millisecond)
+				if wrapper.calls != place.calls {
+					t.Errorf("the wrapper saw %d calls, want %d", wrapper.calls, place.calls)
+				}
+			})
+		})
+		t.Run(place.name+": a canary that meets an outage backs the pace off", func(t *testing.T) {
+			database := storetest.Open(t)
+			seedIssue(t, database, "WRAP", "WRAP-1", "Title of WRAP-1")
+			deps, wrapper := place.wrap(&fakeEmbedder{err: simulatedOutage{}})
+			deps.Store = database
+			pace := deps.pace.Interval()
+			succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
+			if err != nil || succeeded != 0 || failed != 1 || blocked || throttled {
+				t.Fatalf("ProcessBatch = %d, %d, %v, %v, %v; want 0, 1, not blocked, not throttled", succeeded, failed, blocked, throttled, err)
+			}
+			if wrapper.calls != place.calls {
+				t.Errorf("the wrapper saw %d calls, want %d", wrapper.calls, place.calls)
+			}
+			if got := deps.pace.Interval(); got != 2*pace {
+				t.Errorf("the canary's outage left the pace at %v, want it backed off from %v to %v", got, pace, 2*pace)
 			}
 		})
-	})
-	t.Run("a canary that meets an outage backs the pace off", func(t *testing.T) {
-		database := storetest.Open(t)
-		seedIssue(t, database, "WRAP", "WRAP-1", "Title of WRAP-1")
-		wrapper := &passThrough{Embedder: &fakeEmbedder{err: simulatedOutage{}}}
-		deps := Deps{Store: database, Embedder: wrapper}.Paced()
-		pace := deps.pace.Interval()
-		succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
-		if err != nil || succeeded != 0 || failed != 1 || blocked || throttled {
-			t.Fatalf("ProcessBatch = %d, %d, %v, %v, %v; want 0, 1, not blocked, not throttled", succeeded, failed, blocked, throttled, err)
-		}
-		if wrapper.calls != 2 {
-			t.Errorf("the wrapper saw %d calls, want the row's and its canary's", wrapper.calls)
-		}
-		if got := deps.pace.Interval(); got != 2*pace {
-			t.Errorf("the canary's outage left the pace at %v, want it backed off from %v to %v", got, pace, 2*pace)
-		}
-	})
+	}
 }
 
 // requireRenewedThroughTheSlowestWait backs deps' pace off to its slowest, then sends a call whose
