@@ -444,6 +444,10 @@ func (c *stubConn) AgentSecretsToken(context.Context) (string, error) {
 	return "", errors.New("the stream stub reads no projected token")
 }
 
+func (c *stubConn) ModelTotals(context.Context) (runtime.LaunchTotals, error) {
+	return runtime.LaunchTotals{}, errors.New("the stream stub reads no model totals")
+}
+
 func (c *stubConn) awaitEvent(t *testing.T, want string) {
 	t.Helper()
 	deadline := time.After(10 * time.Second)

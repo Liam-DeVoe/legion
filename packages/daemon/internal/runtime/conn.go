@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // ErrPromptRefused is Oh My Pi answering a prompt frame with `success: false`. Prompt wraps it
@@ -140,6 +141,10 @@ type Conn interface {
 	// and returns it as the mount holds it now. A shim that cannot is ErrTokenRefused; every other
 	// error is transport.
 	AgentSecretsToken(ctx context.Context) (string, error)
+	// ModelTotals reads what the agent's shim counted of its launch's calls, by model, since its
+	// harness started. Only ctx bounds the read: its wait for the connection's writer, its write
+	// and its wait for the answer. A read of a shim that does not count fails at once.
+	ModelTotals(ctx context.Context) (LaunchTotals, error)
 	// Sequence is the order the connection was registered in: one registered later has a larger
 	// sequence, so a caller can tell a connection newer than another.
 	Sequence() uint64
@@ -155,4 +160,11 @@ type Conns interface {
 // ConnState is the agent's answer to `get_state`, reduced to the one field the daemon acts on.
 type ConnState struct {
 	IsStreaming bool
+}
+
+// LaunchTotals is one read of a launch's model totals: the generation of the launch whose
+// connection answered, and what its shim counted.
+type LaunchTotals struct {
+	Generation uint64
+	Totals     shimwire.Totals
 }
