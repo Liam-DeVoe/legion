@@ -1401,7 +1401,8 @@ func (e *Engine) endByVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue
 // That architect takes the child's notices from then on, all but an owner-step, because the failed
 // claim no longer holds its role, until the child's architect runs again. An owner-step goes to
 // the child's own architect alone (record.OwnerClaim), which is told that step again when it runs
-// again (claimReady's owedOwnersStep, where no owner-step of the step's open run is still queued).
+// again in a session no owner-step of the step's run reached (claimReady's owedOwnersStep and
+// toldThisSession), where no owner-step of that run is still queued.
 // The daemon starts that architect again at the child's next phase start (start), and so do a
 // re-admission of the tree while the child stands in a phase
 // (admit's startMidPhaseMembers) and an operator's retry. A child that stands at a step of its
