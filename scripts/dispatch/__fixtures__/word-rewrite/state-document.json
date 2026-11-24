@@ -1,0 +1,5 @@
+{
+  "markdown": "```json\n{\"v\":1,\"cursor\":900,\"whole\":true,\"finished\":[\"ABOVE\",\"BELOW\",\"GIVEN\",\"NOADDR\",\"NOKEY\",\"NONE\",\"SEED\"],\"verdicts\":{\"3f2a9c1d7e4b5a6f8091a2b3c4d5e6f7\":\"q\",\"8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b\":\"w\",\"0a1b2c3d4e5f60718293a4b5c6d7e8f9\":\"t\"},\"held\":[],\"waiting\":[],\"refused\":[]}\n```\n",
+  "token": "sha256:33041d0f88697391d4365a6c8ea0e036a0cb33ffd2d1f7d40ba00a1ae84f4439",
+  "version": 4
+}

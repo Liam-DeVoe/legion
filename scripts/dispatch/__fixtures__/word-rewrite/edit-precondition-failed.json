@@ -1,0 +1,16 @@
+{
+  "code": "PRECONDITION_FAILED",
+  "current": {
+    "document": "sha256:788192ac550ff6951bbc0991172b0f417296cc288247bda75b34c3ab041d4ae2",
+    "blocks": null,
+    "version": 2
+  },
+  "error": "the document no longer matches the precondition; read it again and retry",
+  "mismatches": [
+    {
+      "scope": "document",
+      "expected": "sha256:215f16559d02053a0f90a5de1c8575b40ee14d0ca5f35a05b86d44183911884c",
+      "current": "sha256:788192ac550ff6951bbc0991172b0f417296cc288247bda75b34c3ab041d4ae2"
+    }
+  ]
+}

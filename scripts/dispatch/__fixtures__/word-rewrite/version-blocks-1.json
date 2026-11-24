@@ -1,0 +1,69 @@
+{
+  "markdown": "Café ✓ — the parked tree waits for the release.\n\n:::ask{#ask-word urgency=\"med\" multiple=\"false\"}\nShould the parked issue move to backlog?\n\n- Yes\n- No\n:::\n\n:::check{#check-word surface=\"cli\" run=\"go test -run TestParkedDecision ./internal/daemon/\" when=\"before_merge\"}\nThe parked tree resumes.\n:::\n",
+  "number": 1,
+  "named": true,
+  "summary": null,
+  "authors": [
+    {
+      "kind": "session",
+      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
+    }
+  ],
+  "created_at": "2026-11-24T10:05:00Z",
+  "sha256": "3dd28cf6ea60f75aaf0db78b835b88103f02423019f7bb7a5f1299e20070d56c",
+  "size": 303,
+  "mime": "text/markdown",
+  "blocks": [
+    {
+      "id": "ask-word",
+      "type": "ask",
+      "from": 54,
+      "to": 159,
+      "token": "sha256:bc587d8327f7e62231d040e1ed5ff32db6324973775f5b54294c9c73d19b4eea",
+      "references": {
+        "comments": 0,
+        "asks": 1
+      },
+      "attributes": [
+        {
+          "name": "urgency",
+          "value": "med",
+          "kind": "enum"
+        },
+        {
+          "name": "multiple",
+          "value": "false",
+          "kind": "bool"
+        }
+      ]
+    },
+    {
+      "id": "check-word",
+      "type": "check",
+      "from": 161,
+      "to": 302,
+      "token": "sha256:52fdaad79263012274881880ad56272c1ce416d775c368fb346ffc26c23579ea",
+      "references": {
+        "comments": 0,
+        "asks": 0
+      },
+      "attributes": [
+        {
+          "name": "surface",
+          "value": "cli",
+          "kind": "enum"
+        },
+        {
+          "name": "run",
+          "value": "go test -run TestParkedDecision ./internal/daemon/",
+          "kind": "string"
+        },
+        {
+          "name": "when",
+          "value": "before_merge",
+          "kind": "enum"
+        }
+      ]
+    }
+  ]
+}

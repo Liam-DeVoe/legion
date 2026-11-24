@@ -1,0 +1,98 @@
+[
+  {
+    "id": "0b9a0040-6c1d-4e2f-8a3b-5c7d9e1f2a40",
+    "issue_key": "SEED-4",
+    "project": "SEED",
+    "session_id": null,
+    "ref_key": "SEED-4/spec",
+    "slug": "spec",
+    "name": "spec.md",
+    "kind": "doc",
+    "role": "spec",
+    "primary": true,
+    "created_by": {
+      "kind": "session",
+      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
+    },
+    "created_at": "2026-11-24T10:01:00Z",
+    "versions": [
+      {
+        "number": 1,
+        "named": true,
+        "summary": null,
+        "authors": [
+          {
+            "kind": "session",
+            "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
+          }
+        ],
+        "created_at": "2026-11-24T10:16:00Z",
+        "sha256": "be4648bd78013141e097acdd36443d1fac79f3258be0a6fa83e5ecde142ef30b",
+        "size": 13,
+        "mime": "text/markdown"
+      }
+    ],
+    "approval": {
+      "latest_version": 1,
+      "state": "approved",
+      "version": 1,
+      "by": {
+        "kind": "user",
+        "id": "alice@example.com",
+        "proven": true
+      },
+      "at": "2026-11-24T10:20:00Z",
+      "seq": 9,
+      "kind": "person",
+      "content_sha256": "e4f934f321eb76c9bf8b5103e0a0d9afe72d6e62ace3d3ea849790619bf7487a"
+    }
+  },
+  {
+    "id": "0b9a0041-6c1d-4e2f-8a3b-5c7d9e1f2a41",
+    "issue_key": "SEED-4",
+    "project": "SEED",
+    "session_id": null,
+    "ref_key": "SEED-4/verification-md",
+    "slug": "verification-md",
+    "name": "verification.md",
+    "kind": "doc",
+    "role": "verification",
+    "primary": false,
+    "created_by": {
+      "kind": "session",
+      "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
+    },
+    "created_at": "2026-11-24T10:01:00Z",
+    "versions": [
+      {
+        "number": 1,
+        "named": true,
+        "summary": null,
+        "authors": [
+          {
+            "kind": "session",
+            "id": "5b0f3c2e-8d41-4a7e-9c16-2f7a9e0d4b31"
+          }
+        ],
+        "created_at": "2026-11-24T10:17:00Z",
+        "sha256": "05f53a7bcc9513b3c7dde4460088ea649577450bf28f0bfb75dc9b7f150a4163",
+        "size": 21,
+        "mime": "text/markdown"
+      }
+    ],
+    "approval": {
+      "latest_version": 1,
+      "state": "approved",
+      "version": 1,
+      "by": {
+        "kind": "user",
+        "id": "alice@example.com",
+        "proven": true
+      },
+      "at": "2026-11-24T10:20:00Z",
+      "seq": 9,
+      "kind": "person",
+      "content_sha256": "e4f934f321eb76c9bf8b5103e0a0d9afe72d6e62ace3d3ea849790619bf7487a"
+    }
+  }
+]
