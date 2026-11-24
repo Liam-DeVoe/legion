@@ -90,8 +90,10 @@ var ErrTakeoverRecordMoved = errors.New("the takeover record changed under this 
 // holds nothing (nats.ExpectLastSequencePerSubject). So a write lands only over the body its
 // writer read: a pass that read an older body, or one whose write comes late, after another pass
 // wrote the record or the stream removed it, is refused with ErrTakeoverRecordMoved rather than
-// bringing back what was written or removed since. Every other failure is the publish path's
-// (publishStoredRaw).
+// bringing back what was written or removed since. The refusal is either code JetStream answers a
+// lost conditional write with (IsCASConflict): on a stream of more than one copy a write that meets
+// another write of the record still being replicated is answered 10164, not 10071, and has lost
+// the race all the same. Every other failure is the publish path's (publishStoredRaw).
 func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record TakeoverRecord, expected uint64) (uint64, error) {
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -99,8 +101,7 @@ func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record
 	}
 	ack, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(expected))
 	if err != nil {
-		var apiErr *nats.APIError
-		if errors.As(err, &apiErr) && apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence {
+		if IsCASConflict(err) {
 			err = fmt.Errorf("%w: %w", ErrTakeoverRecordMoved, err)
 		}
 		return 0, fmt.Errorf("bus: write the takeover record %s: %w", subject, err)

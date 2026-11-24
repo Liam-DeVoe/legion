@@ -208,3 +208,37 @@ func TestACursorWriteThatLosesToAReplicatingWriteIsCursorMoved(t *testing.T) {
 		t.Fatalf("the cursor write = %v, want an error wrapping ErrCursorMoved", err)
 	}
 }
+
+// A takeover record write over a sequence that loses to a write of its subject still being
+// replicated, on a stream of three copies, is ErrTakeoverRecordMoved: the leader answers it 10164,
+// not the 10071 a stream of one copy answers, and a lost race is a lost race whichever it answers.
+// Only 10071 was ErrTakeoverRecordMoved, so a takeover pass that lost its record to another write
+// on a replicated stream logged the loss as a failed write rather than skipping it as a lost race.
+func TestATakeoverRecordWriteThatLosesToAReplicatingWriteIsMoved(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	client, err := ConnectOwningStream([]string{cluster.Servers[0].URL()}, WithReplicas(3))
+	if err != nil {
+		t.Fatalf("start on member %s: %v", cluster.Name(0), err)
+	}
+	t.Cleanup(client.Close)
+	cluster.MoveStreamLeader(t, Stream, 0)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	subject := TakeoverSubject("replicated-takeover", "ses_previous", "attempt")
+	record := TakeoverRecord{Role: "replicated-takeover", Previous: "ses_previous", ClaimedAt: 1}
+	first, err := client.WriteTakeoverRecord(ctx, subject, record, 0)
+	if err != nil {
+		t.Fatalf("the first takeover record write: %v", err)
+	}
+
+	record.Next = 2
+	release := cluster.HoldReplicatingWrite(t, Stream, subject)
+	_, err = client.WriteTakeoverRecord(ctx, subject, record, first)
+	release()
+	if !errors.Is(err, replicatedConflict) {
+		t.Fatalf("the takeover record write = %v, want the replicated stream's wrong last sequence, 10164", err)
+	}
+	if !errors.Is(err, ErrTakeoverRecordMoved) {
+		t.Fatalf("the takeover record write = %v, want an error wrapping ErrTakeoverRecordMoved", err)
+	}
+}
