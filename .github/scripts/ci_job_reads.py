@@ -3146,6 +3146,12 @@ GATES = [
         ("scripts/e2e/lib/**", f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')}: scripts/e2e/lib/tsconfig.json"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path, and "
                                                         f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')} compiles that test"),
+        ("packages/envoy-client/test/keyed-layer.ts", "scripts/dispatch/__tests__/moved-approval-production-check.test.ts:3 "
+                                                      f"imports it by path, and {at(TOOLING_JOB, 'Typecheck the Dispatch census script')} "
+                                                      "compiles that test"),
+        ("packages/envoy-client/test/route-answers.ts", "scripts/dispatch/__tests__/moved-approval-production-check.test.ts:4 "
+                                                        f"imports it by path, and {at(TOOLING_JOB, 'Typecheck the Dispatch census script')} "
+                                                        "compiles that test"),
         ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),
         (".github/actions/install-changie/**", at(TOOLING_JOB, "./.github/actions/install-changie")),
         (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:28-29 installs the tarball of the changie row, "
@@ -3399,7 +3405,8 @@ GATES = [
         ("packages/pi-envoy/**", "the typecheck compiles packages/pi-legion/extensions/legion.test.ts (tsconfig.json include), whose :77,319 import ../../pi-envoy/extensions/envoy"),
         ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts; the pack's bundle inlines it"),
         ("packages/pi-shared/test/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/test/*, and the typecheck compiles extensions/legion-phase-stall-omp.test.ts:14 and legion-role-tools-omp.test.ts:13, which import it"),
-        ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-shared/test/omp-harness.ts:17 imports it, and the typecheck compiles that harness for the omp tests it includes"),
+        ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-shared/test/omp-harness.ts:18 imports it, and the typecheck compiles that harness for the omp tests it includes"),
+        ("packages/envoy-client/test/keyed-layer.ts", "packages/pi-shared/test/omp-harness.ts:17 imports it, and the typecheck compiles that harness for the omp tests it includes"),
         # envoy-client's sources, and cipher-client's with them, are the shared read below.
         (CONTRACTS_SRC, f"{at('pi-legion-build', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
         (TEST_FIXTURES_SRC, "the typecheck compiles packages/pi-legion's extensions and src tests, which import @legion/test-fixtures"),
