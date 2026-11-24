@@ -1096,14 +1096,7 @@ func TestPodUpdateBoundLineIsNotWrittenWhenTheRuntimeFindsNoPodToReplace(t *test
 // end is written, and the line of the round's end says that no bound made it.
 func TestPodUpdateBoundLineIsNotWrittenForAnAnswerReadWhileItsMachineDecides(t *testing.T) {
 	t.Parallel()
-	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
-	rig.drifts(podUpdateDrift)
-	rig.tick()
-	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-	rig.awaitRound(claim.RoleTester, podUpdateRound)
-	rig.signal(claim.RoleImplementer, "a1b2c3d")
-	rig.signal(claim.RoleTester, "a1b2c3d")
-	rig.settleAll()
+	rig := answeredBeforeTheBound(t)
 	rig.clockAt(podUpdateBound)
 
 	release := rig.holdInDecision(claim.RoleTester)
