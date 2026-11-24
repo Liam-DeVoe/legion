@@ -1616,6 +1616,12 @@ type CheckWakeDue struct {
 
 func (f CheckWakeDue) namedIssue() (string, bool) { return f.Issue, true }
 
+// CheckWakeOf is the fact a check_wake row of issue applies when it comes due (the daemon's
+// outbox), made here alone so that every field the row carries reaches the fact.
+func CheckWakeOf(issue string, wake record.CheckWakeDue) CheckWakeDue {
+	return CheckWakeDue{Issue: issue, Look: wake.Look, OpenedAt: wake.OpenedAt, Reason: wake.Reason}
+}
+
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
 // `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
 // outbox met an operator's suspension on) or `claim failed` (the implementer's claim failed in
