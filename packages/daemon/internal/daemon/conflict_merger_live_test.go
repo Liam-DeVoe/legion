@@ -18,8 +18,9 @@
 // merger and the architect, and not to the implementer. GitHub's merge of the pull request closes
 // the issue. Throughout, the issue never enters implementing: every move the daemon logs for it goes
 // from accepting to retro to merging to done, no read of GET /legion/v1/state shows implementing,
-// and the daemon writes no in_progress status to Dispatch. Last, the merger's own
-// prompt, as its launch carries it, is printed beside what the daemon sent it, for a reader to
+// and the daemon writes no in_progress status to Dispatch. Last, the merger's launch names the
+// role prompt parts the daemon composed for a merger, not the driver's own prompt, and the
+// headings of each part are printed beside what the daemon sent the merger, for a reader to
 // hold the one against the other. scripts/e2e/conflict-merger.sh builds this driver with
 // `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
@@ -66,6 +67,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -91,10 +93,11 @@ const (
 	mergerMergeHead    = "head-merged"
 )
 
-// mergerPromptSections are the headings of the merger's prompt a reader holds against what the
-// daemon sent the merger in the run (prompts/roles/merger.md): the conflict, and the check that
-// failed beneath it.
-var mergerPromptSections = []string{"## A head that conflicts with its base", "### A check that failed"}
+// mergerComposition is the merger's composition: the parts of the composer's snapshot that
+// prompts.Composer.Compose gives a merger, in its order, as paths below the state directory's
+// prompts/ (at boot prompts.New writes shared/ from the role prompts the daemon embeds, and go/
+// from the daemon's own parts). Step 6 holds the merger's launch to it.
+var mergerComposition = []string{"shared/mechanics/headless.md", "shared/merger.md", "go/merger.md", "go/worker-common.md"}
 
 // conflictMergerLive is one run of the proof: the booted daemon, its log and the baseline of each
 // role topic (conflictLive), the three roles the driver acts as over the worker stream, and the
@@ -495,42 +498,53 @@ func (r *conflictMergerLive) mergeClosesTheIssue() {
 }
 
 // Step 6. The merger's prompt as its launch carries it: the role prompt the daemon composed at
-// boot, read from the paths the merger's launch named rather than from any prompt the driver wrote.
-// Its section on a head that conflicts with its base, and the subsection on a check that failed,
-// are printed whole, beside the messages step 2, 3 and 4 printed, for a reader to hold the one
-// against the other.
+// boot. The merger's launch names the parts of the composer's snapshot that the composer gives a
+// merger, in its order (mergerComposition), and not the driver's own prompt file, which a launch
+// names alone once the seed writes one for the claim (specs.rolePromptPaths); and each part holds
+// bytes. For a reader to hold the prompt against the messages steps 2, 3 and 4 printed, it prints
+// the Markdown headings of each part: each line outside a fenced block that starts with `#`, a
+// rule that needs no word of the prompt.
 func (r *conflictMergerLive) mergerPromptAsLaunched() {
 	t := r.t
 	token := r.token(claim.RoleMerger)
 	launch := lastLaunch(t, r.rt, token)
 	override := rolePromptPath(r.cfg.StateDir, token)
-	var text strings.Builder
 	for _, path := range launch.Prompt.RolePromptPaths {
 		if path == override {
 			t.Fatalf("the merger's launch names the driver's own prompt %s, want the role prompt the daemon composed", path)
 		}
+	}
+	snapshot := filepath.Join(r.cfg.StateDir, "prompts")
+	want := make([]string, 0, len(mergerComposition))
+	for _, part := range mergerComposition {
+		want = append(want, filepath.Join(snapshot, part))
+	}
+	if !slices.Equal(launch.Prompt.RolePromptPaths, want) {
+		t.Fatalf("the merger's launch names the role prompt parts %v, want the parts the composer gives a merger %v", launch.Prompt.RolePromptPaths, want)
+	}
+	size := 0
+	for i, path := range launch.Prompt.RolePromptPaths {
 		body, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("read the merger's role prompt %s: %v", path, err)
+			t.Fatalf("read the merger's role prompt part %s: %v", path, err)
 		}
-		text.Write(body)
+		if len(body) == 0 {
+			t.Fatalf("the merger's role prompt part %s is empty", path)
+		}
+		size += len(body)
+		r.note("read back: part %d of %d of the merger's role prompt is the composer's %s, %d bytes, with the headings:",
+			i+1, len(mergerComposition), mergerComposition[i], len(body))
+		fenced := false
+		for _, line := range strings.Split(string(body), "\n") {
+			if strings.HasPrefix(line, "```") {
+				fenced = !fenced
+			} else if !fenced && strings.HasPrefix(line, "#") {
+				r.note("prompt| %s", line)
+			}
+		}
 	}
-	r.note("read back: the merger's launch names %d role prompt parts the daemon composed at boot, %d bytes in all", len(launch.Prompt.RolePromptPaths), text.Len())
-	composed := text.String()
-	start := strings.Index(composed, mergerPromptSections[0]+"\n")
-	if start < 0 {
-		t.Fatalf("the merger's composed prompt has no section %q", mergerPromptSections[0])
-	}
-	section := composed[start:]
-	if end := strings.Index(section[len(mergerPromptSections[0]):], "\n## "); end >= 0 {
-		section = section[:len(mergerPromptSections[0])+end]
-	}
-	if !strings.Contains(section, "\n"+mergerPromptSections[1]+"\n") {
-		t.Fatalf("the merger's section %q holds no subsection %q", mergerPromptSections[0], mergerPromptSections[1])
-	}
-	for _, line := range strings.Split(strings.TrimSpace(section), "\n") {
-		r.note("prompt| %s", line)
-	}
+	r.note("read back: the merger's launch names the %d role prompt parts the daemon composed for a merger at boot, %d bytes in all, and not the driver's own prompt %s",
+		len(mergerComposition), size, override)
 }
 
 // noMergeForwardTo holds that no merge-forward message of the issue was addressed to role: the
