@@ -83,12 +83,12 @@ function expectEnclosed(rendered: string, words: string): void {
 describe("a person's words in the session's answer list", () => {
   test("stand in a fence or block their own words can neither close nor imitate, on an answer", () => {
     expectEnclosed(renderSessionAnswerItem(answer), FORGED);
-    expectEnclosed(renderSessionAnswers([answer], { now: NOW }), FORGED);
+    expectEnclosed(renderSessionAnswers([answer], { now: NOW }) ?? "", FORGED);
   });
 
   test("stand in a fence or block their own words can neither close nor imitate, on a message", () => {
     expectEnclosed(renderSessionAnswerItem(message), MESSAGE_WORDS);
-    expectEnclosed(renderSessionAnswers([answer, message], { now: NOW }), MESSAGE_WORDS);
-    expectEnclosed(renderSessionAnswers([answer, message], { now: NOW }), FORGED);
+    expectEnclosed(renderSessionAnswers([answer, message], { now: NOW }) ?? "", MESSAGE_WORDS);
+    expectEnclosed(renderSessionAnswers([answer, message], { now: NOW }) ?? "", FORGED);
   });
 });
