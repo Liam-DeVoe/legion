@@ -442,6 +442,27 @@ func TestUnguardedRefusesARootUnderWhichItReadsNoTestFile(t *testing.T) {
 	}
 }
 
+// Unguarded reads the module path a go.mod declares as Go does: past a comment after it, and out
+// of quotes. Under either spelling of its module's path programfile.Write is left out, and the
+// package's other write is named.
+func TestUnguardedReadsTheModulePathAsGoDoes(t *testing.T) {
+	t.Parallel()
+	for _, line := range []string{
+		"module github.com/sjawhar/envoy // the writer's module",
+		`module "github.com/sjawhar/envoy"`,
+	} {
+		root := t.TempDir()
+		writeUnder(t, root, "go.mod", line+"\n")
+		writeUnder(t, root, "programfile/programfile.go", "package programfile\n\nimport \"os\"\n\n"+
+			"func Write(name string, perm os.FileMode) error { return os.WriteFile(name, nil, perm) }\n\n"+
+			"func Other(name string) error { return os.WriteFile(name, nil, 0o755) }\n")
+		writeUnder(t, root, "programfile/programfile_test.go", "package programfile\n\nimport \"testing\"\n\nfunc TestParallel(t *testing.T) { t.Parallel() }\n")
+		if got, err := Unguarded(root); err != nil || !slices.Equal(got, []string{"programfile/programfile.go:7"}) {
+			t.Errorf("Unguarded under a go.mod of %q = %v, %v; want only programfile/programfile.go:7, Other's write", line, got, err)
+		}
+	}
+}
+
 // ForkBeside runs its test only where the run of a busy program was refused with ETXTBSY. A kernel
 // that ran it (gVisor's answer, nil) skips the test, saying so, outside CI and fails it under
 // GITHUB_ACTIONS; any other answer fails it everywhere, naming the answer, rather than skipping

@@ -147,10 +147,11 @@ func modulePath(path string) (string, error) {
 	}
 	for line := range strings.Lines(string(body)) {
 		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
-			if module, err := strconv.Unquote(strings.TrimSpace(rest)); err == nil {
+			spelled, _, _ := strings.Cut(rest, "//")
+			if module, err := strconv.Unquote(strings.TrimSpace(spelled)); err == nil {
 				return module, nil
 			}
-			return strings.TrimSpace(rest), nil
+			return strings.TrimSpace(spelled), nil
 		}
 	}
 	return "", fmt.Errorf("its go.mod declares no module (it has no module line), so it is not the root of a module whose writes the check reads: %s", path)

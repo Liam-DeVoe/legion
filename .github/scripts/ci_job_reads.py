@@ -628,7 +628,7 @@ RULES = {
     f"{DAEMON}/internal/textcheck/test_executables_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/test_executables_test.go:18 calls testexec.Unguarded on ../.., whose walk "
                               "(packages/envoy/testexec/unguarded.go:83) passes over node_modules, vendor, testdata and dot "
-                              "directories (:92), and :166 parses every .go file under packages/daemon it finds, test files included")),
+                              "directories (:92), and :167 parses every .go file under packages/daemon it finds, test files included")),
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
@@ -1011,7 +1011,7 @@ RULES = {
     f"{ENVOY}/internal/textcheck/test_executables_test.go": [
         Read(g, "internal/textcheck/test_executables_test.go:19 calls testexec.Unguarded on ../.., whose walk "
                 "(testexec/unguarded.go:83) passes over node_modules, vendor, testdata and dot directories (:92) and "
-                "infra, a directory holding a go.mod of its own (:95), and :166 parses every .go file it finds, test files included")
+                "infra, a directory holding a go.mod of its own (:95), and :167 parses every .go file it finds, test files included")
         for g in envoy_go_files_but_infra()],
     f"{ENVOY}/internal/textcheck/lock_wait_reads_test.go": [
         *[Read(g, "internal/textcheck/lock_wait_reads_test.go:58 calls lockWaitReads on ../.. (lockWaitRoots, :20), whose "
@@ -1059,7 +1059,7 @@ RULES = {
     f"{INFRA}/internal/textcheck/test_executables_test.go": reads(
         (f"{INFRA}/**/*.go", "infra/internal/textcheck/test_executables_test.go:19 calls testexec.Unguarded on ../.., whose walk "
                              "(packages/envoy/testexec/unguarded.go:83) passes over node_modules, vendor, testdata and dot "
-                             "directories (:92), and :166 parses every .go file under packages/envoy/infra it finds, test files included")),
+                             "directories (:92), and :167 parses every .go file under packages/envoy/infra it finds, test files included")),
 }
 
 
