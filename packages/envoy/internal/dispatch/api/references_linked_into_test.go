@@ -43,16 +43,71 @@ const (
 // block. The server's sessions run with JIT off, as production's Cloud SQL runs every statement:
 // it does not support PostgreSQL's LLVM JIT.
 //
-// One document of each side is written through the API, and the rest are copies of its rows
-// written in SQL (seedDocumentCopies), so the rows the read reads are as the server's own writes
-// make them. The database is then vacuumed and analyzed, as dispatch-seed leaves the database it
-// seeds.
+// seedLinkedInto writes the seed. One document of each side is written through the API, and the
+// rest are copies of its rows written in SQL (seedDocumentCopies), so the rows the read reads are
+// as the server's own writes make them. The database is then vacuumed and analyzed, as
+// dispatch-seed leaves the database it seeds.
 //
 // Negative control: with oneRowPerNode's exclusion written back as the array, `where not
 // (row(f.node_kind, f.node_id) = any(array(select row(t.kind, t.id) from targets t)))` in the in
 // statement and its `own` counterpart in the out statement, the read answers 503
 // REFERENCES_TIMEOUT and the test fails at its status.
 func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing.T) {
+	seed := seedLinkedInto(t)
+
+	started := time.Now()
+	response := issueReferencesRequest(t, seed.handler, seed.issue.Key, "")
+	took := time.Since(started)
+	t.Logf("the references read of %s, which %d blocks link into, answered %d in %s", seed.issue.Key, seed.linksInto, response.Code, took.Round(time.Millisecond))
+	if response.Code != http.StatusOK {
+		t.Fatalf("references of an issue %d blocks link into: status=%d after %s body=%s, want 200 inside the %s budget",
+			seed.linksInto, response.Code, took.Round(time.Millisecond), response.Body.String(), referencesClosureBound)
+	}
+	answer := decodeBody[model.IssueReferences](t, response)
+	listed := map[string]int{}
+	var others []string
+	for _, row := range answer.LinkedFrom {
+		if row.Node.Kind != "artifact" || !seed.linking[row.Node.ID] {
+			others = append(others, row.Node.Kind+" "+row.Node.ID)
+			continue
+		}
+		listed[row.Node.ID]++
+	}
+	var missing, repeated int
+	for id := range seed.linking {
+		switch count := listed[id]; {
+		case count == 0:
+			missing++
+		case count > 1:
+			repeated++
+		}
+	}
+	if missing != 0 || repeated != 0 || len(others) != 0 {
+		t.Errorf("linked_from holds %d rows: %d of the %d linking documents missing, %d listed more than once, and %d other nodes %v; want each linking document once",
+			len(answer.LinkedFrom), missing, len(seed.linking), repeated, len(others), others)
+	}
+}
+
+// linkedIntoSeed is what seedLinkedInto seeded: the server that serves it, through handler, and
+// its store, whose every session runs with JIT off; the issue; how many block links reach the
+// issue's blocks; and the id of each document that holds those links.
+type linkedIntoSeed struct {
+	handler   http.Handler
+	server    *server
+	store     *store.Store
+	issue     model.Issue
+	linksInto int
+	linking   map[string]bool
+}
+
+// seedLinkedInto writes the seed TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks
+// describes, which TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin reads too,
+// on a database of its own whose server reads it with JIT off: an issue whose 40 documents hold 50
+// blocks each, and 500 other documents of 20 blocks, each block mentioning one of the issue's
+// 2,000. It fails t unless the issue's documents hold 2,000 blocks and 10,000 block links reach
+// them.
+func seedLinkedInto(t *testing.T) linkedIntoSeed {
+	t.Helper()
 	ctx := context.Background()
 	// JIT is off for the test database, and the pool the server reads through opens its first
 	// session after that, so every session of the server reads it.
@@ -65,7 +120,7 @@ func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing
 		t.Fatalf("turn JIT off for the test database: %v", err)
 	}
 	served := storetest.Reopened(t, database, func(*pgxpool.Config) {})
-	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{store: served})
+	handler, _, _, registered := newRegisteredTestServer(t, testServerOptions{store: served})
 	var jit string
 	if err := served.Pool.QueryRow(ctx, `select current_setting('jit')`).Scan(&jit); err != nil || jit != "off" {
 		t.Fatalf("the server's sessions read jit = %q (%v), want off", jit, err)
@@ -156,38 +211,7 @@ func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing
 	}
 	t.Logf("seed: %d own blocks, %d links into them from %d documents, copied and vacuumed in %s",
 		ownBlocks, linksInto, len(linking), time.Since(seeded).Round(time.Millisecond))
-
-	started := time.Now()
-	response := issueReferencesRequest(t, handler, issue.Key, "")
-	took := time.Since(started)
-	t.Logf("the references read of %s, which %d blocks link into, answered %d in %s", issue.Key, linksInto, response.Code, took.Round(time.Millisecond))
-	if response.Code != http.StatusOK {
-		t.Fatalf("references of an issue %d blocks link into: status=%d after %s body=%s, want 200 inside the %s budget",
-			linksInto, response.Code, took.Round(time.Millisecond), response.Body.String(), referencesClosureBound)
-	}
-	answer := decodeBody[model.IssueReferences](t, response)
-	listed := map[string]int{}
-	var others []string
-	for _, row := range answer.LinkedFrom {
-		if row.Node.Kind != "artifact" || !linking[row.Node.ID] {
-			others = append(others, row.Node.Kind+" "+row.Node.ID)
-			continue
-		}
-		listed[row.Node.ID]++
-	}
-	var missing, repeated int
-	for id := range linking {
-		switch count := listed[id]; {
-		case count == 0:
-			missing++
-		case count > 1:
-			repeated++
-		}
-	}
-	if missing != 0 || repeated != 0 || len(others) != 0 {
-		t.Errorf("linked_from holds %d rows: %d of the %d linking documents missing, %d listed more than once, and %d other nodes %v; want each linking document once",
-			len(answer.LinkedFrom), missing, len(linking), repeated, len(others), others)
-	}
+	return linkedIntoSeed{handler: handler, server: registered, store: served, issue: issue, linksInto: linksInto, linking: linking}
 }
 
 // paragraphsMarkdown is the markdown of a document of texts, one paragraph each.
