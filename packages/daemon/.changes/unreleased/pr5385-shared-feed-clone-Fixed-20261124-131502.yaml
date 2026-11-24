@@ -15,4 +15,4 @@ body: |-
   borrowing clone left it without history.
 time: 2026-11-24T13:15:02Z
 custom:
-    Issue: shared-feed-clone
+    Issue: pr5385

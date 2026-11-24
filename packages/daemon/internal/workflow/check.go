@@ -262,25 +262,12 @@ func (e *Engine) checkReported(ctx context.Context, tx pgx.Tx, fact intake.Check
 	return intake.Result{}, e.closeCheck(ctx, tx, check, outcome)
 }
 
-// endLook ends the open look of a check nobody reported — its bound came due, or the outbox met an
-// operator's hold on its start — as a report of pending would (endLookPending), and names the next
-// look a look bound out, the retry with cause as its reason. cause is why, for the log.
-func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, cause string) error {
-	return e.endLookWaking(ctx, tx, check, cause, e.lookRetry())
-}
-
-// endFailedLook ends the open look whose checking role's claim failed in it, as endLook does, and
-// counts it a failed look (record.ProductionCheck.FailedLooks), so the next look is named the
-// backoff out (failedLookRetry) rather than a look bound: the circuit breaker's open state, after
-// which that look retries the claim with one attempt left of the budget its failure spent (the
-// daemon's outbox, supervise.RequestRetry.OneAttemptLeft).
-func (e *Engine) endFailedLook(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck) error {
-	check.FailedLooks++
-	return e.endLookWaking(ctx, tx, check, failedLookCause(check.FailedLooks), e.failedLookRetry(*check))
-}
-
-// endLookWaking is endLook with the next look named at at, clamped (clampWake).
-func (e *Engine) endLookWaking(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, cause string, at time.Time) error {
+// endLook ends the open look of a check nobody reported — its bound came due, the outbox met an
+// operator's hold on its start (checkLookEnded, which names the next look a look bound out,
+// lookRetry), or its checking role's claim failed in it (endFailedLook) — as a report of pending
+// would (endLookPending), and names the next look at at, clamped (clampWake), the retry with cause
+// as its reason. cause is why, for the log too.
+func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, cause string, at time.Time) error {
 	check.LookOpen = false
 	check.WakeAt = e.clampWake(*check, at)
 	if err := e.store.PutProductionCheck(ctx, tx, *check); err != nil {
@@ -289,6 +276,16 @@ func (e *Engine) endLookWaking(ctx context.Context, tx pgx.Tx, check *record.Pro
 	e.logOnCommit(ctx, "workflow: production check look ended without a report", "issue", check.Issue, "mergeCommit", check.MergeSHA,
 		"look", check.Looks, "cause", cause, "failedLooks", check.FailedLooks, "wake", check.WakeAt)
 	return e.endLookPending(ctx, tx, check, "the retry of a look nobody reported: "+cause)
+}
+
+// endFailedLook ends the open look whose checking role's claim failed in it (endLook) and counts
+// it a failed look (record.ProductionCheck.FailedLooks), so the next look is named the backoff out
+// (failedLookRetry) rather than a look bound: the circuit breaker's open state, after which that
+// look retries the claim with one attempt left of the budget its failure spent (the daemon's
+// outbox, supervise.RequestRetry.OneAttemptLeft).
+func (e *Engine) endFailedLook(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck) error {
+	check.FailedLooks++
+	return e.endLook(ctx, tx, check, failedLookCause(check.FailedLooks), e.failedLookRetry(*check))
 }
 
 // failedLookCause is the cause a look whose checking role's claim failed ends with, the failedth
@@ -359,14 +356,15 @@ func checkRoleFailedReason(fact intake.ClaimFailed, check record.ProductionCheck
 	if fact.Cause != "" {
 		said += "; its cause is " + string(fact.Cause)
 	}
+	if !check.Open() {
+		return said + "; that was the check's last look, so the check closed as " + string(check.Outcome)
+	}
 	how := "with a fresh run, since its failure spent no budget"
 	if fact.Budgets.Spent(fact.Limits) {
 		how = "with one attempt left of the budget its failure spent"
 	}
 	var next string
 	switch {
-	case !check.Open():
-		return said + "; that was the check's last look, so the check closed as " + string(check.Outcome)
 	case check.WakeAt != nil:
 		next = fmt.Sprintf("look %d retries the claim at %s %s", check.Looks+1, check.WakeAt.UTC().Format(time.RFC3339), how)
 	default:
@@ -545,7 +543,7 @@ func (e *Engine) checkLookEnded(ctx context.Context, tx pgx.Tx, fact intake.Chec
 			"check", check.OpenedAt, "named", fact.OpenedAt, "look", fact.Look, "cause", fact.Cause)
 		return intake.Result{}, nil
 	}
-	return intake.Result{}, e.endLook(ctx, tx, check, fact.Cause)
+	return intake.Result{}, e.endLook(ctx, tx, check, fact.Cause, e.lookRetry())
 }
 
 // checkWakeDue is a check's wake coming due (intake.CheckWakeDue, the check_wake row nameWake

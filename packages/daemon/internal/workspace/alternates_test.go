@@ -91,17 +91,15 @@ func TestAClonedWorkspaceReadsTheFeedThroughAlternates(t *testing.T) {
 
 // A feed Fetch finds present but foreign is never removed or replaced: a clone may read its
 // objects through its alternates, and a feed replaced under it would leave that clone's history
-// gone, which is what moved clones off alternates once. So the fetch fails, naming why the feed is
-// not one it wrote, runs no git there at all — neither in the foreign feed, which may carry what
-// git would run or follow, nor a clone of a new one beside it — and leaves the feed as it stood:
-// every object file in place, and the planted file with them. The clone that borrows from it still
-// passes git's connectivity check. Before, the fetch removed the feed and cloned a fresh one.
+// gone, which is what moved clones off alternates once. So the fetch fails naming why the feed is
+// not one it wrote, every object file of the feed stays in place, and the clone that borrows from
+// it still passes git's connectivity check. That the fetch runs no git, removes nothing and keeps
+// each planted shape is TestFetchTakesNoFeedItDidNotWrite's, over every shape it refuses. Before,
+// the fetch removed the feed and cloned a fresh one.
 func TestAForeignFeedFailsTheFetchAndIsKept(t *testing.T) {
 	run := newLocalRunner(t)
 	lost := pushRemoteBranch(t, run.remote, "history", "history.txt")
 	fetch := fetchRequest(t)
-	var logged []string
-	fetch.Log = func(line string) { logged = append(logged, line) }
 	first, err := Fetch(context.Background(), run, fetch)
 	if err != nil {
 		t.Fatalf("first Fetch: %v", err)
@@ -113,8 +111,7 @@ func TestAForeignFeedFailsTheFetchAndIsKept(t *testing.T) {
 		t.Fatalf("provision from the feed: %v", err)
 	}
 	runSetup(t, fetch.Feed, "git", "--git-dir="+run.remote, "update-ref", "-d", "refs/heads/history")
-	grafts := filepath.Join(first.Feed, "info", "grafts")
-	if err := os.WriteFile(grafts, []byte(lost+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(first.Feed, "info", "grafts"), []byte(lost+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	objects := filepath.Join(first.Feed, "objects")
@@ -122,25 +119,9 @@ func TestAForeignFeedFailsTheFetchAndIsKept(t *testing.T) {
 	if len(stood) == 0 {
 		t.Fatal("the feed holds no object file, so the test could not see one removed")
 	}
-	before := len(run.Calls())
 
-	_, err = Fetch(context.Background(), run, fetch)
-	if err == nil {
-		t.Fatal("Fetch of a foreign feed = nil, want it to fail naming why the feed is foreign")
-	}
-	for _, want := range []string{"is not one this fetch wrote", "info/grafts"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Fetch of a foreign feed = %v, want it to say %q", err, want)
-		}
-	}
-	if calls := run.Calls()[before:]; len(calls) != 0 {
-		t.Errorf("Fetch of a foreign feed ran %v, want no git at all", calls)
-	}
-	if slices.ContainsFunc(logged, func(line string) bool { return strings.Contains(line, "removed") }) {
-		t.Errorf("Fetch logged %q, want nothing removed", logged)
-	}
-	if _, err := os.Stat(grafts); err != nil {
-		t.Errorf("the foreign feed's info/grafts: %v, want the feed left as it stood", err)
+	if _, err := Fetch(context.Background(), run, fetch); err == nil || !strings.Contains(err.Error(), "is not one this fetch wrote") {
+		t.Fatalf("Fetch of a foreign feed = %v, want it to fail naming why the feed is foreign", err)
 	}
 	if left := objectFiles(t, objects); !slices.Equal(left, stood) {
 		t.Errorf("the foreign feed holds %q after the fetch, want %q", left, stood)

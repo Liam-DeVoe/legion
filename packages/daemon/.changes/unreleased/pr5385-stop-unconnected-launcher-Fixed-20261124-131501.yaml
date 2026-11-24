@@ -9,4 +9,4 @@ body: |-
   answer, as does one of a pod past its init containers whose launcher is reconnecting.
 time: 2026-11-24T13:15:01Z
 custom:
-    Issue: stop-unconnected-launcher
+    Issue: pr5385

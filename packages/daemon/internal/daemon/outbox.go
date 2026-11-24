@@ -2696,9 +2696,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// failed: it retries the claim with one attempt left of each budget its failure spent,
 			// never a fresh budget, so a role that cannot start launches once a look rather than
 			// until a whole budget runs out at every look up to the check's bound
-			// (supervise.RequestRetry.OneAttemptLeft). A start that asks for a new session is a
-			// person's or the controller's reset, and gives the full budget.
-			again := supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession, OneAttemptLeft: payload.CheckLook > 0 && !payload.FreshSession}
+			// (supervise.RequestRetry.OneAttemptLeft). A check start never asks for a new session
+			// (workflow's startLook); the resets a person or the controller makes, which give the
+			// whole budget, are the API's retry and fresh session (supervise.RequestOperatorRetry).
+			again := supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession, OneAttemptLeft: payload.CheckLook > 0}
 			if err := machine.Handle(ctx, again); err != nil {
 				return fmt.Errorf("retry claim %s: %w", token, err)
 			}

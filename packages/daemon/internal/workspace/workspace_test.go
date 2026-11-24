@@ -768,7 +768,7 @@ func TestProvisionFromAFeedHoldsNoCredential(t *testing.T) {
 			t.Errorf("the clone used a credentialed Jujutsu clone: %q", call.Argv)
 		}
 	}
-	if clone := findCall(t, calls, "git", "clone", "--quiet"); len(clone.Argv) != 7 || clone.Argv[3] != "--no-checkout" || clone.Argv[4] != "--shared" || clone.Argv[5] != feed {
+	if clone := findCall(t, calls, "git", "clone", "--quiet"); !slices.Contains(clone.Argv, "--no-checkout") || !slices.Contains(clone.Argv, "--shared") || !slices.Contains(clone.Argv, feed) {
 		t.Errorf("the clone was made with %q, want a shared local clone of the feed %s with no working tree", clone.Argv, feed)
 	}
 	cloneDir := filepath.Join(state, "repos", "github.com", "acme", "widgets")

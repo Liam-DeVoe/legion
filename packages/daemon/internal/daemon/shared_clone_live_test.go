@@ -23,11 +23,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // sharedCloneLiveRepository is a public repository, so the pod's workspace-fetch clones it without
@@ -62,9 +60,7 @@ func TestASharedCloneReadsTheFeedInAnIssuePodLive(t *testing.T) {
 		t.Fatalf("load %s: %v", path, err)
 	}
 	started := time.Now()
-	pod := launchLiveRoot(ctx, t, cfg, log, func(project, issue string, token claim.Token, bootToken, prompt string) runtime.SpawnSpec {
-		return liveRootSpec(project, issue, token, bootToken, prompt, sharedCloneLiveRepository, "master")
-	})
+	pod := launchLiveRoot(ctx, t, cfg, log, sharedCloneLiveRepository, "master")
 	fmt.Printf("ok launched %s/%s on %s in %s: runtimeClassName %s, node %s\n", pod.Namespace, pod.Name, sharedCloneLiveRepository,
 		time.Since(started).Round(time.Second), liveString(pod.Spec.RuntimeClassName), pod.Spec.NodeName)
 	if liveString(pod.Spec.RuntimeClassName) != "gvisor" {

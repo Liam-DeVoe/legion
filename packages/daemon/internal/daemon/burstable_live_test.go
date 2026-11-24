@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -101,13 +102,12 @@ func TestABurstableIssuePodRendersLive(t *testing.T) {
 // it once the launch returned.
 func launchBurstableLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger) *corev1.Pod {
 	t.Helper()
-	return launchLiveRoot(ctx, t, cfg, log, burstableLiveSpec)
+	return launchLiveRoot(ctx, t, cfg, log, burstableLiveRepository, "master")
 }
 
-// launchLiveRoot is launchBurstableLiveRoot with the root's launch built by spec, from the project
-// token, the issue, the claim, its boot token and its role prompt's path.
-func launchLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger,
-	spec func(project, issue string, token claim.Token, bootToken, prompt string) runtime.SpawnSpec) *corev1.Pod {
+// launchLiveRoot is launchBurstableLiveRoot on the public repository repo, whose default branch is
+// defaultBranch (liveRootSpec).
+func launchLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *slog.Logger, repo ghrepo.Repository, defaultBranch string) *corev1.Pod {
 	t.Helper()
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
@@ -149,7 +149,7 @@ func launchLiveRoot(ctx context.Context, t *testing.T, cfg config.Config, log *s
 	if err := os.WriteFile(prompt, []byte("You are the architect.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	loc, err := rt.Spawn(ctx, spec(project, issue, token, bootToken, prompt))
+	loc, err := rt.Spawn(ctx, liveRootSpec(project, issue, token, bootToken, prompt, repo, defaultBranch))
 	if err != nil {
 		t.Fatalf("Spawn %s: %v", token, err)
 	}
