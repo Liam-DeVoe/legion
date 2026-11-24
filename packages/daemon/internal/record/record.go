@@ -2985,9 +2985,11 @@ func OwnersMergeForward(issue Issue, pr *PullRequest) bool {
 
 // OwnerSlotWriteBack is the supervise slot_credential that writes the slot of the owner of issue's
 // task (OwnerClaim) back to the App of the owner's own role (internal/daemon's slotCredential): the
-// row the end of each act the owner does as another role queues, a step or a retro (workflow's
-// ownerSlotCredential) and a merge forward asked of it (workflow's mergeForwardWriteBack). ok is
-// false for an issue whose key makes no claim token, which has no owner's slot.
+// row the end of each act the owner does as a role of another App than its own queues, a step or a
+// retro (workflow's ownerSlotCredential: endStep where workflow's actsAsOwnApp is false, and
+// endOffWalk for each run off its walk whose start named an architect) and a merge forward asked
+// of it (workflow's mergeForwardWriteBack). ok is false for an issue whose key makes no claim
+// token, which has no owner's slot.
 func OwnerSlotWriteBack(issue Issue) (SuperviseRequest, bool) {
 	owner, err := OwnerClaim(issue)
 	if err != nil {

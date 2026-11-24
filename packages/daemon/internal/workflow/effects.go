@@ -1144,7 +1144,8 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // that claim and no more, since it is only ever compared with a value the daemon itself wrote,
 // never read from a request — a completion carries no identity at all
 // (api.HandoffCompleteRequest). Nothing else at hand counts them: the issue's generation is one
-// run's whole life, and the round counts only returns to implementing.
+// run's whole life, and the review round counts only the reviews that sent the work back, each by
+// an agent other than the owner (recordRound), whichever step the work went back to.
 //
 // The task it writes is the text the worker is sent, word for word, so the record holds exactly
 // what the worker is told and a claim left behind the entry can be sent that work again from the

@@ -5,10 +5,10 @@
 // The boundary carries process facts, and the gh credential of each slot: a runtime spawns, stops,
 // and observes processes, and says `Alive`, `Gone`, `NotRecordedProcess`, or `Uncertain` about
 // them, and it writes a slot's gh credential and says whether the slot holds it (SlotCredentials),
-// which an owner's step asks of it. What the agent inside
-// the process is doing — that it connected, acknowledged a prompt, started or ended a turn — is
-// the worker stream's to report, a peer source beside this one. Both reach the supervisor, which
-// is the only place the two kinds of fact meet.
+// which the daemon asks of it for an act of an owner's: a step, a retro or a merge forward asked of
+// it. What the agent inside the process is doing — that it connected, acknowledged a prompt,
+// started or ended a turn — is the worker stream's to report, a peer source beside this one. Both
+// reach the supervisor, which is the only place the two kinds of fact meet.
 //
 // The connection contract (`Conn`, `Conns`) lives here rather than in the stream package so that
 // this package and its fake depend on methods rather than on the stream's structs; the stream's
@@ -898,9 +898,9 @@ type SlotCredentials interface {
 	// SlotRole answers for it now, where the slot does not hold it already. The runtime decides that
 	// role itself, in the one serialization every write of the slot is made under (the tmux
 	// runtime's launch lock, the slot Secret's resourceVersion), as its refresh and a launch do: so
-	// no write judged before another lands after it, and no caller's earlier reading of whose step
-	// runs decides the App. A slot with no live process to read it is left to the claim's next
-	// launch, which judges and writes the same way.
+	// no write judged before another lands after it, and no caller's earlier reading of which act
+	// of the owner's runs, a step, a retro or a merge forward, decides the App. A slot with no live
+	// process to read it is left to the claim's next launch, which judges and writes the same way.
 	WriteSlotCredential(ctx context.Context, token claim.Token) error
 	// SlotHoldsCredential answers nil once the slot's gh files hold the credential of the App of
 	// role, a wait (ErrSlotCredentialPending) while they do not, and ErrAwaitsPodUpdate for a pod
