@@ -3,13 +3,12 @@ import { useLocation } from "react-router-dom";
 
 import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
 import { useProjectArtifact } from "../document/useProjectArtifact";
-import { routeProjectOf } from "../refs/routes";
+import { documentRouteOf, routeProjectOf } from "../refs/routes";
 import { KeyHints } from "../shell/ShortcutHelp";
 import {
   type BarScopeLevel,
   type BarTargets,
   barTargets,
-  documentRouteOf,
   issueOfPage,
   readSelectedIssues,
   scopeAtCursor,

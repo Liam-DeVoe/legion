@@ -238,7 +238,17 @@ export default defineConfig({
     // 497,933 bytes with a 39-character `DISPATCH_BUILD` the same day, and the two lists' alert
     // for a render error (`features/writes/write-hosts.tsx`) takes it to 498,553. The sign-in
     // page's list of kept writes, in the entry so that its warning depends on no chunk
-    // (`features/writes/KeptWrites.tsx`), takes it to 499,583.
+    // (`features/writes/KeptWrites.tsx`), takes it to 499,583. The merge of the default branch's
+    // correction and deletion of a post (#3512) took it to 500,975, over the budget. Three moves
+    // then took code that no first paint draws out of the entry, none of them a new lazy load, and
+    // the entry reads 498,776 bytes with a 39-character `DISPATCH_BUILD` on 2026-11-24: a held
+    // send refreshes a comment list under `ownerCommentsQuery`'s key, so
+    // `features/conversation/composer-model.ts` is out of the entry (411 bytes); the
+    // rail's state mark reads its relative time from `features/refs/relative-time.ts`, so
+    // `<Timestamp>` is a chunk the pages' chunks share (646 bytes); and the recent items read a
+    // document's route from `features/refs/routes.ts`, so the search bar's chip
+    // (`features/search/bar-scope.ts`) is a chunk that the bar and the issue list share
+    // (1,142 bytes).
     // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and keeps its history,
     // and `bun run check:asset-sizes` reads it again; this `chunkSizeWarningLimit` is Vite's own
     // warning and is over the ECharts chunk alone.

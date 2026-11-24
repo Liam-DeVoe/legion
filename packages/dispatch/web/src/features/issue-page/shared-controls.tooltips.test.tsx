@@ -62,7 +62,8 @@ import {
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote } from "../refs/AgentName";
-import { relativeTimeLabel, Timestamp } from "../refs/Timestamp";
+import { relativeTimeLabel } from "../refs/relative-time";
+import { Timestamp } from "../refs/Timestamp";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS, STATE_LINES } from "./page-words";
 import {

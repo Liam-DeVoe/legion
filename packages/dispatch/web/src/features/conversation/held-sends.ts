@@ -10,7 +10,7 @@ import {
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery } from "../../api/queries";
+import { agentMessagesQuery, ownerCommentsQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { pastDeadlineKey } from "../../hooks/useSending";
 import { newSendKey } from "../../lib/send-key";
@@ -24,7 +24,7 @@ import {
   type Writes,
   writesOf,
 } from "../writes/write-store";
-import { commentListKey, type ReplyTarget } from "./composer-model";
+import type { ReplyTarget } from "./composer-model";
 import {
   type Address,
   type CarriedAddress,
@@ -126,7 +126,12 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
     void client.invalidateQueries({ queryKey: agentMessagesQuery(owner.sessionId).queryKey });
     return;
   }
-  void client.invalidateQueries({ queryKey: commentListKey(owner) });
+  // The owner's comment list, under the key that every reader of the list takes from
+  // `ownerCommentsQuery`. That factory is in the entry chunk already. A key helper in
+  // `composer-model.ts` would put the functions of that module in the entry too.
+  const listOwner =
+    owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId };
+  void client.invalidateQueries({ queryKey: ownerCommentsQuery(listOwner).queryKey });
   void client.invalidateQueries({ queryKey: ["inbox"] });
   if (anchor !== undefined) {
     void client.invalidateQueries({ queryKey: ["artifact", anchor.artifact, "blocks"] });

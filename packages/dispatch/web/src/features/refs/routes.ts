@@ -500,6 +500,19 @@ export function parseProjectPath(pathname: string, search = ""): ProjectRoute | 
   );
 }
 
+/** The project document a page's path names, and undefined for every other path: the document
+ *  whose name the search bar's chip says (`features/search/useBarScope.tsx`), and the one a visit
+ *  records as a recent item (`features/search/recents.ts`). It is here and not with the chip's
+ *  other rules (`features/search/bar-scope.ts`): the recent items are in the entry chunk, and
+ *  those rules are not. */
+export function documentRouteOf(
+  pathname: string,
+  search: string
+): ProjectDocumentRoute | undefined {
+  const route = parseProjectPath(pathname, search);
+  return route?.kind === "document" ? route : undefined;
+}
+
 /** The route of an agent's artifact page, `/agents/<session id>/artifacts/<slug>[?v=N]`; its
  *  segments are percent-decoded, and the session id then holds to the reference's rule. */
 export function parseAgentArtifactPath(

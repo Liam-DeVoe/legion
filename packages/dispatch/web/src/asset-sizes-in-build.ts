@@ -52,7 +52,10 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * `540b1fe2` the entry was 497,933 bytes, the two lists' alert for a render error
  * (`features/writes/write-hosts.tsx`) takes it to 498,553, and the sign-in page's list of kept
  * writes, in the entry so that its warning depends on no chunk (`features/writes/KeptWrites.tsx`),
- * takes it to 499,583, each with a 39-character build id.
+ * takes it to 499,583, each with a 39-character build id. The merge of the default branch's
+ * correction and deletion of a post (#3512, 2026-11-24) then wrote 500,975, and three moves the
+ * same day answered it with no new lazy load, the ones `web/vite.config.ts`'s build comment
+ * names: the entry reads 498,776 bytes with a 39-character build id, 1,224 under this budget.
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. The id is in the entry too, so CI's build, whose id is the 40-character
