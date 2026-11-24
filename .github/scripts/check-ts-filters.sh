@@ -64,6 +64,12 @@
 # each pair and holds it to the filter; ci_job_reads.py declares each of them as a read, and
 # check-ci-filters.sh holds the filter to it.
 #
+# A file a program lists that no commit holds - one git ignores because every `bun install`
+# renders it, as the Dispatch API's TypeScript types are rendered from the OpenAPI document - is
+# held to its filter through the committed files it is rendered from instead (ci_ts_programs.py,
+# GENERATED): no change carries the file itself, so a filter selecting it would select nothing,
+# and a change to its sources is what changes what the program compiles.
+#
 # A file is held to the filter as workflow_paths.PathsFilter reads it, under the
 # predicate-quantifier the changes job declares that filter under, over the filter's patterns
 # with its anchors flattened into the list that names them - the patterns and the quantifier
@@ -163,7 +169,7 @@ from pathlib import Path
 
 import ci_filter_coverage as engine
 import workflow_paths as wp
-from ci_ts_programs import BUNDLES, LISTED, PROGRAMS
+from ci_ts_programs import BUNDLES, GENERATED, LISTED, PROGRAMS
 
 TABLE = ".github/scripts/ci_ts_programs.py"
 MODE = os.environ["TS_FILTERS_MODE"]
@@ -182,7 +188,8 @@ problems: list[engine.Annotation] = []
 def kept(paths) -> list:
     """The paths inside the repository and outside node_modules, repository-relative and sorted.
     A relative path is read against the repository root, which is where both commands run and
-    what each prints a relative path against."""
+    what each prints a relative path against. A generated file no commit holds stands for the
+    committed files it is rendered from (GENERATED)."""
     files = set()
     for line in paths:
         if not line.strip():
@@ -196,7 +203,7 @@ def kept(paths) -> list:
             continue
         if "node_modules" in relative.parts:
             continue
-        files.add(relative.as_posix())
+        files.update(GENERATED.get(relative.as_posix(), (relative.as_posix(),)))
     return sorted(files)
 
 

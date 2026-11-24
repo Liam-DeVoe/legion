@@ -29,6 +29,10 @@ bun_install: &bun_install
 biome: &biome
   - 'biome.json'
   - '.gitignore'
+# why: .github/ci-notes/ci.md#dispatch_api_types-the-two-files-the-dispatch-api-types-are-rendered-from
+dispatch_api_types: &dispatch_api_types
+  - 'packages/contracts/schemas/dispatch-openapi.json'
+  - 'packages/contracts/scripts/gen-api.ts'
 go_workspace: &go_workspace
   - 'go.work'
   - 'go.work.sum'
@@ -620,6 +624,7 @@ claude_envoy:
   - *ci_filters_data
   - '.github/workflows/ci-job-claude-envoy.yaml'
   - *bun_install
+  - *dispatch_api_types
   - *biome
   - *claude_envoy_build
   - '.claude-code-pin'
@@ -660,7 +665,6 @@ contracts:
   - 'packages/envoy/listenerwire/envelope_generated.go'
   - 'packages/envoy/internal/dispatch/pmdoc/schema_generated.go'
   - 'packages/test-fixtures/src/**'
-  # why: .github/ci-notes/ci.md#contracts-bun-run-checkapi-renders-schemasdispatch-openapijson-into
 # why: .github/ci-notes/ci.md#guide_layout_files-the-five-guides-scriptssemantic-line-breaksguidestestts-reads-the-checker-it
 guide_layout_files: &guide_layout_files
   - 'scripts/semantic-line-breaks.guides.test.ts'
@@ -1183,6 +1187,7 @@ tooling_checks:
   - *ci_filters_data
   - '.github/workflows/ci-job-test.yaml'
   - *bun_install
+  - *dispatch_api_types
   - *biome
   - *claude_envoy_build
   # why: .github/ci-notes/ci.md#tooling_checks-the-guides-layout-steps-own-gate-named-here-so-the-job-runs
@@ -1213,6 +1218,7 @@ docs:
   - '.github/workflows/docs-pages.yaml'
   - '.github/workflows/docs-site.yaml'
   - *bun_install
+  - *dispatch_api_types
   - *go_workspace
   - 'docs/site/**'
   - *legion_command
@@ -1410,6 +1416,7 @@ pi_shared:
   - *ci_filters_data
   - '.github/workflows/ci-job-pi-shared.yaml'
   - *bun_install
+  - *dispatch_api_types
   - 'packages/pi-shared/**'
   - *jj_install
   - 'packages/envoy-client/src/**'
@@ -1435,6 +1442,7 @@ pi_envoy:
   - *ci_filters_data
   - '.github/workflows/ci-job-pi-envoy.yaml'
   - *bun_install
+  - *dispatch_api_types
   - 'packages/pi-envoy/**'
   - 'packages/pi-shared/src/**'
   - 'packages/pi-shared/test/**'
@@ -1520,6 +1528,7 @@ pi_legion_build:
   - *ci_filters_data
   - '.github/workflows/ci-job-pi-legion.yaml'
   - *bun_install
+  - *dispatch_api_types
   - 'packages/pi-legion/**'
   - 'packages/pi-envoy/**'
   - 'packages/pi-shared/src/**'
@@ -1542,6 +1551,7 @@ dispatch_ui:
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-ui.yaml'
   - *bun_install
+  - *dispatch_api_types
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'
   - '.github/workflows/dispatch-unit-repeat.yaml'
@@ -1570,7 +1580,6 @@ dispatch_ui:
   - 'packages/contracts/src/dispatch-api-sessions.ts'
   - 'packages/contracts/src/dispatch-api-targeted.ts'
   - 'packages/contracts/src/dispatch-api-user.ts'
-  - 'packages/contracts/src/dispatch-api.generated.ts'
   - 'packages/contracts/src/dispatch-api.ts'
   - 'packages/contracts/src/dispatch-block-ref.ts'
   - 'packages/contracts/src/dispatch-href.ts'
@@ -1731,7 +1740,6 @@ dispatch_browser:
   - 'packages/contracts/src/dispatch-api-sessions.ts'
   - 'packages/contracts/src/dispatch-api-targeted.ts'
   - 'packages/contracts/src/dispatch-api-user.ts'
-  - 'packages/contracts/src/dispatch-api.generated.ts'
   - 'packages/contracts/src/dispatch-api.ts'
   - 'packages/contracts/src/dispatch-block-ref.ts'
   - 'packages/contracts/src/dispatch-href.ts'
@@ -1793,7 +1801,6 @@ dispatch_browser_pr:
   - 'packages/contracts/src/dispatch-api-sessions.ts'
   - 'packages/contracts/src/dispatch-api-targeted.ts'
   - 'packages/contracts/src/dispatch-api-user.ts'
-  - 'packages/contracts/src/dispatch-api.generated.ts'
   - 'packages/contracts/src/dispatch-api.ts'
   - 'packages/contracts/src/dispatch-block-ref.ts'
   - 'packages/contracts/src/dispatch-href.ts'
@@ -2158,7 +2165,6 @@ dispatch_two_builds_go:
   - 'packages/contracts/src/dispatch-api-sessions.ts'
   - 'packages/contracts/src/dispatch-api-targeted.ts'
   - 'packages/contracts/src/dispatch-api-user.ts'
-  - 'packages/contracts/src/dispatch-api.generated.ts'
   - 'packages/contracts/src/dispatch-api.ts'
   - 'packages/contracts/src/dispatch-block-ref.ts'
   - 'packages/contracts/src/dispatch-href.ts'
@@ -2252,7 +2258,6 @@ dispatch_two_builds:
   - 'packages/contracts/src/dispatch-api-sessions.ts'
   - 'packages/contracts/src/dispatch-api-targeted.ts'
   - 'packages/contracts/src/dispatch-api-user.ts'
-  - 'packages/contracts/src/dispatch-api.generated.ts'
   - 'packages/contracts/src/dispatch-api.ts'
   - 'packages/contracts/src/dispatch-block-ref.ts'
   - 'packages/contracts/src/dispatch-href.ts'
@@ -2853,6 +2858,7 @@ envoy_client:
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-client.yaml'
   - *bun_install
+  - *dispatch_api_types
   - 'packages/envoy-client/**'
   - 'packages/cipher-client/**'
   - 'packages/contracts/src/**'

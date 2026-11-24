@@ -440,6 +440,22 @@ BROKER_CLIENT_SRC = "packages/cipher-client/**"
 TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 
 
+def dispatch_api_types(step):
+    """What a typecheck that compiles packages/contracts/src/dispatch-api.generated.ts reads in its
+    place: git ignores that module, and the job's own `bun install` renders it (the root
+    package.json's postinstall runs packages/contracts/scripts/gen-api.ts over the OpenAPI
+    document), so a change to either file changes what `step` compiles, and no change carries the
+    module itself. check-ts-filters.sh holds the gate's filter to the same two files
+    (ci_ts_programs.py, GENERATED)."""
+    return reads(
+        ("packages/contracts/schemas/dispatch-openapi.json",
+         f"{step} compiles packages/contracts/src/dispatch-api.generated.ts, which the job's bun install renders "
+         "from this document (package.json postinstall)"),
+        ("packages/contracts/scripts/gen-api.ts",
+         f"the job's bun install runs it (package.json postinstall) to render the module {step} compiles"),
+    )
+
+
 def envoy_client_dep(why):
     """The reads of a gate whose job compiles @legion/envoy-client: that package's sources, and
     packages/cipher-client's with them. envoy-client's src/broker-credential.ts imports
@@ -3147,6 +3163,7 @@ GATES = [
         ("packages/*/.changie.yaml", f"{at(TOOLING_JOB, FOLD_CHECK_STEP)}: fold-check renders each listed package's fragments with that package's own changie configuration"),
         ("packages/*/.changes/unreleased/**", f"{at(TOOLING_JOB, FOLD_CHECK_STEP)}: fold-check renders every fragment a listed package holds"),
     ) + envoy_client_dep("scripts/dispatch/ask-census.ts:10-18 (tsc -p scripts/dispatch)")
+      + dispatch_api_types(at(TOOLING_JOB, "Typecheck the Dispatch census script"))
       + biome(at(TOOLING_JOB, "Lint the Dispatch census script")) + bun_job(TOOLING_JOB)),
 
     # The session message-wait suite, in a job of its own: it is the one test of the whole test
@@ -3224,6 +3241,7 @@ GATES = [
             ("internal/cipher/proxy", "recorder.go:13,78"),
         ) for path in files_but_tests(f"{ENVOY}/{directory}")],
     ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)
+      + dispatch_api_types(at_docs("Typecheck the docs site"))
       + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF, workflow=CI),
 
     gate("contracts", "contracts", reads=reads(
@@ -3288,7 +3306,7 @@ GATES = [
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
         ("docs/site/src/content/docs/dispatch/for-agents.md", "packages/envoy-client/src/__tests__/plans-command.test.ts:314 readFileSync (REPO_ROOT :210): the guide for agents' Plans row, held to the contract's rating scale; comment-mention-role.test.ts:234 readFileSync (REPO_ROOT :20): its Comments row, which names --mention-role"),
         (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts:131 reads the listener's own cases by relative path (SHARED_CASES :118-121), which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
-    ) + bun_job("envoy-client")),
+    ) + dispatch_api_types(at("envoy-client", "Typecheck Envoy client")) + bun_job("envoy-client")),
 
     gate("pi_shared", "pi-shared", reads=reads(
         ("packages/pi-shared/**", f"{at('pi-shared', 'Typecheck pi-shared')} and test in packages/pi-shared"),
@@ -3308,6 +3326,7 @@ GATES = [
          "packages/pi-shared/src/git-lock.test.ts:63-64 reads it and holds git-lock.ts's copy to it"),
     ) + envoy_client_dep("packages/pi-shared/tsconfig.json paths @legion/envoy-client/errors; src imports "
                          "@legion/envoy-client/* (exports.bun -> src)")
+      + dispatch_api_types(at("pi-shared", "Typecheck pi-shared"))
       + install_jj("pi-shared") + bun_job("pi-shared")),
 
     gate("pi_envoy", "pi-envoy", reads=reads(
@@ -3329,6 +3348,7 @@ GATES = [
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:144-149"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
+      + dispatch_api_types(at("pi-envoy", "Typecheck pi-envoy"))
       + install_omp("pi-envoy") + bun_job("pi-envoy")),
 
     # The plugin's test suite, the merge-queue half of the old pi-legion job; pi_legion_build
@@ -3398,7 +3418,7 @@ GATES = [
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions, and the typecheck includes scripts/skill-scenarios/*.ts"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")
-      + bun_job("pi-legion-build")),
+      + dispatch_api_types(at("pi-legion-build", "Typecheck pi-legion")) + bun_job("pi-legion-build")),
 
     # The dashboard's and the proof editor's fast checks
     # (.github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
@@ -3440,7 +3460,7 @@ GATES = [
                          "above import, and packages/dispatch/e2e/read-token-live.ts:37 imports "
                          "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
                          "(check-ts-filters.sh measures it)")
-      + bun_job("dispatch-ui")),
+      + dispatch_api_types(at("dispatch-ui", "Typecheck dispatch dashboard")) + bun_job("dispatch-ui")),
 
     # The browser suite's two gates, one per caller of dispatch-browser.yaml in ci.yaml:
     # browser_gate above says what each reads.
@@ -3449,7 +3469,8 @@ GATES = [
 
     gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_JOB + reads(
         (TEST_FIXTURES_SRC, "packages/claude-envoy/tests import @legion/test-fixtures"),
-    ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy")),
+    ) + dispatch_api_types(at("claude-envoy", "Typecheck Claude Envoy plugin"))
+      + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy")),
 
     gate("envoy_go", "envoy-go", runs=[
         step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",

@@ -76,6 +76,20 @@ BUNDLES = [
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
 ]
 
+# The files a program lists that no commit holds, each with the committed files it is rendered
+# from: git ignores the file and every `bun install` writes it (the root package.json's
+# postinstall), so no change ever carries it, and a filter holding it would select nothing. What
+# changes it is a change to its sources, so check-ts-filters.sh holds a program's filter to those
+# in its place, and a listed block lists the sources under its tree, never the file.
+#
+# Each entry is generated file: (source, ...), every path repository-relative.
+GENERATED = {
+    "packages/contracts/src/dispatch-api.generated.ts": (
+        "packages/contracts/schemas/dispatch-openapi.json",
+        "packages/contracts/scripts/gen-api.ts",
+    ),
+}
+
 # The trees a filter names file by file rather than whole: check-ts-filters.sh writes into the
 # filter a listed block holding one pattern per file under `tree` that the programs PROGRAMS pairs
 # with filters `sources` compile or the bundles BUNDLES pairs with them load, in sorted order, and

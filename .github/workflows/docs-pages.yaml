@@ -54,6 +54,9 @@ on:
       - '.github/actions/setup-bun/**'
       - '.github/ci-tools.yaml'
       - '.github/scripts/ci-tools.sh'
+      # ci-filters.yaml's *dispatch_api_types:
+      - 'packages/contracts/schemas/dispatch-openapi.json'
+      - 'packages/contracts/scripts/gen-api.ts'
       # ci-filters.yaml's *go_workspace:
       - 'go.work'
       - 'go.work.sum'

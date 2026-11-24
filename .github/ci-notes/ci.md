@@ -330,14 +330,22 @@ Go contract, pmdoc's generated block schema and contracts' own generated TypeScr
 shape of: this job generates that Go from packages/contracts/schemas, and reads no
 file of pmdoc/schema itself.
 
-## contracts: `bun run check:api` renders schemas/dispatch-openapi.json into
+## dispatch_api_types: The two files the Dispatch API types are rendered from
 
-`bun run check:api` renders schemas/dispatch-openapi.json into
-src/dispatch-api.generated.ts and compares, and reads no Go at all
-(scripts/gen-api.ts:6), so the Go that document is emitted from is not named here:
-a change to it is judged by envoy-go-build's `openapi --check`, whose filter
-(envoy_go_build) selects both that Go and this document, so either one alone
-starts the job.
+packages/contracts/src/dispatch-api.generated.ts, the Dispatch API's TypeScript types,
+is in no commit: every `bun install` renders it from schemas/dispatch-openapi.json
+with scripts/gen-api.ts (the root package.json's postinstall), and so does the
+`typecheck` script of each package that compiles it, so two pull requests
+that each add a route never edit one generated file. Only a type check reads it:
+dispatch-api.ts re-exports it with `export type *` and every other import of it is
+an `import type`, so Bun, `bun build`, Vite and Astro erase each of them. A change
+to what a typecheck compiles there is a change to one of those two files, so every
+filter whose job's tsc program holds the module names this group
+(.github/scripts/check-ts-filters.sh derives that from the programs, through
+ci_ts_programs.py's GENERATED). The contracts job's own filter takes the whole
+package. The Go the document is emitted from is not named here: a change to it is
+judged by envoy-go-build's `openapi --check`, whose filter selects both that Go and
+the document.
 
 ## guide_layout_files: The five guides scripts/semantic-line-breaks.guides.test.ts reads, the checker it
 
