@@ -15,7 +15,9 @@ package api
 //
 // from packages/envoy, with DISPATCH_TEST_DATABASE_URL naming a Postgres server it may create a
 // database on, over TCP and without TLS (the plan proxy relays that connection in the clear).
-// MOVED_READ_COST_SCALE scales the corpus (movedCostScale); the check's run leaves it unset.
+// MOVED_READ_COST_SCALE scales the corpus (movedCostScale), and MOVED_READ_COST_SEED_ONLY=1, for
+// diagnosis, keeps the database the release before seeded and ends the run before any reading
+// (movedCostSeedOnly); the check's run leaves both unset.
 
 import (
 	"bufio"
@@ -24,6 +26,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -42,6 +45,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testbaseline"
@@ -57,6 +61,14 @@ const movedCostBaseVariable = "STORES_BASE_SHA"
 // count of issues and of tuples of other kinds scales, and so do production's counts of issues the
 // corpus is held to; the 13 priorities do not, and an issue keeps its runs and its children.
 const movedCostScaleVariable = "MOVED_READ_COST_SCALE"
+
+// movedCostSeedOnlyVariable, set to 1 for diagnosis, ends the run once the release before has
+// seeded the corpus and owes nothing, and keeps that database (movedCostSeedOnly);
+// movedCostKeptDatabaseFile is the file in $TMPDIR the kept database's name is written to.
+const (
+	movedCostSeedOnlyVariable = "MOVED_READ_COST_SEED_ONLY"
+	movedCostKeptDatabaseFile = "moved-read-cost-kept-database"
+)
 
 // movedCostMigrations are the three migrations a release before R32's move holds: the graph store,
 // and the two stores R32 moves into it. A base that lacks one is no such release.
@@ -268,6 +280,67 @@ func movedCostScale(t *testing.T) float64 {
 			movedCostScaleVariable, raw)
 	}
 	return scale
+}
+
+// movedCostSeedOnly reads movedCostSeedOnlyVariable before anything is built or read. Unset, it
+// answers false, and the run is the check's. Set to 1, it answers true: the run builds only the
+// release before, writes the corpus, boots that release over it until it owes nothing, keeps the
+// database (keepMovedCostSeed) and ends, passing, with no reading. Set to anything else, it fails,
+// naming the value it takes.
+func movedCostSeedOnly(t *testing.T) bool {
+	t.Helper()
+	switch named := strings.TrimSpace(os.Getenv(movedCostSeedOnlyVariable)); named {
+	case "":
+		return false
+	case "1":
+		return true
+	default:
+		t.Fatalf("%s=%q: it takes 1, which keeps the seeded database and ends the run before any reading, or is left unset",
+			movedCostSeedOnlyVariable, named)
+		return false
+	}
+}
+
+// keepMovedCostSeed keeps the run's database at databaseURL, which the release before seeded and
+// no longer serves, past the test's end. readCostDatabase drops the run's database by its name
+// when the test ends, so the database is renamed to that name with "_seed" after it, and that drop
+// finds nothing; JIT stays off, a setting of the database and not of its name. A rename needs no
+// other session on the database, so conn, the test's own, is closed first, and the rename is tried
+// again while Postgres still tears down a backend of the stopped server (55006). The kept name is
+// printed and written to movedCostKeptDatabaseFile in $TMPDIR.
+func keepMovedCostSeed(t *testing.T, conn *pgx.Conn, databaseURL string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := conn.Close(ctx); err != nil {
+		t.Fatalf("close the test's connection to the seeded database: %v", err)
+	}
+	run, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatalf("read the run's database URL: %v", err)
+	}
+	name := strings.TrimPrefix(run.Path, "/")
+	kept := name + "_seed"
+	adminURL := *run
+	adminURL.Path = "/postgres"
+	admin, err := pgx.Connect(ctx, adminURL.String())
+	if err != nil {
+		t.Fatalf("connect to the test server: %v", err)
+	}
+	defer admin.Close(ctx)
+	testwait.Holds(30*time.Second, 200*time.Millisecond, func() bool {
+		_, err = admin.Exec(ctx, "alter database "+name+" rename to "+kept)
+		var postgres *pgconn.PgError
+		return !errors.As(err, &postgres) || postgres.Code != "55006"
+	})
+	if err != nil {
+		t.Fatalf("rename the seeded database %s to %s, which keeps it past the test's end: %v", name, kept, err)
+	}
+	t.Logf("c-moved-read-cost: %s keeps the seeded database %s (jit off), so this run is not a reading of the check",
+		movedCostSeedOnlyVariable, kept)
+	file := filepath.Join(os.TempDir(), movedCostKeptDatabaseFile)
+	if err := os.WriteFile(file, []byte(kept+"\n"), 0o644); err != nil {
+		t.Fatalf("write the kept database's name %s to %s: %v", kept, file, err)
+	}
 }
 
 // seedMovedCostTemplates makes, through the release before's own API, the four projects and the
@@ -1064,35 +1137,53 @@ func movedCostParameters(statement movedCostStatement) string {
 // (readCostStatements), where the server's pg_stat_statements can be read; where it cannot, the
 // run says so in one line and fails on none of it.
 //
-// It fails, never skips, where STORES_BASE_SHA is unset, names no 40-character commit, or names a
-// commit that lacks one of the three migrations, before it builds anything.
+// MOVED_READ_COST_SEED_ONLY=1, for diagnosis, builds only the release before, writes the corpus,
+// boots that release over it until it owes nothing, stops it and keeps the database, writing its
+// name to $TMPDIR/moved-read-cost-kept-database (keepMovedCostSeed); the run ends there, passing,
+// with no reading, and is no reading of the check.
+//
+// It fails, never skips, where MOVED_READ_COST_SEED_ONLY is set to anything but 1, or where
+// STORES_BASE_SHA is unset, names no 40-character commit, or names a commit that lacks one of the
+// three migrations, before it builds anything.
 func TestNoMovedReadGetsSlower(t *testing.T) {
 	began := time.Now()
 	t.Cleanup(func() {
 		t.Logf("c-moved-read-cost: TestNoMovedReadGetsSlower took %s of wall time", time.Since(began).Round(time.Second))
 	})
+	seedOnly := movedCostSeedOnly(t)
 	baseCommit := movedCostBaseCommit(t)
 	corpus := newMovedCostCorpus(t, movedCostScale(t))
-	headCommit := gitOutput(t, ".", "rev-parse", "HEAD")
-	if !readCostFullCommit.MatchString(headCommit) || headCommit == baseCommit {
-		t.Fatalf("this head's commit %q must be a whole commit other than %s=%s, or the two builds cannot be told apart",
-			headCommit, movedCostBaseVariable, baseCommit)
+	var headCommit, headBinary string
+	if !seedOnly {
+		headCommit = gitOutput(t, ".", "rev-parse", "HEAD")
+		if !readCostFullCommit.MatchString(headCommit) || headCommit == baseCommit {
+			t.Fatalf("this head's commit %q must be a whole commit other than %s=%s, or the two builds cannot be told apart",
+				headCommit, movedCostBaseVariable, baseCommit)
+		}
 	}
 	databaseURL := readCostDatabase(t, false)
 	baseBinary := testbaseline.Build(t, baseCommit, movedCostBaseVariable)
-	headBinary := cmdtest.BuildCommand(t, cmdtest.Command{
-		Name:   "envoy-dispatch-head",
-		Dir:    envoyModuleRoot(t),
-		Target: "./cmd/dispatch",
-		Flags:  []string{"-ldflags", "-X main.buildCommit=" + headCommit},
-	})
-	t.Logf("c-moved-read-cost: the old side and the third side run on the build of %s, the commit %s names; the new side "+
-		"on the build of this checkout's working copy, stamped with its HEAD %s", baseCommit, movedCostBaseVariable, headCommit)
+	if seedOnly {
+		t.Logf("c-moved-read-cost: %s=1: the run builds only the release before (%s), the commit %s names, seeds the "+
+			"corpus with it and ends before any reading", movedCostSeedOnlyVariable, baseCommit, movedCostBaseVariable)
+	} else {
+		headBinary = cmdtest.BuildCommand(t, cmdtest.Command{
+			Name:   "envoy-dispatch-head",
+			Dir:    envoyModuleRoot(t),
+			Target: "./cmd/dispatch",
+			Flags:  []string{"-ldflags", "-X main.buildCommit=" + headCommit},
+		})
+		t.Logf("c-moved-read-cost: the old side and the third side run on the build of %s, the commit %s names; the new side "+
+			"on the build of this checkout's working copy, stamped with its HEAD %s", baseCommit, movedCostBaseVariable, headCommit)
+	}
 	client := readCostClient()
 	listener := readCostListener(t)
 	conn := readCostConnect(t, databaseURL)
 	holdReadCostJITOff(t, "c-moved-read-cost", conn)
-	statements := newReadCostStatements(t, "c-moved-read-cost", databaseURL)
+	var statements *readCostStatements
+	if !seedOnly {
+		statements = newReadCostStatements(t, "c-moved-read-cost", databaseURL)
+	}
 	reads := movedCostReads(corpus)
 	baseName := func(what string) string { return "the release before (" + baseCommit + ")" + what }
 
@@ -1103,6 +1194,11 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	seedMovedCostCorpus(t, conn, corpus)
 	base := startReadCostServer(t, client, baseName(""), baseBinary, baseCommit, databaseURL, listener)
 	waitMovedCostOwed(t, conn, base, movedCostBaseOwed)
+	if seedOnly {
+		base.stop(t)
+		keepMovedCostSeed(t, conn, databaseURL)
+		return
+	}
 	readCostVacuum(t, conn, "old side")
 	counts := holdMovedCostReads(t, base, "old side", reads, nil)
 	old := measureMovedCostSide(t, statements, base, "old side", reads)
