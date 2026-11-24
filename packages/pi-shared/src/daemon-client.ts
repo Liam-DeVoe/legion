@@ -1,4 +1,4 @@
-import { mayHaveReachedServer, outage } from "@legion/contracts/http-status";
+import { mayHaveReachedServer, outage, retryAfterMs } from "@legion/contracts/http-status";
 import {
   type LegionActivityRequest,
   LegionChildRequest,
@@ -218,7 +218,9 @@ export interface LegionDaemonClient {
  * wrote says what it refused. Any other body carries no code, and its `detail` names the body's
  * length in bytes, the contract this build speaks, the contract the daemon stated and which side
  * is behind, and quotes no part of the body, as `LegionDaemonContractError` does for a success
- * this build cannot read. */
+ * this build cannot read. `retryAfterMs` is the wait the answer's `Retry-After` header asked for
+ * (`retryAfterMs` of `@legion/contracts/http-status`), 0 where it sent none: a proxy's 429 or 503
+ * can send one, which the ready's retry waits within its bound (`callReadyWithRetry`). */
 export class LegionDaemonApiError extends Error {
   constructor(
     readonly method: string,
@@ -226,7 +228,8 @@ export class LegionDaemonApiError extends Error {
     readonly status: number,
     readonly code: string | undefined,
     readonly detail: string,
-    readonly refusalShape: boolean
+    readonly refusalShape: boolean,
+    readonly retryAfterMs: number
   ) {
     super(
       `${method} ${path} failed with ${status}${code === undefined ? "" : ` ${code}`}: ${detail}`
@@ -285,9 +288,14 @@ export class LegionDaemonContractError extends Error {
   }
 }
 
-// Bounds retries of the transient `claims/ready` request.
+// Bounds retries of the transient `claims/ready` request: three attempts, the waits between them
+// 1 s, or as long as the answer's `Retry-After` asks but never longer than 30 s. So the retry
+// waits at most 60 s, well inside the daemon's registration deadline, whose default is 360 s
+// (`worker_boot_timeout_seconds` 120 times `worker_boot_registration_deadline_intervals` 3), past
+// which the daemon relaunches a pane that never said it was ready.
 const READY_RETRY_ATTEMPTS = 3;
 const READY_RETRY_DELAY_MS = 1_000;
+const READY_RETRY_AFTER_MAX_MS = 30_000;
 
 function isNetworkOrTimeoutError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -313,8 +321,19 @@ function isNetworkOrTimeoutError(error: unknown): boolean {
  * 408 or a 429) or a network failure. The daemon answers no 408 and no 429 itself, so either is a
  * proxy between the session and the daemon. Each Legion host's claim (pi-legion's claim session,
  * claude-envoy's Legion claim) sends its `claims/ready` through it, at boot and after each role
- * regain. */
-export async function callReadyWithRetry(label: string, call: () => Promise<void>): Promise<void> {
+ * regain. It makes `READY_RETRY_ATTEMPTS` attempts, and waits between them 1 s, or what the
+ * answer's `Retry-After` asks for where that is longer, but never longer than
+ * `READY_RETRY_AFTER_MAX_MS`: a proxy that asks for longer is asked again at that bound. `sleep` is
+ * the wait, a test's own. */
+export async function callReadyWithRetry(
+  label: string,
+  call: () => Promise<void>,
+  sleep: (ms: number) => Promise<void> = (ms) => {
+    const waited = Promise.withResolvers<void>();
+    setTimeout(waited.resolve, ms);
+    return waited.promise;
+  }
+): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
       await call();
@@ -329,12 +348,12 @@ export async function callReadyWithRetry(label: string, call: () => Promise<void
         console.error(`[legion] ${label} failed after ${attempt} attempts: ${messageFor(error)}`);
         throw error;
       }
+      const asked = error instanceof LegionDaemonApiError ? error.retryAfterMs : 0;
+      const wait = Math.min(Math.max(READY_RETRY_DELAY_MS, asked), READY_RETRY_AFTER_MAX_MS);
       console.error(
-        `[legion] ${label} failed (attempt ${attempt}/${READY_RETRY_ATTEMPTS}), retrying: ${messageFor(error)}`
+        `[legion] ${label} failed (attempt ${attempt}/${READY_RETRY_ATTEMPTS}), retrying in ${wait / 1_000} s: ${messageFor(error)}`
       );
-      const retryDelay = Promise.withResolvers<void>();
-      setTimeout(retryDelay.resolve, READY_RETRY_DELAY_MS);
-      await retryDelay.promise;
+      await sleep(wait);
     }
   }
 }
@@ -553,6 +572,7 @@ export function createLegionDaemonClient(
     const text = await response.text();
     const daemonContract = statedContract(response.headers);
     if (response.ok) return { status: response.status, text, daemonContract };
+    const asked = retryAfterMs(response.headers);
     const refusal = parseBody(LegionErrorResponse, text);
     if ("value" in refusal) {
       throw new LegionDaemonApiError(
@@ -561,7 +581,8 @@ export function createLegionDaemonClient(
         response.status,
         refusal.value.code,
         refusal.value.error,
-        true
+        true,
+        asked
       );
     }
     // A body that is not the daemon's refusal was written by something in its place, which can
@@ -572,7 +593,8 @@ export function createLegionDaemonClient(
       response.status,
       undefined,
       `${unreadableBody(text)} is not the daemon's refusal shape (${refusal.problem}). ${contractStanding(pluginContract, daemonContract)}`,
-      false
+      false,
+      asked
     );
   };
 

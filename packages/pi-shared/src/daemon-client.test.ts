@@ -7,6 +7,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import * as ts from "typescript";
 import { z } from "zod";
 import {
+  callReadyWithRetry,
   createLegionDaemonClient,
   daemonUnreachable,
   LegionDaemonApiError,
@@ -853,7 +854,8 @@ test("a coded refusal of an outage's status and a 4xx with no code are the daemo
       status,
       code,
       "refused",
-      refusalShape
+      refusalShape,
+      0
     );
     expect([status, refusalShape, daemonUnreachable(refusal)]).toEqual([
       status,
@@ -861,6 +863,50 @@ test("a coded refusal of an outage's status and a 4xx with no code are the daemo
       undefined,
     ]);
   }
+});
+
+/** The daemon's golden ready request, which these rows send. */
+const readyInput: ReadyInput = LegionReadyRequest.parse(daemonFixture("ready.json"));
+
+// A proxy's 429 or 503 can say how long to wait (`Retry-After`). The ready's retry waits that long
+// between its three attempts, never less than its own 1 s and never more than 30 s: a proxy that
+// asks for longer is asked again at 30 s, so the ready never waits past the daemon's registration
+// deadline (360 s by default) on a proxy's word.
+test.each([
+  ["5", [5_000, 5_000]],
+  ["120", [30_000, 30_000]],
+  ["0", [1_000, 1_000]],
+  [undefined, [1_000, 1_000]],
+] as const)("a ready answered 429 with Retry-After %p waits %p between its attempts", async (asked, waited) => {
+  let attempts = 0;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async (_input, _init) => {
+      attempts += 1;
+      if (attempts === 3) return new Response(null, { status: 204 });
+      return new Response("<html>429 Too Many Requests</html>", {
+        status: 429,
+        headers: asked === undefined ? {} : { "Retry-After": asked },
+      });
+    }) as typeof fetch,
+  });
+  const first = await client.ready(readyInput).catch((error: unknown) => error);
+  expect(first).toMatchObject({
+    status: 429,
+    retryAfterMs: asked === undefined ? 0 : Number(asked) * 1_000,
+  });
+
+  attempts = 0;
+  const waits: number[] = [];
+  await callReadyWithRetry(
+    "claims/ready",
+    () => client.ready(readyInput),
+    async (ms) => {
+      waits.push(ms);
+    }
+  );
+  expect(attempts).toBe(3);
+  expect(waits).toEqual([...waited]);
 });
 
 /** A daemon that answers `body` with `contract` in its `Legion-Daemon-Contract` header, and

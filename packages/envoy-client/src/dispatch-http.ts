@@ -98,7 +98,7 @@ import {
   sleep,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
-import { mayHaveReachedServer, outage } from "@legion/contracts/http-status";
+import { mayHaveReachedServer, outage, retryAfterMs } from "@legion/contracts/http-status";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { credentialDeadline, type RequestCredential } from "./bearer";
@@ -506,14 +506,6 @@ function pauseFor(ms: number, signal: AbortSignal): Promise<void> {
   }, ms);
   signal.addEventListener("abort", stop, { once: true });
   return promise;
-}
-
-/** The wait an answer's `Retry-After` asks for, in delta-seconds or as an HTTP date; 0 for none. */
-function retryAfterMs(response: Response): number {
-  const value = response.headers.get("Retry-After")?.trim() ?? "";
-  if (/^\d+$/.test(value)) return Number(value) * 1_000;
-  const at = Date.parse(value);
-  return Number.isNaN(at) ? 0 : Math.max(0, at - Date.now());
 }
 
 /** A request body encoded once, so every attempt of a write sends the bytes the first one did. */
@@ -2307,7 +2299,7 @@ export class DispatchClient {
           sent,
         };
       }
-      const heard = { retryAfterMs: retryAfterMs(response) };
+      const heard = { retryAfterMs: retryAfterMs(response.headers) };
       // Its headers came: an echo of the key counts for the call whether or not the body follows.
       if (response.headers.get(IDEMPOTENCY_KEY_HEADER) === key) progress.keyEchoed = true;
       let answer: WriteAnswer;

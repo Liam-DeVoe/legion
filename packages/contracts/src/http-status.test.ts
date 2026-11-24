@@ -5,7 +5,7 @@ import {
   IDEMPOTENCY_KEY_REUSED,
   retriesUnderKey,
 } from "./dispatch-api-limits";
-import { mayHaveReachedServer, outage } from "./http-status";
+import { mayHaveReachedServer, outage, retryAfterMs } from "./http-status";
 
 /** Every status from 100 to 599. */
 const STATUSES = Array.from({ length: 500 }, (_, index) => 100 + index);
@@ -46,4 +46,19 @@ test("retriesUnderKey reads every status from 100 to 599 as outage does, but a 4
       .map((code) => `${status} ${code}`)
   );
   expect(parts).toEqual([`409 ${IDEMPOTENCY_KEY_IN_FLIGHT}`]);
+});
+
+// `Retry-After` is delay-seconds or an HTTP-date (RFC 9110 section 10.2.3); anything else, or no
+// header, asks for no wait.
+test("Retry-After is read as delay-seconds or as the time left until its date", () => {
+  const now = Date.parse("Mon, 23 Nov 2026 18:00:00 GMT");
+  const asked = (value?: string) =>
+    retryAfterMs(new Headers(value === undefined ? {} : { "Retry-After": value }), now);
+  expect(asked("30")).toBe(30_000);
+  expect(asked(" 7 ")).toBe(7_000);
+  expect(asked("Mon, 23 Nov 2026 18:00:45 GMT")).toBe(45_000);
+  expect(asked("Mon, 23 Nov 2026 17:59:00 GMT")).toBe(0);
+  expect(asked("soon")).toBe(0);
+  expect(asked("-5")).toBe(0);
+  expect(asked()).toBe(0);
 });

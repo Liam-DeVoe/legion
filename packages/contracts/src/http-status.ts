@@ -5,6 +5,7 @@
 // `mayHaveReachedServer` decides whether a failed request may have reached the server and taken
 // effect, which the Dispatch client, Dispatch's page, the Envoy client and the Legion daemon's
 // client read.
+// `retryAfterMs` reads the wait an answer's `Retry-After` asks for.
 // It imports nothing, so any module of the contract can read it.
 
 /**
@@ -37,4 +38,16 @@ export function outage(status: number): boolean {
  */
 export function mayHaveReachedServer(status: number): boolean {
   return status >= 500 || status === 408;
+}
+
+/**
+ * The wait an answer's `Retry-After` header asks for, in milliseconds (RFC 9110 section 10.2.3):
+ * its delay-seconds, or the time left until its HTTP-date as `now` reads it (none for a date that
+ * has passed); 0 where it sends none or a value that is neither. A reader bounds the wait itself.
+ */
+export function retryAfterMs(headers: Headers, now: number = Date.now()): number {
+  const value = headers.get("Retry-After")?.trim() ?? "";
+  if (/^\d+$/.test(value)) return Number(value) * 1_000;
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? 0 : Math.max(0, at - now);
 }
