@@ -3405,14 +3405,15 @@ only a bucket that is absent, which holds no write to lose.
 
 **The check is best effort.** Every `recreate` and `check` prints so first, on standard error. A
 writer gets past it six ways: a host, dev box or namespace you do not name, a binary renamed to a
-name the check does not know, a program a pod's launcher picks from what the pod does not show (a
-script file, a file or a command's output it reads, a variable of the image's own environment), a
-pod deleted with `--force` whose containers still run (a cluster is read through its API, not its
-nodes' runtimes), a writer that starts between the final scan and the create, and a restore after
-`check` that nothing holds. So before every `recreate` or `check`, stop every listener of the
-deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it has
-ended; the check confirms what you did, and does not replace it. `create` needs no listener
-stopped and prints no warning.
+name the check does not know, a program a pod's launcher picks from what the pod does not show or
+as its script reads it alone (a script file, a file or a command's output it reads, a variable of
+the image's own environment, a variable the script gives no literal value, a glob, bash's
+`${!REF}`), a pod deleted with `--force` whose containers still run (a cluster is read through its
+API, not its nodes' runtimes), a writer that starts between the final scan and the create, and a
+restore after `check` that nothing holds. So before every `recreate` or `check`, stop every
+listener of the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each
+host that it has ended; the check confirms what you did, and does not replace it. `create` needs
+no listener stopped and prints no warning.
 The coming server-side hold will exclude writers at the server instead: while it holds,
 the auth callout refuses every connection but the operator's, every other connection is kicked,
 every server's connz shows the operator alone, and a server it cannot reach stops the hold. Six
@@ -3464,11 +3465,12 @@ named bucket first, and changes no bucket that is there, so it can run again:
 - a connection that reports no server version, as one that is not connected does, refuses the run
   with exit 1 before any read (`refused: the connection reports no server version`), and nothing
   is created: each bucket is judged against the stream its create makes on the hub's version, and
-  nats.go reads no version as a server too old for a bucket. The create reads the version again
-  after the account's JetStream info, where nats.go reads it for the stream's discard policy, and a
-  connection that drops and is reconnecting there refuses the run the same way, naming the bucket
-  it did not create, where it used to create that bucket with a discard policy of old. Run
-  `create` again.
+  nats.go reads no version as a server too old for a bucket. A connection that drops during a
+  create, and is reconnecting when the create reads the version again (before it sends anything,
+  and after the account's JetStream info, where nats.go reads it for the stream's discard policy),
+  refuses the run the same way, naming the bucket it did not create, where it used to print
+  nats.go's error for a server too old for a bucket, or create that bucket with a discard policy of
+  old. Run `create` again.
 
 Each absent bucket is then created with no writer proof (`bus.CreateMissingCopiedBucket`), and
 the run prints `created <bucket> (<n> copies)`. The create sends no stream update, on any server
@@ -3532,17 +3534,25 @@ without one:
   launcher may set `ENVOY_MACHINE_ID` and `ENVOY_WEBHOOKS` where the pod does not show them, and its
   blocker says so, naming the launcher quoted. One whose later words name `envoy-dispatch` writes
   `envoy_ci_state` too; for a launcher whose words name neither, the launcher rule adds none. The
-  words are read as the kubelet runs them: a `$(VAR)` reference becomes the value the container's
-  `env` gives `VAR`, so `[$(PROGRAM)]` with `PROGRAM=envoy-dispatch` runs envoy-dispatch, and the
-  value of each variable of the container's `env` a shell expands (`$PROGRAM`, `${PROGRAM}`) is read
-  beside the words. A reference or an expansion of a variable whose value the pod does not show -
-  from a Secret or a ConfigMap, or one an `envFrom` source may set - counts as a writer of every
-  bucket, its blocker naming the expansion; a variable from a field of the pod is read from the pod.
-  A variable the container's `env` and `envFrom` do not set - the script's own, or one the image's
-  environment sets - is not read, and a program a launcher picks from one, from a script file, or
-  from a file or a command's output it reads gets past the check: that is the third way the warning
-  names. Any word or value holding a writer's name counts, a probe that reads the listener's URL
-  among them, so the check fails closed. A container whose `envFrom` may
+  words are read as the kubelet and then a shell run them. A `$(VAR)` reference becomes the value
+  the container's `env` gives `VAR`, so `[$(PROGRAM)]` with `PROGRAM=envoy-dispatch` runs
+  envoy-dispatch. Then each `$NAME`, `${NAME}` and `${NAME...}` becomes the value the container's
+  `env` gives `NAME` (a literal, or a field of the pod such as a label) or the value a literal
+  assignment in the script gave it before (`NAME=value`, `export NAME=value`, a quoted value, a
+  value its own expansions make, read in order), `$1` to `$9` become the words after a `-c` script,
+  an unset name's `${NAME:-word}` becomes its word, and quotes and backslashes go; that reading is
+  read again until it changes nothing. So `sh -c 'exec "envoy-${ROLE}"'` with `ROLE=dispatch`, from
+  the `env` or from a label, and `PROGRAM=envoy-; PROGRAM=${PROGRAM}dispatch; exec "$PROGRAM"` both
+  run envoy-dispatch, and their blocker says the words name it `as the shell reads them`. A
+  reference or an expansion of a variable whose value the pod does not show - from a Secret or a
+  ConfigMap, or one an `envFrom` source may set (one of a name its prefix and a key of
+  `[-._a-zA-Z0-9]+` form) - counts as a writer of every bucket, its blocker naming the expansion. A
+  variable neither the container's `env` nor a literal assignment of the script sets - one the
+  image's environment sets, or one the script sets from a command's output or a loop - is not read,
+  nor are a glob and bash's `${!REF}`, and a program a launcher picks through one of those, from a
+  script file, or from a file or a command's output it reads gets past the check: that is the third
+  way the warning names. Any word, value or reading holding a writer's name counts, a probe that
+  reads the listener's URL among them, so the check fails closed. A container whose `envFrom` may
   set `ENVOY_MACHINE_ID` or `ENVOY_WEBHOOKS` (a source with no prefix, or a prefix that starts the
   name, and no `env` entry of that name, which takes precedence) counts as a writer of each bucket
   that variable could select, and its blocker says so: one nothing else names a writer, with a

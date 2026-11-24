@@ -8,8 +8,8 @@ import (
 	"net"
 	"net/http"
 	"reflect"
-	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -685,29 +686,36 @@ func startHeldCreate(t *testing.T, holds string) *heldCreate {
 	return run
 }
 
-// createInBus is the function a bucket's create runs in, as a goroutine's stack names it: bus's
+// createInBus is the function a bucket's create runs in, as a goroutine's trace names it: bus's
 // addBucketStream, on the goroutine bus.Bounded starts, which runs on to its own end once the run
 // stops waiting for it.
 const createInBus = "github.com/sjawhar/envoy/internal/bus.addBucketStream("
 
-// goroutines is every goroutine's stack (runtime.Stack).
-func goroutines() string {
-	for size := 1 << 20; ; size *= 2 {
-		stacks := make([]byte, size)
-		if n := runtime.Stack(stacks, true); n < size {
-			return string(stacks[:n])
+// createGoroutines is the id of each goroutine running a bucket's create (createInBus), read from
+// one dump of every goroutine (goroutinetest.Traces).
+func createGoroutines(t *testing.T) []uint64 {
+	t.Helper()
+	var ids []uint64
+	for _, trace := range goroutinetest.Traces() {
+		if !strings.Contains(trace, createInBus) {
+			continue
 		}
+		id, err := strconv.ParseUint(strings.Fields(trace)[1], 10, 64)
+		if err != nil {
+			t.Fatalf("read the goroutine id of %q: %v", trace, err)
+		}
+		ids = append(ids, id)
 	}
+	return ids
 }
 
-// awaitCreatesEnded waits until no goroutine runs a bucket's create (createInBus), so what a create
-// the run stopped waiting for sends has been sent, failing t after 30 s. No test of the package runs
-// in parallel with another, so a create still running is one of the test's own.
-func awaitCreatesEnded(t *testing.T) {
+// awaitCreatesEnded waits until each goroutine of ids has returned (goroutinetest.Live), so what
+// a create the run stopped waiting for sends has been sent, failing t after 30 s.
+func awaitCreatesEnded(t *testing.T, ids []uint64) {
 	t.Helper()
-	for deadline := time.Now().Add(30 * time.Second); strings.Contains(goroutines(), createInBus); time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(30 * time.Second); slices.ContainsFunc(ids, goroutinetest.Live); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("a bucket's create still ran 30 s after its held request was let go:\n%s", goroutines())
+			t.Fatalf("a bucket's create (goroutines %v) still ran 30 s after its held request was let go", ids)
 		}
 	}
 }
@@ -728,8 +736,10 @@ func awaitCreatesEnded(t *testing.T) {
 //   - held at the STREAM.CREATE, the create already sent lands after the run has stopped, as the
 //     line says ("one it had sent may still land"), and create run again finds the bucket present.
 //
-// Before the interrupt each row checks that a goroutine runs the create, so the wait for it to end
-// is not a wait for nothing. The control is TestACreateWhoseAccountInfoIsHeldAndLetGoGoesOn.
+// Before the interrupt each row takes the goroutines that run the create (createGoroutines), and
+// fails when there are none, so the wait for them to end is not a wait for nothing. No test of the
+// package runs in parallel with another, so a create running then is the test's own. The control
+// is TestACreateWhoseAccountInfoIsHeldAndLetGoGoesOn.
 func TestACreateInterruptedWithItsRequestInFlightSaysWhatMayLand(t *testing.T) {
 	const stoppedLine = "envoy-infra buckets create: stopped: interrupt signal received; it starts no create after this, but one it had sent may still land: run create again to see what the hub holds\n"
 	for _, c := range []struct {
@@ -743,7 +753,8 @@ func TestACreateInterruptedWithItsRequestInFlightSaysWhatMayLand(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			run := startHeldCreate(t, c.holds)
-			if !strings.Contains(goroutines(), createInBus) {
+			creates := createGoroutines(t)
+			if len(creates) == 0 {
 				t.Fatalf("no goroutine runs %s while the create's %s is held, so the wait for the create to end would wait for nothing", createInBus, c.holds)
 			}
 			run.interrupt(errors.New("interrupt signal received"))
@@ -754,7 +765,7 @@ func TestACreateInterruptedWithItsRequestInFlightSaysWhatMayLand(t *testing.T) {
 				t.Fatalf("the run had not ended 5 s after the interrupt, with its %s held: it waited the request out", c.holds)
 			}
 			run.held.let()
-			awaitCreatesEnded(t)
+			awaitCreatesEnded(t, creates)
 			if code != 1 || run.stdout.String() != "" || run.stderr.String() != stoppedLine {
 				t.Fatalf("the run = %d, want 1\nstdout: %q\nstderr: %q\nwant:   %q", code, run.stdout, run.stderr, stoppedLine)
 			}
@@ -778,6 +789,7 @@ func TestACreateInterruptedWithItsRequestInFlightSaysWhatMayLand(t *testing.T) {
 // is answered is counted there.
 func TestACreateWhoseAccountInfoIsHeldAndLetGoGoesOn(t *testing.T) {
 	run := startHeldCreate(t, "INFO")
+	creates := createGoroutines(t)
 	run.held.let()
 	var code int
 	select {
@@ -785,7 +797,7 @@ func TestACreateWhoseAccountInfoIsHeldAndLetGoGoesOn(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("the run had not ended 30 s after its held account info was let go\nstdout: %s\nstderr: %s", run.stdout, run.stderr)
 	}
-	awaitCreatesEnded(t)
+	awaitCreatesEnded(t, creates)
 	if want := "created " + bus.KnownSessionBucket + " (1 copies)\n"; code != 0 || run.stdout.String() != want || run.stderr.String() != "" {
 		t.Fatalf("the run = %d, want 0 and %q\nstdout: %q\nstderr: %q", code, want, run.stdout, run.stderr)
 	}
@@ -861,29 +873,51 @@ func (d *heldDial) Dial(network, address string) (net.Conn, error) {
 }
 
 // reconnectingJetStream is the JetStream context a create is given on conn, a connection dialled
-// through dial. Once the account's JetStream info is answered, it holds dial and drops the
-// connection (ForceReconnect), so the connection is reconnecting, and reports no server version,
-// until the create's STREAM.CREATE, which lets dial go and wakes the reconnect first. With no dial
-// (the control) nothing is dropped. version is what the connection reported when the account info
-// returned, and creates counts the STREAM.CREATEs sent through it.
+// through dial. Once the request at names is answered - the create's lookup of the bucket
+// ("lookup", KeyValue) or the account's JetStream info ("account info", AccountInfo) - it holds
+// dial and drops the connection (ForceReconnect), so the connection is reconnecting, and reports no
+// server version, until the create's STREAM.CREATE, which lets dial go and wakes the reconnect
+// first. With no dial (the control) nothing is dropped. version is what the connection reported
+// when that request returned, and creates counts the STREAM.CREATEs sent through it.
 type reconnectingJetStream struct {
 	natsgo.JetStreamContext
 	conn    *natsgo.Conn
 	dial    *heldDial
+	at      string
 	version atomic.Pointer[string]
 	creates atomic.Int32
 }
 
-func (r *reconnectingJetStream) AccountInfo(opts ...natsgo.JSOpt) (*natsgo.AccountInfo, error) {
-	info, err := r.JetStreamContext.AccountInfo(opts...)
+// answered drops the connection when request is the one r drops it after, and notes the version
+// the connection then reports.
+func (r *reconnectingJetStream) answered(request string) error {
+	if request != r.at {
+		return nil
+	}
 	if r.dial != nil {
 		r.dial.held.Store(true)
 		if dropped := r.conn.ForceReconnect(); dropped != nil {
-			return nil, dropped
+			return dropped
 		}
 	}
 	version := r.conn.ConnectedServerVersion()
 	r.version.Store(&version)
+	return nil
+}
+
+func (r *reconnectingJetStream) KeyValue(bucket string) (natsgo.KeyValue, error) {
+	kv, err := r.JetStreamContext.KeyValue(bucket)
+	if dropped := r.answered("lookup"); dropped != nil {
+		return nil, dropped
+	}
+	return kv, err
+}
+
+func (r *reconnectingJetStream) AccountInfo(opts ...natsgo.JSOpt) (*natsgo.AccountInfo, error) {
+	info, err := r.JetStreamContext.AccountInfo(opts...)
+	if dropped := r.answered("account info"); dropped != nil {
+		return nil, dropped
+	}
 	return info, err
 }
 
@@ -894,6 +928,37 @@ func (r *reconnectingJetStream) AddStream(cfg *natsgo.StreamConfig, opts ...nats
 		_ = r.conn.ForceReconnect()
 	}
 	return r.JetStreamContext.AddStream(cfg, opts...)
+}
+
+// reconnectingRun runs a create (createBuckets) of the known-session bucket at replicas copies on a
+// server of the test's own, through a connection that drops once the request at is answered and
+// reconnects only at the create's STREAM.CREATE, or never drops when drops is false
+// (reconnectingJetStream). It returns the run's exit code and output, the context, and the test's
+// own JetStream context on the server.
+func reconnectingRun(t *testing.T, at string, drops bool, replicas int) (code int, stdout, stderr string, reconnecting *reconnectingJetStream, js natsgo.JetStreamContext) {
+	t.Helper()
+	uri, js := server(t)
+	dial := &heldDial{}
+	conn, err := natsgo.Connect(uri, natsgo.SetCustomDialer(dial), natsgo.ReconnectWait(time.Hour), natsgo.MaxReconnects(-1))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	t.Cleanup(func() { dial.held.Store(false) })
+	connJS, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	reconnecting = &reconnectingJetStream{JetStreamContext: connJS, conn: conn, at: at}
+	if drops {
+		reconnecting.dial = dial
+	}
+	var out, errOut strings.Builder
+	code = createBuckets(t.Context(), &out, &errOut, conn, reconnecting, []string{bus.KnownSessionBucket}, replicas, func(string) {})
+	if version := reconnecting.version.Load(); version == nil || (*version == "") != drops {
+		t.Fatalf("the connection reported server version %v when its %s returned, want none: %t: this row holds nothing", version, at, drops)
+	}
+	return code, out.String(), errOut.String(), reconnecting, js
 }
 
 // A create whose connection drops after its account info, and reconnects only later, sends no
@@ -921,30 +986,9 @@ func TestACreateWhoseConnectionReconnectsAfterItsAccountInfoSendsNoCreate(t *tes
 		{"control: not dropped", false, 0, "created " + bus.KnownSessionBucket + " (1 copies)\n", "", 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			uri, js := server(t)
-			dial := &heldDial{}
-			conn, err := natsgo.Connect(uri, natsgo.SetCustomDialer(dial), natsgo.ReconnectWait(time.Hour), natsgo.MaxReconnects(-1))
-			if err != nil {
-				t.Fatalf("connect: %v", err)
-			}
-			t.Cleanup(conn.Close)
-			t.Cleanup(func() { dial.held.Store(false) })
-			connJS, err := conn.JetStream()
-			if err != nil {
-				t.Fatalf("open JetStream: %v", err)
-			}
-			reconnecting := &reconnectingJetStream{JetStreamContext: connJS, conn: conn}
-			if c.drops {
-				reconnecting.dial = dial
-			}
-			var stdout, stderr strings.Builder
-			code := createBuckets(t.Context(), &stdout, &stderr, conn, reconnecting, []string{bus.KnownSessionBucket}, 1, func(string) {})
-			version := reconnecting.version.Load()
-			if version == nil || (*version == "") != c.drops {
-				t.Fatalf("the connection reported server version %v when the account info returned, want none: %t: this row holds nothing", version, c.drops)
-			}
-			if code != c.code || stdout.String() != c.stdout || stderr.String() != c.stderr {
-				t.Fatalf("the run = %d, want %d\nstdout: %q\nwant:   %q\nstderr: %q\nwant:   %q", code, c.code, stdout.String(), c.stdout, stderr.String(), c.stderr)
+			code, stdout, stderr, reconnecting, js := reconnectingRun(t, "account info", c.drops, 1)
+			if code != c.code || stdout != c.stdout || stderr != c.stderr {
+				t.Fatalf("the run = %d, want %d\nstdout: %q\nwant:   %q\nstderr: %q\nwant:   %q", code, c.code, stdout, c.stdout, stderr, c.stderr)
 			}
 			if creates := reconnecting.creates.Load(); creates != c.creates {
 				t.Fatalf("the create sent %d STREAM.CREATE, want %d", creates, c.creates)
@@ -957,6 +1001,29 @@ func TestACreateWhoseConnectionReconnectsAfterItsAccountInfoSendsNoCreate(t *tes
 				t.Fatalf("control: KV_%s = %v, %v, want it made with a discard policy of new", bus.KnownSessionBucket, info, err)
 			}
 		})
+	}
+}
+
+// A create whose connection drops after its lookup of the bucket, before the create's first read
+// of the server version, is refused for that version with create's own line, as one that drops
+// after the account info is. That first read (bus's addBucketStream) answers nats.go's own error for
+// no version, "key-value requires at least server version 2.6.2", which the bus names with the
+// copies asked for, so at 6928405d47 the run printed "create envoy_known_sessions: ...:
+// ENVOY_NATS_REPLICAS=3: nats: key-value requires at least server version 2.6.2", which tells the
+// operator neither what happened nor to run create again. The run is at 3 copies, as that report
+// was. The control of the harness is TestACreateWhoseConnectionReconnectsAfterItsAccountInfoSendsNoCreate's.
+func TestACreateWhoseConnectionReconnectsAfterItsLookupIsRefusedForNoServerVersion(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	const refusal = "envoy-infra buckets create: refused: the connection reports no server version, as one that is not connected does, and each bucket is judged against the stream its create makes on the hub's version; KV_" + bus.KnownSessionBucket + " is not created: run create again\n"
+	code, stdout, stderr, reconnecting, js := reconnectingRun(t, "lookup", true, 3)
+	if code != 1 || stdout != "" || stderr != refusal {
+		t.Fatalf("the run = %d, want 1\nstdout: %q\nstderr: %q\nwant:   %q", code, stdout, stderr, refusal)
+	}
+	if creates := reconnecting.creates.Load(); creates != 0 {
+		t.Fatalf("the create sent %d STREAM.CREATE, want none", creates)
+	}
+	if _, err := js.StreamInfo("KV_" + bus.KnownSessionBucket); !errors.Is(err, natsgo.ErrStreamNotFound) {
+		t.Fatalf("the refused run made KV_%s: %v", bus.KnownSessionBucket, err)
 	}
 }
 

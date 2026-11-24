@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -298,15 +299,15 @@ func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCre
 		return answer
 	}
 
-	before := createGoroutines()
+	before := createGoroutines(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	release := make(chan struct{})
 	answer := open(ctx, release)
 	// The create the open leaves running once its context ends: each goroutine running the create
 	// step now that did not before the open. Goroutine ids are never reused.
-	var ours []string
-	for id := range createGoroutines() {
-		if !before[id] {
+	var ours []uint64
+	for _, id := range createGoroutines(t) {
+		if !slices.Contains(before, id) {
 			ours = append(ours, id)
 		}
 	}
@@ -328,11 +329,7 @@ func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCre
 	if _, err := infos.NextMsg(30 * time.Second); err != nil {
 		t.Fatalf("the held account info did not reach the server in 30 s after its release: %v", err)
 	}
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		running := createGoroutines()
-		if !slices.ContainsFunc(ours, func(id string) bool { return running[id] }) {
-			break
-		}
+	for deadline := time.Now().Add(30 * time.Second); slices.ContainsFunc(ours, goroutinetest.Live); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the create the open left running (goroutines %v) still ran 30 s after its held account info was released", ours)
 		}
@@ -355,23 +352,20 @@ func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCre
 	}
 }
 
-// createGoroutines is the id of each goroutine whose stack runs a bucket's create step,
-// addBucketStream, read from every goroutine's stack (runtime.Stack).
-func createGoroutines() map[string]bool {
-	stacks := make([]byte, 1<<20)
-	for {
-		n := runtime.Stack(stacks, true)
-		if n < len(stacks) {
-			stacks = stacks[:n]
-			break
+// createGoroutines is the id of each goroutine running a bucket's create step, addBucketStream,
+// read from one dump of every goroutine (goroutinetest.Traces).
+func createGoroutines(t *testing.T) []uint64 {
+	t.Helper()
+	var ids []uint64
+	for _, trace := range goroutinetest.Traces() {
+		if !strings.Contains(trace, "github.com/sjawhar/envoy/internal/bus.addBucketStream(") {
+			continue
 		}
-		stacks = make([]byte, 2*len(stacks))
-	}
-	ids := map[string]bool{}
-	for _, stack := range strings.Split(string(stacks), "\n\n") {
-		if header, _, ok := strings.Cut(stack, " ["); ok && strings.Contains(stack, "github.com/sjawhar/envoy/internal/bus.addBucketStream(") {
-			ids[strings.TrimPrefix(header, "goroutine ")] = true
+		id, err := strconv.ParseUint(strings.Fields(trace)[1], 10, 64)
+		if err != nil {
+			t.Fatalf("read the goroutine id of %q: %v", trace, err)
 		}
+		ids = append(ids, id)
 	}
 	return ids
 }
