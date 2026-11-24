@@ -84,7 +84,15 @@ func TestTheWebSearchStandInAnswersTheProvidersCallWithOneResult(t *testing.T) {
 	})
 
 	t.Run("another tool", func(t *testing.T) {
-		other := bytes.Replace(request, []byte(`"name":"web_search"`), []byte(`"name":"fetch"`), 1)
+		var call map[string]any
+		if err := json.Unmarshal(request, &call); err != nil {
+			t.Fatal(err)
+		}
+		call["params"].(map[string]any)["name"] = "fetch"
+		other, err := json.Marshal(call)
+		if err != nil {
+			t.Fatal(err)
+		}
 		answer := postWebSearch(t, client, other)
 		var got struct {
 			Error struct {
