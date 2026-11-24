@@ -22,6 +22,7 @@ import { useIssueTableActions } from "./issues-table-actions";
 import {
   issueTableLayout,
   listingColumns,
+  OpenedLabelsContext,
   type ShownColumnId,
   useIssueTableColumns,
 } from "./issues-table-columns";
@@ -106,6 +107,20 @@ export function IssuesTable({
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
+  const [labelsOpened, setLabelsOpened] = useState<ReadonlySet<string>>(() => new Set());
+  const openedLabels = useMemo(
+    () => ({
+      opened: labelsOpened,
+      setOpened: (key: string, open: boolean) =>
+        setLabelsOpened((current) => {
+          const next = new Set(current);
+          if (open) next.add(key);
+          else next.delete(key);
+          return next;
+        }),
+    }),
+    [labelsOpened]
+  );
 
   const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
   const wantsDone = !whole && (statusPicked.length === 0 || statusPicked.includes("done"));
@@ -395,48 +410,50 @@ export function IssuesTable({
         ) : null}
       </div>
 
-      <DataTable
-        empty="No issues match these filters."
-        filterCounts={openFacets}
-        filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
-        label={`${name} table`}
-        model={model}
-        noun={{ many: "issues", one: "issue" }}
-        onOpenFilterChange={setOpenFilter}
-        openFilter={openFilter}
-        renderGroup={({ entry, index, measure }) => (
-          <GroupRow
-            columns={visibleColumns}
-            viewportWidth={boxWidth}
-            continued={entry.continued}
-            epics={epics}
-            grouping={grouping[0] ?? ""}
-            index={index}
-            measure={measure}
-            onMerge={mergeEpic}
-            shown={entry.shown}
-            onRename={renameEpic}
-            onStartAll={(key) =>
-              startNext(
-                allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
-              )
-            }
-            row={entry.row}
-          />
-        )}
-        renderRow={({ row, index, measure }) => (
-          <IssueRow
-            busy={busy}
-            index={index}
-            measure={measure}
-            moved={moved}
-            onStartNext={(key) => startNext([key])}
-            row={row}
-          />
-        )}
-        scrollTestId="issues-table-scroll"
-        trailingWidth={ACTION_WIDTH}
-      />
+      <OpenedLabelsContext.Provider value={openedLabels}>
+        <DataTable
+          empty="No issues match these filters."
+          filterCounts={openFacets}
+          filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
+          label={`${name} table`}
+          model={model}
+          noun={{ many: "issues", one: "issue" }}
+          onOpenFilterChange={setOpenFilter}
+          openFilter={openFilter}
+          renderGroup={({ entry, index, measure }) => (
+            <GroupRow
+              columns={visibleColumns}
+              viewportWidth={boxWidth}
+              continued={entry.continued}
+              epics={epics}
+              grouping={grouping[0] ?? ""}
+              index={index}
+              measure={measure}
+              onMerge={mergeEpic}
+              shown={entry.shown}
+              onRename={renameEpic}
+              onStartAll={(key) =>
+                startNext(
+                  allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
+                )
+              }
+              row={entry.row}
+            />
+          )}
+          renderRow={({ row, index, measure }) => (
+            <IssueRow
+              busy={busy}
+              index={index}
+              measure={measure}
+              moved={moved}
+              onStartNext={(key) => startNext([key])}
+              row={row}
+            />
+          )}
+          scrollTestId="issues-table-scroll"
+          trailingWidth={ACTION_WIDTH}
+        />
+      </OpenedLabelsContext.Provider>
 
       <IssueTableSelection
         table={table}
