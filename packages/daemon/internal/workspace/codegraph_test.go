@@ -137,16 +137,12 @@ esac
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	dir := t.TempDir()
 
-	returned := make(chan struct{})
-	go func() {
+	// The stub holds its init until the release below, so a call that waited on the build never
+	// returns and this wait fails.
+	testwait.Receive(t, "WarmCodegraphIndexInBackground to return while codegraph init still runs", inFlight(func() struct{} {
 		WarmCodegraphIndexInBackground(dir)
-		close(returned)
-	}()
-	select {
-	case <-returned:
-	case <-time.After(time.Second):
-		t.Fatal("WarmCodegraphIndexInBackground blocked for over 1s; it must return at once")
-	}
+		return struct{}{}
+	}))
 	waitFor(t, func() bool {
 		calls, _ := os.ReadFile(callLog)
 		return strings.Contains(string(calls), "init")
@@ -170,7 +166,7 @@ esac
 
 func waitFor(t *testing.T, done func() bool, what string) {
 	t.Helper()
-	testwait.WithinPolling(t, 10*time.Second, 20*time.Millisecond, what, done)
+	testwait.Eventually(t, what, done)
 }
 
 // TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing proves the acceptance criterion directly:
