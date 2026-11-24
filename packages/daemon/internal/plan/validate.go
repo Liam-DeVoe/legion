@@ -178,16 +178,6 @@ func validate(p Plan, d Deployment, found *reasons) {
 			})
 		}
 	}
-	sets, _ := cycles(p.Tasks)
-	for _, cycle := range sets {
-		found.add(needsItself, cycle[0], func() string {
-			chain := make([]string, len(cycle))
-			for i, id := range cycle {
-				chain[i] = id + " needs " + cycle[(i+1)%len(cycle)]
-			}
-			return fmt.Sprintf("task %s needs itself: %s.", cycle[0], strings.Join(chain, ", "))
-		})
-	}
 }
 
 // cycles is one cycle of needs for each set of tasks that need each other: each strongly
