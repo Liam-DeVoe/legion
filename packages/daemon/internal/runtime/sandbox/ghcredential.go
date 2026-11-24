@@ -695,8 +695,8 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 // launch for the pod's update round (runtime.AwaitsPodUpdate), which a read that failed for a
 // moment must not cost.
 func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runtime.SpawnSpec) (bool, error) {
-	_, acts, err := runtime.Acting(ctx, r.actsAs, spec.Claim)
-	if err != nil || acts {
+	_, _, err := runtime.Acting(ctx, r.actsAs, spec.Claim) // control 1a: the acting branch always false
+	if err != nil {
 		return false, err
 	}
 	app, err := r.roleApps.Of(ctx, spec.Issue, spec.Role)
