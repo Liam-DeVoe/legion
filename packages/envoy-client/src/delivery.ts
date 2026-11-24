@@ -13,8 +13,8 @@ import {
   DISPATCH_DOCUMENT_TOPIC_PREFIX,
   DISPATCH_TOPIC_PREFIX,
   type InboundDispatchEvent as DispatchEvent,
+  type DispatchPayloadReading,
   DispatchTargetedCommentPayloadSchema,
-  DispatchTargetedDeliverySchema,
   DispatchTargetedMessagePayloadSchema,
   dedupeKeyNamesItsEvent,
   EnvelopeSchema,
@@ -942,7 +942,7 @@ type DispatchFrame =
       readonly event: DispatchEvent;
       readonly notify: unknown;
       readonly quiet: unknown;
-      readonly delivery: unknown;
+      readonly delivery: Extract<DispatchPayloadReading, { readonly kind: "event" }>["delivery"];
     }
   | {
       readonly rejectedDelivery?: DispatchDelivery;
@@ -977,22 +977,16 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
   }
   const reading = readDispatchPayload(value);
   switch (reading.kind) {
-    case "event": {
+    case "event":
       // `notify` and `quiet` are fields of the event, where the outbox marshals them (a targeted
-      // frame's event, or the payload itself), and the schemas drop both as unknown keys.
-      const wireEvent = (
-        reading.delivery === undefined ? value : (value as { readonly event: unknown }).event
-      ) as {
-        readonly notify?: unknown;
-        readonly quiet?: unknown;
-      };
+      // frame's event, or the payload itself), and the schemas drop both as unknown keys, so they
+      // are read from the event as the payload carried it.
       return {
         event: withWholeBody(reading.event, wholeBody),
-        notify: wireEvent.notify,
-        quiet: wireEvent.quiet,
+        notify: reading.wireEvent["notify"],
+        quiet: reading.wireEvent["quiet"],
         delivery: reading.delivery,
       };
-    }
     case "recovered": {
       const { delivery, event } = reading.failure;
       const commentDelivery = isCommentTargetedDelivery(delivery);
@@ -1198,13 +1192,13 @@ export function renderInbound(
         dispatchReply = dispatchCommentReplyWith(frame.event, topic, commentPayload);
         if (frame.event.type === "message.created") {
           const message = DispatchTargetedMessagePayloadSchema.safeParse(frame.event.payload);
-          const requested = DispatchTargetedDeliverySchema.safeParse(frame.delivery);
-          if (message.success && requested.success && !isCommentTargetedDelivery(requested.data)) {
+          const requested = frame.delivery;
+          if (message.success && requested !== undefined && !isCommentTargetedDelivery(requested)) {
             delivery = {
               resource: "message",
               id: message.data.id,
-              attempt: requested.data.attempt,
-              mode: requested.data.mode,
+              attempt: requested.attempt,
+              mode: requested.mode,
               replyPath: dispatchReplyPath("message", message.data.id),
               replyFields: {},
               issueKey: frame.event.issue_key,
@@ -1227,15 +1221,15 @@ export function renderInbound(
           }
         } else if (frame.event.type === "comment.created") {
           const comment = DispatchTargetedCommentPayloadSchema.safeParse(frame.event.payload);
-          const requested = DispatchTargetedDeliverySchema.safeParse(frame.delivery);
-          if (comment.success && requested.success && isCommentTargetedDelivery(requested.data)) {
+          const requested = frame.delivery;
+          if (comment.success && requested !== undefined && isCommentTargetedDelivery(requested)) {
             delivery = {
               resource: "comment",
-              id: requested.data.comment_id,
-              attempt: requested.data.attempt,
-              mode: requested.data.mode,
-              replyPath: dispatchReplyPath("comment", requested.data.comment_id),
-              replyFields: { target: requested.data.target },
+              id: requested.comment_id,
+              attempt: requested.attempt,
+              mode: requested.mode,
+              replyPath: dispatchReplyPath("comment", requested.comment_id),
+              replyFields: { target: requested.target },
               issueKey: frame.event.issue_key,
               body: comment.data.body,
               ...(comment.data.body_truncated === true ? { bodyTruncated: true } : {}),

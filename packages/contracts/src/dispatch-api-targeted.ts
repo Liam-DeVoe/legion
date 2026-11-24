@@ -133,15 +133,18 @@ export const RecoverableDispatchDeliveryFailureSchema = z
  * it shows, with its delivery line when it is a targeted frame (DispatchTargetedFrameSchema), or an
  * outbox event (DispatchEventSchema); a `recovered` targeted frame it refuses by name
  * (RecoverableDispatchDeliveryFailureSchema); or `raw`, a payload it reads as neither, `targeted`
- * when it holds a `delivery` key. The plugin's renderInbound reads every Dispatch payload through
- * this one function, and the edge listener passes a Dispatch frame only when its payload is an
- * `event` here (DispatchPayloadIsEvent, held to this function by
- * fixtures/dispatch-frame-verdicts.json).
+ * when it holds a `delivery` key. An `event` reading carries `wireEvent` too, the event object as
+ * the payload carried it (a targeted frame's `event`, or the payload itself): the schemas drop the
+ * keys they do not name, such as the outbox's `notify` and `quiet`, which a host still reads. The
+ * plugin's renderInbound reads every Dispatch payload through this one function, and the edge
+ * listener passes a Dispatch frame only when its payload is an `event` here
+ * (DispatchPayloadIsEvent, held to this function by fixtures/dispatch-frame-verdicts.json).
  */
 export type DispatchPayloadReading =
   | {
       readonly kind: "event";
       readonly event: z.infer<typeof DispatchEventSchema>;
+      readonly wireEvent: Readonly<Record<string, unknown>>;
       readonly delivery?: z.infer<typeof DispatchTargetedDeliverySchema>;
     }
   | {
@@ -154,13 +157,23 @@ export function readDispatchPayload(value: unknown): DispatchPayloadReading {
   // A targeted frame requires `delivery`, so only a payload carrying the key can be one.
   if (typeof value === "object" && value !== null && "delivery" in value) {
     const targeted = DispatchTargetedFrameSchema.safeParse(value);
-    if (targeted.success) {
-      return { kind: "event", event: targeted.data.event, delivery: targeted.data.delivery };
+    if (targeted.success && "event" in value) {
+      // The schema has just read `value.event` as an event, so it is an object.
+      const wireEvent = value.event as Readonly<Record<string, unknown>>;
+      return {
+        kind: "event",
+        event: targeted.data.event,
+        wireEvent,
+        delivery: targeted.data.delivery,
+      };
     }
     const recovered = RecoverableDispatchDeliveryFailureSchema.safeParse(value);
     if (recovered.success) return { kind: "recovered", failure: recovered.data };
     return { kind: "raw", targeted: true };
   }
   const parsed = DispatchEventSchema.safeParse(value);
-  return parsed.success ? { kind: "event", event: parsed.data } : { kind: "raw", targeted: false };
+  // The schema has just read `value` as an event, so it is an object.
+  return parsed.success
+    ? { kind: "event", event: parsed.data, wireEvent: value as Readonly<Record<string, unknown>> }
+    : { kind: "raw", targeted: false };
 }
