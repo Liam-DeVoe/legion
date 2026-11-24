@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    **Breaking:** a role of `legion.yaml`'s `roles` named `sub-owner`, or whose name starts with
+    `sub-owner-`, now fails the config load. The daemon does not boot until that role is renamed.
+    `sub-owner` is the claim role of a task's sub-owner, and each sub-owner's agent is named
+    `sub-owner-` and its task.
+time: 2026-11-24T08:34:13.017691959Z
+custom:
+    Issue: pr5169

@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+    Dispatch's `plan_task` block takes `owner`, the role of the task's sub-owner, a string read and
+    created from block schema version 12. The issue page labels it "task owner".
+time: 2026-11-24T08:35:32.037159179Z
+custom:
+    Issue: pr5169
