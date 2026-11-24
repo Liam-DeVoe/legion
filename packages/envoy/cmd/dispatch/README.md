@@ -446,7 +446,7 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   It holds GitHub's answer that the App is not installed for an hour (`cireconcile.AbsentAppRecheck`), for a project's default repository too, so it asks about such a repository once an hour and not once a pass.
   The cost is that the repair can lag by up to an hour after an operator installs the App on a repository, which is accepted because the live webhook path carries the repository's new events meanwhile.
   For a project's default repository the hold has a second cost: after an operator installs the App, the WARN and `defaults_skipped` of 1 also stand for up to an hour, until a pass asks GitHub again.
-  The issues half reads the repositories of closed issues too: an open issue that names no repository works in the repository of the nearest issue above it, whatever the status of that issue.
+  The issues half reads the repositories of closed issues too: an open issue that names no repository works in the repository of the nearest issue above it in its own project, whatever the status of that issue.
 
 - A pass reads a repository's open heads in batches, over GraphQL: one query answers twenty open pull requests with every check suite and every check run of each one's head commit (`cireconcile.headsQuery`), and the pass asks for the next twenty with the cursor that answer carries until GitHub says there is no next page.
   The query asks for the runs of every check type (`filterBy: {checkType: ALL}`), as the REST listing is read with `filter=all`, so a head read either way is recorded from the same runs: GitHub's default answers the latest run of each name alone — on one measured head, 3 of its 32 runs.
@@ -473,6 +473,8 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   Only a completed suite is recorded: a suite that is not completed can hold the head as a queued run does (`suiteHolds`, `packages/envoy/internal/cistore/cistore.go`), so one left queued with no run of its own would hold it for ever; a running suite holds the head through its runs.
   A `tester` or `architect` check run counts only from the App `DISPATCH_REVIEWER_APP_ID` names, by the rule the listener's webhook handler calls;
   with that variable unset no verdict check is recorded, and the server says so once at start.
+  A suite of the App `DISPATCH_VERDICT_APP_ID` names, the one that writes `legion-verdict`, is not recorded, as the listener leaves it out under `ENVOY_VERDICT_APP_ID`: it is no CI result, and written into a settled record it would re-arm it, so the head would be published a second time once the App's run completes its suite.
+  Give the two variables one value; with `DISPATCH_VERDICT_APP_ID` unset every App's completed suite is recorded, and the server says so once at start.
 
 - With `ENVOY_CI_VERIFY=on` on the listener, a head's settlement is published only after a GitHub read that began after the listener asked for one (`packages/envoy/internal/cistore/verify.go`, `cireconcile.Reconciler.Verify`).
   A record cannot tell "no more checks" from "their webhooks never reached me": on 2026-11-22 the listener answered GitHub 503 for about a minute while NATS moved, a pass then wrote the runs that had finished in that minute, and the store announced `checks settled` on heads whose CI GitHub was still running.
@@ -1588,6 +1590,8 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   A type is data, so a type added by a migration reaches a running server without a restart;
   a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value the install refuses; `schemanodes.Installer` makes both checks, the read's (`schemanodes.Read`) and the install's (`pmdoc.Install`).
   Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
+  Migration `20261123080000` adds `plan_task`'s `steps` attribute node and moves every block type to version 5, the version `pmdoc/schema/blocks.json` declares since #4611.
+  It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
   A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
   A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
@@ -1634,6 +1638,7 @@ A process that finds it held tries again
   A webhook GitHub never delivered leaves the head's record behind GitHub: the head never settles, or settles while GitHub still runs a check, and no notification announces either.
   It needs NATS, whose `envoy_ci_state` bucket it binds and never creates, and the App private key; without either it is off and says so at start.
   The pass compares a `tester` or `architect` check run's `app.id` against `DISPATCH_REVIEWER_APP_ID`, and with that variable unset records no verdict check at all.
+  It leaves out the check suites of the App `DISPATCH_VERDICT_APP_ID` names, and with that variable unset records every App's completed suite.
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
   That interval is the pass's own bound too: a pass that cannot cover every head within it ends there, logs its line and leaves the cursor for the pass after it, so the lease is free when the next pass is due (CI reconcile, above).
 
@@ -1855,7 +1860,7 @@ If T2 deploys before T1 merges, that database applies T2 then T1 while a fresh o
 So a migration must not depend on its order relative to one written in a concurrent pull request, another branch open at the same time;
 one that needs another's effect is written after that one has merged.
 
-The runner applies every version it has not recorded, so before it touches the database it reads the whole directory (`pgmigrate.Load`) and refuses to start, applying nothing and naming every file concerned, when two migrations share a version (it would apply the first and skip the rest as already applied;
+The runner applies every version it has not recorded, so before it touches the database it reads the whole directory the binary embeds (`pgmigrate.LoadBuilt`, every check `pgmigrate.Load` makes but the parse of non-transactional migrations below) and refuses to start, applying nothing and naming every file concerned, when two migrations share a version (it would apply the first and skip the rest as already applied;
 keep the version on the file that merged to `main` first, since a database may already have applied it, and give each of the rest the UTC moment it was created), when a file is named other than `<version>_<name>.up.sql`, `<version>_<name>.down.sql` or `<version>_<name>.census.sql` (a `.down.sql` is a rollback script an operator runs by hand, and a `.census.sql` is the migration's census, "Pre-deploy census" below;
 each needs its `.up.sql`), when a census is not one `select` or calls a function it may not (below), when a version is not decimal digits of a positive number the `bigint` column holds, and when a file cannot be read.
 The directory is embedded with `all:`, which keeps a name beginning with `_` or `.`, so such a name is refused like any other.
@@ -1912,7 +1917,7 @@ What the operator does:
   The first replaces line names the identity the version first shipped with, and a later line goes after the ones there, in their order; the next boot accepts the row as it is.
   The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way, and for one that Postgres reads as part of a string literal, a dollar-quoted body or a continued string, where it would declare nothing.
   A line ending in a carriage return, as a file with CRLF line endings has, is read without it.
-  Before the merge, the `envoy-go-checks` job compares every migration the base already holds with the head's file of the same version, building `./internal/pgmigrate/cmd/edited-migrations` and running it with `--base <commit>` (built and run, it exits 2 when the check could not be taken; `go run` reports every failure as exit 1).
+  Before the merge, the `envoy-go-build` job compares every migration the base already holds with the head's file of the same version, building `./internal/pgmigrate/cmd/edited-migrations` and running it with `--base <commit>` (built and run, it exits 2 when the check could not be taken; `go run` reports every failure as exit 1).
   The base is the first parent of the commit the run tests, on a pull request and in the merge queue; on the bypass check's run at main's tip (`main-bypass-check.yaml`, whose push can carry several commits) it is the commit main pointed at before that push, passed as ci.yaml's `migration-base` input, and a dispatch on main that names none fails the check.
   On a dispatch of another branch that names none, a full run started by hand, the base is the branch's merge base with main (`.github/scripts/edited-migrations-base.sh` picks the base for each run).
   It fails a head file whose first replaces line is not the base's first identity, a head file whose replaces lines do not begin with the base's, in the base's order, then one naming the base's file itself, name and checksum, since each of those is an identity or a text a database the base accepts may record, and a base file whose version the head no longer has a file of, each naming the lines to begin with, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
@@ -1934,8 +1939,9 @@ A migration edited in place after this runner's first release needs its replaces
 The pre-deploy census (`envoy-dispatch census`) reads only which versions are recorded, and judges no identity.
 
 A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
-The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.
-It refuses, naming the line, a file that holds the marker as a comment of its own on any other line, as one does with a replaces line written above it: that file would run in a transaction, and its concurrent index would fail on a fresh database.
+The store's test `TestTheEmbeddedMigrationsPassEveryCheckLoadMakes` holds the embedded set to `pgmigrate.Load`, which accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set there.
+A start does not repeat that parse, which compiles libpg_query's WebAssembly, for a set that cannot change after the build: a marked migration the database has not applied is parsed when its turn comes, and refused before its statement runs (`pgmigrate.ExecNonTransactional`), after the pending migrations before it have been applied.
+The loader, at a start as in that test, refuses, naming the line, a file that holds the marker as a comment of its own on any other line, as one does with a replaces line written above it: that file would run in a transaction, and its concurrent index would fail on a fresh database.
 The runner owns and closes that connection and holds the session-level advisory lock on the same migration key through the build and its separate version insert, excluding transactional runners and schema-version readers too.
 Every runner takes that key by polling `pg_try_advisory_lock` as statements of its own, with nothing open between two tries, and never by a blocking call: a backend blocked on a lock keeps the snapshot its statement took, and a concurrent index build waits for every older snapshot, so a blocking wait and the build that holds the key deadlock (SQLSTATE 40P01, measured on PostgreSQL 18.6).
 That holds at each of the three places a boot waits for the key (`prepareVersionTable`, `applyMigrationOnce`, `applyNonTransactionalMigration`) and at the auto-deployer's schema read.
@@ -3363,6 +3369,7 @@ It refuses:
     Nor may the migration hold a statement after which its names can resolve to another table, a `set` of any setting but `lock_timeout` and `statement_timeout` among them.
     An enabled trigger of the table, and the default of a column an insert leaves out, run for each row written, and the census reads neither, as it reads no function's body.
     A column default does not refuse, but an enabled trigger can read any table, so the admission is refused while the table has one that is not on the census's reviewed list (`reviewedTriggers`), whose entry says why its body is bounded; an admitted table's report prints the number of statements, the bound and the table's enabled triggers.
+    The list holds `graph_nodes`' two triggers, `graph_nodes_block_schema_written` and `graph_nodes_block_schema_removed` (migration `20261109051232`): each runs `block_schema_changed`, which reads no table and sends one `dispatch_block_schema` notification, one per transaction however many rows it writes.
     An enabled event trigger does not take the admission away either, since an `insert` and an `update` fire none.
     A migration that writes rows of such a table any other way is refused with what is not bounded (`…, and lock table is not one`, `…, and an insert of 1,001 rows, above the 1,000 a bounded write may hold, is not one`), and one that writes none of its rows and is not exempt above is refused on the size alone;
 
@@ -3534,6 +3541,16 @@ the output says so on the line that uses it.
 It walks each kind in batches, writing a batch's nodes, its tuples and the projection columns that name them in one transaction, so a row and its node commit together or not at all, exactly as a live write does.
 It appends no event of its own, and a fact whose row's own event cannot be found carries the store's sentinel (`source_event` 0) as its cause:
 a comment's own event is the `comment.created` that stored it, a block's is the event that recorded the version its row was written at, and a block reference's is its `source_seq`, which is that event's id already.
+Each of those reads probes an index of its own, so the run reads no whole table once for each row: a block batch reads the `artifact.version` event of each document and version among its rows through `events_artifact_version_number` (migration `20261119020700`), and a comment batch reads each comment's `comment.created` event through `events_comment_created_id` (migration `20261119020800`) (`TestTheBackfillsEventReadsProbeTheirIndexes`).
+The walks over the blocks and the block references read each batch from the last one's key on, in their order, through `document_blocks_naming_no_node` (migration `20261119020900`) and `block_refs_naming_no_node` (migration `20261119021000`), each partial on the rows naming no node (`TestTheBackfillsWalksReadOnlyTheirBatch`); `node_id` and `from_node` are hash indexed, which keeps no order, and the comment walk reads `comments_pkey`.
+Before its passes the run analyzes `node_kind` of the three tables (`TestTheBackfillAnalyzesTheColumnsItsWalksReadBy`): the release adds those columns after any analysis, and with no statistics of them the planner guesses that a fraction of a percent of the rows name no node and reads every such row through a bitmap for each batch instead of one batch through the index.
+A block-reference batch's read again under its locks checks each row's block node by that node's key, a subquery Postgres runs for each row (`TestTheHeldBlockRefReadProbesEachRowsBlockNode`): as a join, right after the block pass wrote the block nodes and before any analysis counted them, the plan read every block node once per batch.
+The run refuses to start, naming each, while any of these four indexes is absent or invalid (`graphcensus.BackfillIndexes`, `TestTheBackfillRefusesToRunWithoutItsIndexes`, `TestTheBackfillRefusesToRunOverAnInvalidIndex`): it prints `backfill-graph-store: refused: the index(es) … are absent or invalid`, then the statements that build each one again by hand, and exits 1, before it writes anything.
+The command migrates the database before it runs, so by then each index's version is recorded, and the runner applies a recorded version no more: an index the refusal names went missing or invalid after its migration ran (its down file run by hand, or a concurrent build by hand that failed), and no boot builds it again.
+The remedy is the printed statements, run with `psql` one a line, each on its own outside a transaction as `psql`'s default autocommit runs them: a `set search_path` to the schema the tables are in, a `drop index concurrently if exists` of an index that stands invalid (its migration's `create … if not exists` would leave it as it is), and the migration's own `create index concurrently if not exists …`; then run the backfill again.
+Without these indexes each event read was a read of `events` whole, and each batch read and sorted every row still naming no node, so the run's time grew with the square of the data: over a seeded database of 12,884 issues, 270,529 document blocks and 64,460 events, the block pass took 43.9 minutes, against 20.7 seconds over a tenth of that.
+With them, on one machine and beside a serving build, the block pass took 85.7 s over 270,564 blocks (0.32 ms a block) against 7.2 s over a tenth (0.26 ms), the block-reference pass 0.26 ms a reference against 0.19 ms, and the comment pass 0.65 ms a comment against 0.43 ms, where the build before them took 6.24 ms a block over the full database.
+Measured again in one pod against the build before these changes, over the same full database, the whole run took 228 s against 3,249 s: 0.58 ms a block against 5.55 ms, 0.69 ms a block reference against 0.74 ms, and 1.27 ms a comment against 61.0 ms.
 Each tuple takes its row's own `created_at` as its time and its row's own `source_seq` as its `legacy_source_seq`, so a backfilled edge is dated and sequenced exactly as the `graph_edges` arm it replaces dates and sequences it.
 Once every row of a kind the store can hold names its node, the run reports that kind `complete=true`, which is the moment the arm of `graph_edges` over that kind's table answers nothing.
 
@@ -4516,6 +4533,12 @@ Each item below names a path with its method and identity, then its purpose.
 - `/ws/live` (GET; cookie, trusted header, or bearer)
 
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.
+  A `legion_issue` view, `{kind: "legion_issue", issue}`, names one issue and nothing else, and its snapshot and deltas carry the body of `GET /api/v1/issues/{key}/legion`, as a `legion` view's carry the body of its project's board.
+  A frame that names a project, a window, an `at` or a `query` beside the issue, or names no issue, is `INVALID_FRAME`.
+  The view moves when the sampler reads the daemon of the issue's project, when `PUT` or `DELETE /api/v1/projects/{key}/legion/daemon` names or removes that daemon, and when a write of one of the issue's runs that stores something new commits (`dispatch_workflow_runs`).
+  At each connection of the hub's listener to Postgres, the hub reads every `legion` and `legion_issue` view again, so a notification sent while the listener was down leaves no view stale.
+  Dispatch never refuses a `legion_issue` view for a project that names no daemon: its body then says `configured` `false`.
+  A well-formed view has one refusal, an `error` frame with the route's code `NOT_FOUND`, for a key that names no issue.
   An events subscription resumes after a decimal event id;
   its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, or above the head (a log that was reset).
   An events subscription that falls 64 events behind the relay catches up from the log within the same bounds and goes on;
@@ -4657,6 +4680,25 @@ Each item below names a path with its method and identity, then its purpose.
   The Legion board of the project its path names, from what the sampler recorded of that project's daemon; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
   Eleven columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
+
+- `/api/v1/issues/{key}/legion` (GET; cookie, trusted header, or bearer)
+
+  One issue's Legion state, from what the sampler recorded of the daemon of the issue's project: `{issue, project, configured, state, read, runs_revision}`.
+  The `/ws/live` `legion_issue` view carries the same body and sends each change.
+  `project` is the project of the issue, and `configured` is `true` when that project names a daemon.
+  `state` is `null` when the daemon does not record the issue.
+  Otherwise it is `{phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}`.
+  `phase_since` is when Dispatch stored the phase, and `phase_start_seen` is `false` when that phase is the first value that Dispatch stored for the issue.
+  `roles` is `[{role, state}]`, one entry for each role with a claim, and `[]` when no role has one.
+  `slot` is the index of the slot that the issue holds, or `null`.
+  `waiting_line` is `{place, length}`, where `place` counts from 1 in the daemon's waiting line, or `null` when that line does not name the issue.
+  `blocked_by` lists the issues that block the issue, in the order the daemon stored them, and is `[]` when no issue blocks it.
+  `waiting_on` is the daemon's object exactly as stored, or `null`.
+  `read` is the newest read of the daemon, `{at, ok, error}`, or `null` when no read was recorded.
+  `runs_revision` counts the tuples of the issue's runs: it is `0` for an issue with no run.
+  Each write of a run that stores something new makes it larger, and a write sent again leaves it.
+  A project that names no daemon is not refused: its issue answers `configured` `false`, `state` `null` and `read` `null`, whatever rows an earlier daemon left, and its `runs_revision`.
+  The one refusal is `404 NOT_FOUND`, for a key that names no issue, as `GET /api/v1/issues/{key}` answers it.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 
@@ -4927,6 +4969,9 @@ Each item below names a path with its method and identity, then its purpose.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
   `repo` (`owner/name`) is the issue's own repository, which may be any repository at all:
   `400 INVALID_ISSUE` when it is not `owner/name`.
+  `parent` may be an issue of any project: `400 PARENT_INPUT` when no such issue exists, `409 PARENT_INPUT` when the new issue would sit more than 32 links below its root, counting the links in every project, and `403 PROJECT_SCOPE` when a credential that may write one project names a parent outside it.
+  A parent of another project passes on no repository, components, `legion` label or assignee:
+  `resolved_repo`, an inherited component attachment, the architecture tree's owner and `legion_managed_status` read only the ancestors in the issue's own project, so such an issue takes its own project's default repository, and a create that names no assignee and acts for no person lands on its own project's default assignee rather than the parent's.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
@@ -4942,6 +4987,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
   not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); the route's row in `internal/dispatch/api/routes_table.go` (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
+  A `parent` may be an issue of any project, under the refusals a create meets, and one that would make the issue its own ancestor is `409 PARENT_INPUT`;
+  a parent of another project passes on no repository, components or `legion` label, as on creation.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
@@ -5445,6 +5492,10 @@ Each item below names a path with its method and identity, then its purpose.
   `?download=true` is the download address, which the web app's Download links use (exactly `true`; any other value answers as without it):
   every kind answers there `Content-Disposition: attachment` under that name and `Cache-Control: private, no-cache`, so a browser asks again before it uses a copy it holds and saves under the name of the moment, an older version's `-v<number>` included once a newer version arrives.
   A document version answers there its Markdown, the text the JSON's `markdown` field holds, rather than the JSON, as `text/markdown; charset=utf-8`, its name given `.md` first when it ends in neither `.md` nor `.markdown`, whatever their case (`Launch notes-v1.md`).
+  `?blocks=true` (exactly `true`) carries the document version's typed blocks under `blocks`, each read from that version's own text under the id its opening line writes, with its `type`, its `attributes`, its `token` and its `from` and `to` byte range in the `markdown` of the same answer.
+  That `markdown`, with `sha256` and `size`, is the version as this build renders it, which is the stored text unless an earlier renderer wrote it otherwise; a version holding an element this build cannot read is then `409 DOC_NEWER_CONTENT`.
+  Untyped blocks are not listed, because the stored text names no id for them; a listed block's `references` read zero and it carries no `embedding`, which describe the live document.
+  A build before this one ignores the parameter and answers no `blocks` key.
 
 - `/api/v1/artifacts/{id}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -5534,7 +5585,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read an issue artifact version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` included.
+  Read an issue artifact version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` and `?blocks=true` included.
 
 - `/api/v1/issues/{key}/artifacts/{slug}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -5562,7 +5613,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read an unlinked project document version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` included.
+  Read an unlinked project document version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` and `?blocks=true` included.
 
 - `/api/v1/projects/{key}/artifacts/{slug}/versions` (POST; cookie, trusted header, or bearer)
 
