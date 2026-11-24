@@ -140,6 +140,10 @@ test("every other completion reports the commit the workspace stands on, and rea
   for (const [phase, role] of [
     ["retro", "implementer"],
     ["merging", "merger"],
+    // The fresh agent of the role `acceptance` completes `accepting` with a verdict and writes no
+    // handoff record, so it asks Dispatch for none: the daemon would refuse a record it does not
+    // read for that phase.
+    ["accepting", "acceptance"],
     ["admitted", "architect"],
     ["accepting", "architect"],
     ["implementing", "architect"],
@@ -171,19 +175,6 @@ test("a role of the deployment reports the commit the workspace stands on, and r
     expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
     expect(reads).toEqual([]);
   }
-});
-
-// The fresh agent of the role `acceptance` completes `accepting` with a verdict and writes no
-// handoff record, so it reports the commit its workspace stands on and asks Dispatch for none: the
-// daemon would refuse a record it does not read for that phase.
-test("the fresh agent of acceptance completes accepting with no handoff record", async () => {
-  const { jj, calls } = fakeJj();
-  const { latestHandoff, reads } = recordingDispatch();
-  await expect(
-    findHandoffReport({ phase: "accepting", role: "acceptance", env, jj, latestHandoff })
-  ).resolves.toEqual({ commit: STANDING });
-  expect(calls).toEqual([["log", "-r", "@-", "--no-graph", "-T", "commit_id"]]);
-  expect(reads).toEqual([]);
 });
 
 test("a reviewer whose review moved its issue on reports its own newest review record and the head it names", async () => {
