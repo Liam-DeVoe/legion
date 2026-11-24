@@ -1979,6 +1979,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       refuses: (message: string) => hook(handlers, "session_stop")(refusedBy(message), context),
       /** The run's end, which is what reports the turn's outcome to the daemon. */
       ends: (event: unknown) => hook(handlers, "agent_end")(event, context),
+      /** A run starting, whatever started it. */
+      starts: () => hook(handlers, "agent_start")({}, context),
     });
     /** jj's root commit: `@-` of a workspace fresh from `jj git init`, which is what a phase that
      * writes no handoff (retro, here) reports as the commit it stands on. */
@@ -2679,14 +2681,14 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // reminder it earned bought another refused turn. The worker read nothing and said nothing, so
     // the turn earns no continuation and the record stands as the last real turn left it. One
     // timer is armed all the same: a refused turn that carried no task leaves nothing else to wake
-    // the worker, and below `launch_failure_limit` the daemon counts the turn rather than failing
-    // the claim, so without it a single transient refusal would leave the issue idle. A task's
+    // the worker, so without it a single transient refusal would leave the issue idle. A task's
     // refused turn is woken by the daemon as well, whose provider-error wait keeps the task and
-    // writes its value again once the wait is over, unless the provider answered a 4xx other than
-    // 401, 403, 408 and 429, which fails the claim. By the time the timer fires the daemon has had
-    // every refusal of the run reported, and at the limit the claim it reads is failed and the
-    // reminder is dropped — which is what ends the reminding of a session the provider refuses for
-    // ever.
+    // writes its value again once the wait is over. What ends the reminders is the daemon failing
+    // the claim, which the timer's record check reads: it does at once for a refusal whose status
+    // cannot clear, of the task's turn or of a reminder's own, which ran no task and which the
+    // daemon judges from its turn-outcome report (dispatch://INFRA-4508). A refusal that can clear
+    // fails nothing, so the reminders keep their pace, and the controller is told once at six such
+    // turns in a row.
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -2708,8 +2710,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     // The daemon's own counter: every turn's end is reported, under a sequence this plugin counts
-    // itself within the claim's launch generation, so the daemon can fail a claim whose provider
-    // refuses turn after turn.
+    // itself within the claim's launch generation, from which the daemon derives the claim's run of
+    // refused turns. A turn of no task, a reminder's among them, names no task and is never marked
+    // unprompted; a refused one carries the status the provider refused it with in its provider
+    // error, which is what the daemon judges it by (dispatch://INFRA-4508).
     test("every turn's end reports its outcome to the daemon, in sequence", async () => {
       const worker = await bootStalling({});
       const outcomes = () =>
@@ -2717,10 +2721,17 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
           .map((request) => request.body);
 
+      await worker.starts();
       await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      await worker.starts();
       await worker.ends({
         messages: [
-          { role: "assistant", stopReason: "error", errorMessage: "Overloaded: the model is busy" },
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "Overloaded: the model is busy",
+            errorStatus: 529,
+          },
         ],
       });
 
@@ -2742,14 +2753,56 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           outcome: "refused",
           message: "Overloaded: the model is busy",
           providerError: {
-            status: 0,
+            status: 529,
             provider: "",
             model: "",
             message: "Overloaded: the model is busy",
-            retryable: false,
+            retryable: true,
           },
         },
       ]);
+    });
+
+    // A run that settles with a message waiting — an Envoy steer the host runs next — and the run
+    // that waiting message starts are turns of no task: no take was handed to either. So each
+    // report names no task, which is how this plugin says what the `unprompted` mark of a plugin
+    // from before the task's number says, and the daemon judges the second from its report, a 400
+    // there failing the claim. The entry reads nothing of `ctx.hasPendingMessages()` for this.
+    test("a run a waiting message starts after a settled end is reported with no task and its status in its provider error", async () => {
+      const worker = await bootStalling({});
+      const outcomes = () =>
+        daemonRequests(worker.requests)
+          .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+          .map((request) => request.body);
+
+      await worker.starts();
+      await hook(worker.handlers, "agent_end")(
+        { messages: [{ role: "assistant", stopReason: "stop" }] },
+        { ...worker.context, hasPendingMessages: () => true }
+      );
+      await worker.starts();
+      await worker.ends({
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "400 invalid_request_error",
+            errorStatus: 400,
+          },
+        ],
+      });
+
+      expect(outcomes()[0]).toMatchObject({ sequence: 1, outcome: "clean" });
+      expect(outcomes()[1]).toMatchObject({
+        sequence: 2,
+        outcome: "refused",
+        providerError: { status: 400 },
+      });
+      for (const body of outcomes()) {
+        expect(body).not.toHaveProperty("task");
+        expect(body).not.toHaveProperty("unprompted");
+        expect(body).not.toHaveProperty("httpStatus");
+      }
     });
 
     test("a turn that ends on a tool call written as text is told the call did not run", async () => {

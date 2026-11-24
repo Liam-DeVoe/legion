@@ -631,10 +631,27 @@ ended this claim's turn: <cause>`, where the cause names that status, and the ho
 architect's to retry or escalate as any held phase is. The claim's own record carries that
 failure under the cause word `provider_error`, with the same sentence as its `detail`.
 
-**After six turns of one claim in a row have ended in a provider error**, the project's controller
-is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
+**A turn that was not the take's** — a phase reminder the plugin starts itself, an Envoy message, a
+background job's result — names no task in the plugin's turn-outcome report, so the daemon judges
+it from that report alone, by the HTTP status in its provider error (a plugin from before daemon
+API contract 248 says the same with `unprompted` and `httpStatus`). The same rule holds: a status
+that cannot clear fails the claim at once, with `why` reading `a provider error that cannot clear
+ended a turn this claim's agent ran with no prompt of the daemon's: <cause>`, holds the issue under
+the cause word `provider_error`, and so ends the plugin's reminders. Any other refusal, or one
+whose report carries no status, fails nothing and logs `supervise: a turn that ran no prompt of the
+daemon's ended in a provider error`; the reminders keep their pace of one every 5 minutes, and the
+turn counts in the claim's run of provider-error turns below. Nothing is given again for such a
+turn: it carried no task. A report a plugin marks `unprompted` is read as one naming no task,
+whatever task it names.
+
+**After six turns of one claim in a row have ended in a provider error**, whether the take's turn
+or another, the project's controller is told once, as `provider-errors on <KEY>`,
+with the run, the model where the report's provider error named one, and the cause
 (`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
-held and nothing is stopped by that count: the task is still kept and still given again. The run
+held and nothing is stopped by that count. The take's task is still kept and still given again on
+the ladder, and the notice says the daemon writes it again; a turn that was not the take's carried
+no task, so nothing is given again for it, the reminders keep their pace, and a notice whose sixth
+turn was such a turn says that the daemon sends no task again for it. The run
 goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
 compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
@@ -918,8 +935,11 @@ claim launching with no process, and the relaunches of processes the previous da
 back into the pacing in one order, the order their tasks were queued, the oldest first, so among
 those a claim that waited before the restart goes ahead of work owed after it; the stale-plugin
 pass takes its turns as it reaches the gate, and while the project is paused the unfinished
-launches wait for the resume instead. Read what the pacing still holds before you act on anything
-below:
+launches wait for the resume instead. A relaunch that reaches its gate an interval or more after
+the turn the boot gave it — its admission waits behind every other launch's — is reserved a turn
+afresh, at the back of the queue unless the pacing has drained, and the daemon logs `supervise:
+this launch reached the wake gate an interval or more after the turn its caller reserved` with the
+moment it is now `due`. Read what the pacing still holds before you act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -1668,7 +1688,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   delivery of the daemon's own tells its agent what the relaunch ended`): a numbered task of
   origin `notice`, whose delivery id starts `relaunch:`, which the worker takes and which the
   report naming its number finishes as any task, or the end of its turn for a worker whose plugin
-  is below contract 240 and names no task in its reports. A newer task replaces
+  is below contract 248 and names no task in its reports. A newer task replaces
   it while no take of it is accepted, and carries the sentence in front of itself instead. The
   same task is given when the claim's held task is dropped rather than taken: the issue left the
   task's phase, the task is an ask an older daemon queued for an update round, or a root
@@ -2313,11 +2333,17 @@ notice comes once per handoff commit, from whichever read finds it first.
     again after it applied writes no line.
 
   A published settlement with no new `CI settled` message, no drop line and no give-up line is one
-  of three things:
+  of four things:
   - The daemon applied it, and the line it would tell is the line it already told for that head,
     so it tells nobody again. The earlier `CI settled` message of that head stands for it.
   - The daemon applied it on a tree that lingers after its root left the workflow, where the
     daemon tells nobody.
+  - The daemon applied it and woke the released worker of the issue's open phase with a task that
+    names the settlement: `wake: a released pod is coming back`, kind `checks`, whose `detail`
+    starts with the head's first 12 characters. That task is the worker's `CI settled` message.
+    Each other released role's message ends `outbox role message finished undelivered: its role's
+    pod is released, and the message is not worth a wake`, unless a project pause holds it for the
+    role, when it waits for the role's launch.
   - In every other case, it was lost between the listener and the daemon.
 
   No line at all for a finished head means that no event of that head reached the listener's

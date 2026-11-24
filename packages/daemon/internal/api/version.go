@@ -3516,7 +3516,35 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 240: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
+// 232: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); a number outside that range is taken as no status,
+// and the daemon logs a warning naming it rather than refusing the report. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 232; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above 228), and a reading of
+// the 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. The forward merge of 2026-11-24 that brought in e14345bf
+// brought main's 228 (INFRA-1575's entry above), and a reading of the 137 open heads that change
+// this file, between 2026-11-24T09:36:47Z and 09:39:37Z, found 240 declared by #3831 and 229 to
+// 231 declared by others, and 232 by none, so this entry moved to 232, the lowest number above
+// main's 228 that no other open pull request declares. Read main's own number and every open head
+// again at the next merge rather than from this line.)
+//
+// 248: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
 // The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
 // `legion_tasks` bucket, which the listener relays to the session holding that role, and the
 // worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
@@ -3535,7 +3563,13 @@ package api
 // began the turn with it and the agent never took it — which puts that take back to await its own
 // turn also where the daemon has lost its count of the process's turns (a daemon restarted under
 // it, or a hello that does not say its backlog is whole); each is optional, and a report without
-// `held` is read as before. The worker shim's `hello2` carries `backlogWhole`, true where the
+// `held` is read as before. A plugin before this contract reports as 232 says, with `httpStatus`
+// and `unprompted`, and this daemon reads both: a status in `providerError` is read before
+// `httpStatus`, which is read where `providerError` names none, and a report marked `unprompted`
+// is read as one naming no task, whatever its `task` says, so its refusal is judged as the turn
+// that was not the take's that it is and it finishes nothing. A plugin at this contract sends
+// neither: the report of a turn that was not the take's names no task, and a refusal's status
+// rides in `providerError`. The worker shim's `hello2` carries `backlogWhole`, true where the
 // backlog the shim holds for a daemon that is not connected dropped no frame since its last
 // connection took it (shimwire.Hello2.BacklogWhole), and left out when false; a hello without it,
 // from a shim that dropped frames or one built before the member, is read as a backlog that may
@@ -3564,22 +3598,22 @@ package api
 // carry `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, keys of legion.yaml
 // that no reader types, which move no contract of their own (answers.go's typedSettings).
 // This daemon serves each of these down through the shaping 193 brought, to a caller whose header
-// states a contract below 240 or, stating none, whose pod's claims record one. The state is served
+// states a contract below 248 or, stating none, whose pod's claims record one. The state is served
 // without `unseenTaskValues` (the last row of shaping.go's stateNarrowings, withoutUnseenTaskValues,
 // which follows the pod's highest contract as every band does). `never_reconnected` is declared at
-// 240 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
+// 248 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
 // withoutNeverReconnected (a row of shaping.go's valueStrips, which follows the pod's lowest
 // contract) serves it as `never_registered` in `failure.cause` and `pendingCause`, since a plugin
-// from 75 up to 240 reads both through a strict enum and refuses the whole body for a word it does
+// from 75 up to 248 reads both through a strict enum and refuses the whole body for a word it does
 // not name; the word is rewritten rather than its key dropped, because a key gone would say the
 // claim's failure has no cause or that nothing failed its relaunching process, and
 // `never_registered` is the nearest cause such a reader knows. The registration's answer is served
 // without `task` and `finished` (shaping.go's withoutTaskReading, the registration's row of
 // shapeAnswer, which placedByPod places by the caller's pod). The task read's and the take's
-// answers are rows of answers.go's Answers from 240 (`task` and `take`), and `claims/task-seen`
+// answers are rows of answers.go's Answers from 248 (`task` and `take`), and `claims/task-seen`
 // answers the 204 every claim report answers (`no-content`); the take answer's `outcome` is the
 // discriminator of a union of literals and so no enumerated field. The three task routes' bodies
-// and the turn outcome's `task`, `providerError` and `held` are in the request records from 240
+// and the turn outcome's `task`, `providerError` and `held` are in the request records from 248
 // (`packages/contracts/fixtures/daemon-api/request-shapes.json`). This change carried its own two
 // rows of the state's narrowing table before 193 moved that table into shaping.go, and keeps none
 // of its own now: the band and the value strip above are those two rows in 193's tables, so the
@@ -3706,9 +3740,15 @@ package api
 // (#4540), 232 (#5271), 233 (#4173, #4180, #4182, #4193 and #4932), 234 (#4065), 235 (#5204), 236
 // (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592), 241 (#4771 and #5307), 242 (#4596),
 // 243 (#5349) and 244 (#3831) declared, so this entry moved to 240, the lowest number above
-// main's 228 that no other open pull request declares.
+// main's 228 that no other open pull request declares. The forward merge of 2026-11-24 that
+// brought in 9a4e7a14e1 brought main's 232 (#5271, INFRA-4508's entry above). A reading of every
+// open pull request at that merge, which ended at 2026-11-24T13:54:12Z, found 233 (#4173, #4180,
+// #4182, #4193 and #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238
+// (#5285), 239 (#4592), 240 (#3712 and #4771), 241 (#4049 and #4392), 242 (#4596), 243 (#5349),
+// 244 (#3831), 245 (#5158), 246 (#4960) and 247 (#4580) declared, so this entry moved to 248, the
+// lowest number above main's 232 that no other open pull request declares.
 // Read the base's own number and every open pull request again at the next merge rather than from
 // this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 240
+const DaemonAPIVersion = 248

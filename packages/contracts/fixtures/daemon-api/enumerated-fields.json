@@ -561,27 +561,27 @@
     "values": [
       {
         "value": "architect",
-        "since": 240
+        "since": 248
       },
       {
         "value": "implementer",
-        "since": 240
+        "since": 248
       },
       {
         "value": "merger",
-        "since": 240
+        "since": 248
       },
       {
         "value": "planner",
-        "since": 240
+        "since": 248
       },
       {
         "value": "reviewer",
-        "since": 240
+        "since": 248
       },
       {
         "value": "tester",
-        "since": 240
+        "since": 248
       }
     ]
   },
@@ -789,7 +789,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 240
+        "since": 248
       },
       {
         "value": "never_registered",
@@ -827,7 +827,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 240
+        "since": 248
       },
       {
         "value": "never_registered",
@@ -865,7 +865,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 240
+        "since": 248
       },
       {
         "value": "never_registered",
@@ -903,7 +903,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 240
+        "since": 248
       },
       {
         "value": "never_registered",
@@ -1733,7 +1733,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 240
+        "since": 248
       },
       {
         "value": "never_registered",
@@ -1771,7 +1771,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 240
+        "since": 248
       },
       {
         "value": "never_registered",
@@ -1809,7 +1809,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 240
+        "since": 248
       },
       {
         "value": "never_registered",
@@ -1847,7 +1847,7 @@
       },
       {
         "value": "never_reconnected",
-        "since": 240
+        "since": 248
       },
       {
         "value": "never_registered",

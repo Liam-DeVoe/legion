@@ -171,7 +171,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "LastReady", Column: ColumnAgents, Keys: []string{"lastReady"},
 		Reason: "when the agent last said it could be prompted, which is what dates the death's cause above"},
 	{Field: "TurnOutcomes", Column: ColumnWithheld,
-		Reason: "the window the run of refused turns is derived from, whose count reaches a reader as the failure's own sentence"},
+		Reason: "the window the run of refused turns is derived from, which the turn-outcome answer alone carries and which reaches no surface"},
 	{Field: "TurnOutcomeMark", Column: ColumnWithheld,
 		Reason: "the key at or below which the window answers a report sent again as a repeat, bookkeeping of the window it rides on"},
 	{Field: "Abandoned", Column: ColumnWithheld,

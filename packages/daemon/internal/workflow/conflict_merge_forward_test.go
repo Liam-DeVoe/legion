@@ -932,15 +932,19 @@ func askedBeforeTheMerger(at phase.Phase) record.PullRequest {
 
 // readingEngine is the engine of these tests (mergingEngineAt, at the first conflicting read) with
 // a reader of GitHub's merge state, which appends the issue of each read the engine asks for to
-// asked once the fact's transaction commits (Config.ReadMergeState), followed by " once" when the
-// request is for one read rather than a ladder (classify.MergeStateReadOnce).
+// asked once the fact's transaction commits: a read of one pull request (Config.ReadMergeState),
+// and each issue of a base push's batch (Config.ReadBaseMergeStates), followed by " once" when
+// the batch owes it one read rather than a ladder (classify.MergeStateReadOnce).
 func readingEngine(asked *[]string) *Engine {
 	engine := mergingEngineAt(firstConflictRead)
-	engine.cfg.ReadMergeState = func(issue string, once bool) {
-		if once {
-			issue += " once"
+	engine.cfg.ReadMergeState = func(issue string) { *asked = append(*asked, issue) }
+	engine.cfg.ReadBaseMergeStates = func(_, _ string, issues, once []string) {
+		for _, issue := range issues {
+			if slices.Contains(once, issue) {
+				issue += " once"
+			}
+			*asked = append(*asked, issue)
 		}
-		*asked = append(*asked, issue)
 	}
 	return engine
 }

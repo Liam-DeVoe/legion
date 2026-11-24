@@ -565,10 +565,14 @@ type Claim struct {
 	// clears it (clearUpdate).
 	UpdateLeftRound string
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row, and 0
-	// for a claim whose last turn ended with none (reportedTask). At providerErrorRunTold the
-	// project's controller is told once, and not again until a turn with no error puts it back to
-	// zero. It bounds nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a
-	// limit would fail every claim of a project at once in a provider outage.
+	// for a claim whose last turn ended with none. A refused turn of the task a take holds is
+	// counted from the end report that names its number (reportedTask, providerErrored), and a
+	// refused turn that was not the take's — a report naming no task, or marked unprompted — from
+	// its report too (unpromptedTurnEnded), in the one run; a clean report, whoever ran the turn,
+	// ends it (turnOutcome, providerErrorRunOver). At providerErrorRunTold the project's controller
+	// is told once, and not again until a turn with no error puts it back to zero. It bounds
+	// nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a limit would fail
+	// every claim of a project at once in a provider outage.
 	ProviderErrorRun int
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream
 	// report it. It is written by the store's PutClaimStep alone and read back with the claim;
@@ -1604,6 +1608,17 @@ type Machine struct {
 	// hold across the one refusal and the end after it, in one daemon run, and a restart in that
 	// window costs the claim the one launch failure that end is then charged.
 	refusedEarlierRelease uint64
+	// turnOutcomeFailed is whether the turn-outcome report this decision handles failed the
+	// claim: turnOutcome clears it, providerErrorTurnEnded sets it when the report's provider error
+	// cannot clear and fails the claim (providerErrored for the take's turn, unpromptedTurnEnded
+	// for any other), and HandleTurnOutcome reads it before the decision's lock is let go. It is
+	// memory only and means nothing outside that one decision.
+	turnOutcomeFailed bool
+	// turnOutcomeDecided, when it is set, runs once HandleTurnOutcome's decision has let its lock
+	// go and before it returns: the moment another event's decision can run between a report's
+	// decision and a read of the claim made after it. Only a test sets it, to run such a decision
+	// there (TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim); it is nil otherwise.
+	turnOutcomeDecided func()
 	// askFirst is a claim restored working, whose turn an earlier daemon saw start and may not have
 	// seen end: the machine asks the agent (get_state) whether that turn is over before it reads
 	// the claim as in one (askTurnOver), and a take from such a claim is the worker's word that it
@@ -2142,12 +2157,12 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // answers ErrSuspendHeld (holdSuspension). A request the wake pacing never makes wait, reaching a
 // claim a paced wake parked with no process, drops that wake before the lookup and is then
 // decided against the state the gate found (dropWakeFor); an operator's retry no row of that state
-// decides — queued, suspended, or launching for a try the pause held after its write — runs the
-// dropped launch itself (runDroppedLaunchForRetry); an operator's task the claim
-// can take, over a launch parked above a process the claim still records, runs that launch first,
-// so the row that queues the task is the row of the claim that launch leaves, and a launch its
-// lifecycle recheck refuses runs nothing and changes nothing, and the task is refused
-// (runParkedLaunchNow).
+// decides — queued, suspended, or launching for a try the pause held after its write or a start
+// whose pod grant the pause met — runs the dropped launch itself (runDroppedLaunchForRetry); an
+// operator's task the claim can take, over a launch parked above a process the claim still records,
+// runs that launch first, so the row that queues the task is the row of the claim that launch
+// leaves, and a launch its lifecycle recheck refuses runs nothing and changes nothing, and the
+// task is refused (runParkedLaunchNow).
 //
 // Handle returns when the decision is made, which includes the runtime call it makes: a stop
 // waits out its grace, a resume waits out the previous incarnation. A caller feeding many claims
@@ -2171,8 +2186,39 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // takes the start out of the gate and names that row's end: a suspension's or a retirement's
 // (endPodPark, dispatch://INFRA-5297).
 //
-// Handle gives ev through the store's rule first; the comment that opens its body says why.
+// Handle gives ev through the store's rule first; the comment that opens handle's body says why.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
+	return m.handle(ctx, ev, nil)
+}
+
+// TurnOutcomeAnswer is what one turn-outcome report's decision left, read under that decision's
+// own lock (HandleTurnOutcome): the claim's run of refused turns (Claim.RefusedRun), and whether
+// this report failed the claim, which only a report whose provider error cannot clear does: the
+// end report of the take's turn (providerErrored) or the report of any other turn
+// (unpromptedTurnEnded), both through providerErrorTurnEnded.
+type TurnOutcomeAnswer struct {
+	RefusedRun int
+	Failed     bool
+}
+
+// HandleTurnOutcome is Handle for one turn-outcome report, answering what that decision left. The
+// answer is read before the lock is let go, so a decision of another event that runs next —
+// another report's 400, or a death that spends the launch budget — cannot make a clean report
+// answer that it failed the claim, as a read of the claim after Handle returned could.
+func (m *Machine) HandleTurnOutcome(ctx context.Context, r RequestTurnOutcome) (TurnOutcomeAnswer, error) {
+	var answer TurnOutcomeAnswer
+	err := m.handle(ctx, r, func() {
+		answer = TurnOutcomeAnswer{RefusedRun: m.claim.RefusedRun(), Failed: m.turnOutcomeFailed}
+	})
+	if m.turnOutcomeDecided != nil {
+		m.turnOutcomeDecided()
+	}
+	return answer, err
+}
+
+// handle is Handle, and calls read, when it is given, at the end of the decision with the lock
+// still held, whatever the decision returned.
+func (m *Machine) handle(ctx context.Context, ev Event, read func()) error {
 	// An event is a far side's or an agent's words — a session id, a task, an update round's id
 	// and reasons, a worker's head — and the claim keeps each text as the store keeps it, so the
 	// claim in memory, the store and a restart agree. So the event is given through the store's
@@ -2184,6 +2230,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	}
 	m.mu.Lock()
 	defer m.unlock()
+	if read != nil {
+		defer read()
+	}
 	// A refresh post carries a credit of the gate, and this decision is the last place that credit
 	// can come back if the machine does not take it: a state whose row ignores the post, a settle
 	// or fence that returns first, or a post for another claim (RefreshGate, the rule of return).
@@ -3202,10 +3251,10 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // could read it. A retry raised anew from the top — the lifecycle check's (again) and every one
 // relaunchLater arms — is a request's no longer, and passes false.
 //
-// turn is the moment the request already reserved for this launch in the wake pacing
-// (RequestSpawn.Turn), which the gate takes in place of a reservation of its own, and the zero
-// time for every launch that reserved none. Only the gate reads it, and no field of the machine
-// holds it; a retry raised anew from the top reserves afresh, passing the zero time.
+// turn is the moment the request already reserved for this launch in the wake pacing, the zero
+// time for every launch that reserved none, which the gate decides by the rule RequestSpawn.Turn
+// states. Only the gate reads it, and no field of the machine holds it; a retry raised anew from
+// the top reserves afresh, passing the zero time.
 func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, turn time.Time, cause string) error {
 	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, time.Time{}, cause) }
 	if err := m.checkLaunch(ctx); err != nil {
@@ -4184,10 +4233,10 @@ func deathCause(observation runtime.Observation) string {
 
 // AbandonedSession is a session a claim stopped resuming: the id and transcript path it recorded
 // for it, why it was left behind, and when. Why is the sentence whoever abandoned it wrote — the
-// failure of a claim the provider refused out of its budget, the reason an operator's retry gave,
-// the runtime's account of a session no store holds — and it is what the agent that replaces the
-// session is told, so it reads the provider's own words for the refusal, the context size in them
-// included, rather than a sentence the daemon invented.
+// failure of a retried claim whose provider refused the session's last turns, the reason an
+// operator's retry gave, the runtime's account of a session no store holds — and it is what the
+// agent that replaces the session is told, so it reads the daemon's own record of what happened
+// rather than a sentence invented for the prompt.
 type AbandonedSession struct {
 	Session     string    `json:"session"`
 	SessionFile string    `json:"sessionFile,omitempty"`
@@ -4758,9 +4807,9 @@ func (m *Machine) arm(kind TimerKind, after time.Duration, deliveryID string) {
 }
 
 // fire hands the machine ev, a timer of its own firing, on the goroutine it fires on: the
-// clock's, for a timer the clock holds (arm), and one of its own for the grant of a launch parked
-// at its issue pod's gate (askPod). That goroutine holds no lock, so its decision runs on a fresh
-// context.
+// clock's, for a timer the clock holds (arm), and the one the pod gate posts the grant of a launch
+// parked at its gate on (askPod, PodStarts.post). That goroutine holds no lock, so its decision
+// runs on a fresh context.
 func (m *Machine) fire(ev Timer) {
 	if err := m.Handle(m.worker(), ev); err != nil {
 		m.log.Error("supervise: timer", "timer", string(ev.Kind), "error", err)
