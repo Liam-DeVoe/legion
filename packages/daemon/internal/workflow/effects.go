@@ -185,18 +185,16 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // builds comes through) and a root architect's start that claims the decisions it names
 // (EnqueueNaming). It is where a task takes what every task of its worker must name: the
 // daemon's two sentences of the reviewer's review round (namingTheReviewRound), always the last
-// two of each task of the reviewer, in each phase, and the one sentence of the commit a review
-// step of a role of the deployment read last, so a kind of task added later cannot be queued
+// two of each task of the reviewer, in each phase, and for a review step of a role of the
+// deployment the sentence of the commit its agent's own review read last, or, where its row holds
+// none, of the commit another agent's review read, so a kind of task added later cannot be queued
 // without them.
 //
-// Only a start of the reviewer or of a role of the deployment (NamesTheRound) that carries a task and does not hold the sentences already is
-// named, so no other row reads the record for them. Such a start reads the phase its issue stands
-// in and, as tx holds them, the issue's phases rows and among them the row of the role that the
-// start's claim ran last (record.AgentsRowOf), which is the row's commit and entry at the moment
-// the task is queued: the role's row now, unless that is the step of another agent of the role, so
-// a wake of an earlier step's agent is named its own commit and entry, never the other agent's. It
-// then carries the typed fact that its task ends with the daemon's sentences
-// (record.SuperviseRequest.RoundNamed), which the claim's send reads, so it adds none.
+// Only a start of the reviewer or of a role of the deployment (NamesTheRound) that carries a task
+// and does not hold the sentences already is named, so no other row reads the record for them. It
+// is named through RoundTask, which says what it reads, and then carries the typed fact that its
+// task ends with the daemon's sentences (record.SuperviseRequest.RoundNamed), which the claim's
+// send reads, so it adds none.
 // A start whose task is the stored task of its entry - the start of the transition that raised
 // the entry, whose task enter stored through namingTheReviewRound in the same transaction, the
 // promoted worker's and the owed entry's - comes with that fact already, and is queued as it is
@@ -219,9 +217,12 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 // it now on issue by agent, the claim its start reaches: task followed by the daemon's sentences
 // of its review round (namingTheReviewRound), read from the phase the issue stands in and, as tx
 // holds them, the issue's phases rows and among them the row of role that agent ran last
-// (record.AgentsRowOf). The queue names each such start it queues through it (queuedRow), and the
-// daemon's start executor names such a start queued for news alone through it, which carries no
-// task for the queue to name and is composed only when it runs (the daemon's newsForStart).
+// (record.AgentsRowOf), its commit and entry at the moment the task is named: the role's row now,
+// unless that is the step of another agent of the role, so a wake of an earlier step's agent is
+// named its own commit and entry, never the other agent's. The queue names each such start it
+// queues through it (queuedRow), and the daemon's start executor names such a start queued for
+// news alone through it, which carries no task for the queue to name and is composed only when it
+// runs (the daemon's newsForStart).
 func RoundTask(ctx context.Context, tx pgx.Tx, store record.Store, issue string, role claim.Role, agent claim.Token, task string) (string, error) {
 	standing, err := store.Issue(ctx, tx, issue)
 	if err != nil {
