@@ -325,8 +325,10 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 		{name: "Supported's kinds and Validate's each have their own bound", plan: steps(implementer, keyed("reviewer", numbered("k", 25)), numbered("r", 25)),
 			want: slices.Concat(naming("a", numbered("k", MostReasons)...), counting(5), naming("a", "reviewer at steps 2 and 3"),
 				naming("a", numbered("r", MostReasons)...), counting(5))},
+		// The ring's chain of 22 needs is named by its first MostReasons - 1, a count of the two
+		// left out, and the need that closes it.
 		{name: "a cycle is named after more than MostReasons reasons of another kind", plan: planOf(t, 1, ring...),
-			want: slices.Concat(naming("", "(t01, t02, "), ringNeeds, counting(2), naming("t01", "t22 needs t01"))},
+			want: slices.Concat(naming("", "(t01, t02, "), ringNeeds, counting(2), naming("t01", "t19 needs t20, 2 more needs, t22 needs t01."))},
 		{name: "21 sets of tasks that need each other: 20 named, 1 counted", plan: planOf(t, 1, selves...),
 			want: slices.Concat(naming("", "(s01, s02, "), selfNeeds, counting(1), selfSets, counting(1))},
 		{name: "the reasons named keep the checks' order, the dropped ones left out", plan: mixed,
