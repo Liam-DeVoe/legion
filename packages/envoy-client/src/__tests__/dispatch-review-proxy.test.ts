@@ -10,7 +10,13 @@
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import type { ApproveRoute, RequestCredential } from "../bearer";
-import { DISPATCH_WRITE_RETRY, DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
+import {
+  DISPATCH_WRITE_RETRY,
+  DispatchClient,
+  DispatchServiceError,
+  type DispatchWriteRetry,
+  DispatchWriteUnsettledError,
+} from "../dispatch-http";
 
 const PLACEHOLDER = `agent-secrets-placeholder-approve-${"B".repeat(32)}`;
 const AUTHORITY = "-----BEGIN CERTIFICATE-----\nproxy\n-----END CERTIFICATE-----\n";
@@ -186,4 +192,97 @@ test("a review the proxy never answers names Cipher's proxy, never this process'
   expect(message).toContain("Cipher's proxy at http://proxy.example:3128");
   expect(message).not.toContain("restart this agent process");
   expect(message).not.toContain(PLACEHOLDER);
+});
+
+/** The proxy's own answer, as record.go writes it: `text/plain` "airlock: …", its code in
+ *  `Cipher-Proxy-Code` and whether the request may have left it in `Cipher-Proxy-Forwarded`. */
+function proxyAnswer(status: number, code: string, forwarded: "false" | "unknown"): Response {
+  return new Response(`airlock: ${code.toLowerCase().replaceAll("_", " ")}\n`, {
+    status,
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cipher-Proxy-Code": code,
+      "Cipher-Proxy-Forwarded": forwarded,
+    },
+  });
+}
+
+/** A fetch that answers each request with the next of `answers` (the last one from then on), and
+ *  keeps what it was sent. */
+function scriptedFetch(answers: readonly (() => Response)[]): typeof fetch & {
+  readonly sent: Sent[];
+} {
+  const sent: Sent[] = [];
+  const impl = async (
+    input: Parameters<typeof fetch>[0],
+    init?: RequestInit
+  ): Promise<Response> => {
+    sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
+    const answer = answers[Math.min(sent.length, answers.length) - 1];
+    if (answer === undefined) throw new Error("scriptedFetch was given no answer");
+    return answer();
+  };
+  return Object.assign(impl, { sent, preconnect: () => {} }) as typeof fetch & {
+    readonly sent: Sent[];
+  };
+}
+
+test("the proxy's own refusal, before anything left it, names the proxy and its code and says a new review trades a new grant", async () => {
+  const fetchImpl = scriptedFetch([() => proxyAnswer(407, "GRANT_NOT_LIVE", "false")]);
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const refused = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+    () => null,
+    (error: unknown) => error
+  );
+  expect(fetchImpl.sent).toHaveLength(1);
+  expect(refused).toBeInstanceOf(DispatchServiceError);
+  const refusal = refused as DispatchServiceError;
+  expect([refusal.code, refusal.status, refusal.fromDispatch]).toEqual([
+    "GRANT_NOT_LIVE",
+    407,
+    false,
+  ]);
+  expect(refusal.message).toContain("Cipher's proxy at http://proxy.example:3128");
+  expect(refusal.message).toContain("nothing reached Dispatch");
+  expect(refusal.message).toContain("a new `dispatch review` trades a new grant");
+  expect(refusal.message).not.toContain("Dispatch URL");
+  expect(refusal.message).not.toContain(PLACEHOLDER);
+});
+
+test("the proxy's own failure, before anything left it, is asked again under the write's key", async () => {
+  const fetchImpl = scriptedFetch([
+    () => proxyAnswer(502, "UPSTREAM_UNREACHABLE", "false"),
+    () => Response.json(REVIEW, { status: 201 }),
+  ]);
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const review = await client.reviewArtifact("artifact-1", 3, { state: "approved" });
+  expect(review as unknown).toEqual(REVIEW);
+  const keys = fetchImpl.sent.map((sent) => new Headers(sent.init.headers).get("Idempotency-Key"));
+  expect(keys).toHaveLength(2);
+  expect(keys[1]).toBe(keys[0]);
+});
+
+test("the proxy's answer after the review may have reached Dispatch leaves the review unsettled, with its key", async () => {
+  const fetchImpl = scriptedFetch([() => proxyAnswer(407, "GRANT_NOT_LIVE", "unknown")]);
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const ended = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+    () => null,
+    (error: unknown) => error
+  );
+  expect(ended).toBeInstanceOf(DispatchWriteUnsettledError);
+  const unsettled = ended as DispatchWriteUnsettledError;
+  const keys = new Set(
+    fetchImpl.sent.map((sent) => new Headers(sent.init.headers).get("Idempotency-Key"))
+  );
+  expect([...keys]).toEqual([unsettled.key]);
+  expect(fetchImpl.sent.length).toBeGreaterThan(1);
+  expect(unsettled.message).toContain("Cipher's proxy");
+  expect(unsettled.message).not.toContain("Dispatch URL");
+  expect(unsettled.message).not.toContain(PLACEHOLDER);
 });
