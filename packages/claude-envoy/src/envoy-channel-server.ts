@@ -172,7 +172,7 @@ import {
   touchStateFile,
 } from "./session-state"
 import { type SessionTitle, sessionTitle } from "./session-title"
-import { createStopGates } from "./stop-gates"
+import { gatedStderr } from "./stop-gates"
 import {
   createUserTurnRouter,
   type UserTurnRouter,
@@ -562,7 +562,7 @@ export function createChannelDelivery(input: {
   readonly configFile: SessionConfigFile
   /** What a person's own message, command, pick or BTW becomes; omitted, every frame is a card. */
   readonly router?: () => UserTurnRouter | undefined
-  /** Writes one stderr line of the queue's own: the session's tell gate (`StopGates.stderr`), so
+  /** Writes one stderr line of the queue's own: the session's tell gate (`gatedStderr`), so
    *  a notice queued before the stop that fails after it says nothing. */
   readonly stderr: (line: string) => void
 }): ChannelDeliveryPath {
@@ -856,17 +856,17 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   // Whether `shutdown()` has run, which it does once, also where the abort above came first.
   let shutdownStarted = false
   // The stop gates (`./stop-gates`): once the stop has begun, the tell gate drops every notice
-  // card (`notice`) and stderr line (`gates.stderr`) of this session's own, and the write gate
+  // card (`notice`) and stderr line (`sessionStderr`) of this session's own, and the write gate
   // refuses every role record and ledger entry. Each reads `shuttingDown`. The stop's own lines
   // are written to stderr with no gate (`shutdown`). A relay frame already past
   // `deliverRelayed`'s read is a delivered message, not a notice: it passes no gate.
-  const gates = createStopGates(() => shuttingDown)
+  const sessionStderr = gatedStderr(() => shuttingDown)
   const delivery = createChannelDelivery({
     identity,
     notifier: options.notifier,
     configFile: options.configFile,
     router: () => router,
-    stderr: gates.stderr,
+    stderr: sessionStderr,
   })
   /** A notice card of Envoy's own (`ChannelDeliveryPath.notice`), through the tell gate: one the
    *  gate drops resolves at once, shown to nobody. */
@@ -948,7 +948,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    */
   const tellGapNotice = (notice: ConsumerGapNotice): void => {
     showNotice(gapNoticeText(notice)).catch((error: unknown) => {
-      gates.stderr(
+      sessionStderr(
         `envoy-channel: ${notice.message} (the session could not be told — ${messageFor(error)})\n`,
       )
     })
@@ -978,12 +978,12 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       showFailureNotice: (addressed, notice) =>
         showNotice(envoyNoticeText(failureNoticeFields(notice)), addressed),
       failureNoticeFailed: (notice, error) => {
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: message ${notice.eventId} from ${notice.sender} was not shown, nor was the notice naming it — ${messageFor(error)}\n`,
         )
       },
       log: (message, error) => {
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: ${message}${error === undefined ? "" : ` — ${messageFor(error)}`}\n`,
         )
       },
@@ -1001,7 +1001,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     const sessionId = identity.id
     const file = replayStateFile(options.stateDirectory, sessionId)
     const snapshot = await readReplayState(file).catch((error: unknown): ReplayStateFile => {
-      gates.stderr(
+      sessionStderr(
         `envoy-channel: could not read the delivery state (${messageFor(error)}); this session's record starts over\n`,
       )
       return { ledger: [] }
@@ -1027,7 +1027,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (options.router === undefined) return
     const file = userTurnStateFile(options.stateDirectory, identity.id)
     const restored = await readUserTurnState(file).catch((error: unknown) => {
-      gates.stderr(
+      sessionStderr(
         `envoy-channel: could not read this session's record of the messages it took (${messageFor(error)}); its messages arrive as cards\n`,
       )
       return undefined
@@ -1146,7 +1146,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         deliver: (frame) => deliverRelayed(owner, frame),
         gap: tellGapNotice,
         log: (message, error) => {
-          gates.stderr(
+          sessionStderr(
             `envoy-channel: ${message}${error === undefined ? "" : ` — ${messageFor(error)}`}\n`,
           )
         },
@@ -1157,7 +1157,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       persist: (snapshot) => {
         if (relay !== owner) return false
         state.consumer(snapshot).catch((error: unknown) => {
-          gates.stderr(
+          sessionStderr(
             `envoy-channel: could not persist the consumer delivery state — ${messageFor(error)}\n`,
           )
         })
@@ -1210,7 +1210,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         owner.delivery.receive(message)
       }
     } catch (error) {
-      gates.stderr(
+      sessionStderr(
         `envoy-channel: the relay subscription of ${owner.sessionID} stopped — ${natsFailureReason(error)}\n`,
       )
       if (owner.subscription !== subscription) return
@@ -1291,7 +1291,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     serialized(register).catch((error: unknown) => {
       // A registration that fails once the stop has begun is retried by no heartbeat.
       if (shuttingDown) return
-      gates.stderr(
+      sessionStderr(
         `envoy-channel: could not register again after a reconnect (${messageFor(error)}); the next heartbeat retries\n`,
       )
     })
@@ -1326,7 +1326,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     // consumer's filter met a NATS reconnect, so that outage is not reported as a
     // removal that did not happen.
     dropFromTopicsAndRegistry(topics).catch((error: unknown) => {
-      gates.stderr(
+      sessionStderr(
         isBusUnanswered(error)
           ? `envoy-channel: the listener's message bus did not answer a request to drop a removed subscription from the registry — ${messageFor(error)}; the registry may already be without it, and the next heartbeat reconciles the registry and sets the consumer's filter to the topics it holds\n`
           : `envoy-channel: could not drop a removed subscription from the registry — ${messageFor(error)}; the next heartbeat reconciles it\n`,
@@ -1381,9 +1381,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   const inboundOutage = inboundUnavailable(
     (outage) => {
       const { line, told } = INBOUND_UNAVAILABLE_LINES[outage.kind]
-      gates.stderr(line(outage.why))
+      sessionStderr(line(outage.why))
       showNotice(inboundUnavailableNoticeText(outage)).catch((noticeError: unknown) => {
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: the session could not be told ${told} — ${messageFor(noticeError)}\n`,
         )
       })
@@ -1391,9 +1391,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     {
       restored: ({ kind }) => {
         const { line, told } = INBOUND_RESTORED_LINES[kind]
-        gates.stderr(line)
+        sessionStderr(line)
         showNotice(inboundRestoredNoticeText(kind)).catch((noticeError: unknown) => {
-          gates.stderr(
+          sessionStderr(
             `envoy-channel: the session could not be told ${told} — ${messageFor(noticeError)}\n`,
           )
         })
@@ -1446,7 +1446,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
         "flushing NATS",
       ).catch((error: unknown) => {
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: could not confirm the relay subscription of ${identity.id} — ${natsFailureReason(error)}\n`,
         )
       })
@@ -1467,7 +1467,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         // Said once per failure run: every heartbeat retries it.
         if (!stampFailureReported) {
           stampFailureReported = true
-          gates.stderr(
+          sessionStderr(
             `envoy-channel: could not write the session title for the dispatch command (${messageFor(error)}); retrying every heartbeat, and the command names this session by its id\n`,
           )
         }
@@ -1538,17 +1538,17 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         for (const topic of topics) userTopics.delete(topic)
         followedTopics.unfollow(topics)
         ledger.followedChanged().catch((error: unknown) => {
-          gates.stderr(
+          sessionStderr(
             `envoy-channel: the topics the listener refused stay in the delivery state until it is written next — ${messageFor(error)}\n`,
           )
         })
         showNotice(refusedTopicsNoticeText(topics, reason)).catch((noticeError: unknown) => {
-          gates.stderr(
+          sessionStderr(
             `envoy-channel: the session could not be told which topics the listener refused — ${messageFor(noticeError)}\n`,
           )
         })
       },
-      log: (line) => gates.stderr(`envoy-channel: ${line}\n`),
+      log: (line) => sessionStderr(`envoy-channel: ${line}\n`),
       stopping: () => shuttingDown,
     })
   }
@@ -1668,7 +1668,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     void Promise.resolve()
       .then(() => hook(role, reason))
       .catch((error: unknown) => {
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: role ${role} regain hook failed (${reason}) — ${messageFor(error)}\n`,
         )
       })
@@ -1698,7 +1698,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // Said once per failure run: every heartbeat retries it.
       if (!roleRefreshFailureReported) {
         roleRefreshFailureReported = true
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: could not refresh the role record ${roleFile} (${messageFor(error)}); retrying every heartbeat\n`,
         )
       }
@@ -1780,7 +1780,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // Said once per failure run.
       if (!roleTransferFailureReported) {
         roleTransferFailureReported = true
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: could not take back the role held by ${from} (${messageFor(error)}); retrying every heartbeat\n`,
         )
       }
@@ -1873,7 +1873,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     roleTransferFrom ??= previous
     await register()
     await transferRole()
-    gates.stderr(`envoy: session id changed ${previous} -> ${next}; re-registered\n`)
+    sessionStderr(`envoy: session id changed ${previous} -> ${next}; re-registered\n`)
   }
 
   /** Set by the first read `syncRegisteredInterests` completes, never cleared. */
@@ -2035,7 +2035,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         retryIn === undefined
           ? "retrying at the next heartbeat"
           : `retrying once in ${Math.round(retryIn / 1000)} s, then every heartbeat`
-      gates.stderr(`envoy-channel: registry heartbeat failed (${messageFor(error)}); ${retrying}\n`)
+      sessionStderr(
+        `envoy-channel: registry heartbeat failed (${messageFor(error)}); ${retrying}\n`,
+      )
     } finally {
       heartbeatInFlight = false
       if (heartbeatRequested) {
@@ -2087,7 +2089,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   // `interestsRead` false, so the heartbeat retries the adopt and never
   // subtracts against a set this read could not populate.
   await syncRegisteredInterests().catch((error: unknown) => {
-    gates.stderr(
+    sessionStderr(
       `envoy-channel: could not read the registered interests (${messageFor(error)}); the next heartbeat retries\n`,
     )
   })
@@ -2115,7 +2117,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     // asks again, and `registrationFailed` makes the first accepted one a regain of the role.
     await register().catch((error: unknown) => {
       registrationFailed = true
-      gates.stderr(
+      sessionStderr(
         `envoy-channel: the first registration failed (${messageFor(error)}); the next heartbeat retries\n`,
       )
     })
@@ -2140,13 +2142,13 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       roleTransferFrom = (await restoreRole(identity.id)) === "pending" ? identity.id : undefined
     } catch (error) {
       if (error instanceof UnparseableRoleRecordError) {
-        gates.stderr(`envoy-channel: ${messageFor(error)}; the session starts without a role\n`)
+        sessionStderr(`envoy-channel: ${messageFor(error)}; the session starts without a role\n`)
       } else {
         roleTransferFrom = identity.id
         // This is the first failure of the run `transferRole` reports, so it says nothing more
         // until the retry has succeeded once.
         roleTransferFailureReported = true
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: could not restore the role (${messageFor(error)}); the next heartbeat retries\n`,
         )
       }
@@ -2169,7 +2171,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   ]) {
     if (shuttingDown) break
     await prune().catch((error: unknown) => {
-      gates.stderr(`envoy-channel: could not prune stale session state (${messageFor(error)})\n`)
+      sessionStderr(`envoy-channel: could not prune stale session state (${messageFor(error)})\n`)
     })
   }
   const heartbeatTimer = setInterval(() => {
@@ -2207,7 +2209,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     connectionLost = { closeError, dialError: undefined }
     // Ended with its connection: nothing is relayed until a new one takes the subject again.
     if (relay !== undefined) relay.subscription = undefined
-    gates.stderr(
+    sessionStderr(
       `envoy-channel: the NATS connection closed for good (${lostConnectionReason(connectionLost)}); ${options.reopen === undefined ? "nothing dials a new one" : "dialing a new one"}\n`,
     )
     // Refused now rather than at the next heartbeat, since the session receives nothing from this
@@ -2252,7 +2254,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     } catch (error) {
       if (shuttingDown || options.startSignal?.aborted === true) return
       lost.dialError = error
-      gates.stderr(
+      sessionStderr(
         `envoy-channel: gave up opening a new NATS connection (${natsFailureReason(error)}); dialing again at the next heartbeat\n`,
       )
       return
@@ -2277,7 +2279,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
         "flushing NATS",
       ).catch((error: unknown) => {
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: could not confirm the relay subscription on the new NATS connection — ${natsFailureReason(error)}\n`,
         )
       })
@@ -2288,7 +2290,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       await register()
     }).catch((error: unknown) => {
       registrationFailed = true
-      gates.stderr(
+      sessionStderr(
         `envoy-channel: could not register on the new NATS connection (${messageFor(error)}); the next heartbeat retries\n`,
       )
     })
@@ -2312,7 +2314,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           renewRelayEpoch()
         }
       } catch (error) {
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: the NATS connection's status reader failed — ${natsFailureReason(error)}\n`,
         )
       }
@@ -2378,7 +2380,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       serialized(register).catch((error: unknown) => {
         // A registration that fails once the stop has begun is retried by no heartbeat.
         if (shuttingDown) return
-        gates.stderr(
+        sessionStderr(
           `envoy-channel: could not advertise this session's delivery modes (${messageFor(error)}); the next heartbeat retries\n`,
         )
       })
@@ -2614,10 +2616,10 @@ export async function runEnvoyChannelServer(): Promise<void> {
   const pane = legionPane(process.env)
   // Whether this server's stop has begun (`stop`, R24 of dispatch://INFRA-3589). The client's stop
   // gate reads it at every call, and the server's own stderr lines and Legion log lines go
-  // through a tell gate over it (`serverGates`, `logLegionLine`). The session reads its own from
+  // through a tell gate over it (`serverStderr`, `logLegionLine`). The session reads its own from
   // the same moment (`startSignal`).
   let stopping = false
-  const serverGates = createStopGates(() => stopping)
+  const serverStderr = gatedStderr(() => stopping)
   /** One line of the pane's Legion log (`logLegion`), through the server's tell gate. */
   const logLegionLine = (line: string): void => {
     if (!stopping) logLegion(line)
@@ -2636,7 +2638,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
     session: currentSessionId,
   })
   // Claude Code logs the server's stderr: why a section is off, once.
-  if (notice !== null) serverGates.stderr(`envoy-channel: ${notice}\n`)
+  if (notice !== null) serverStderr(`envoy-channel: ${notice}\n`)
   const overrideSessionId = process.env["ENVOY_SESSION_ID"]
   // The title every registration sends, and the one the `dispatch` command stamps on this
   // session's Dispatch writes. Registration stamps it; with Envoy or its inbound messages off,
@@ -2676,7 +2678,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       const own = title(sessionId)
       if (own !== "") stampTitle(sessionId, own)
     } catch (error) {
-      serverGates.stderr(
+      serverStderr(
         `envoy-channel: could not write the session title for the dispatch command — ${messageFor(error)}; the dispatch command's writes carry no session title\n`,
       )
     }
@@ -2849,7 +2851,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       },
       connected: () => modLink?.connected() === true,
     },
-    warn: (text) => serverGates.stderr(`envoy-channel: ${text}\n`),
+    warn: (text) => serverStderr(`envoy-channel: ${text}\n`),
   })
   // Every line this server writes into the session: the bridge's inbox in a Legion pane, and the
   // mod's own write in a terminal session, which is a row of the turn running and the prompt of
@@ -2923,7 +2925,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
     // the ENVOY_SESSION_ID override names an Envoy identity, never a Claude Code session.
     sessionId: claudeSessionId({ CLAUDE_CODE_SESSION_ID: process.env["CLAUDE_CODE_SESSION_ID"] }),
     env: process.env,
-    warn: (text) => serverGates.stderr(`envoy-channel: ${text}\n`),
+    warn: (text) => serverStderr(`envoy-channel: ${text}\n`),
   }).then(
     (link) => {
       modLink = link
@@ -2932,7 +2934,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       else linked.resolve(link)
     },
     (error: unknown) => {
-      serverGates.stderr(
+      serverStderr(
         `envoy-channel: no link to this session's Claude Code mod — ${messageFor(error)}; the session runs on without one\n`,
       )
     },
@@ -2961,7 +2963,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
       session: claude,
       sessionId: () => identity.id,
       state,
-      warn: (text) => serverGates.stderr(`envoy-channel: ${text}\n`),
+      warn: (text) => serverStderr(`envoy-channel: ${text}\n`),
       // A pane's person message is a line of the bridge's inbox, which makes it a user turn;
       // the phase endpoint is told of it as it is told of every line this server writes.
       ...(inboxSocket === undefined ? {} : { inbox: (input) => notifier.notification(input) }),
@@ -3008,7 +3010,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           // A redial's warning names what the start waits on; the token keeper warns through the
           // same channel once the connection is up, and names nothing the start waits on.
           if (dialError !== undefined) starting = text
-          serverGates.stderr(`envoy-channel: ${text}\n`)
+          serverStderr(`envoy-channel: ${text}\n`)
         },
         connect,
         booting.signal,
@@ -3038,7 +3040,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         name: natsName,
         signal: booting.signal,
         stopping: () => stopping,
-        warn: (text) => serverGates.stderr(`envoy-channel: ${text}\n`),
+        warn: (text) => serverStderr(`envoy-channel: ${text}\n`),
         swapKeeper: (stop) => {
           stopNatsKeeper()
           stopNatsKeeper = stop
@@ -3093,7 +3095,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           connection,
           liveView: dialled.liveView,
           // Through the server's tell gate: a read the link's close at the stop ends says nothing.
-          warn: (text) => serverGates.stderr(`envoy-channel: ${text}\n`),
+          warn: (text) => serverStderr(`envoy-channel: ${text}\n`),
           // Only a Claude-minted id follows `/clear`; the override names a fixed identity.
           followsSessionId: configuredValue(overrideSessionId) === undefined,
           ...(admission === undefined ? {} : { admitted: (id: string) => admission.admitted(id) }),

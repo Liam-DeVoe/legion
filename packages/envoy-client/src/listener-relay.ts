@@ -649,8 +649,8 @@ export class ListenerRelay implements InboundConnection {
    *  every flush waiting on it, which no later socket can answer. */
   #open(): void {
     if (this.#closedForGood) return;
-    // A session whose stop has begun opens no socket again: the stop drains the connection after
-    // its hand-back, and a socket opened meanwhile would be an upgrade under the stopping
+    // A session whose stop has begun opens no socket again: the stop drains the connection before
+    // it ends, and a socket opened before that drain would be an upgrade under the stopping
     // session's token.
     if (this.#options.stopping?.() === true) {
       void this.close();

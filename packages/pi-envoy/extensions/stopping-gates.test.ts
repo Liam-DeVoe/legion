@@ -359,6 +359,41 @@ test("a session event after the stop began runs no subagent check", async () => 
   expect(publishes).toBe(before);
 });
 
+// The control of the row above: the same session, with no stop begun. Each session event asks
+// again after the failed publish, so the check publishes the transcript again.
+test("control: a session event with no stop begun runs the subagent check again", async () => {
+  const session = "ses_event_no_stop";
+  globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+  // A fresh instance of the entry, as the row above loads: no static import gives one.
+  const { default: envoyExtension } = await import("./envoy.ts?event-no-stop");
+  const fixture = createPi();
+  let publishes = 0;
+  const base = host(session, [], [], []);
+  const context: SessionContext = {
+    ...base,
+    sessionManager: {
+      ...base.sessionManager,
+      ensureOnDisk: async () => {
+        publishes += 1;
+        throw new Error("another writer holds the transcript's publish lock");
+      },
+    },
+  };
+  envoyExtension(fixture.pi);
+  await fixture.handlers.get("session_start")?.({}, context);
+  const before = publishes;
+  try {
+    await fixture.handlers.get("session_switch")?.({ reason: "new" }, context);
+    await fixture.handlers.get("session_branch")?.({}, context);
+    await fixture.handlers.get("session_tree")?.({}, context);
+    await settle();
+
+    expect(publishes).toBeGreaterThan(before);
+  } finally {
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }
+});
+
 /** What a call that should fail failed with, or undefined when it did not fail. */
 async function failure(call: Promise<void>): Promise<unknown> {
   return call.then(

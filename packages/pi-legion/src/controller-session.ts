@@ -334,7 +334,9 @@ export function createControllerSession(
         pluginContract: pkg.legion.daemonApiVersion,
       })
       .catch((error: unknown) => {
-        if (error instanceof LegionDaemonApiError) {
+        // A refusal that arrives after the session's stop began writes no line: the stop overtook
+        // this claim, and such a claim says nothing (`claimOnce`).
+        if (error instanceof LegionDaemonApiError && !stopped.signal.aborted) {
           // The daemon's detail is its own text, and it can echo the boot token it was sent.
           logger.error(
             `[legion] claims/register for the controller failed (${error.status}): ${scrub(error.detail)}`

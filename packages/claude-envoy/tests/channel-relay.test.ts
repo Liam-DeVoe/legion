@@ -26,7 +26,7 @@ import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
 import { startChannelSession } from "../src/envoy-channel-server"
 import type { ModLink } from "../src/mod-link"
 import { SessionIdentity } from "../src/session-identity"
-import { createStopGates } from "../src/stop-gates"
+import { gatedStderr } from "../src/stop-gates"
 import {
   FakeNotifier,
   noInterest,
@@ -225,7 +225,7 @@ test("a reopened relay socket opens no socket again and writes nothing on stderr
   const { inbound } = settings
   if ("off" in inbound) throw new Error(`inbound is off: ${inbound.off}`)
   let stopping = false
-  const gates = createStopGates(() => stopping)
+  const serverStderr = gatedStderr(() => stopping)
   const written: string[] = []
   const stderr = spyOn(process.stderr, "write").mockImplementation((chunk) => {
     written.push(String(chunk))
@@ -239,7 +239,7 @@ test("a reopened relay socket opens no socket again and writes nothing on stderr
       name: "claude-envoy-channel-test",
       signal: new AbortController().signal,
       stopping: () => stopping,
-      warn: (text) => gates.stderr(`envoy-channel: ${text}\n`),
+      warn: (text) => serverStderr(`envoy-channel: ${text}\n`),
       swapKeeper: () => undefined,
       admitting: (follow) => follow,
       useConnection: () => undefined,

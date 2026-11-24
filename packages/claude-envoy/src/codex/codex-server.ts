@@ -44,7 +44,7 @@ import { inboundOffChannelSession } from "../envoy-off"
 import { channelConnectionName, installedPluginVersion } from "../installed-build"
 import { SessionIdentity } from "../session-identity"
 import { sessionTitle } from "../session-title"
-import { createStopGates } from "../stop-gates"
+import { gatedStderr } from "../stop-gates"
 import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stream"
 import { askSideQuestion, type CodexCommand, codexProcessEnv, queueMessage } from "./codex-cli"
 import { createCodexDelivery } from "./codex-delivery"
@@ -273,8 +273,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
   // The server's tell gate over its stop (`stop`, R24 of dispatch://INFRA-3589): once the stop
   // has begun, a warning of its own is written nowhere. The session reads the same stop from
   // `startSignal`, and the client's stop gate from `stopping.signal` too.
-  const serverGates = createStopGates(() => stopping.signal.aborted)
-  const warn = (text: string): void => serverGates.stderr(`envoy-channel: ${text}\n`)
+  const serverStderr = gatedStderr(() => stopping.signal.aborted)
+  const warn = (text: string): void => serverStderr(`envoy-channel: ${text}\n`)
 
   const server = new Server(MCP_SERVER_INFO, {
     capabilities: { tools: {} },

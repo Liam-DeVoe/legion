@@ -1,6 +1,5 @@
-// The rows on the shutdown's deregistration: how long it waits for a registration the listener
-// stalled on before it goes out. They moved out of `envoy-channel-registry.test.ts`, by subject,
-// with their names.
+// The shutdown's deregistration of a channel session: it waits for a registration the listener
+// stalled on, then goes out anyway, and that wait is one bound over the whole shutdown path.
 import { expect, test } from "bun:test"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity } from "../src/session-identity"

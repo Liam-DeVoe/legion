@@ -250,7 +250,7 @@ import {
 import { type SessionInbound, sessionInbound } from "../src/session-inbound";
 import { sideTurn } from "../src/side-turn";
 import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
-import { createStopGates } from "../src/stop-gates";
+import { gatedLogger } from "../src/stop-gates";
 import { stepWasRefused, type TaskHandle, taskWasAbandoned } from "../src/task-queue";
 import { TypedPictures } from "../src/typed-pictures";
 import {
@@ -827,7 +827,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // state (`createEnvoyClient`'s `stopping`). Each reads `shuttingDown`. The stop's own lines go to
   // `scrubbedHostLogger`, which no gate holds. A relay frame already past `deliverRelayed`'s read
   // is a delivered message, not a notice: its card, its records and its answer pass no gate.
-  const logger = createStopGates(() => shuttingDown).gatedLogger(scrubbedHostLogger);
+  const logger = gatedLogger(() => shuttingDown, scrubbedHostLogger);
   // A pane notice of the extension's own, through the tell gate: every `ui.notify` here goes
   // through this.
   const notify = (

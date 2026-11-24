@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { createStopGates } from "./stop-gates";
+import { gatedLogger } from "./stop-gates";
 
 test("a gated logger writes every line before the stop and none once it began, and leaves the logger's other members alone", () => {
   let stopping = false;
   const written: string[] = [];
-  const logger = createStopGates(() => stopping).gatedLogger({
+  const logger = gatedLogger(() => stopping, {
     name: "host",
     warn: (line: string, fields?: Record<string, unknown>) =>
       written.push(`warn ${line}${fields === undefined ? "" : ` ${JSON.stringify(fields)}`}`),

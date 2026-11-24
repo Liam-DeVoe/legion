@@ -1,6 +1,6 @@
-// The rows on the topics a registration may not carry: one no stream subject captures, which no
-// registration names, and one an edge listener refuses for the session's projects, which the
-// session drops. They moved out of `envoy-channel-registry.test.ts`, by subject, with their names.
+// The topics a channel session's registration may not carry: a topic no stream subject captures,
+// which no registration names, and a topic an edge listener refuses for the session's projects,
+// which the session drops.
 import { expect, test } from "bun:test"
 import { uncapturedTopicRefusal } from "@legion/contracts"
 import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer"

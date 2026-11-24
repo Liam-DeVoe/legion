@@ -7,6 +7,7 @@ import { createEnvoyClient } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import { modSocketPath } from "../hooks/mod-protocol"
 import { legion } from "../package.json" with { type: "json" }
+import { LIVE_VIEW_READ_FAILED } from "../src/agent-stream-runner"
 import {
   type ChannelNotifier,
   DELIVERY_FAILED_LINE,
@@ -452,7 +453,54 @@ test(
       await run.server.exited
       await run.stderrEnded
 
-      expect(run.stderr()).not.toContain("the live view could not read")
+      expect(run.stderr()).not.toContain(LIVE_VIEW_READ_FAILED)
+    } finally {
+      await mod?.stop()
+      await run.stop()
+    }
+  },
+  ROW_TIMEOUT_MS,
+)
+
+// The control of the row above: no stop begins, and the mod answers the view's read of the model
+// with an error. The view's warning is on stderr. The same whole processes.
+test(
+  "control: a live view read that fails with no stop begun says so on stderr",
+  async () => {
+    const sessionId = "ses_view_no_stop"
+    const run = await startReopenServer({
+      sessionId,
+      env: (stateDirectory) => ({
+        CLAUDE_CODE_SESSION_ID: sessionId,
+        CLAUDE_PLUGIN_DATA: stateDirectory,
+      }),
+    })
+    let mod: FakeMod | undefined
+    try {
+      const socketPath = modSocketPath(sessionId, { XDG_RUNTIME_DIR: run.stateDirectory })
+      if (socketPath === undefined) throw new Error("the session names no mod socket")
+      mod = await startFakeMod(socketPath, {
+        sessionId,
+        answers: {
+          "session.model": () => Promise.reject(new Error("the session's model is unreadable")),
+        },
+      })
+      await waitFor(
+        async () => run.broker.subscribed.includes(agentStreamControlSubject(sessionId)),
+        "the live view started",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
+      // An event of the conversation: the view reads the session's model, and the read fails.
+      await mod.send({ kind: "turn-start", turnId: "turn-no-stop" })
+      await waitFor(
+        async () => run.stderr().includes(LIVE_VIEW_READ_FAILED),
+        "the live view's warning on stderr",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
+
+      expect(run.stderr()).toContain(`envoy-channel: ${LIVE_VIEW_READ_FAILED}model — `)
     } finally {
       await mod?.stop()
       await run.stop()

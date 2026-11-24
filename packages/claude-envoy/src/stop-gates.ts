@@ -7,16 +7,11 @@
  * which has no gate (`ChannelSession.shutdown`, `ChannelTopics.close`). The listener calls have a
  * gate of their own, in the client (`EnvoyClientConfig.stopping`).
  */
-export interface StopGates {
-  /** Writes `line` to stderr before the stop has begun, and nothing once it has. */
-  readonly stderr: (line: string) => void
-}
 
-/** The gates of one stop reading, `stopping`: a session's, or its server's. */
-export function createStopGates(stopping: () => boolean): StopGates {
-  return {
-    stderr: (line) => {
-      if (!stopping()) process.stderr.write(line)
-    },
+/** A writer of stderr lines for one stop reading, `stopping`: a session's, or its server's. It
+ *  writes each line to stderr before the stop has begun, and nothing once it has. */
+export function gatedStderr(stopping: () => boolean): (line: string) => void {
+  return (line) => {
+    if (!stopping()) process.stderr.write(line)
   }
 }

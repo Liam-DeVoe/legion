@@ -7,24 +7,17 @@
  * the host's logger, which has no gate (`releaseRoleClaims`, `HandBackLedger.handBackAll`). The
  * listener calls have a gate of their own, in the client (`EnvoyClientConfig.stopping`).
  */
-export interface StopGates {
-  /** `logger` with each of its log methods writing nothing once the stop has begun. */
-  readonly gatedLogger: <T extends object>(logger: T) => T;
-}
-
 const LOG_METHODS = new Set<string | symbol>(["trace", "debug", "info", "warn", "error", "log"]);
 
-/** The gates of one extension instance: `stopping` is its stop reading. */
-export function createStopGates(stopping: () => boolean): StopGates {
-  return {
-    gatedLogger: (logger) =>
-      new Proxy(logger, {
-        get(object, key) {
-          const value = Reflect.get(object, key, object) as unknown;
-          if (typeof value !== "function") return value;
-          if (!LOG_METHODS.has(key)) return value.bind(object);
-          return (...args: unknown[]) => (stopping() ? undefined : value.apply(object, args));
-        },
-      }),
-  };
+/** `logger` with each of its log methods writing nothing once the stop has begun. `stopping` is
+ *  the stop reading of one extension instance. */
+export function gatedLogger<T extends object>(stopping: () => boolean, logger: T): T {
+  return new Proxy(logger, {
+    get(object, key) {
+      const value = Reflect.get(object, key, object) as unknown;
+      if (typeof value !== "function") return value;
+      if (!LOG_METHODS.has(key)) return value.bind(object);
+      return (...args: unknown[]) => (stopping() ? undefined : value.apply(object, args));
+    },
+  });
 }

@@ -23,6 +23,10 @@ import type { ModLink } from "./mod-link"
  *  wait this long means the mod is gone rather than busy, and the header keeps its last values. */
 const AGENT_STREAM_CALL_TIMEOUT_MS = 5_000
 
+/** How the live view's warning for a read of the mod that failed begins. The thing it read and
+ *  the failure's message follow it (`refreshSettings`, `refreshCommands`). */
+export const LIVE_VIEW_READ_FAILED = "the live view could not read this session's "
+
 /**
  * The most row ids this stream remembers having read, so a row that arrives twice is read once.
  *
@@ -224,7 +228,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
         if (!control.stopped) publishSettings()
       })
       .catch((error: unknown) => {
-        warn(`the live view could not read this session's model — ${messageFor(error)}`)
+        warn(`${LIVE_VIEW_READ_FAILED}model — ${messageFor(error)}`)
       })
       .finally(() => {
         readingSettings = false
@@ -241,7 +245,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
         if (!control.stopped) publishCommands()
       })
       .catch((error: unknown) => {
-        warn(`the live view could not read this session's commands — ${messageFor(error)}`)
+        warn(`${LIVE_VIEW_READ_FAILED}commands — ${messageFor(error)}`)
       })
       .finally(() => {
         readingCommands = false
