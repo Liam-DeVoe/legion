@@ -337,7 +337,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			t.Fatalf("a caller at %d expects the lines %v, want the plan row's and gateBasisContract's alone", assignmentPlanContract-1, want)
 		}
 		if len(narrowings) != len(want) {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
+			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, the plan row's and gateBasisContract's: %+v",
 				len(narrowings), assignmentPlanContract-1, len(want), narrowings)
 		}
 		for i, line := range narrowings {
