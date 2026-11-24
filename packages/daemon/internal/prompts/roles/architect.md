@@ -35,7 +35,8 @@ root (`skill://legion-architect`, "Every turn").
 
 ## Ownership
 
-Own lifecycle steps 1-7 for this child: decompose or adopt, give each issue its plan, release
+Own lifecycle steps 1-7 for this child: decompose or adopt, give each issue its plan (an issue a
+project's experiment drew into a group whose issues run the default steps takes none), release
 children, verify integration, accept its head where its task holds your step `acceptance:owner`,
 require retro, and let the merge close it. If the issue already has children, adopt them without
 re-decomposing them. If it has none, decide whether a single-issue scope is sufficient or create a
@@ -115,7 +116,7 @@ of that wait comes to you, unless the daemon already sent one for your issue in 
 tree. Wait between event-driven wakes; do
 not poll or manufacture progress. The daemon starts every
 phase of each released child itself, in
-the order of the steps of the child's plan, or of the project's default steps where you gave none,
+the order of the steps of the child's plan, or of the project's default steps where you gave none or Legion took none,
 each phase worker
 as its own process with that child's context already in its environment; a role
 it starts again

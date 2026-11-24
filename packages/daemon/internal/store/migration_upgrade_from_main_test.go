@@ -125,6 +125,9 @@ import (
 // at its default, nor the plan of an issue (20261117034837), which creates the three tables of the
 // plan and adds `phases.step_task` and `phases.step_place`, each at a default that every row it
 // finds reads as no plan (migration_20261117034837_test.go).
+// The plan of an experiment's draw (20261123165139) adds `experiment_assignments.plan` at its
+// default, which every row it finds reads as no group (migration_20261123165139_test.go), stands
+// above every migration named here, and touches no outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -156,7 +159,8 @@ import (
 // these and before INFRA-3320's 20261122154643, and it touches no outbox_kind_check: it adds
 // dispatch_issues.applied_seq at its default, 0, on every row it finds.
 // INFRA-3320's kind list with the two basis seeds (20261122154643) stands above every other
-// version of this list and restates the design news's kinds with the two seeds, so an upgrade
+// version of this list but the plan of an experiment's draw (20261123165139), which touches no
+// outbox_kind_check, and restates the design news's kinds with the two seeds, so an upgrade
 // applies it last of the kind lists and it is the last word of outbox_kind_check. It deletes
 // nothing, so the phase_ended row 20261119003157 deleted stays deleted.
 var thisBranchsMigrations = []int{
@@ -170,7 +174,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261114064234, 20261114232555, 20261115194357, 20261116144907, 20261116165926,
 	20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117034837, 20261117064152,
 	20261117112334, 20261117200337, 20261119003157, 20261119203047, 20261120012547, 20261120042902,
-	20261120055717, 20261121170714, 20261122154643,
+	20261120055717, 20261121170714, 20261122154643, 20261123165139,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -189,9 +193,10 @@ var thisBranchsMigrations = []int{
 // 20261122154643, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717 and the copy's applied sequence, 20261121170714. That is
-// why the loop below holds the list rather than counting it, so that a version added above any of
-// them is named here rather than read as main's.
+// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, and the
+// plan of an experiment's draw (20261123165139). That is why the loop below holds the list
+// rather than counting it, so that a version added above any of them is named here rather than
+// read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -451,17 +456,21 @@ const mainsAppliedSequence = 20261121170714
 
 // At each merge of main since 77eac01e35d0 each side has recorded a migration the other has not,
 // and this branch's daemon meets a database that either side left. One that main at 4a8d82bfd090,
-// this head's merge of main, migrated holds main's applied sequence (20261121170714) and the plan
-// of an issue (20261117034837), which main took after 77eac01e35d0, and none of INFRA-3320's three
-// versions, two of which stand below its newest. One that this branch's head before its merge of
-// 77eac01e35d0 (10e98a85ef53) migrated holds the three and lacks both of main's, which stand below
-// its newest, 20261122154643. One that this branch's head before its merge of a7fae897a408
-// (03ac783258da), the merge that brought it the plan of an issue, migrated holds main's applied
-// sequence too and lacks the plan of an issue alone. No merge since brought this branch a
-// migration, so a database its head migrated after that merge holds every version this head
-// embeds. Store.Migrate asks each embedded migration whether its own version is recorded (apply)
-// and never compares it with the newest, so each upgrade applies the versions that database lacks,
-// below its newest and above it alike, and leaves every embedded version recorded once.
+// this head's merge of main before 4ad19fe8459c, migrated holds main's applied sequence
+// (20261121170714) and the plan of an issue (20261117034837), which main took after 77eac01e35d0,
+// and none of INFRA-3320's three versions, two of which stand below its newest. One that this
+// branch's head before its merge of 77eac01e35d0 (10e98a85ef53) migrated holds the three and lacks
+// both of main's, which stand below its newest, 20261122154643. One that this branch's head before
+// its merge of a7fae897a408 (03ac783258da), the merge that brought it the plan of an issue,
+// migrated holds main's applied sequence too and lacks the plan of an issue alone. The merge of
+// 4ad19fe8459c brought this branch main's plan of an experiment's draw (20261123165139), which
+// stands above every version of this branch's: one that main at 4ad19fe8459c migrated holds it and
+// lacks INFRA-3320's three, every one of them below its newest, and one that this branch's head
+// before that merge (dc73ab2f7f06) migrated holds every other version this head embeds and lacks
+// that one alone, above its newest. Store.Migrate asks each embedded migration whether its own
+// version is recorded (apply) and never compares it with the newest, so each upgrade applies the
+// versions that database lacks, below its newest and above it alike, and leaves every embedded
+// version recorded once.
 //
 // Main's database holds an outbox row of each kind its own kind check admits, read off that check:
 // the basis seeds' list rewrites the check, which validates every row the table holds, so a kind
@@ -470,42 +479,55 @@ const mainsAppliedSequence = 20261121170714
 // Dispatch's issues as the release before 20261121170714 writes one, and the upgrade gives it
 // applied_seq at 0. Its database at 03ac783258da holds a phases row as the release before
 // 20261117034837 writes one, and the upgrade leaves the row as it was, running no step
-// (migration_20261117034837_test.go).
+// (migration_20261117034837_test.go). Its database at dc73ab2f7f06 holds an experiment's draw as
+// the release before 20261123165139 writes one, and the upgrade leaves the row of no group, its
+// plan the empty word (migration_20261123165139_test.go).
 //
 // Each database is built from the migrations numbered up to its own newest alone, so a migration
 // added after this test still finds the database that release left, and the upgrade applies it
 // too.
 func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *testing.T) {
 	ctx := context.Background()
+	// queueMainsKinds writes a row of each kind main's kind check admits, and queueBasisSeeds a row
+	// of each basis seed after the upgrade: the seed and the check of a database main migrated.
+	queueMainsKinds := func(t *testing.T, store *Store) {
+		var check string
+		if err := store.pool.QueryRow(ctx, `select pg_get_constraintdef(oid) from pg_constraint
+			where conrelid = 'outbox'::regclass and conname = 'outbox_kind_check'`).Scan(&check); err != nil {
+			t.Fatalf("read the kind check main's database stands on: %v", err)
+		}
+		kinds := regexp.MustCompile(`'([a-z_]+)'::`).FindAllStringSubmatch(check, -1)
+		if len(kinds) == 0 {
+			t.Fatalf("the kind check main's database stands on names no kind: %s", check)
+		}
+		for _, kind := range kinds {
+			if err := queueRowOfKind(store, kind[1]); err != nil {
+				t.Fatalf("queue the %s row main's kind check admits: %v", kind[1], err)
+			}
+		}
+		t.Logf("main's database holds a row of each of the %d kinds its kind check admits", len(kinds))
+	}
+	queueBasisSeeds := func(t *testing.T, store *Store) {
+		for _, kind := range []string{"pending_basis_seed", "reparent_seed"} {
+			if err := queueRowOfKind(store, kind); err != nil {
+				t.Errorf("queue a %s row after the upgrade: %v", kind, err)
+			}
+		}
+	}
 	for _, release := range []releaseDatabase{
 		{
 			name:   "main at 4a8d82bfd090",
 			newest: mainsAppliedSequence,
 			lacks:  []int{20261114064234, 20261114232555},
-			seed: func(t *testing.T, store *Store) {
-				var check string
-				if err := store.pool.QueryRow(ctx, `select pg_get_constraintdef(oid) from pg_constraint
-					where conrelid = 'outbox'::regclass and conname = 'outbox_kind_check'`).Scan(&check); err != nil {
-					t.Fatalf("read the kind check main's database stands on: %v", err)
-				}
-				kinds := regexp.MustCompile(`'([a-z_]+)'::`).FindAllStringSubmatch(check, -1)
-				if len(kinds) == 0 {
-					t.Fatalf("the kind check main's database stands on names no kind: %s", check)
-				}
-				for _, kind := range kinds {
-					if err := queueRowOfKind(store, kind[1]); err != nil {
-						t.Fatalf("queue the %s row main's kind check admits: %v", kind[1], err)
-					}
-				}
-				t.Logf("main's database holds a row of each of the %d kinds its kind check admits", len(kinds))
-			},
-			check: func(t *testing.T, store *Store) {
-				for _, kind := range []string{"pending_basis_seed", "reparent_seed"} {
-					if err := queueRowOfKind(store, kind); err != nil {
-						t.Errorf("queue a %s row after the upgrade: %v", kind, err)
-					}
-				}
-			},
+			seed:   queueMainsKinds,
+			check:  queueBasisSeeds,
+		},
+		{
+			name:   "main at 4ad19fe8459c",
+			newest: experimentAssignmentPlanVersion,
+			lacks:  []int{20261114064234, 20261114232555, basisSeedsVersion},
+			seed:   queueMainsKinds,
+			check:  queueBasisSeeds,
 		},
 		{
 			name:   "this branch at 10e98a85ef53",
@@ -548,6 +570,30 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 				const steps = `select row(issue, role, handoff_commit, entry, step_task, step_place)::text from phases order by issue, role`
 				if got, want := rowsAsText(t, store, steps), []string{`(LEGION-208,implementer,abc123,3,"",0)`}; !slices.Equal(got, want) {
 					t.Errorf("the phases rows after the upgrade (issue, role, handoff_commit, entry, step_task, step_place) = %v, want %v: the row it held, running no step", got, want)
+				}
+			},
+		},
+		{
+			name:   "this branch at dc73ab2f7f06",
+			newest: basisSeedsVersion,
+			seed: func(t *testing.T, store *Store) {
+				// The release before 20261123165139 names these seven columns of a draw and no other
+				// (record's PutAssignments).
+				for _, seed := range []string{
+					`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+						values ('LEGION-501', 'LEGION-501', 'LEGION', 'root', 'admitted', 1, 'in_progress', 'A', 1)`,
+					`insert into experiment_assignments (issue_key, experiment, unit, variant, mode, drawn_at, carried)
+						values ('LEGION-501', 'planning', 'issue', 'b', 'random', now(), false)`,
+				} {
+					if _, err := store.pool.Exec(ctx, seed); err != nil {
+						t.Fatalf("write a draw as this branch's daemon did before the plan of a draw: %v", err)
+					}
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				const drawn = `select row(issue_key, experiment, variant, plan)::text from experiment_assignments order by issue_key`
+				if got, want := rowsAsText(t, store, drawn), []string{`(LEGION-501,planning,b,"")`}; !slices.Equal(got, want) {
+					t.Errorf("the draws after the upgrade (issue_key, experiment, variant, plan) = %v, want %v: the row it held, of no group", got, want)
 				}
 			},
 		},

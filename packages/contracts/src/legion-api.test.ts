@@ -1099,6 +1099,12 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   ]);
   // An issue no experiment has reached carries no key.
   expect(issueOf("LEGION-211").assignments).toBeUndefined();
+  // The group an experiment that sets how its issues are done gave the child, as its draw
+  // recorded it: the parse keeps it, and a group that is no string is refused.
+  const planned = LegionStateResponse.parse(state).issues["LEGION-209"]?.assignments?.find(
+    (row) => row.experiment === "planning"
+  );
+  expect(planned?.plan).toBe("default");
 
   const parses = () => LegionStateResponse.safeParse(state).success;
   expect(parses()).toBeTrue();
@@ -1126,6 +1132,12 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   expect(parses()).toBeTrue();
   drawn.assignments = [{ experiment: "memory", variant: "memory" }];
   expect(parses()).toBeTrue();
+  // A group that is no string, and an empty one: the daemon leaves the key off where the arm
+  // named no group.
+  drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: 1 }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "planning", variant: "b", mode: "random", plan: "" }];
+  expect(parses()).toBeFalse();
   drawn.assignments = held;
   expect(parses()).toBeTrue();
 });
@@ -2657,7 +2669,7 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// Contract 239: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
+// Contract 240: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
 // wait, closed, on an ancestor's open approval request (`pending_on_basis`), each with the `basis`
 // that names the approval or the request, and every root the daemon records says whether its
 // tree runs (`treeRuns`). The state golden carries LEGION-207's step open on LEGION-200's
@@ -2754,12 +2766,12 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
   expect(LegionStateResponse.safeParse(notBoolean).success).toBeFalse();
 });
 
-// `legionGatedStepView`'s status as contracts 55 to 238 hold it: four words, in an enum. Every
+// `legionGatedStepView`'s status as contracts 55 to 239 hold it: four words, in an enum. Every
 // plugin parses the state with the schema of the contract it was built at, so this reader is live
-// in every pod still on an image before 239. It reads every step of the golden that stands on no
-// basis, and refuses the two words of 239 — and with them the whole state body, since
+// in every pod still on an image before 240. It reads every step of the golden that stands on no
+// basis, and refuses the two words of 240 — and with them the whole state body, since
 // `gatedSteps` is an array it parses whole — which is why the state route serves a caller below
-// 239 no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
+// 240 no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
 // `withoutUnadmittedStepStatuses`, pinned on the Go side): neither `waiting` nor `approved` is true
 // of such a step, so it serves no entry of that issue rather than a wrong one.
 const gatedStepStatusBeforeBasis = z.object({
@@ -2786,7 +2798,7 @@ test("a reader before the basis words reads every gated step but those on a basi
   }
 });
 
-// The architect's registration on an ancestor's basis (contract 239): the three fields come
+// The architect's registration on an ancestor's basis (contract 240): the three fields come
 // together, the document is a UUID, the version positive and the reason a sentence; a request
 // that names none of them is the request it was.
 test("a gate registration names a basis by its document, its version and a reason", () => {
@@ -2880,19 +2892,20 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   expect(block.data?.caches).toEqual(live.caches);
 
   // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
-  // the keys contract 239 added aside: the mark names the contract the caller is served at, 199,
-  // the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
+  // the keys contracts 220 and 240 added aside: the mark names the contract the caller is served
+  // at, 199, the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
   // INFRA-4605's, which moved no answer's shape, and the lowest plugin contract reports the claims
   // of the snapshot the route projected the body from, a pod at 201, which `state.json`'s own
-  // fixture does not hold. No band stands between 199 and 202 but the repositories block's, and
-  // the one band above 202 is contract 239's, which takes every root's `treeRuns` and the
-  // `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), so
-  // the narrowing changes this one block and those keys and no other key. One value strip of
-  // contract 213 stands above 199 as well: `caches`, the source of the repository-cache-room row,
-  // arrived at contract 213, so that row is served here without its `source`, every other field of
-  // it and every other row as the state golden holds them. Contract 239's value strips take
-  // nothing more here: the strip of its two step statuses takes the `gatedSteps` its band has
-  // taken already, and the golden holds no issue in `awaiting_children` and no held row of it.
+  // fixture does not hold. Three bands stand above 199: the repositories block's; contract 220's,
+  // which takes `plan` off each assignment, so the golden's rows are compared without it; and
+  // contract 240's, which takes every root's `treeRuns` and the `gatedSteps` of each issue with a
+  // step on an ancestor's basis (`api`'s `withoutGateBasis`), so the narrowing changes this one
+  // block and those keys and no other key. One value strip of contract 213 stands above 199 as
+  // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
+  // row is served here without its `source`, every other field of it and every other row as the
+  // state golden holds them. Contract 240's value strips take nothing more here: the strip of its
+  // two step statuses takes the `gatedSteps` its band has taken already, and the golden holds no
+  // issue in `awaiting_children` and no held row of it.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2927,6 +2940,19 @@ test("a reader at contract 152 parses the repositories block served below 202", 
       delete issue.gatedSteps;
     }
   }
+  const issues = Object.fromEntries(
+    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => [
+      key,
+      issue.assignments === undefined
+        ? issue
+        : {
+            ...issue,
+            assignments: (issue.assignments as Record<string, unknown>[]).map(
+              ({ plan: _plan, ...row }) => row
+            ),
+          },
+    ])
+  );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
   expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
   const withoutCachesSource = capabilities.map((row) => {
@@ -2936,7 +2962,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
-  expect(narrowedRest).toEqual({ ...rest, capabilities: withoutCachesSource });
+  expect(narrowedRest).toEqual({ ...rest, issues, capabilities: withoutCachesSource });
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
   // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to

@@ -47,18 +47,19 @@ const ServingFloor = 46
 // headers out of version.go and holds this list to them in both directions.
 //
 // shapedAnswersContract (193), repositoriesLiveContract (202), childRouteRemovedContract (205),
-// cachesSourceContract (213), OwnerPlanContract (219) and gateBasisContract are constants rather
-// than numbers, because the entries that took those numbers name them: shapedAnswersContract is
-// the number dispatch://INFRA-2694's entry took, repositoriesLiveContract the number
-// dispatch://INFRA-4401's took, childRouteRemovedContract the number dispatch://INFRA-3178's took,
-// cachesSourceContract the number dispatch://INFRA-4036's took, OwnerPlanContract the number the
-// owner's plan's took, and gateBasisContract the number of the last entry, dispatch://INFRA-3320's.
-// A renumber of any of the six entries moves its constant and this list with it, and moving one of
-// them alone would describe a shape at a contract no entry declares. The other entries above 193
-// follow them as numbers: 199 is version.go's entry for INFRA-4605, and 217 its entry for
-// dispatch://INFRA-3531 and dispatch://INFRA-4567.
+// cachesSourceContract (213), OwnerPlanContract (219), assignmentPlanContract (220) and
+// gateBasisContract are constants rather than numbers, because the entries that took those numbers
+// name them: shapedAnswersContract is the number dispatch://INFRA-2694's entry took,
+// repositoriesLiveContract the number dispatch://INFRA-4401's took, childRouteRemovedContract the
+// number dispatch://INFRA-3178's took, cachesSourceContract the number dispatch://INFRA-4036's
+// took, OwnerPlanContract the number the owner's plan's took, assignmentPlanContract the number the
+// experiment group's took, and gateBasisContract the number of the last entry,
+// dispatch://INFRA-3320's. A renumber of any of the seven entries moves its constant and this list
+// with it, and moving one of them alone would describe a shape at a contract no entry declares.
+// The other entries above 193 follow them as numbers: 199 is version.go's entry for INFRA-4605,
+// and 217 its entry for dispatch://INFRA-3531 and dispatch://INFRA-4567.
 // 199 moves no shape of an answer a plugin parses, so its records are 193's under its own number.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, gateBasisContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, gateBasisContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer

@@ -171,7 +171,7 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionFreshSessionResponse>>;
   /** The root architect's `register_gate`: its document for a design-gate step at a version and,
    * on a basis, the ancestor's document id (`basisArtifactId`), its `basisVersion` and the
-   * architect's `reason` (contract 239), which the daemon takes together or not at all. */
+   * architect's `reason` (contract 240), which the daemon takes together or not at all. */
   readonly gateRegister: (
     input: z.input<typeof LegionGateRegisterRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
@@ -215,7 +215,8 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
-   * a plan it does not take is refused `PLAN_REFUSED`, every reason in the sentence. */
+   * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason in the sentence,
+   * and a plan of an issue whose experiment's group takes no plan from its owner `PLAN_NOT_TAKEN`. */
   readonly planRegister: (
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;

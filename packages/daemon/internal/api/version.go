@@ -3363,7 +3363,43 @@ package api
 // declared only by #4611 and by #4902, #4948 and #5161, each stacked on this branch and carrying
 // this entry, so this entry kept 219, and OwnerPlanContract comes after 217 in SupportedContracts.)
 //
-// 239: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 220: an experiment sets how each new issue is done. `POST /legion/v1/plans/register` and `POST
+// /legion/v1/tasks/stop` answer `409 PLAN_NOT_TAKEN` for a recorded issue that an experiment drew
+// into an arm whose `plan` is `default`: a code and a sentence that names the issue's variant and
+// experiment, with no `reasons`. Legion takes no plan from that issue's owner, and so no stop of
+// one of its tasks; register_plan's answer leaves the registration unspent, so the same call sent
+// again gets the same answer. The code is a value of the refusal's `code`, which no reader
+// enumerates, so a plugin below 220 reads the code and its sentence as it reads every other one,
+// and no answer's shape moves for it. This entry also names what the two routes answer and 219's
+// entry leaves out: register_plan's `400 INVALID_ISSUE`, `400 INVALID_ARTIFACT_ID`,
+// `400 INVALID_VERSION` and `500 DISPATCH_UNAVAILABLE`, and stop_task's
+// `400 INVALID_ISSUE`. `TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory` reads the codes the
+// two routes answer of their own from the source and holds each to this history.
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` gain one key: each assignment of
+// an issue's `assignments` carries `plan`, the group the arm of an experiment that sets how its
+// issues are done set at the issue's draw (`owner` or `default`), as the draw recorded it, and
+// absent where the arm named none. The issue runs on that group for its whole life, and the
+// project's file can change an arm's `plan` or rename the arm after the draw, so a reader takes
+// the group from the record and never from `settings`. The records of 220 hold
+// `issues.*.assignments.*.plan`, and no record below 220 does: a caller whose contract (the one it
+// states, else its pod's) is below 220 is served every assignment without the key (the band of
+// shaping.go's stateNarrowings, `withoutAssignmentPlans`). The key
+// `settings.projects.<KEY>.experiments.<name>.variants[].plan` came with it: a key below
+// `projects`, which no reader types, so no record holds it and nothing is served down
+// (answers.go's typedSettings).
+// (This entry takes 220, above each number another open pull request declared. The forward merge
+// of 2026-11-22 brought the base's 219 (the owner's plan's entry above). A reading of `const
+// DaemonAPIVersion` at the head commit of each of the 431 open pull requests, made between
+// 2026-11-22T02:35:47Z and 02:36:07Z, read all 431 and found 219 declared by #4611 and #4805, 220
+// by this change's own pull request alone, and nothing above 220. The forward merge of 2026-11-23
+// that brought in 7923340d brought the base's 219 again, over main's 217, and a reading of all 507
+// open heads between 2026-11-23T16:08:36Z and 16:09:51Z found 220 declared only by this change's
+// pull request and #5014, which is stacked on it and carries this entry, so this entry kept 220.
+// From this entry the last number of answers.go's SupportedContracts is
+// `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
+// open pull request again at the next merge rather than from this line.)
+//
+// 240: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -3401,7 +3437,7 @@ package api
 // whose step rests on the issue's approval is still in the workflow, and `SIGNOFF_CHILD_OPEN`,
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
-// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 239 — one
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 240 — one
 // that states a contract below it in `Legion-Plugin-Contract`, or else one from a pod whose
 // claims record one — the shape its own contract describes, by 193's serving rule, and this
 // entry adds one band and two value strips to that serving, and a word to a third strip, 219's
@@ -3413,15 +3449,17 @@ package api
 // `lastPause` as well, the entry of 178 above (`withoutPause`), a caller below 146 the issues
 // without both entry times and `architectStalls`, the entry of 146 (`withoutEntryTimes`), and so
 // on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
-// of 193 and 202 stand between them, so a caller at 202 through 238 is served the pause, the keys
-// 193 added and the repositories block 202 writes, and none of this entry's keys and words (a
+// of 193, 202 and 220 stand between them, so a caller at 202 through 239 is served the pause, the
+// keys 193 added and the repositories block 202 writes, and none of this entry's keys and words (a
 // caller that states 203 or 204 is served 202's records, the nearest recorded contract at or below
 // it, one that states 205 to 212 is served 205's, which are 202's under its own number, as 205's
 // entry says, one that states 213 to 216 is served 213's, which are 205's with `caches` among the
 // words of a capability row's `source`, as 213's entry says, one that states 217 or 218 is served
-// 217's, which are 213's under its own number, as 217's entry says, and one that states 219 to 238
-// is served 219's, which are 217's with the owner's plan's routes, fields and words, as 219's
-// entry says, so a caller below 219 is served none of 219's additions either), a
+// 217's, which are 213's under its own number, as 217's entry says, one that states 219 is served
+// 219's, which are 217's with the owner's plan's routes, fields and words, as 219's entry says, and
+// one that states 220 to 239 is served 220's, which are 219's with each assignment's `plan`, as
+// 220's entry says, so a caller below 220 is served no assignment's `plan`, and one below 219 none
+// of 219's additions either), a
 // caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
 // 194 to 198 is served 193's shape and one that states 199 to 201 199's, and 199's is 193's, since
 // 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the pause and the
@@ -3436,7 +3474,7 @@ package api
 // (`gatedStepStatuses`), so a value strip holds them back too, following the contract the caller
 // states, else its pod's lowest: `withoutUnadmittedStepStatuses`, a row of shaping.go's
 // `valueStrips`, serves an issue any step of which reads a word the caller does not admit with no
-// `gatedSteps`. Every reader from 239 on takes `treeRuns` and `basis` as optional and reads the
+// `gatedSteps`. Every reader from 240 on takes `treeRuns` and `basis` as optional and reads the
 // six words (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
 // `20261122154643_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
@@ -3447,7 +3485,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller below 239 knows neither word — its phase enum and its held
+// `LEGION_HELD_REASONS` names. A caller below 240 knows neither word — its phase enum and its held
 // words are the ones before this change — so the daemon serves it that issue's `phase` as
 // `admitted`, the status that names no worker's phase, and that held entry's `reason` as
 // `children_first`, the word a started parent's wait took over. Both are value strips, rows of
@@ -3456,7 +3494,7 @@ package api
 // `withoutUnadmittedPhases` and `withoutUnadmittedHeldWords`. `heldFrom` and
 // `pendingTask.phase` read `LEGION_WORKFLOW_PHASES` too, so the table declares the word for them
 // as well (`workflowPhases`), and `withoutUnadmittedPhases` leaves either key off where it names
-// the word for a caller below 239; the daemon writes the word in neither, since `heldFrom` is null
+// the word for a caller below 240; the daemon writes the word in neither, since `heldFrom` is null
 // in the phase and a hold never comes from it, and no task is queued for a phase no role works.
 // The change ships store migration `20261114232555_awaiting_children`, which adds the phase value
 // and the parent's held start to the issues table; it moves the daemon's own record and is no part
@@ -3605,7 +3643,13 @@ package api
 // 512 open heads' file between 2026-11-23T22:25:40Z and 22:34:16Z found 236 declared by #4173,
 // #4182 and #4193, 237 by #5168 and #5169 and 238 by #4771 and #5285, with every number from 220
 // to 235 declared, so this change moved 236 → 239, the lowest number above main's that no other
-// open head declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-23c-md). Read the
-// base's own number and every open head again, by a REST raw read of each head's file, at the
-// next forward merge rather than from this line.)
-const DaemonAPIVersion = 239
+// open head declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-23c-md). At the
+// forward merge of 2026-11-24 that brought main in at 4ad19fe8459c, main carried 220
+// (cybermonklabs/legion#4930's experiment group, the entry above), and a REST raw read of 510 of
+// the 511 open heads' file between 2026-11-23T23:41:58Z and 23:50:04Z (#4282's read failed) found
+// every number from 220 to 238 declared by other heads, 239 by #5271 too, and nothing above 239, so
+// this change moved 239 → 240, the lowest number above main's that no other open head declares,
+// and gateBasisContract comes after assignmentPlanContract in SupportedContracts. Read the base's
+// own number and every open head again, by a REST raw read of each head's file, at the next
+// forward merge rather than from this line.)
+const DaemonAPIVersion = 240
