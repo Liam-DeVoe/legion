@@ -25,7 +25,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old. */
+    /** @description Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old and refreshed ahead of that bound. A copy past its bound answers 503 ENVOY_UNAVAILABLE at once; only a server that has no copy yet waits, up to 2 s, for the listener's first answer. */
     get: operations["getApiV1Agents"];
     put?: never;
     post?: never;

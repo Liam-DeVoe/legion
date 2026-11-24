@@ -398,7 +398,9 @@ func TestAgentsAnswer503ThroughTheSilenceWindow(t *testing.T) {
 // together leave it as the listener sent it: no list sorts it or fills in a host in place (the
 // race detector catches the write itself), and each list still comes out newest first with the
 // machine_id standing in for a missing host. The listener sends the sessions oldest first, so the
-// sorted order is the reverse of the cached one.
+// sorted order is the reverse of the cached one. The reads run once the refresh loop has stored
+// the listener's answer (awaitRoster), since a cold process's issue read waits on no fetch and
+// would read its route unknown.
 func TestConcurrentAgentsListsAndIssueReadsLeaveTheSharedListAsTheListenerSentIt(t *testing.T) {
 	t.Parallel()
 	listenerURL, calls := sessionsListener(t, `[
@@ -409,6 +411,7 @@ func TestConcurrentAgentsListsAndIssueReadsLeaveTheSharedListAsTheListenerSentIt
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL})
 	served.rosters.ttl = time.Minute
 	key := routedIssueKey(t, handler, "role:sre")
+	awaitRoster(t, served)
 
 	const readers = 8
 	agents := make([]*httptest.ResponseRecorder, readers)
@@ -469,8 +472,9 @@ func TestConcurrentAgentsListsAndIssueReadsLeaveTheSharedListAsTheListenerSentIt
 	}
 }
 
-// An agents list whose request ends while it waits on the shared fetch answers 503
-// ENVOY_UNAVAILABLE at once, saying why; the fetch runs on, and the next list is its answer.
+// A cold process's agents list whose request ends while it waits on the refresh's first fetch
+// answers 503 ENVOY_UNAVAILABLE at once, saying why; the fetch runs on, and the next list is its
+// answer.
 func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -509,10 +513,32 @@ func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing
 	}
 }
 
-// While the process drains after a shutdown, the shared fetch, which runs on the process's
-// lifetime, cannot answer; an agents list the drain still serves asks a healthy listener on its
-// own request and lists its sessions, whether the cache was cold or already holds the shutdown's
-// failure.
+// A cold process's agents list waits for the refresh's first fetch for the fetch bound and no
+// longer: with the listener holding that fetch for the client's whole minute, the list answers 503
+// ENVOY_UNAVAILABLE once the half-second bound has passed - not before it, since it waited for
+// that fetch, and not at the client's minute - and the refresh asked the listener once.
+func TestAColdAgentsListWaitsForTheFirstFetchOnlyForTheFetchBound(t *testing.T) {
+	t.Parallel()
+	listenerURL, calls, _ := heldRosterListener(t)
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: time.Minute})
+	const bound = 500 * time.Millisecond
+	served.rosters.ttl, served.rosters.timeout = time.Minute, bound
+
+	answer := serveTimed(handler, testRequestAs(t, http.MethodGet, "/api/v1/agents", "alice"))
+	if answer.status != http.StatusServiceUnavailable || !strings.Contains(answer.body, `"code":"ENVOY_UNAVAILABLE"`) {
+		t.Fatalf("a cold agents list with the listener held: status=%d body=%s, want 503 ENVOY_UNAVAILABLE", answer.status, answer.body)
+	}
+	if answer.elapsed < bound || answer.elapsed > noRosterWait {
+		t.Fatalf("a cold agents list with the listener held answered after %v, want at the %v fetch bound", answer.elapsed, bound)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("a cold agents list had the listener asked %d times, want once, by the refresh", got)
+	}
+}
+
+// While the process drains after a shutdown, the refresh, which runs on the process's lifetime,
+// has ended and stores nothing; an agents list the drain still serves asks a healthy listener on
+// its own request and lists its sessions, the first list and every one after it.
 func TestAnAgentsListDuringAShutdownDrainListsAHealthyListenersSessions(t *testing.T) {
 	t.Parallel()
 	listenerURL, _ := sessionsListener(t, `[{"session_id":"ses-live","title":"worker","last_seen":100}]`)

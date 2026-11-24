@@ -8262,6 +8262,25 @@ func (p *dispatchProcess) issueReach(t *testing.T, key string) string {
 	return orNull(issue.RouteStatus) + " " + orNull(issue.RouteHolder)
 }
 
+// awaitIssueReach waits until GET /api/v1/issues/{key} on this process reads the route as want
+// ("<status> <holder>", issueReach), failing after within. A process that has stored no listener
+// answer yet reads every route unknown, and refuses a judged route_status filter, until its first
+// refresh of the stored answer lands: no read waits on the listener (api/issue_route_status.go).
+func (p *dispatchProcess) awaitIssueReach(t *testing.T, key, want string, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		got := p.issueReach(t, key)
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s reads %s within %v, want %s:\n%s", key, got, within, want, p.Output.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // liveRoutesPage is one page of project's open issues whose route reaches a live session, as GET
 // /api/v1/issues?route_status=live on this process answers it: the page's keys and its total.
 func (p *dispatchProcess) liveRoutesPage(t *testing.T, project string, limit, offset int) (keys []string, total int) {
@@ -8288,7 +8307,9 @@ func (p *dispatchProcess) liveRoutesPage(t *testing.T, project string, limit, of
 // B does not ask the listener for a copy of its own, so the listener answers one live-list read
 // in all. A filtered listing paged across the two processes is cut from that one answer too: a
 // page read on B after the listener's list has flipped holds the rest of the issues A's page was
-// cut from, never issues judged against B's own later copy.
+// cut from, never issues judged against B's own later copy. A cold process reads every route
+// unknown, and refuses a judged filter, until its first refresh lands, so each case first waits
+// for A to read a route live (awaitIssueReach) and only then reads what it holds the two to.
 func TestBothProcessesJudgeARouteAgainstOneRoster(t *testing.T) {
 	sre := listenerSession{SessionID: "sre-holder", Title: "sre", Roles: []string{"sre"}, Capabilities: []string{}}
 	reviewer := listenerSession{SessionID: "reviewer-holder", Title: "reviewer", Roles: []string{"reviewer"}, Capabilities: []string{}}
@@ -8300,9 +8321,7 @@ func TestBothProcessesJudgeARouteAgainstOneRoster(t *testing.T) {
 		pair.a.createProject(t, project, "One roster")
 		key := pair.a.routeIssue(t, project, "Routed to sre", "role:sre")
 
-		if got := pair.a.issueReach(t, key); got != "live sre-holder" {
-			t.Fatalf("A reads %s while the listener lists the holder, want live sre-holder", got)
-		}
+		pair.a.awaitIssueReach(t, key, "live sre-holder", 30*time.Second)
 		listener.setSessions()
 		for _, reader := range []*dispatchProcess{pair.b, pair.a} {
 			if got := reader.issueReach(t, key); got != "live sre-holder" {
@@ -8326,6 +8345,7 @@ func TestBothProcessesJudgeARouteAgainstOneRoster(t *testing.T) {
 			pair.a.routeIssue(t, project, fmt.Sprintf("Review work %d", index), "role:reviewer")
 		}
 
+		pair.a.awaitIssueReach(t, routedToSRE[0], "live sre-holder", 30*time.Second)
 		first, firstTotal := pair.a.liveRoutesPage(t, project, 3, 0)
 		listener.setSessions(reviewer)
 		second, secondTotal := pair.b.liveRoutesPage(t, project, 3, 3)

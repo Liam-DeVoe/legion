@@ -1224,8 +1224,10 @@ What the two processes share, and what each keeps to itself:
 
 - Route status and the agents list come from one stored listener answer.
   Every issue read judges its `route_status` against the `route_roster` row (migration `0159`), the listener's last live-session list, and `GET /api/v1/agents` lists that row's sessions, so both processes read a route the same way, list the same agents, and a `route_status` page read on either is cut from the same answer.
-  A process that finds the row older than five seconds by the database's clock asks the listener once, however many of its reads wait, and stores the answer, unless the other process stored one from a later call;
-  a listener that did not answer is stored too, so every process reads `unknown` and answers the agents list `503 ENVOY_UNAVAILABLE` for the next five seconds together (`api/issue_route_status.go`).
+  The row serves reads for five seconds by the database's clock, and each process refreshes it ahead of that bound with no read waiting on the listener: a loop that the process's first roster read starts asks the listener once the row is within two seconds (the fetch bound) of expiring, with or without reads, and stores the answer unless the other process stored one from a later call, so while the listener answers within two seconds no read finds the row past its five seconds;
+  a read that does find it past them reads every route `unknown`, and the agents list answers `503 ENVOY_UNAVAILABLE`, at once, save a process's first agents list before it has any copy, which waits up to two seconds for that first answer and holds no admission unit while it waits.
+  A listener that did not answer is stored too, so every process reads `unknown` and answers the agents list `503 ENVOY_UNAVAILABLE` for the next five seconds together (`api/issue_route_status.go`).
+  A fetch whose listener read takes over a second is logged, with its duration and how it ended.
   A refresh of the answer between two page reads can still move issues across a page boundary, as any change does under offset paging.
 
 - GitHub's rate limits hold every process.
@@ -4777,8 +4779,8 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/agents` (GET; cookie, trusted header, or bearer)
 
-  List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
-  `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
+  List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old and refreshed ahead of that bound, so a list waits on no listener read;
+  `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again, and `503 ENVOY_UNAVAILABLE` at once when the copy is past its 5 s, save the first list of a process that has no copy yet, which waits up to 2 s for the listener's first answer.
   Neither is an empty list: a client reads neither as "no agents".
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
@@ -4948,11 +4950,11 @@ Each item below names a path with its method and identity, then its purpose.
   a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
   `route_status` (`live`, `no_holder` or `unknown`;
   anything else is `400 INVALID_ROUTE_STATUS`) keeps the open issues whose route is in that state, whatever their priority;
-  `live` or `no_holder` is `503 ENVOY_REFILLING` with the listener's `Retry-After` while the listener refuses its list as refilling, and `503 ENVOY_UNAVAILABLE` when it does not answer.
+  `live` or `no_holder` is `503 ENVOY_REFILLING` with the listener's `Retry-After` while the listener refuses its list as refilling, and `503 ENVOY_UNAVAILABLE` when it does not answer or Dispatch's copy of its sessions is past its 5 s.
 
   - Summaries contain `key`, `title`, `status`, `priority`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
-    Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the process's one copy of the listener's `GET /v1/sessions`, stored in no table:
-    that copy is at most 5 s old, one listener call refreshes it for every read that asks while it runs, and a listener that fails or does not answer within 2 s is asked again only after 5 s, every read in that window reading `unknown` at once.
+    Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the copy of the listener's `GET /v1/sessions` every process shares (the `route_roster` row):
+    that copy is at most 5 s old, and each process refreshes it 2 s before it expires with no read waiting on the listener, so a read that finds it past its 5 s (the listener slower than 2 s, or no copy yet) reads every route `unknown` at once; a listener that fails or does not answer within 2 s is left alone for 5 s, every read in that window reading `unknown` at once, and asked again 2 s before the window ends.
     The status is `live` (a live session holds the role, or the session is live;
     `route_holder` names it), `no_holder` (nobody live holds the role, or the session is not live), `unknown` (the listener gave no list), or null with no route.
     `route_status_reason` says why a route is `unknown`:
