@@ -680,8 +680,24 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 			return false, fmt.Errorf("read the decline of %s's release: %w", issue, err)
 		}
 	}
-	var tells bool
-	if decline.Reason == pods.DeclineWorkspaceUnread {
+	unread := decline.Reason == pods.DeclineWorkspaceUnread
+	// same is a read that could read and found the work the row names, through the role it names.
+	var same bool
+	if !unread {
+		err := tx.QueryRow(ctx, `select head = $3 and commits = $4 and changed = $5 and role = $6
+			from idle_release_declines where project = $1 and issue = $2 for update`,
+			project, issue, decline.Head, decline.Commits, decline.Changed, string(decline.Role)).Scan(&same)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("read the decline of %s's release: %w", issue, err)
+		}
+	}
+	// tells is whether the decline queues its message, decided once: a Kept decline tells unless
+	// the architect was told of its pod (told), and any other tells only where it replaces the row
+	// whole, since its role was told of the work the row names and a failed read tells a role
+	// nothing.
+	tells := decline.Message != nil && !told && (decline.Kept || (!unread && !same))
+	switch {
+	case unread:
 		// The row's pod and the failed read's are both named and differ: the pod was made again.
 		const otherPod = `idle_release_declines.pod_uid <> '' and excluded.pod_uid <> ''
 			and idle_release_declines.pod_uid <> excluded.pod_uid`
@@ -697,41 +713,29 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 			project, issue, decline.At, string(decline.Role), decline.Reason, decline.PodUID); err != nil {
 			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 		}
-		tells = decline.Kept && !told && decline.Message != nil
 		if tells {
 			if _, err := tx.Exec(ctx, `update idle_release_declines set role = $3, declined_at = $4
 				where project = $1 and issue = $2`, project, issue, string(decline.Role), decline.At); err != nil {
 				return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 			}
 		}
-	} else {
-		var same bool
-		err := tx.QueryRow(ctx, `select head = $3 and commits = $4 and changed = $5 and role = $6
-			from idle_release_declines where project = $1 and issue = $2 for update`,
-			project, issue, decline.Head, decline.Commits, decline.Changed, string(decline.Role)).Scan(&same)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return false, fmt.Errorf("read the decline of %s's release: %w", issue, err)
+	case same:
+		if _, err := tx.Exec(ctx, `update idle_release_declines set checked_at = greatest(declined_at, $3),
+			reason = $4, started_row = `+startedRow+`, pod_uid = $5 where project = $1 and issue = $2`,
+			project, issue, decline.At, decline.Reason, decline.PodUID); err != nil {
+			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 		}
-		if same {
-			if _, err := tx.Exec(ctx, `update idle_release_declines set checked_at = greatest(declined_at, $3),
-				reason = $4, started_row = `+startedRow+`, pod_uid = $5 where project = $1 and issue = $2`,
-				project, issue, decline.At, decline.Reason, decline.PodUID); err != nil {
-				return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
-			}
-			tells = decline.Kept && !told && decline.Message != nil
-		} else {
-			if _, err := tx.Exec(ctx, `insert into idle_release_declines
-				(project, issue, declined_at, checked_at, role, reason, head, commits, changed, started_row, pod_uid)
-				values ($1, $2, $3, $3, $4, $5, $6, $7, $8, `+startedRow+`, $9)
-				on conflict (project, issue) do update set declined_at = excluded.declined_at,
-					checked_at = excluded.checked_at, role = excluded.role, reason = excluded.reason,
-					head = excluded.head, commits = excluded.commits, changed = excluded.changed,
-					started_row = excluded.started_row, pod_uid = excluded.pod_uid`,
-				project, issue, decline.At, string(decline.Role), decline.Reason, decline.Head, decline.Commits, decline.Changed,
-				decline.PodUID); err != nil {
-				return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
-			}
-			tells = decline.Message != nil && !told
+	default:
+		if _, err := tx.Exec(ctx, `insert into idle_release_declines
+			(project, issue, declined_at, checked_at, role, reason, head, commits, changed, started_row, pod_uid)
+			values ($1, $2, $3, $3, $4, $5, $6, $7, $8, `+startedRow+`, $9)
+			on conflict (project, issue) do update set declined_at = excluded.declined_at,
+				checked_at = excluded.checked_at, role = excluded.role, reason = excluded.reason,
+				head = excluded.head, commits = excluded.commits, changed = excluded.changed,
+				started_row = excluded.started_row, pod_uid = excluded.pod_uid`,
+			project, issue, decline.At, string(decline.Role), decline.Reason, decline.Head, decline.Commits, decline.Changed,
+			decline.PodUID); err != nil {
+			return false, fmt.Errorf("record the decline of %s's release: %w", issue, err)
 		}
 	}
 	if decline.Kept {
