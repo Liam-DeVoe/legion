@@ -45,37 +45,70 @@ func TestReadingAThreadsClocksAllocatesNothing(t *testing.T) {
 
 // On a machine NUMA balancing runs on, a held thread allocates on its own node, as by default,
 // but has no page moved for it while it is held, and gets back the policy it had when it is let
-// go (xidHoldThread). On a machine NUMA balancing leaves alone the hold changes nothing.
+// go (xidHoldThread). On a machine NUMA balancing leaves alone the hold changes nothing and makes
+// no memory-policy call, so it answers held even in a container whose seccomp profile refuses
+// those calls (EPERM, as a runtime's default profile answers without CAP_SYS_NICE): a hold that
+// made one there would be refused it and answer not held, and the rig would judge no gap on that
+// machine. The test asserts that answer first, on every machine. Where NUMA balancing runs and the
+// kernel refuses the hold's calls, the rig holds no thread and judges no gap, and the test stops
+// as the rig's self-tests do (RequireXidGapJudgment).
+//
+// The policy itself is compared in a subtest. A machine that refuses the read of a thread's
+// policy, with NUMA balancing off, has no policy to compare and nothing the hold could change, so
+// that subtest skips there, saying so (threadMempolicy).
 func TestHoldingAThreadKeepsNUMABalancingOffItUntilItIsLetGo(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	before := threadMempolicy(t)
 	release, held := xidHoldThread()
-	if !held {
-		t.Fatal("the rig could not hold this thread out of NUMA balancing")
-	}
-	during := threadMempolicy(t)
 	release()
-	after := threadMempolicy(t)
-	want := before
-	if xidNUMABalancing() {
-		want = xidMempolicyLocal
+	if !held && !xidNUMABalancing() {
+		t.Fatal("the hold answered not held on a machine NUMA balancing leaves alone, where it has nothing to hold and makes no memory-policy call")
 	}
-	if during != want {
-		t.Errorf("a held thread's memory policy is mode %d, want %d", during, want)
+	if !held {
+		// The kernel refused the hold's memory-policy calls: the rig holds no thread, and judges no gap.
+		RequireXidGapJudgment(t)
+		t.Fatal("the rig could not hold this thread out of NUMA balancing, yet it judges gaps")
 	}
-	if after != before {
-		t.Errorf("a thread let go has memory policy mode %d, want the %d it had", after, before)
-	}
+	t.Run("its memory policy while it is held and once it is let go", func(t *testing.T) {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		before := threadMempolicy(t)
+		release, held := xidHoldThread()
+		if !held {
+			t.Fatal("the rig could not hold this thread out of NUMA balancing")
+		}
+		during := threadMempolicy(t)
+		release()
+		after := threadMempolicy(t)
+		want := before
+		if xidNUMABalancing() {
+			want = xidMempolicyLocal
+		}
+		if during != want {
+			t.Errorf("a held thread's memory policy is mode %d, want %d", during, want)
+		}
+		if after != before {
+			t.Errorf("a thread let go has memory policy mode %d, want the %d it had", after, before)
+		}
+	})
 }
 
-// threadMempolicy is the calling thread's memory policy mode.
+// threadMempolicy is the calling thread's memory policy mode. A kernel that refuses the read -
+// a seccomp profile that refuses the memory-policy calls answers EPERM, and a kernel built without
+// NUMA answers ENOSYS - on a machine NUMA balancing leaves alone skips the test, saying why: the
+// hold makes no such call there and changes nothing, so there is no policy to compare. With NUMA
+// balancing on, the hold makes the same call, and the test that held the thread has stopped on
+// its refusal already, so a refusal here fails.
 func threadMempolicy(t *testing.T) int {
 	t.Helper()
 	var mode int
 	var nodes [16]uint64
-	if _, _, errno := unix.Syscall6(unix.SYS_GET_MEMPOLICY, uintptr(unsafe.Pointer(&mode)),
-		uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64), 0, 0, 0); errno != 0 {
+	_, _, errno := unix.Syscall6(unix.SYS_GET_MEMPOLICY, uintptr(unsafe.Pointer(&mode)),
+		uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64), 0, 0, 0)
+	if (errno == unix.EPERM || errno == unix.ENOSYS) && !xidNUMABalancing() {
+		t.Skipf("NUMA balancing moves no page on this machine, so the hold makes no memory-policy call and changes nothing, and this thread's memory policy cannot be read here to compare (get_mempolicy: %v)", errno)
+	}
+	if errno != 0 {
 		t.Fatalf("read this thread's memory policy: %v", errno)
 	}
 	return mode
@@ -86,7 +119,9 @@ func threadMempolicy(t *testing.T) int {
 // this goroutine's stack lies in - has a policy of its own, MPOL_LOCAL, so no thread's fault moves
 // a page of it and the balancing scan passes over it. With the hold planted to do nothing, the
 // mappings keep the default policy and this test fails. On a machine NUMA balancing leaves alone
-// there is nothing to hold, and the test skips.
+// there is nothing to hold, and the test skips. Where the kernel refuses the memory-policy calls,
+// as a container's seccomp profile may, the rig holds nothing and judges no gap, and the test
+// stops as the rig's self-tests do (RequireXidGapJudgment).
 func TestHoldingTheMemoryKeepsNUMABalancingOffItsMappings(t *testing.T) {
 	if !xidNUMABalancing() {
 		t.Skip("NUMA balancing moves no page on this machine, so there is no memory to hold")
@@ -95,7 +130,9 @@ func TestHoldingTheMemoryKeepsNUMABalancingOffItsMappings(t *testing.T) {
 	object[0] = 1
 	var onStack byte
 	if !xidHoldMemory() {
-		t.Fatal("the rig could not hold the process's memory out of NUMA balancing")
+		// The kernel refused mbind: the rig holds no memory, and judges no gap.
+		RequireXidGapJudgment(t)
+		t.Fatal("the rig could not hold the process's memory out of NUMA balancing, yet it judges gaps")
 	}
 	for _, address := range []struct {
 		name string
@@ -107,14 +144,20 @@ func TestHoldingTheMemoryKeepsNUMABalancingOffItsMappings(t *testing.T) {
 	}
 }
 
-// mappingMempolicy is the memory policy mode of the mapping address lies in (MPOL_F_ADDR).
+// mappingMempolicy is the memory policy mode of the mapping address lies in (MPOL_F_ADDR). A
+// kernel that refuses the read (EPERM, ENOSYS) refuses the thread hold's get_mempolicy too, so the
+// rig judges no gap, and the test stops as the rig's self-tests do (RequireXidGapJudgment).
 func mappingMempolicy(t *testing.T, address unsafe.Pointer) int {
 	t.Helper()
 	const byAddress = 1 << 1
 	var mode int
 	var nodes [16]uint64
-	if _, _, errno := unix.Syscall6(unix.SYS_GET_MEMPOLICY, uintptr(unsafe.Pointer(&mode)),
-		uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64), uintptr(address), byAddress, 0); errno != 0 {
+	_, _, errno := unix.Syscall6(unix.SYS_GET_MEMPOLICY, uintptr(unsafe.Pointer(&mode)),
+		uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64), uintptr(address), byAddress, 0)
+	if errno == unix.EPERM || errno == unix.ENOSYS {
+		RequireXidGapJudgment(t)
+	}
+	if errno != 0 {
 		t.Fatalf("read the memory policy at %p: %v", address, errno)
 	}
 	return mode
