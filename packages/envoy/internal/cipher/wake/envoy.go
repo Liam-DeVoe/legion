@@ -34,6 +34,12 @@ type Envoy struct {
 	HTTP    *http.Client
 }
 
+// NewEnvoy is Envoy{URL: url, Account: account, HTTP: client}: the constructor a later head builds
+// the notice with, here with this tree's own behaviour, so that head's rows build against it.
+func NewEnvoy(url string, account ciphertoken.Account, client *http.Client) Envoy {
+	return Envoy{URL: url, Account: account, HTTP: client}
+}
+
 type secretRequestPayload struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`

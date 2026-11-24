@@ -51,6 +51,13 @@ type Dispatch struct {
 	HTTP *http.Client
 }
 
+// NewDispatch is Dispatch{BaseURL: baseURL, Account: account, HTTP: client}: the constructor a
+// later head builds the read with, here with this tree's own behaviour, so that head's rows build
+// against it.
+func NewDispatch(baseURL string, account ciphertoken.Account, client *http.Client) Dispatch {
+	return Dispatch{BaseURL: baseURL, Account: account, HTTP: client}
+}
+
 // Issue is what the judge reads of one issue: enough to tell whether the reason's issue is open
 // and what it is about.
 type Issue struct {
