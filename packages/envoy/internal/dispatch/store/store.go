@@ -32,8 +32,10 @@ type Store struct {
 	afterNonTransactionalStatement func(ctx context.Context, conn *pgx.Conn) error
 }
 
-// Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
-// states why the pattern is all:migrations and holds the tree to it.
+// Every file in migrations, so the store's tests judge each one with pgmigrate.Load
+// (TestTheEmbeddedMigrationsPassEveryCheckLoadMakes) and a start reads each one with
+// pgmigrate.LoadBuilt; pgmigratetest.CheckEmbedsEveryFile states why the pattern is all:migrations
+// and holds the tree to it.
 //
 //go:embed all:migrations
 var migrationFiles embed.FS
@@ -132,10 +134,12 @@ func declaresPoolSize(databaseURL string) (bool, error) {
 // Migrate applies embedded migrations in version order. Unmarked files commit with their
 // version record in one transaction; marked concurrent indexes run outside a transaction under
 // the same advisory key until their version is recorded. Every wait for that key polls, for the
-// reason lockMigrations gives. It refuses a set pgmigrate.Load refuses before touching the
+// reason lockMigrations gives. It refuses a set pgmigrate.LoadBuilt refuses before touching the
 // database, refuses a database whose schema_migrations records a version under another file's
 // identity before applying anything (prepareVersionTable), and bounds every migration's lock
-// waits by LockTimeout.
+// waits by LockTimeout. A marked migration whose statement is not one idempotent concurrent index
+// build is refused at its turn, after the pending migrations before it have been applied
+// (pgmigrate.LoadBuilt says why the start reads the set that way).
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
 }
@@ -149,6 +153,25 @@ func (s *Store) MigrateThrough(ctx context.Context, version int) error {
 	return s.migrateThrough(ctx, migrationFiles, version)
 }
 
+// MigrationText is the whole text of the embedded forward migration numbered version, comments
+// included, as the runner applies it. It refuses a version no embedded forward migration carries,
+// and one that two carry. A caller that names an operator's remedy reads a migration's statement
+// here rather than keeping a second copy of it (graphcensus' refusal without its indexes).
+func MigrationText(version int) (string, error) {
+	names, err := fs.Glob(migrationFiles, fmt.Sprintf("migrations/%d_*.up.sql", version))
+	if err != nil {
+		return "", fmt.Errorf("find migration %d: %w", version, err)
+	}
+	if len(names) != 1 {
+		return "", fmt.Errorf("find migration %d: %d embedded forward migrations carry it, want one", version, len(names))
+	}
+	text, err := migrationFiles.ReadFile(names[0])
+	if err != nil {
+		return "", fmt.Errorf("read migration %d: %w", version, err)
+	}
+	return string(text), nil
+}
+
 // versionTable is the table this runner records each applied migration in.
 const versionTable = "schema_migrations"
 
@@ -160,7 +183,7 @@ func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) err
 	if s == nil || s.Pool == nil {
 		return fmt.Errorf("migrate: store pool required")
 	}
-	migrations, err := pgmigrate.Load(fsys, "migrations")
+	migrations, err := pgmigrate.LoadBuilt(fsys, "migrations")
 	if err != nil {
 		return fmt.Errorf("migrations refused, none applied: %w", err)
 	}
