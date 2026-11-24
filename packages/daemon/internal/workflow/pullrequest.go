@@ -554,9 +554,10 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, s TaskScope,
 // and in a lingering one alike; the merge that ends the issue opens its check through the issue's
 // leave, which checks each merge of the run that has none (leaveByTasks). In a running tree the
 // close is the table's row to done (transition), which leaves where the issue is then done: a
-// child's close retires five of its claims and opens its production check in the live session of
-// the role the project's `production_check` names, and retires all six and opens no check where
-// that setting is off; a root's close lingers its tree and opens its check behind the linger's rows
+// child's close retires each of its claims but the claim of each production check that stays open
+// past it, and opens the check of each merge of its run that has none in that check's agent's live
+// session, and retires every claim and opens no check where the project's `production_check` is
+// off; a root's close lingers its tree and opens its check behind the linger's rows
 // (leave). A merge is the one fact GitHub never sends again, so one that lands while the tree
 // lingers, where no transition runs, still moves its task to done and ends the merge step. Where
 // that merge ends the issue it writes the phase done and the status done, and the issue leaves

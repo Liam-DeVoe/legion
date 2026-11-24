@@ -216,7 +216,7 @@ func (e *Engine) keptClaims(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return nil, err
 	}
-	kept := checks[:0:0]
+	var kept []record.ProductionCheck
 	for _, check := range checks {
 		if check.Open() {
 			kept = append(kept, check)
