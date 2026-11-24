@@ -24,9 +24,12 @@ const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 // at the 96 rung (the first row below, in the Job infra-1580-r27mc-74dnt of the cluster's `builds`
 // namespace, two CPUs and 8 GiB, 205 busy loops for the 96 rung, row A 31.8 s, at 82306880), where
 // `row-deadline.ts`'s 120 s was 1.8 times it, and the two broker-token rows' 60_000 and 90_000
-// were 1.3 and 1.4 times their 46 399 and 62 505 ms. Six times the worst is 403 s, past that room,
-// so the room decides 240_000, 3.6 times the worst. The dial row keeps its own 600 s
-// (`ROW_TIMEOUT_MS`, `./reopen-server.ts`), 10.4 times its 57 403 ms there.
+// were 1.3 and 1.4 times their 46 399 and 62 505 ms. With the waits below ending on their facts
+// and the guard in place, the worst over 20 runs at that rung is 82 600 ms, the broker-wait row,
+// whose 45 s bound of before would have failed that run (infra-1580-r27mc2-86dmr, 122 busy loops,
+// row A 36.1 s, at 0faaee16). Six times it is 496 s, past that room, so the room decides 240_000,
+// 2.9 times the worst. The dial row keeps its own 600 s (`ROW_TIMEOUT_MS`, `./reopen-server.ts`),
+// 7.1 times its 84 395 ms there.
 beforeEach(rowStarted)
 setDefaultTimeout(JOB_ROOM_GUARD_MS)
 

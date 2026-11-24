@@ -1998,6 +1998,18 @@ async function projectedTokenFile(scratch: string): Promise<string> {
 // its own bound ends it, and the hook goes on to the read. The census must hold exactly the route's
 // starts and waits beside the jj start, its timer and the read's deadline, so a wait added anywhere
 // on that route fails here by name.
+//
+// These rows' rung is 32 busy loops, 16 per CPU, below the 80 this file's other rows hold at. Above
+// it the hook's own 3 s bound on the Dispatch read (`OPEN_ASKS_TIMEOUT_MS`), a production budget no
+// per-test limit guards, can end the read before a starved host has traded the credential: the
+// credential's share of it (`credentialDeadline`) fires, and the census then holds none of the
+// route's waits. That lost a correct run of the device-login rows 1 time in 5 runs of this file
+// whole at the 80 rung (the Job infra-1580-r27ow-46ct9 of the cluster's `builds` namespace, two
+// CPUs and 8 GiB, 183 busy loops for the 80 rung, row A 36.6 s, at 82306880), and 1 time in 20 at
+// the 48 rung (infra-1580-r27cb48-5rhzl, 54 busy loops for the 48 rung, row A 35.7 s). At the 32
+// rung each of the six rows is 20 of 20 (infra-1580-r27cb32-zslfn, 34 busy loops for the 32 rung,
+// row A 32.1 s, at 58517f21), the worst run charged 40 297 ms. Their guard is the file's
+// (`OPEN_ASKS_ROW_GUARD_MS`), which the job's room decides, 5.96 times that worst.
 for (const route of BROKER_ROUTES) {
   test(`a hook whose credential is traded at the broker by ${route.name}, the first service never answering, waits on nothing but that route's bounds`, async () => {
     const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-waits-broker-"))
@@ -2226,7 +2238,16 @@ const REVIEWED_WAIT_SITES: readonly {
 /** The scan row's own limit, sized to what reading the hook's modules as one program costs, not to
  *  the package's 60 s: 4.4 to 4.9 s wall, 10 s of CPU and 551 MB on the dev box; 38.6 s wall alone
  *  and up to 54.7 s beside other rows in a shared two-CPU pod (Legion's review 6011857098). It
- *  starts no child and cannot hang, so its limit only keeps a slow machine from deciding it. */
+ *  starts no child and cannot hang, so its limit only keeps a slow machine from deciding it. Its
+ *  work is CPU bound, and on a loaded host it takes most of what the claude-envoy job has: over 20
+ *  runs it cost up to 257 693 ms at the 48 rung (the Job infra-1580-r27sc48-9cj2g of the cluster's
+ *  `builds` namespace, two CPUs and 8 GiB, 57 busy loops for the 48 rung, row A 32.6 s) and up to
+ *  233 205 ms at the 32 rung (infra-1580-r27sc32-sr2vl, 36 busy loops, row A 31.8 s), both at
+ *  58517f21, 20 of 20 each; in this file run whole at the 80 rung, 79 to 315 s over 5 runs
+ *  (infra-1580-r27ow-46ct9), a pass past this limit because the scan's body is synchronous, which
+ *  bun's limit does not interrupt. Six times any of these is past the job's whole 600 s, so the
+ *  job decides: this limit stays below it, and the row's rung is 48, where it holds 20 of 20 at
+ *  1.2 times its worst. */
 const SCAN_ROW_LIMIT_MS = 300_000
 
 /** claude-envoy's TypeScript settings, which the scan reads the hook's modules with. */
