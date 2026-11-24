@@ -314,6 +314,10 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 		return HeldChildrenBeforeRetro, openBeneathIn(issue, facts.Chain)
 	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
 		return HeldTaskStopped, nil
+	case HeldFor(issue, HoldForFix) && !KeepsSlot(issue):
+		return HeldFixRunning, facts.Facts.EndHolds[issue.Key]
+	case HeldFor(issue, HoldForCI) && !KeepsSlot(issue):
+		return HeldCIAtHead, facts.Facts.EndHolds[issue.Key]
 	}
 	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from accepting, retro or
 	// merging keeps no slot (KeepsSlot reads StandsAt), which makes this word reachable for a held

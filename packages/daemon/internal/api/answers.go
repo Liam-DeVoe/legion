@@ -274,7 +274,8 @@ type EnumeratedValue struct {
 // gained `caches` at dispatch://INFRA-4036's contract (cachesSourceContract), `holdReason`, which
 // gained `task-stopped` and `children` at OwnerPlanContract and `fix` and `ci` at
 // FixBesideReviewContract, and `admission.held.*.reason`, which gained `children_before_retro`
-// and `task_stopped` at OwnerPlanContract, so every other list is recorded whole
+// and `task_stopped` at OwnerPlanContract and `fix_running` and `ci_at_head` at
+// FixBesideReviewContract, so every other list is recorded whole
 // at its own field's arrival. (`suspendedBy` gained `released` at 48 and is no row here: the
 // operator claim answers carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
@@ -423,9 +424,10 @@ var stateEnumeratedFields = []EnumeratedField{
 	// `reason` of one row of the admission's held list, the one word for why nothing of that
 	// issue runs (api.HeldIssue, record.HeldReason). It arrived with `admission.held`, which is
 	// served down below that contract whole (shaping.go's withoutHeld), so no body below 98
-	// carries a value of it. Its list grew: `children_before_retro` and `task_stopped` arrived
-	// at OwnerPlanContract, after the field, and a row of either word is served as
-	// `unclassified` below that contract (shaping.go's withoutUnadmittedHeldWords).
+	// carries a value of it. Its list grew twice: `children_before_retro` and `task_stopped`
+	// arrived at OwnerPlanContract, after the field, and `fix_running` and `ci_at_head` at
+	// FixBesideReviewContract, and a row of any of the four is served as `unclassified` below
+	// the contract its word arrived at (shaping.go's withoutUnadmittedHeldWords).
 	{Answer: AnswerState, KeyPath: "admission.held.*.reason", Values: heldReasons},
 	// `holdReason` of a held issue, why it is held (api.Issue.HoldReason, record.HoldReason).
 	// Older than the floor, and read with a literal of its one value until OwnerPlanContract,
@@ -541,20 +543,24 @@ var lineKinds = []EnumeratedValue{
 }
 
 // heldReasons is every word of a held row's `reason`. The field arrived at heldContract with
-// eleven words, and its list grew once: `children_before_retro`, a parent whose task's last step
+// eleven words, and its list grew twice: `children_before_retro`, a parent whose task's last step
 // is not the owner's acceptance, held before its retro for the issues beneath it, and
-// `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). So
-// it is written out value by value, sorted by value, as waitAnswers is. It names each constant
-// rather than reading record.HeldReasons, because a word added to the ladder later arrives at
-// its own contract.
+// `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219);
+// `fix_running`, a task held before its retro while its fix runs, and `ci_at_head`, a task held
+// before its retro until each check a CI job runs passes at its head, arrived at
+// FixBesideReviewContract (version.go's 236). So it is written out value by value, sorted by
+// value, as waitAnswers is. It names each constant rather than reading record.HeldReasons,
+// because a word added to the ladder later arrives at its own contract.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},
 	{Value: string(record.HeldAtWork), Since: heldContract},
 	{Value: string(record.HeldChildrenBeforeRetro), Since: OwnerPlanContract},
 	{Value: string(record.HeldChildrenFirst), Since: heldContract},
+	{Value: string(record.HeldCIAtHead), Since: FixBesideReviewContract},
 	{Value: string(record.HeldDesignGate), Since: heldContract},
 	{Value: string(record.HeldDispatchBlocker), Since: heldContract},
+	{Value: string(record.HeldFixRunning), Since: FixBesideReviewContract},
 	{Value: string(record.HeldLabelOff), Since: heldContract},
 	{Value: string(record.HeldRootAwaitingPerson), Since: heldContract},
 	{Value: string(record.HeldTaskStopped), Since: OwnerPlanContract},
