@@ -351,11 +351,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// LEGION-207's tree closed and LEGION-214's is no live tree, so neither carries a
 			// measure whoever asks.
 			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true}
-			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true,
-				"LEGION-214": true, "LEGION-215": true, "LEGION-216": true, "LEGION-218": true, "LEGION-219": true}
-			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true, "LEGION-216": true}
-			measured := map[string]bool{"LEGION-208": true, "LEGION-209": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true,
-				"LEGION-215": true, "LEGION-216": true, "LEGION-218": true, "LEGION-219": true}
+			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true}
+			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true}
+			measured := map[string]bool{"LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-218": true, "LEGION-219": true}
 			// The issues the fixture holds an experiment answer for: the drawn tree's root and
 			// its child, each under two experiments, and LEGION-210, whose hand-over settled it
 			// at no arm, which is an answer and so a row.
