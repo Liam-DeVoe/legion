@@ -23391,38 +23391,54 @@ console.log(JSON.stringify(args));
           { stamp: undefined, packed: true, want: `omp-ses_build @sjawhar/pi-envoy@${packageVersion}` },
           { stamp: undefined, packed: false, want: "omp-ses_build" },
         ];
-        for (const [index, row] of rows.entries()) {
-          // Each turn starts, and goes on after each await, only while its row runs, and its
-          // session ends with the row (`rowShutdown`): a row its limit abandoned inside
-          // `session_start` leaves no session running, and its loop acts in no row after it.
-          stillOn(ownRow, "starting a turn of the connection-name loop");
-          const stamp = join(stampDirectory, `build-commit-${index}`);
-          if (row.stamp !== undefined) writeFileSync(stamp, row.stamp);
-          entry.setBuildSourceForTests({ stamp, packed: row.packed });
-          const context: SessionContext = {
-            cwd: "/tmp/envoy-omp-test",
-            sessionManager: { ...topLevelSession, getSessionId: () => "ses_build" },
-            setInterval: () => {},
-            ui: sessionContext().ui,
-          };
-          const fixture = createPi();
-          entry.default(fixture.pi);
-          const shutdown = rowShutdown(async () =>
-            fixture.handlers.get("session_shutdown")?.({}, context)
-          );
-          names.length = 0;
-          await fixture.handlers.get("session_start")?.({}, context);
-          stillOn(ownRow, "shutting down a session of the connection-name loop");
-          await shutdown();
-          stillOn(ownRow, "reading the connection name of the loop's session");
-          expect(names[0]).toBe(row.want);
-        }
+        // The sessions run on the test's clock (`onPassClock`). The pass's deadline of 7.5 s gives
+        // its dial no budget to redial, so each session dials once; with an hour's deadline the
+        // redials take the row past 60 s. On the real clock that deadline ran beside a row that
+        // cost up to 5 404 ms at the 96 rung, above a tenth of it. The clock is held, so the
+        // deadline ends no pass however slow the host, and it still allows no redial.
+        await onPassClock(async (clock) => {
+          for (const [index, row] of rows.entries()) {
+            // Each turn starts, and goes on after each await, only while its row runs, and its
+            // session ends with the row (`rowShutdown`): a row its limit abandoned inside
+            // `session_start` leaves no session running, and its loop acts in no row after it.
+            stillOn(ownRow, "starting a turn of the connection-name loop");
+            const stamp = join(stampDirectory, `build-commit-${index}`);
+            if (row.stamp !== undefined) writeFileSync(stamp, row.stamp);
+            entry.setBuildSourceForTests({ stamp, packed: row.packed });
+            const context: SessionContext = {
+              cwd: "/tmp/envoy-omp-test",
+              sessionManager: { ...topLevelSession, getSessionId: () => "ses_build" },
+              setInterval: () => {},
+              ui: sessionContext().ui,
+            };
+            const fixture = createPi();
+            entry.default(fixture.pi);
+            const shutdown = rowShutdown(async () =>
+              fixture.handlers.get("session_shutdown")?.({}, context)
+            );
+            names.length = 0;
+            await clock.run(
+              "a session's start in the connection-name loop",
+              fixture.handlers.get("session_start")?.({}, context)
+            );
+            stillOn(ownRow, "shutting down a session of the connection-name loop");
+            await clock.run("a session's shutdown in the connection-name loop", shutdown());
+            stillOn(ownRow, "reading the connection name of the loop's session");
+            expect(names[0]).toBe(row.want);
+          }
+        });
       } finally {
         rmSync(stampDirectory, { recursive: true, force: true });
         setNatsConnectForTests(natsStandInConnect);
       }
     });
-  }, 30_000);
+    // A hang guard: what can hang is the import of the row's own instance, or a session's boot or
+    // shutdown, each held for at most 10_000 turns of the test's clock. Worst measured cost of the
+    // row's form on the real clock: 5 404 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-r26-gd-v7fxf of the cluster's `builds` namespace, two CPUs and 8 GiB (116 busy
+    // loops, at which row A's runs took 39.9 s against the calibration's 31.2 s), at 0fba4c77.
+    // Main's 30_000 is 5.6 times that, so this takes 60_000, 11.1 times it.
+  }, 60_000);
 
   for (const { row, error, shown, withheld } of [
     {
