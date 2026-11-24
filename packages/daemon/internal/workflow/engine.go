@@ -378,7 +378,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// The issue may be an ancestor that steps of other roots wait on, closed, whatever tree it is
 	// in or none (dispatch://INFRA-3320, R1), so this runs before the record's own fences and
 	// before an unrecorded issue's return.
-	if err := e.endPendingOnAncestorIssue(ctx, tx, issue, fact); err != nil {
+	if err := e.endPendingOnAncestorIssue(ctx, tx, fact); err != nil {
 		return intake.Result{}, err
 	}
 	if fact, err = SettleRetainedRepository(fact, issue); err != nil {

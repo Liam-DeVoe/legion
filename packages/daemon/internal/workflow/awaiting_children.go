@@ -378,7 +378,7 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	if !record.OpenChildHolds(issue.Phase) || len(open) == 0 {
 		return false, nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || (pr != nil && pr.State == record.PullRequestMerged) {
 		return false, err
 	}
@@ -513,7 +513,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 		return nil
 	}
 	held := *issue.ChildrenWait
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}

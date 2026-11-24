@@ -136,6 +136,14 @@ type DispatchIssue struct {
 	// Only "user" has admission queue a person's handover (a todo through the outbox); every other
 	// value, "" included, keeps today's `triage` wake of the controller.
 	LabelSetter string
+	// AncestorRead is Dispatch's view of the issue now, read when the fact is prepared
+	// (ConsumerSpec.PrepareBasis) for an event that shows the issue leaving R1's first condition
+	// while a step of another root waits on its approval request (workflow's PendingBasisCue):
+	// the workflow ends such a wait from this read alone, never from the event, which a late
+	// delivery or a replay can apply after a later event moved the issue back. Nil for every
+	// other fact, and for one nothing prepared, which the workflow answers by queueing the
+	// step's pending-basis seed.
+	AncestorRead *AncestorRead
 }
 
 // LabelledTriageRoot says whether the fact shows a root (no Dispatch parent) in triage that
@@ -287,6 +295,13 @@ type DispatchArtifact struct {
 	// (NeedsEventLog). It is 0 when no later event changed the status, and for every fact
 	// nothing read the log for.
 	StatusChangedSeq int64
+	// BasisRead is Dispatch's state now of the document and of its issue, read when the fact is
+	// prepared (ConsumerSpec.PrepareBasis) for an event of a document that a step of another root
+	// waits on, closed, for a person's approval of (workflow's PendingBasisCue): the workflow opens
+	// or ends that wait from this read alone, never from the event. Nil for every other fact, and
+	// for one nothing prepared, which the workflow answers by queueing the step's pending-basis
+	// seed.
+	BasisRead *BasisRead
 }
 
 func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
@@ -357,37 +372,49 @@ type BasisReview struct {
 	Reason string
 }
 
+// AncestorRead is Dispatch's view now of the issue of an ancestor whose approval request a step
+// of another root waits on, read as register_gate reads it (dispatch://INFRA-3320, R1's first
+// condition): its status, and whether it carries dispatch.LegionLabel (dispatch.Issue.HandedOver).
+type AncestorRead struct {
+	Status     string
+	HandedOver bool
+}
+
+// BasisRead is Dispatch's state now of what a step waits on, closed, when it waits on an
+// ancestor's request for a person's approval of a version of the ancestor's document
+// (dispatch://INFRA-3320, R1): the document's approval as Dispatch derives it (Approval: its
+// latest version, its latest review with that review's sequence, time and reviewer, and the
+// request open on it), and the ancestor's issue (Ancestor). The daemon reads it outside the fact
+// lock, in the preparation of an event that is a cue for such a step (ConsumerSpec.PrepareBasis,
+// workflow's PendingBasisCue) and in the step's pending-basis seed (PendingBasisRead), and the
+// workflow opens or ends the wait from it alone, never from the event that cued it: an event
+// delivered late, or replayed, says what Dispatch was when it was written, and the read says what
+// Dispatch is.
+type BasisRead struct {
+	Approval dispatch.Approval
+	Ancestor AncestorRead
+}
+
 // PendingBasisRead is the pending-basis seed's read (record.PendingBasisSeed) of the ancestor's
 // document a root's step waits on, closed, at the version the step names: the root (Issue), its
 // step, its own document (ArtifactID) and the generation that registered the step; the
-// ancestor's document, the version and the approval request the step waits on; and what the read
-// found. Approval is the first review of that version, where it is a person's approval, nil
-// otherwise. Changes is a changes request on that version: after such an approval, the newest
-// one; with none, the first review of that version, where it is a changes request. LatestVersion
-// is the document's latest version, and RequestOpen says the request still stands open.
-// AncestorStatus and AncestorHandedOver are what Dispatch shows of the ancestor's issue, read as
-// register_gate reads it and only where the read found such an approval, which alone opens the
-// step: its status, and whether it carries dispatch.LegionLabel (dispatch.Issue.HandedOver). The
-// approval opens the step only on an ancestor that still meets R1's first condition.
+// ancestor's document, the version and the approval request the step waits on; and Dispatch's
+// state of the document and of the ancestor's issue (Read), which the workflow judges as it
+// judges the read a cue carries, so the seed and a live event decide one state alike.
 //
 // It is a fact of its own and never the gate seed's (intake.DispatchArtifact), whose rows are the
 // root's own document's: applied as one of those, the ancestor's read would reach the ancestor's
 // own gate as well. The workflow applies it only to a step of that generation still pending on
 // that request, so a read of a wait that has ended or opened since changes nothing.
 type PendingBasisRead struct {
-	Issue              string
-	Step               record.DesignStep
-	Generation         uint64
-	ArtifactID         string
-	BasisArtifactID    string
-	BasisVersion       int
-	Ask                string
-	Approval           *BasisReview
-	Changes            *BasisReview
-	LatestVersion      int
-	RequestOpen        bool
-	AncestorStatus     string
-	AncestorHandedOver bool
+	Issue           string
+	Step            record.DesignStep
+	Generation      uint64
+	ArtifactID      string
+	BasisArtifactID string
+	BasisVersion    int
+	Ask             string
+	Read            BasisRead
 }
 
 func (f PendingBasisRead) namedIssue() (string, bool) { return f.Issue, true }
@@ -474,6 +501,13 @@ func (f DispatchAskRestored) namedIssue() (string, bool) { return f.Key, true }
 // is set done (ResolutionWithdrawn), whose ask.resolved events come before the issue's own
 // issue.closed: what closed the ask is the issue's close, which a reader names as that
 // (workflow's endPendingOnRequest) rather than as a resolution by the actor who closed the issue.
+//
+// BasisRead is Dispatch's state now of the document the ask asks a person to approve and of its
+// issue, read when the fact is prepared (ConsumerSpec.PrepareBasis) for a close that a step of
+// another root waiting on this request takes as a cue (workflow's PendingBasisCue): the workflow
+// ends that wait from this read alone, never from the close, which a late delivery or a replay can
+// apply after the issue's reopen opened the request again. Nil for every other fact, and for one
+// nothing prepared, which the workflow answers by queueing the step's pending-basis seed.
 type DispatchAskClosed struct {
 	Key       string
 	Ask       string
@@ -484,6 +518,7 @@ type DispatchAskClosed struct {
 	Withdrawn bool
 	Actor     dispatch.Actor
 	Mark      record.EventMark
+	BasisRead *BasisRead
 }
 
 // ResolutionDeclined is the resolution kind of an ask a person chose not to answer

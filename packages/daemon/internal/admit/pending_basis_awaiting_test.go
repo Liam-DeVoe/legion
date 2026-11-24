@@ -43,10 +43,17 @@ func pendingRegistration(requestAsk string) intake.GateRegistered {
 }
 
 // ancestorAct is the person's review of kind on version 4 of LEGION-150's primary document, at seq
-// in LEGION-150's own event log.
+// in LEGION-150's own event log, with the read of Dispatch its preparation makes
+// (intake.BasisRead): that review as the latest of version 4, the latest version, and LEGION-150
+// at work and labelled.
 func ancestorAct(kind intake.DispatchArtifactKind, seq int64, reason string) intake.DispatchArtifact {
-	return intake.DispatchArtifact{Key: pendingAncestor, ArtifactID: pendingAncestorDoc, Kind: kind, Version: 4, Reason: reason, Actor: alice,
-		Mark: record.EventMark{Seq: seq, At: fixedNow.Add(-time.Duration(100-seq) * time.Minute)}}
+	mark := record.EventMark{Seq: seq, At: fixedNow.Add(-time.Duration(100-seq) * time.Minute)}
+	read := dispatch.Approval{IssueKey: pendingAncestor, State: string(kind), LatestVersion: 4, Version: new(4), At: mark.At, Seq: seq, By: alice}
+	if reason != "" {
+		read.Reason = &reason
+	}
+	return intake.DispatchArtifact{Key: pendingAncestor, ArtifactID: pendingAncestorDoc, Kind: kind, Version: 4, Reason: reason, Actor: alice, Mark: mark,
+		BasisRead: &intake.BasisRead{Approval: read, Ancestor: intake.AncestorRead{Status: "in_progress", HandedOver: true}}}
 }
 
 // basisNotices is every notice queued for LEGION-208's architect that tells a gate's opening, its

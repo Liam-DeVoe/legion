@@ -168,7 +168,8 @@ func TestTheEndOfAWaitOnTheParentsRequestStartsItsHeldRetro(t *testing.T) {
 	pool, engine := heldForARestingRoot(t)
 
 	if result := applyFacts(t, pool, engine)("request-closed", intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval,
-		Artifact: basisDoc, State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-other"}, Mark: askSeq(61)}); result.Refusal != nil {
+		Artifact: basisDoc, State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-other"}, Mark: askSeq(61),
+		BasisRead: readOf(requestClosed(), ancestorAtWork)}); result.Refusal != nil {
 		t.Fatalf("the close of ask-100 was refused: %+v", result.Refusal)
 	}
 

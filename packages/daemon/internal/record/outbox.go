@@ -1389,12 +1389,14 @@ type GateSeed struct {
 
 func (GateSeed) OutboxKind() OutboxKind { return OutboxKindGateSeed }
 
-// PendingBasisSeed reads, from Dispatch, the ancestor's approval request a root's step waits on
-// (DesignGate.Basis.Pending) and applies what it finds, as a fact of its own rather than the gate
-// seed's: a person's approval of the version opens the step, a changes request, a newer version
-// or the request's close with no approval ends the wait, and a request still waiting changes
-// nothing. The row's issue is the root. A registration queues one, and so does the boot for every
-// pending step of the project, whatever phase its root stands in.
+// PendingBasisSeed reads, from Dispatch, the ancestor's document and issue a root's step waits on
+// through the ancestor's approval request (DesignGate.Basis.Pending) and applies what it finds, as
+// a fact of its own rather than the gate seed's: a person's approval of the version opens the
+// step, a changes request, a newer version, the request's close with no approval or the
+// ancestor's leave ends the wait, and a request still waiting changes nothing. The row's issue is
+// the root. A registration queues one, so does the boot for every pending step of the project,
+// whatever phase its root stands in, and so does an event that reaches such a step with no read of
+// Dispatch on it (workflow's readBasisLater).
 type PendingBasisSeed struct {
 	// Step and ArtifactID are the root's step and its own document the step was registered on.
 	Step       DesignStep `json:"step"`
@@ -1414,7 +1416,8 @@ func (PendingBasisSeed) OutboxKind() OutboxKind { return OutboxKindPendingBasisS
 
 // PendingBasisSeedOf is the seed of gate, a step that waits on an ancestor's approval request
 // (DesignGate.PendingOnBasis), for the root generation that registered it: what a registration
-// queues (workflow's tellRegisteredBasis) and what the boot queues for every such step.
+// queues (workflow's tellRegisteredBasis), what the boot queues for every such step, and what an
+// event with no read of Dispatch queues for each step it reaches (workflow's readBasisLater).
 func PendingBasisSeedOf(gate DesignGate, generation uint64) PendingBasisSeed {
 	return PendingBasisSeed{Step: gate.Step.OrSpec(), ArtifactID: gate.ArtifactID, BasisArtifactID: gate.Basis.ArtifactID,
 		BasisVersion: gate.Basis.Version, Ask: gate.Basis.Pending.Ask, Generation: generation}

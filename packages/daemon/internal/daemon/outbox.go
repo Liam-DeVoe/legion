@@ -4053,78 +4053,48 @@ func basisReview(review dispatch.Review, approval dispatch.Approval) intake.Basi
 }
 
 // seedPendingBasis reads, for the row's issue, a root whose step waits, closed, on an ancestor's
-// approval request (record.PendingBasisSeed), the ancestor's document's approval and its reviews,
-// and applies what it finds at the version the step waits on as a fact of its own
+// approval request (record.PendingBasisSeed), Dispatch's state of the ancestor's document and
+// issue as a cue's preparation reads it (readBasis), and applies the read as a fact of its own
 // (intake.PendingBasisRead), never the gate seed's, so the read reaches the root's step alone and
-// not the ancestor's own gate. The reviews of that version are taken in the order they were given:
-// a first one that is a person's approval opens the step, and a changes request after it is passed
-// on as well, as the two events in order give live; with no such approval, a changes request on
-// that version, a newer version of the document, or the request no longer open ends the wait. A
-// request still open on that version with no review changes nothing, and applies no fact. Where
-// it finds the person's approval, it reads the ancestor's issue as well, the issue Dispatch names
-// the document on, as register_gate reads it: the approval opens the step only on an ancestor
-// that is neither done nor retro and carries the legion label (R1's first condition). The
-// workflow applies the fact only while the step still waits on that request in that generation,
-// so a read of a wait that has opened or ended since changes nothing. The fact's id is the step,
-// the request and what the read found, so the same read again is a duplicate, and a later read
-// that finds more is a fact of its own.
+// not the ancestor's own gate. The workflow judges it by the one verdict it judges a cue's read by
+// (workflow's judgeBasisRead): the person's approval of the version, as the document's latest
+// review of its latest version, opens the step on an ancestor that still meets R1's first
+// condition, and a changes request on that version, a newer version of the document, the request
+// no longer open, or the ancestor's leave ends the wait. The workflow applies the fact only while
+// the step still waits on that request in that generation, so a read of a wait that has opened or
+// ended since changes nothing. The fact's id is the step, the request and what the read found
+// (basisReadFound), so the same read again is a duplicate, and a read that finds anything else is
+// a fact of its own.
 func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, payload record.PendingBasisSeed) error {
 	if r.dispatch == nil {
 		return errors.New("pending-basis seed executor has no Dispatch client")
 	}
-	approval, err := r.dispatch.Approval(ctx, payload.BasisArtifactID)
+	read, err := readBasis(ctx, r.dispatch, payload.BasisArtifactID)
 	if err != nil {
-		return fmt.Errorf("read Dispatch approval %s: %w", payload.BasisArtifactID, err)
-	}
-	reviews, err := r.dispatch.Reviews(ctx, payload.BasisArtifactID)
-	if err != nil {
-		return fmt.Errorf("read Dispatch reviews of %s: %w", payload.BasisArtifactID, err)
+		return err
 	}
 	fact := intake.PendingBasisRead{Issue: row.Issue, Step: payload.Step, Generation: payload.Generation, ArtifactID: payload.ArtifactID,
-		BasisArtifactID: payload.BasisArtifactID, BasisVersion: payload.BasisVersion, Ask: payload.Ask, LatestVersion: approval.LatestVersion,
-		RequestOpen: approval.State == "awaiting" && approval.AskID == payload.Ask}
-	// Dispatch lists the reviews newest first.
-	for _, review := range slices.Backward(reviews) {
-		if review.Version != payload.BasisVersion {
-			continue
-		}
-		read := basisReview(review, approval)
-		switch {
-		case review.State == "approved" && review.Actor.Person() && fact.Approval == nil && fact.Changes == nil:
-			fact.Approval = &read
-		case review.State == "changes_requested" && (fact.Approval != nil || fact.Changes == nil):
-			fact.Changes = &read
-		}
-	}
-	if fact.Approval != nil {
-		ancestor, err := r.dispatch.GetIssue(ctx, approval.IssueKey)
-		if err != nil {
-			return fmt.Errorf("read Dispatch issue %s, the ancestor whose document %s is: %w", approval.IssueKey, payload.BasisArtifactID, err)
-		}
-		fact.AncestorStatus, fact.AncestorHandedOver = ancestor.Status, ancestor.HandedOver
-	}
-	var found string
-	switch {
-	case fact.Approval != nil && fact.Changes != nil:
-		found = fmt.Sprintf("approved:%d:changes:%d", fact.Approval.Mark.ID(), fact.Changes.Mark.ID())
-	case fact.Approval != nil:
-		found = fmt.Sprintf("approved:%d", fact.Approval.Mark.ID())
-	case fact.Changes != nil:
-		found = fmt.Sprintf("changes:%d", fact.Changes.Mark.ID())
-	case fact.LatestVersion > fact.BasisVersion:
-		found = fmt.Sprintf("newer:%d", fact.LatestVersion)
-	case !fact.RequestOpen:
-		found = "closed"
-	default:
-		r.log.Info("pending-basis seed: the ancestor's request still waits on the person", "issue", row.Issue, "basis", payload.BasisArtifactID,
-			"basis_version", payload.BasisVersion, "ask", payload.Ask)
-		return nil
-	}
-	id := fmt.Sprintf("pending-basis:%s:%d:%s:%s:%s:%d:%s", row.Issue, payload.Generation, payload.Step, payload.Ask, payload.BasisArtifactID, payload.BasisVersion, found)
+		BasisArtifactID: payload.BasisArtifactID, BasisVersion: payload.BasisVersion, Ask: payload.Ask, Read: read}
+	id := fmt.Sprintf("pending-basis:%s:%d:%s:%s:%s:%d:%s", row.Issue, payload.Generation, payload.Step, payload.Ask, payload.BasisArtifactID, payload.BasisVersion,
+		basisReadFound(read))
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...); err != nil {
 		return fmt.Errorf("apply the pending-basis seed of %s: %w", row.Issue, err)
 	}
 	return nil
+}
+
+// basisReadFound names what read found, for the id of the fact that carries it: the document's
+// approval state, its latest version, the version and the place of its latest review and who gave
+// it, the request open on it, and the ancestor's status and label. Two reads that name the same
+// found the same, which the workflow judges alike.
+func basisReadFound(read intake.BasisRead) string {
+	approval := read.Approval
+	version := 0
+	if approval.Version != nil {
+		version = *approval.Version
+	}
+	return fmt.Sprintf("%s:%d:%d:%d:%s:%s:%s:%t", approval.State, approval.LatestVersion, version, record.EventMark{Seq: approval.Seq, At: approval.At}.ID(),
+		approval.By.Name(), approval.AskID, read.Ancestor.Status, read.Ancestor.HandedOver)
 }
 
 // seedReparent reads, for the row's issue, a root that ran as a tree of its own and that a person
