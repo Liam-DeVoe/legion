@@ -352,20 +352,21 @@ func streamedFrames(t *testing.T, stream string) []model.GraphFrame {
 	return frames
 }
 
-// storedFrames is every frame the run stored, as its going_events rows hold them.
+// storedFrames is every frame the run stored, as its going_events rows hold them: the base's
+// goingRig.frames reads them as a reader of the stream does, and each `<sequence> <name> <data>`
+// line it answers is decoded as graphFrameOf decodes a frame.
 func (rig goingRoutesRig) storedFrames(t *testing.T, id string) []model.GraphFrame {
 	t.Helper()
-	stored, _, err := rig.server.readGoingStream(context.Background(), id, 0)
-	if err != nil {
-		t.Fatalf("read the frames run %s stored: %v", id, err)
-	}
-	frames := make([]model.GraphFrame, 0, len(stored))
-	for _, frame := range stored {
-		data, err := json.Marshal(frame.Event.Data)
+	lines := goingRig{server: rig.server, database: rig.database}.frames(t, id)
+	frames := make([]model.GraphFrame, 0, len(lines))
+	for _, line := range lines {
+		sequence, rest, _ := strings.Cut(line, " ")
+		name, data, _ := strings.Cut(rest, " ")
+		parsed, err := strconv.Atoi(sequence)
 		if err != nil {
-			t.Fatalf("encode the data of frame %d of run %s: %v", frame.Sequence, id, err)
+			t.Fatalf("run %s stored the frame %q, which names no sequence", id, line)
 		}
-		frames = append(frames, graphFrameOf(t, frame.Sequence, frame.Event.Name, data))
+		frames = append(frames, graphFrameOf(t, parsed, name, []byte(data)))
 	}
 	return frames
 }
