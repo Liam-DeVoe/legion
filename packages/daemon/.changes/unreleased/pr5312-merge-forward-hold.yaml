@@ -11,16 +11,20 @@ body: |-
   has one asked role: where a move leaves the implementer's ask of `implementing` owed by nobody,
   or the merger is asked for its head, the implementer is told once that the merge is no longer
   its work, and its ask is delivered no more. A move back out of `merging` asks the merge of the
-  role of the phase it enters, with its hold. An ask whose role's claim ended keeps its held
-  workers held, is told to the owning architect in the claim's notice, and is sent again at that
-  role's next start. The news of an approved design to the architect that holds an issue in
-  `accepting` names, as its move-back targets, the phases of the task's steps before the
-  acceptance.
+  role of the phase it enters, with its hold. An ask whose role's claim ended - it failed, an
+  operator stopped it, or its agent reported its own exit - keeps its held workers held and is sent
+  again, once, at the ready of that role's next launch; the record's ask keeps that launch
+  (`sentLaunch`), and a failed claim's notice tells the owning architect. A launch whose session
+  already holds the ask is told it a second time. The news of an approved design to the architect
+  that holds an issue in `accepting` names, as its move-back targets, the phases of the task's steps
+  before the acceptance.
 
   The release before refuses a merge-forward row whose step is `withdrawn` and a hold or landed
   row to the planner. A rollback past this release deletes those queued `merge_forward` rows first
   (docs/kubernetes.md, "Rolling back the release that holds every worker while a merge forward is
-  owed").
+  owed"). An ask sent again at a launch is a plain ask row, which the release before delivers. The
+  release before reads the record's ask without `withdrawn` and `sentLaunch`, drops both at its
+  next write, and sends no ask again at a role's next launch.
 time: 2026-11-24T01:50:00Z
 custom:
     Issue: pr5312

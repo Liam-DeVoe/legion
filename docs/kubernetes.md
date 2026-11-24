@@ -2670,7 +2670,7 @@ The outbox and the plan rows are shared by every project's daemon on the databas
 
 #### Rolling back the release that holds every worker while a merge forward is owed
 
-This release holds the worker of each phase that starts while another role's merge forward of the head is owed, the planner among them, tells the implementer when the merge forward it was asked for is no longer its work, and keeps an ask whose role's claim ended until that role starts again (cybermonklabs/legion#5312).
+This release holds the worker of each phase that starts while another role's merge forward of the head is owed, the planner among them, tells the implementer when the merge forward it was asked for is no longer its work, and asks a role again at the ready of its claim's next launch while the merge it was asked for is still owed to it (cybermonklabs/legion#5312).
 It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON.
 The release before refuses two kinds of `merge_forward` row that this release writes:
 
@@ -2687,9 +2687,13 @@ delete from outbox where kind = 'merge_forward' and split_part(issue, '-', 1) = 
 ```
 
 A deleted withdrawal leaves the implementer with the ask it was told is no longer its work; a deleted row to the planner is a hold or a new head the planner does not read.
-`pull_requests.merge_forward` can hold the keys `withdrawn` and `waits`.
-The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), so it reads a withdrawn ask as one its role still holds, and it never sends an ask that waits for a role's ended claim again.
-For an issue whose ask waits (`merge_forward->>'waits' = 'true'`), have its architect move it back to `implementing`, which drops the ask: the release before asks once for each head, so nothing else asks again.
+The ask sent again at a role's next launch is an `ask` row with the payload of the first one, which the release before decodes and delivers as it does every ask, so the statement leaves it.
+`pull_requests.merge_forward` can hold the keys `withdrawn` and `sentLaunch`.
+The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), and its next write of the pull request's record drops both.
+Without `withdrawn` it reads a withdrawn ask as one its role still holds.
+Without `sentLaunch` it does what it always did: it asks once for each head, so an ask whose role's claim failed, was stopped or exited is not sent to that role's next launch, and the workers held for it wait for a landing.
+For such an issue, have its architect move it back to `implementing`, which drops the ask.
+A roll forward reads an ask with no `sentLaunch` as sent at no launch's ready, so the ready of the asked role's next launch sends it once more while it is owed.
 The statement takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), so one project can roll back while another stays on this release.
 
 #### Rolling back the release whose owner's plan picks the steps
