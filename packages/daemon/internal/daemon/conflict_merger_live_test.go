@@ -181,7 +181,7 @@ func (r *conflictMergerLive) seed() {
 	}); err != nil {
 		t.Fatalf("record the architect's unfinished launch: %v", err)
 	}
-	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer} {
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleMerger} {
 		writePrompt(t, r.cfg, r.token(role))
 	}
 	r.note("seeded: %s in accepting on pull request #%d at %s, base %s requiring [%s], %s passed there; its architect mid-launch",
