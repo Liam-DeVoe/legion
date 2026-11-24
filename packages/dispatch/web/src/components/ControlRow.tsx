@@ -336,10 +336,10 @@ export interface ControlRowProps {
  * the removal to commit, whatever holds the focus meanwhile (a pointer's click in Safari focuses
  * no button, so the focus stays on the body), and then moves the focus only if it is on the
  * page's body, so a reader who moved it elsewhere while the chip was going keeps it there. It
- * lands the control as every component hand-off does (`landWhole`): with no scroll of the
- * engine's own, and a control the reader can see a part of shown whole at its nearest edge, at
- * once and again once the commit is done, since the Inbox list's anchor puts this row back where
- * the commit found it after the hand-off has run (`ViewportAnchor`'s `keepPressedRow`).
+ * lands the control through `landWhole`: with no scroll of the engine's own, and shown whole at
+ * its nearest edge whether the reader can see a part of it or none, at once and again once the
+ * commit is done, since the Inbox list's anchor puts this row back where the commit found it
+ * after the hand-off has run (`ViewportAnchor`'s `keepPressedRow`).
  *
  * Any other focused control the reader's own press takes out of a slot of the first line while
  * the row stays - a page's own control that removes itself, as the Inbox's **Mark all read** does

@@ -459,10 +459,16 @@ export function focusLost(): boolean {
   return focused === null || focused === document.body || !focused.isConnected;
 }
 
+/** Which landings `land` shows whole: one the reader can see a part of (`"cut"`), the page's sight
+ *  rule for a landing a hand-off chose because it was in sight (`landFirstInSight`), or every one
+ *  not wholly in sight (`"any"`), for a hand-off that names its own landing wherever it stands
+ *  (`landWhole`). */
+type Shown = "any" | "cut";
+
 /** Focuses `element` with no scroll of the engine's own, and, once it holds the focus, shows it
- *  whole (`showWhole`): at once, and again once the commit it lands in is done, while it still
- *  holds the focus. A component's hand-off lands in a layout effect, and a layout effect after it
- *  in the same commit can scroll the page back under the landing: the Inbox list's
+ *  whole by `shown`'s rule (`showWhole`): at once, and again once the commit it lands in is done,
+ *  while it still holds the focus. A component's hand-off lands in a layout effect, and a layout
+ *  effect after it in the same commit can scroll the page back under the landing: the Inbox list's
  *  `ViewportAnchor` puts the row it holds back where the commit found it, from its
  *  `componentDidUpdate`, and so undoes a scroll the control row's hand-off made before it. Blocked
  *  on you, landed after Enter on Mark all read scrolled out of sight at 390 px, was left with 4 of
@@ -473,25 +479,24 @@ export function focusLost(): boolean {
  *  control only a frame later, by when a list's own scroll keeping may have moved the page again.
  *  So every engine lands a control the same way. `clips` is the caller's read of which boxes clip
  *  (`clippingBoxes`): a focus changes no box's overflow. Answers whether it took the focus. */
-function land(element: HTMLElement, clips: Map<Element, boolean>): boolean {
+function land(element: HTMLElement, clips: Map<Element, boolean>, shown: Shown): boolean {
   element.focus({ preventScroll: true });
   if (document.activeElement !== element) return false;
-  showWhole(element, clips);
+  showWhole(element, clips, shown);
   queueMicrotask(() => {
-    if (document.activeElement === element) showWhole(element, clips);
+    if (document.activeElement === element) showWhole(element, clips, shown);
   });
   return true;
 }
 
-/** Scrolls `element` to its nearest edge where the reader can see a part of it but not the whole,
- *  in the window or in a box around it that clips it (`clippingBoxes`): the least distance that
- *  shows it whole. A control wholly in sight, or wholly out of it, scrolls nothing. */
-function showWhole(element: HTMLElement, clips: Map<Element, boolean>): void {
+/** Scrolls `element` to its nearest edge where it is not wholly in sight, in the window or in a
+ *  box around it that clips it (`clippingBoxes`): the least distance that shows it whole. A control
+ *  wholly in sight scrolls nothing, and so, under `"cut"`, does one wholly out of sight. */
+function showWhole(element: HTMLElement, clips: Map<Element, boolean>, shown: Shown): void {
   const sight = sightOf(clippingBoxes(element, clips), undefined);
   const drawn = boxOf(element, undefined);
-  if (meets(drawn, sight) && !liesWithin(drawn, sight)) {
-    element.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }
+  if (liesWithin(drawn, sight) || (shown === "cut" && !meets(drawn, sight))) return;
+  element.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 /** Lands the first of `candidates`, in their order, that the reader can see now (`inSightNow`)
@@ -500,18 +505,22 @@ function showWhole(element: HTMLElement, clips: Map<Element, boolean>): void {
 function landFirstInSight(candidates: readonly HTMLElement[]): boolean {
   // One read of each box's style for the whole hand-off (`clippingBoxes`).
   const clips = new Map<Element, boolean>();
-  return candidates.some((candidate) => inSightNow(candidate, clips) && land(candidate, clips));
+  return candidates.some(
+    (candidate) => inSightNow(candidate, clips) && land(candidate, clips, "cut")
+  );
 }
 
-/** Lands `element` as every component hand-off lands its control (`land`): with no scroll of the
- *  engine's own, and, where the reader can see a part of it but not the whole, scrolled to its
- *  nearest edge at once and again once the commit it lands in is done. For a hand-off that names
- *  its own landing, as ControlRow's chips hand-off does: the Inbox list's `ViewportAnchor` puts
- *  the control row back where the commit found it after that hand-off has run (`keepPressedRow`),
- *  which undid the engine's own scroll of a plain `focus()` and left the control as cut as before.
- *  Answers whether it took the focus. */
+/** Lands `element` (`land`) with no scroll of the engine's own, and shows it whole at its nearest
+ *  edge wherever it stands, partly or wholly out of the reader's sight (`"any"`), at once and
+ *  again once the commit it lands in is done: a keyboard focus the reader cannot see is lost to
+ *  them. A component's walk-back shows only a landing partly in sight (`"cut"`), since it lands
+ *  only on one in sight. For a hand-off that names its own landing, as ControlRow's chips hand-off
+ *  does: the Inbox list's `ViewportAnchor` puts the control row back where the commit found it
+ *  after that hand-off has run (`keepPressedRow`), which undid the engine's own scroll of a plain
+ *  `focus()` and left the control as far out of sight as before. Answers whether it took the
+ *  focus. */
 export function landWhole(element: HTMLElement): boolean {
-  return land(element, new Map());
+  return land(element, new Map(), "any");
 }
 
 /** A row that will move up the page by `by` pixels once the rows a press is still taking away

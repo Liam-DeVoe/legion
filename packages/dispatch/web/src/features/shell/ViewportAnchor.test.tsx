@@ -1181,3 +1181,57 @@ test("the control row's chips hand-off shows its landing whole again after the a
     view.unmount();
   }
 });
+
+// The same press with the window scrolled so far that the Filter trigger stands wholly above the
+// window's top, 140 px above it. A keyboard focus the reader cannot see is lost to them, so the
+// hand-off shows its landing whole at its nearest edge here too, as the plain `focus()` it
+// replaced scrolled it in: at once, and again once the anchor has put the row back where the
+// commit found it, which takes Filter out of sight again. The landing showed only a control partly
+// in sight, and left this one where it stood, out of sight.
+test("the control row's chips hand-off shows a landing wholly out of sight at its nearest edge, again after the anchor puts the row back", async () => {
+  const user = userEvent.setup();
+  const view = render(<NarrowedByControlRow />);
+  // Every scroll into view and every scroll of the window, in order: a scroll into view moves the
+  // window the least that shows the element whole, as `{ block: "nearest" }` does.
+  const moves: unknown[] = [];
+  const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+    options?: boolean | ScrollIntoViewOptions
+  ) {
+    moves.push({ of: this.textContent, options, scroll: "into view" });
+    const box = this.getBoundingClientRect();
+    if (box.top < 0) setScrollY(window.scrollY + box.top);
+    else if (box.bottom > VIEWPORT_HEIGHT)
+      setScrollY(window.scrollY + box.bottom - VIEWPORT_HEIGHT);
+  });
+  const scrollBy = window.scrollBy;
+  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
+    moves.push({ by: typeof x === "number" ? y : x.top, scroll: "window" });
+    scrollBy(x as number, y as number);
+  }) as typeof window.scrollBy;
+  try {
+    // The control row stands 60 px down the page, its Filter on its first line; the window is
+    // scrolled to 200 px.
+    const row = document.querySelector(`[data-control="${CONTROL.controlRow}"]`);
+    const filter = screen.getByRole("button", { name: "Filter" });
+    if (row === null) throw new Error("no control row is drawn");
+    row.getBoundingClientRect = () => new DOMRect(0, 60 - window.scrollY, 100, 104);
+    filter.getBoundingClientRect = () => new DOMRect(0, 60 - window.scrollY, 100, 44);
+    setScrollY(200);
+    screen.getByRole("button", { name: "Remove Type: question filter" }).focus();
+
+    await user.keyboard("{Enter}");
+    expect(filter).toHaveFocus();
+    expect(moves).toEqual([
+      { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
+      // The anchor puts the row back where the commit found it, 140 px above the window's top.
+      { by: 140, scroll: "window" },
+      { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
+    ]);
+    expect(filter.getBoundingClientRect().top).toBe(0);
+  } finally {
+    scrolls.mockRestore();
+    disarm();
+    view.unmount();
+  }
+});
