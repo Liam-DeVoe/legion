@@ -365,6 +365,7 @@ func TestRunWithNoEmbedderDoesNothing(t *testing.T) {
 func TestCoverChangesNothingTheTriggersAlreadyEnqueued(t *testing.T) {
 	database := storetest.Open(t)
 	seeded := seedEveryKind(t, database.Pool, "PARI")
+	fillCounts(t, database)
 	embedder := newPlaceEmbedder(configuredIdentity)
 	deps := Deps{Store: database, Embedder: embedder}
 	drain(t, deps)
@@ -414,6 +415,7 @@ func TestCoverRepairsAStaleRow(t *testing.T) {
 		update embeddings set dead = true, dead_model = $1, attempt_count = 4, confirmed_failures = 3,
 		       next_attempt_at = now() + interval '1 hour', pending_since = now() - interval '1 day'
 		where kind = 'issue' and id = 'STLE-1'`, configuredIdentity)
+	fillCounts(t, database)
 
 	started := time.Now()
 	cover(t, deps)
@@ -560,6 +562,7 @@ func TestCoverRequeuesAnIssueEmbeddedWithItsTitleAlone(t *testing.T) {
 			values ('OLDE-1', 'OLDE', 1, 'Old title', '{"kind":"user","id":"alice"}', 'A')`)
 		seedSpec(t, q, "OLDE", "OLDE-1", "What the old issue's spec says")
 	})
+	fillCounts(t, database)
 	mustExec(t, database.Pool, `select embeddings_enqueue('issue', 'OLDE-1', 'Old title')`)
 	embedder := newPlaceEmbedder(configuredIdentity)
 	deps := Deps{Store: database, Embedder: embedder}
@@ -818,6 +821,7 @@ func seedForeignRows(t *testing.T, database *store.Store, project string) {
 func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 	database := storetest.Open(t)
 	seedForeignRows(t, database, "MISN")
+	fillCounts(t, database)
 	fake := &azureFake{missing: true}
 	server := httptest.NewServer(fake)
 	defer server.Close()
@@ -1100,6 +1104,7 @@ func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 	withTriggersOff(t, database, func(q querier) {
 		mustExec(t, q, `update issues set title = 'Stale, restored' where key = 'CVRG-3'`)
 	})
+	fillCounts(t, database)
 	mustExec(t, database.Pool, `update embeddings set model = $1 where id = 'CVRG-4'`, foreignIdentity)
 	mustExec(t, database.Pool, `update embeddings set embedding = null where id = 'CVRG-5'`)
 	mustExec(t, database.Pool, `update embeddings set embedding = null, embedded_hash = null, dead = true, dead_model = $1 where id = 'CVRG-6'`, configuredIdentity)
@@ -1148,6 +1153,7 @@ func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 func TestCoverageOfAnEmptyBacklogHasNoOldestAge(t *testing.T) {
 	database := storetest.Open(t)
 	seeded := seedEveryKind(t, database.Pool, "EMPT")
+	fillCounts(t, database)
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(foreignIdentity)})
 	report, err := Coverage(context.Background(), database, foreignIdentity)
 	if err != nil {
@@ -1201,6 +1207,7 @@ func notIndexedCountsOf(t *testing.T, report model.SearchCoverage) map[string]in
 func TestCoverageNamesEveryKindItCoversNothingOfWithItsCount(t *testing.T) {
 	database := storetest.Open(t)
 	seeded := seedEveryKind(t, database.Pool, "NIDX")
+	fillCounts(t, database)
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
 	ctx := context.Background()
 
@@ -1267,6 +1274,7 @@ func TestCoverageNamesEveryKindItCoversNothingOfWithItsCount(t *testing.T) {
 func TestTheCoveragePassDoesNotRestoreRetiredWholeTextRows(t *testing.T) {
 	database := storetest.Open(t)
 	seeded := seedEveryKind(t, database.Pool, "RTRD")
+	fillCounts(t, database)
 	// The rows the release before this one's triggers wrote, which its block index has retired
 	// now that every owner holds a window.
 	items := snapshotRows(t, database)
@@ -1389,6 +1397,7 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 		mustExec(t, q, `update issues set title = 'Title changed with the triggers off' where key = 'SIDE-3'`)
 	})
 	seedIssue(t, database, "SIDE", "SIDE-2", longTitle)
+	fillCounts(t, database)
 
 	// Run reaches the database through the proxy, which holds the scan loop's claim open once
 	// the claim's row, the only message longer than the long title, reaches the client.

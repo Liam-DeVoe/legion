@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # packages/envoy/scripts/coverage-scale.sh
 #
-# Measures the search coverage statement, its window kinds read by one bitmap heap scan over its
-# two partial window indexes, against the statement it replaced at production's size and twice it,
-# each in six states of embeddings (freshly vacuumed; about a third of its pages not all-visible
+# Times the search coverage counts' fill and recount, the statements of the counts that read every
+# row they count, on a synthetic corpus at production's size and a larger scale, the recount in
+# each of six states of embeddings (freshly vacuumed; about a third of its pages not all-visible
 # after an ANALYZE; none all-visible after an ANALYZE; none all-visible while the statistics still
 # record about half of them all-visible; and after an embedder change has dropped every vector,
 # first with those statistics and then after an ANALYZE), times the builds of the two window
-# indexes by their migrations' own statements, and states the corpus size at which the statement
-# would reach its 10 s bound in the slowest of the six states (dispatch://INFRA-4241, R2): it runs
+# indexes by their migrations' own statements, and fails when four times the fill at the largest
+# scale passes coverageFillTimeout or four times the longest whole recount there passes
+# coverageRecountTimeout, stating the corpus size at which the recount would reach its bound: it runs
 # TestCoverageStatementScale (internal/dispatch/embedqueue) on a Postgres of its own. It is what a
 # Job in the cluster's builds namespace runs, from packages/envoy of a clone, on the worker image,
 # which carries Go, the PostgreSQL 18 server with pgvector and legion-testpg. Never run it in an
@@ -21,8 +22,8 @@
 # DISPATCH_COVERAGE_SCALES (the test's default is "1 2") reaches the test as it is.
 #
 # It prints the server's version and settings, then the test's output, then the test's
-# `coverage-scale:` line again, last. It exits with the test's own status, and with 1 when the test
-# printed no `coverage-scale:` line, which leaves nothing to judge.
+# `coverage-scale:` lines again, the verdict last. It exits with the test's own status, and with 1
+# when the test printed no `coverage-scale:` line, which leaves nothing to judge.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

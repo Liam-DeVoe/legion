@@ -52,7 +52,3 @@ const mainRouteCoverageStatement = `
 // byte as df18d9be's planCoverage set them (coverageSettings there), each set local in the
 // statement's transaction.
 const mainRouteCoverageSettings = `set local enable_seqscan = off; set local enable_sort = off; set local max_parallel_workers_per_gather = 0; set local jit = off; set local work_mem = '128MB'`
-
-// coverageQuery is mainRouteCoverageStatement under the name the tests written before the kept
-// counts read it by (the plan and scale tests of main's statement).
-var coverageQuery = mainRouteCoverageStatement

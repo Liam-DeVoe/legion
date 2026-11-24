@@ -1568,7 +1568,17 @@ wait_until() {
 # block's filler is a multiple of the window's 1,200 characters, so that last window is the
 # window's 200-character overlap and the passage, and the passage is most of what it embeds.
 # A one-line ask option is the second half: a search for its text names that option's part.
+# The server fills its coverage counts in the background once it listens, and the route answers
+# 503 SEARCH_COVERAGE_NOT_FILLED until that fill ends, so a server started a moment ago is read
+# again every 2 s for up to 120 s while it answers so.
+a9_filled_by=$((SECONDS + 120))
 get "/api/v1/search/coverage"
+while [[ "$status" == 503 && "$(jq -r '.code // ""' "$work/body" 2>/dev/null)" == SEARCH_COVERAGE_NOT_FILLED ]]; do
+  ((SECONDS < a9_filled_by)) ||
+    fail A9 "read meaning search's coverage" "the coverage counts were still not filled after 120 s: HTTP $status: $(body)"
+  sleep 2
+  get "/api/v1/search/coverage"
+done
 want_status 200 A9 "read meaning search's coverage"
 a9_identity="$(jq -r '.identity // ""' "$work/body")"
 if [[ -z "$a9_identity" ]]; then

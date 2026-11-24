@@ -100,6 +100,7 @@ func TestTheBackfillLeavesEveryIndexedKindComplete(t *testing.T) {
 	// server runs of its own (INFRA-988): without this pass the four window kinds hold nothing
 	// and the report has no kind to call complete.
 	windowOwedOwners(t, deps)
+	fillCoverageCounts(t, database)
 
 	// What a restore or a replication writes with the triggers off: the issue is there and its
 	// queue row is not, which is the gap the coverage pass exists to close.
@@ -244,6 +245,7 @@ func TestSearchCoverageNamesEveryKindItDoesNotIndex(t *testing.T) {
 	// The four window kinds are the block-index tick's to write (INFRA-988), and this test
 	// needs every covered kind complete before it can tell an uncovered one from it.
 	windowOwedOwners(t, deps)
+	fillCoverageCounts(t, database)
 	processAllPending(t, database, embedder)
 
 	before := searchCoverageResponse(t, handler)
@@ -291,7 +293,8 @@ func TestSearchCoverageNamesEveryKindItDoesNotIndex(t *testing.T) {
 // halves, which would let one reader count it and another not.
 func TestSearchCoverageNamesNoKindTwice(t *testing.T) {
 	t.Parallel()
-	handler := newTestHandler(t)
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	fillCoverageCounts(t, database)
 
 	report := searchCoverageResponse(t, handler)
 	covered := coverageKinds(report)

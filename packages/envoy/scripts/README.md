@@ -1583,18 +1583,22 @@ before anything reads a row count again. `--requests`, `--body-bytes`, `--artifa
 
 ## coverage-scale.sh
 
-Measures the search coverage statement as the route runs it (the head: `coverageQuery` under the settings `planCoverage` sets) against the statement it replaced (`mainCoverageQuery`, the base) at production's size and twice it,
-in six states of `embeddings`, four of its visibility map and statistics and two after an embedder change,
-and states the corpus size at which the head would reach its 10 s bound in the slowest of them.
+Times the coverage counts' fill and recount (`FillCoverage` and `RecountCoverage`, the statements of the counts that read every row they count) at production's size and a larger scale,
+the recount in six states of `embeddings`, four of its visibility map and statistics and two after an embedder change,
+and judges them against the bounds the counts loop holds them to:
+four times the fill at the largest scale must stay within `coverageFillTimeout`, and four times the longest whole recount there within `coverageRecountTimeout`.
+The route reads the kept counts and never `main`'s coverage statement, so the test no longer times that statement as the route's.
 It runs `TestCoverageStatementScale` (`internal/dispatch/embedqueue`), which builds a synthetic corpus in a database of its own at each scale:
 `testdata/coverage_corpus.sql`, production's counts and proportions of 2026-11-17 times the scale
 (11,151 issues, 216,414 document versions and 984,012 window rows at scale 1),
 with texts cut from this repository's `docs/` and `skills/` and each issue's spec of a size sampled from real specs.
+The load runs with its tables' triggers off, so no count holds anything of the corpus, as at the first deploy of the counts.
 Autovacuum is off on `embeddings`, so nothing but the test sets its visibility map or its statistics.
-Once the corpus is loaded it drops the two window indexes, `embeddings_window_embedded` and `embeddings_window_unembedded`, and builds each again with its migration's own statement, read from its file under `internal/dispatch/store/migrations` and run outside a transaction as the migration runner runs it,
+Once the corpus is loaded and the record step has run, it drops the two window indexes, `embeddings_window_embedded_since` and `embeddings_window_unembedded_since`, and builds each again with its migration's own statement, read from its file under `internal/dispatch/store/migrations` and run outside a transaction as the migration runner runs it,
 timing each build and reading each index's size:
 the downtime a deploy of those migrations takes, since Dispatch migrates before it serves.
-On each corpus it then measures six states in turn:
+It then times the fill once, before any count, so its refresh computes every issue's state row.
+On each corpus it then times the whole recount in six states in turn:
 `fresh`, every table vacuumed and analyzed;
 `third`, one row of every third heap page of `embeddings` updated and the table analyzed, so about a third of its pages are not all-visible;
 `all`, one row of every page updated and the table analyzed, so no page is all-visible;
@@ -1602,14 +1606,11 @@ On each corpus it then measures six states in turn:
 so no page is all-visible while the statistics still record about half of them all-visible;
 `embedder`, the configured embedder changed to another identity, whose identity step (`dropForeignVectors`, over every covered kind) drops every vector the corpus holds, with no analyze after it, so the statistics are the `stale` state's;
 and `embedder-analyzed`, the same table analyzed.
-The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of this statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log),
+The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of `main`'s coverage statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log),
 and the `embedder` state unless the identity step dropped a vector; it logs how many it dropped.
-In each state it checks that the base and the head answer the same rows in one snapshot, for the state's configured identity (the new one from `embedder` on),
-and times both on one connection, one warm-up and then five alternating runs each under `EXPLAIN (ANALYZE, BUFFERS)`:
-the base on the connection,
-the head in a read-only transaction that `planCoverage` plans, as the route runs it, with no `statement_timeout`.
-In every state it also runs a negative control:
-the head's text once with none of `planCoverage`'s settings, the planner free.
+The fill and each recount run under a bound of 3 hours rather than their own, so each is timed to its end, on a pool whose statements a tracer times, so each group statement's time is read too:
+the refresh of the issues' state rows, then the issue's group, the window kinds' group and each not-indexed kind's.
+After each recount it checks that the kept counts and `main`'s two statements answer the same rows in one snapshot, for the state's configured identity (the new one from `embedder` on).
 It drops the database before the next scale.
 
 It runs as a Job in the cluster's `builds` namespace, never in an issue pod.
@@ -1633,19 +1634,21 @@ both to `postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable`.
 
 It prints the server's version and the settings the times depend on
 (`shared_buffers`, `work_mem`, `maintenance_work_mem`, `jit`, `max_parallel_workers_per_gather`, `effective_cache_size`),
-then the test's output: for each scale the corpus's counts, each window index's build time and size, the head's report kind by kind and the items;
+then the test's output: for each scale the corpus's counts, each window index's build time and size, the fill's time, the report kind by kind and the items;
 and for each state how many vectors its embedder change dropped, how many pages of `embeddings` the statistics record as all-visible and that share, the database's size,
-each statement's median and every run, one plan of each,
-and the negative control's time and whether it read `embeddings` by a Seq Scan.
-Read the result from the line that starts `coverage-scale:`, which the script prints again as its last line.
-It names each window index's build time and size at the two smallest scales;
-then, for each state, the vectors dropped where the state changes the embedder, the share of pages the statistics record as all-visible, the head's and the base's medians, the negative control's times and whether it read `embeddings` by a Seq Scan, at both scales;
-and the item count at which the head would reach 10 s by a linear fit and by a power law `t = a × s^k` through the two points,
+and the whole recount's time with each of its statements'.
+Each scale ends with a line that starts `coverage-scale: scale`, which names its items, the fill's time and each state's whole recount, each with its statements' times.
+Read the result from the last line that starts `coverage-scale:`, which the script prints again, after every scale's line, as its last line.
+It names the scales and S, the largest of them, with its items;
+the fill at S and four times it against `coverageFillTimeout`;
+the longest whole recount at S, its state, and four times it against `coverageRecountTimeout`;
+each window index's build time and size at every scale;
+then, for each state, the vectors dropped where the state changes the embedder, the share of pages the statistics record as all-visible and the whole recount, at the two smallest scales,
+and the item count at which the whole recount would reach `coverageRecountTimeout` by a linear fit and by a power law `t = a × s^k` through the two points,
 with the smaller of the two as a multiple of the 1 × corpus's items.
-It ends with the slowest state, the one with the smallest multiple, and its multiple;
-where a state has no fit, it says the slowest state is not known and names the slowest of the others.
-`pass` means that multiple is at least 4.
-`FAIL` means it is below 4, or that the head's time did not grow between the two scales in some state, so no fit is defined.
+It ends with the slowest state, the one with the smallest multiple, and its multiple, or the states where the recount did not grow between the two scales and no fit is defined.
+`pass` means four times the fill at S is within `coverageFillTimeout` and four times the longest whole recount at S within `coverageRecountTimeout`;
+`FAIL` means one of them is not.
 The script exits with the test's own status, and with 1 when the test printed no `coverage-scale:` line.
 CI never runs it: the test skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.
 

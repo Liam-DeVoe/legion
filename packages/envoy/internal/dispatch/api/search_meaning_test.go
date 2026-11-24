@@ -794,6 +794,7 @@ func TestSearchAndWritesRideOutAnAzureOutage(t *testing.T) {
 	// The comment's windows are the tick's to write, and it writes them while Azure is down:
 	// a window is a row, not a vector (INFRA-988).
 	windowOwedOwners(t, deps)
+	fillCoverageCounts(t, database)
 	processAllPending(t, database, client)
 	var embeddedDuringOutage, dead bool
 	commentWindow := "select %s from embeddings where kind = 'comment_block' and split_part(id, '#', 1) = 'comment/' || $1"

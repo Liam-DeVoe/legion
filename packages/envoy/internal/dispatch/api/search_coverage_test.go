@@ -13,8 +13,21 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// fillCoverageCounts fills the coverage counts as the counts loop's first run does
+// (embedqueue.FillCoverage), which no test server runs of its own: until a fill ends, the route
+// answers 503 SEARCH_COVERAGE_NOT_FILLED. A test runs it once after its seed, and the triggers of
+// every write after it keep the counts.
+func fillCoverageCounts(t testing.TB, database *store.Store) {
+	t.Helper()
+	if err := embedqueue.FillCoverage(context.Background(), database); err != nil {
+		t.Fatalf("fill the search coverage counts: %v", err)
+	}
+}
 
 // searchCoverageResponse reads GET /api/v1/search/coverage as alice and holds its body to
 // model.SearchCoverage's own encoding, byte for byte: every field present, null where the model
@@ -85,6 +98,7 @@ func TestSearchCoverageCountsItemsWithNoRowAsLacking(t *testing.T) {
 	// The corpus's writes record their blocks and leave the windows to the block-index tick,
 	// which the coverage report counts (INFRA-988).
 	windowOwedOwners(t, deps)
+	fillCoverageCounts(t, database)
 	if _, err := database.Pool.Exec(context.Background(), "delete from embeddings where kind = 'issue'"); err != nil {
 		t.Fatalf("delete the issue's row: %v", err)
 	}
@@ -114,6 +128,7 @@ func TestSearchCoverageCountsCurrentFailedAndLackingRows(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	corpus := seedSearchCorpus(t, handler)
 	windowOwedOwners(t, deps)
+	fillCoverageCounts(t, database)
 	processAllPending(t, database, embedder)
 
 	drained := searchCoverageResponse(t, handler)
@@ -161,9 +176,10 @@ func TestSearchCoverageCountsCurrentFailedAndLackingRows(t *testing.T) {
 // embedded.
 func TestSearchCoverageWithNoEmbedderNamesNoIdentity(t *testing.T) {
 	t.Parallel()
-	handler, _, deps := newTestServer(t, testServerOptions{})
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedSearchCorpus(t, handler)
 	windowOwedOwners(t, deps)
+	fillCoverageCounts(t, database)
 
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/search/coverage", nil, "alice")
 	if !bytes.HasPrefix(response.Body.Bytes(), []byte(`{"identity":null,"place":null,"model":null,`)) {
@@ -180,13 +196,16 @@ func TestSearchCoverageWithNoEmbedderNamesNoIdentity(t *testing.T) {
 // session cookie, and refuses a request with no credential exactly as GET /api/v1/search does.
 func TestSearchCoverageAuthentication(t *testing.T) {
 	t.Parallel()
-	handler := newTestHandler(t)
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	fillCoverageCounts(t, database)
 
 	if agent := agentRequest(t, handler, http.MethodGet, "/api/v1/search/coverage", nil, "agent-token"); agent.Code != http.StatusOK {
 		t.Fatalf("agent coverage: status=%d body=%s", agent.Code, agent.Body.String())
 	}
 
-	_, _, _, cookieRequest := newCookieServer(t)
+	cookieDatabase := storetest.Open(t)
+	fillCoverageCounts(t, cookieDatabase)
+	_, _, _, cookieRequest, _ := newCookieServerOn(t, cookieDatabase, 0)
 	if cookie := cookieRequest(http.MethodGet, "/api/v1/search/coverage", nil); cookie.Code != http.StatusOK {
 		t.Fatalf("cookie coverage: status=%d body=%s", cookie.Code, cookie.Body.String())
 	}
@@ -207,18 +226,18 @@ func TestSearchCoverageAuthentication(t *testing.T) {
 	}
 }
 
-// The route answers a coverage statement Postgres ended at its bound 503 SEARCH_COVERAGE_TIMEOUT,
-// at about that bound, and frees what it held: the pool's connection is back and the statement no
-// longer runs in the database. The bound is shortened to a second
-// (embedqueue.ShortenCoverageBoundForTest), and components is locked in another connection, so
-// the statement, whose uncovered count of components reads that table, waits however fast it
+// The route answers a coverage read Postgres ended at its bound 503 SEARCH_COVERAGE_TIMEOUT, at
+// about that bound, and frees what it held: the pool's connection is back and the statement no
+// longer runs in the database. The counts are filled first, so the route reads them; the bound is
+// shortened to a second (embedqueue.ShortenCoverageBoundForTest), and search_coverage_counts, the
+// base rows the read sums, is locked in another connection, so the read waits however fast it
 // would run, and the bound is what ends it.
 //
 // While the request waits, pg_stat_activity must show its statement blocked by that lock: that is
 // the control that a later count of 0 means the statement ended, not that the read cannot see it.
 // The read counts the backends of this test's database that another backend blocks
 // (pg_blocking_pids), but for its own: the lock's holder, idle in its transaction, blocks and is
-// not blocked, and nothing but the coverage statement waits on components, so the count is 1
+// not blocked, and nothing but the coverage read waits on search_coverage_counts, so the count is 1
 // while the request waits and 0 once the bound has ended the statement. It reads this test's
 // database alone, since another test's database on the same server may hold locks of its own, and
 // a backend's state can lag the answer by a moment, so it is read again for a while before it
@@ -228,9 +247,10 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	// (embedqueue.ShortenCoverageBoundForTest).
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: &fakeEmbedder{}})
 	ctx := context.Background()
+	fillCoverageCounts(t, database)
 	const bound = time.Second
 	t.Cleanup(embedqueue.ShortenCoverageBoundForTest(bound.String()))
-	holdLock(t, database, "lock table components in access exclusive mode")
+	holdLock(t, database, "lock table search_coverage_counts in access exclusive mode")
 	blocked := func() int {
 		t.Helper()
 		var count int

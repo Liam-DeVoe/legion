@@ -245,24 +245,27 @@ func attrsOf(record slog.Record) map[string]slog.Value {
 // A pass whose report Postgres ends at its bound (coverageStatementTimeout) fails nothing: every
 // step before the report is done, so Cover returns nil, and the pass logs the failed report at
 // WARN with its error and what the pass changed, rather than failing and being run again whole by
-// runCoverage. components is locked in another connection, so the report's uncovered count of
-// components waits however fast the statement would run, and the bound is what ends it. Once the
-// lock is released, the same pass logs its ordinary line with the coverage it leaves.
+// runCoverage. The counts are filled after the seed, and search_coverage_counts is then locked in
+// another connection, so the report's read of the base rows waits however fast the statement
+// would run, and the bound is what ends it; no step before the report touches that table, since a
+// write's triggers write delta rows and never the base. Once the lock is released, the same pass
+// logs its ordinary line with the coverage it leaves.
 func TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "BNDP", "BNDP-1", "An issue the pass records")
+	fillCounts(t, database)
 	deps := Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)}
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
 	t.Cleanup(ShortenCoverageBoundForTest("500ms"))
 	hold, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the transaction that holds components: %v", err)
+		t.Fatalf("begin the transaction that holds search_coverage_counts: %v", err)
 	}
 	t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
-	if _, err := hold.Exec(ctx, `lock table components in access exclusive mode`); err != nil {
-		t.Fatalf("lock components: %v", err)
+	if _, err := hold.Exec(ctx, `lock table search_coverage_counts in access exclusive mode`); err != nil {
+		t.Fatalf("lock search_coverage_counts: %v", err)
 	}
 
 	if err := Cover(ctx, deps); err != nil {
@@ -284,7 +287,7 @@ func TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing(t *testing.T) {
 	}
 
 	if err := hold.Rollback(ctx); err != nil {
-		t.Fatalf("release the lock on components: %v", err)
+		t.Fatalf("release the lock on search_coverage_counts: %v", err)
 	}
 	if err := Cover(ctx, deps); err != nil {
 		t.Fatalf("Cover once the lock is released = %v, want nil", err)

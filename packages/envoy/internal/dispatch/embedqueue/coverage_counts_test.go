@@ -15,6 +15,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -339,6 +342,577 @@ func TestAClaimOfAnIssuesRowRefreshesNothing(t *testing.T) {
 			gotStateXmin, gotDeltas, deltas+2)
 	}
 	requireMainsAnswer(t, database, "after the update of embedded_hash")
+}
+
+// countedTables are the seven tables the counting triggers are on (countingTriggers, but for the
+// issues' state rows, which the triggers write themselves).
+var countedTables = []string{"embeddings", "issues", "artifacts", "artifact_versions", "components", "check_results", "handoffs"}
+
+// writeTally is what the session it runs in has written and not yet sent to the cumulative
+// statistics, as pg_stat_xact_user_tables counts it: the rows inserted, updated or deleted in the
+// counted tables ($1, countedTables), triggers' writes and cascades included, and the delta rows
+// inserted. Since Postgres 15 those counts hold, beside the current transaction's, an earlier
+// transaction's of the same session until the session flushes them, which it does only between
+// transactions; so what one transaction wrote is the tally at its end less the tally at its start.
+const writeTally = `
+	select coalesce(sum(n_tup_ins + n_tup_upd + n_tup_del) filter (where relname = any($1::text[])), 0)::bigint,
+	       coalesce(sum(n_tup_ins) filter (where relname = 'search_coverage_deltas'), 0)::bigint
+	from pg_stat_xact_user_tables where schemaname = 'public'`
+
+// requireDeltaRowsBounded fails the test unless write inserted at most twice as many delta rows as
+// it changed rows of the counted tables: each write statement inserts one delta row for each class
+// it moved, and a write that passed twice its changed rows would build delta rows up faster than
+// the bound the route reads (coverageDeltaBound) was set for (plan D7, T18).
+func requireDeltaRowsBounded(t *testing.T, write string, deltas, changed int64) {
+	t.Helper()
+	if deltas > 2*changed {
+		t.Errorf("%s inserted %d delta rows for %d rows it changed in the counted tables, more than twice as many", write, deltas, changed)
+	}
+}
+
+// requireWriteKept runs write in a transaction of its own and commits it, then compares the
+// report's three sides in one snapshot (requireMainsAnswer) right after it, with no fold and no
+// recount between. Inside the write's transaction it reads what the write did (writeTally, at the
+// transaction's start and again before its commit) and holds its delta rows to its changed rows
+// (requireDeltaRowsBounded). write answers the rows it changed that pg_stat_xact_user_tables does
+// not count: a truncate's, the rows the table held. It answers the delta rows the write inserted.
+func requireWriteKept(t *testing.T, database *store.Store, write string, run func(tx pgx.Tx) (uncounted int64)) int64 {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("%s: begin its transaction: %v", write, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tally := func() (changed, deltas int64) {
+		t.Helper()
+		if err := tx.QueryRow(ctx, writeTally, countedTables).Scan(&changed, &deltas); err != nil {
+			t.Fatalf("%s: read what it wrote: %v", write, err)
+		}
+		return changed, deltas
+	}
+	changedBefore, deltasBefore := tally()
+	uncounted := run(tx)
+	changed, deltas := tally()
+	changed, deltas = changed-changedBefore, deltas-deltasBefore
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("%s: commit: %v", write, err)
+	}
+	requireDeltaRowsBounded(t, write, deltas, changed+uncounted)
+	requireMainsAnswer(t, database, "after "+write)
+	return deltas
+}
+
+// deltaRows is how many delta rows search_coverage_deltas holds.
+func deltaRows(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	var rows int64
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from search_coverage_deltas`).Scan(&rows); err != nil {
+		t.Fatalf("count the delta rows: %v", err)
+	}
+	return rows
+}
+
+// requirePoolWriteKept is requireWriteKept for a write of this package that sends its one
+// statement on the pool itself (scanPending, claimRenewal.renew, commitEmbeddings, retryRows), so
+// that the test holds no transaction of it: each is one update of rows of embeddings, which writes
+// no other counted table, so the rows it changed are the rows it answers (run's answer), and the
+// delta rows it inserted are how many more search_coverage_deltas holds after it, since nothing in
+// the test folds or recounts. It answers those delta rows.
+func requirePoolWriteKept(t *testing.T, database *store.Store, write string, run func() (changed int64)) int64 {
+	t.Helper()
+	before := deltaRows(t, database)
+	changed := run()
+	deltas := deltaRows(t, database) - before
+	requireDeltaRowsBounded(t, write, deltas, changed)
+	requireMainsAnswer(t, database, "after "+write)
+	return deltas
+}
+
+// issueStateXmins is the xmin of every issue's state row (search_coverage_issues), by key: a write
+// that leaves an issue's xmin as it was did not write its state row.
+func issueStateXmins(t *testing.T, database *store.Store) map[string]string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `select key, xmin::text from search_coverage_issues`)
+	if err != nil {
+		t.Fatalf("read the issues' state rows: %v", err)
+	}
+	xmins, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
+		var pair [2]string
+		return pair, row.Scan(&pair[0], &pair[1])
+	})
+	if err != nil {
+		t.Fatalf("read the issues' state rows: %v", err)
+	}
+	byKey := make(map[string]string, len(xmins))
+	for _, pair := range xmins {
+		byKey[pair[0]] = pair[1]
+	}
+	return byKey
+}
+
+// requireClaimRefreshedNothing fails the test unless claim claimed an issue's row and left the
+// state row of every issue whose row it claimed as before (its xmin unchanged): a claim moves
+// next_attempt_at alone, which moves no count and refreshes no issue.
+func requireClaimRefreshedNothing(t *testing.T, database *store.Store, claim string, claimed []pendingRow, before map[string]string) {
+	t.Helper()
+	after := issueStateXmins(t, database)
+	issues := 0
+	for _, row := range claimed {
+		if row.kind != issueKind {
+			continue
+		}
+		issues++
+		if after[row.id] != before[row.id] {
+			t.Errorf("%s wrote the state row of %s (xmin %s, was %s): a claim refreshed the issue", claim, row.id, after[row.id], before[row.id])
+		}
+	}
+	if issues == 0 {
+		t.Errorf("%s claimed no issue's row, so it shows nothing of the issues' state rows: %v", claim, claimed)
+	}
+}
+
+// documentOf is a document's markdown made of blocks, each (id, type, text), one blank line apart,
+// and the blocks with their places in it, as the version write's parser reports them.
+func documentOf(blocks ...[3]string) (string, []model.ArtifactBlock) {
+	var markdown strings.Builder
+	parsed := make([]model.ArtifactBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if markdown.Len() > 0 {
+			markdown.WriteString("\n\n")
+		}
+		from := markdown.Len()
+		markdown.WriteString(block[2])
+		parsed = append(parsed, model.ArtifactBlock{ID: block[0], Type: block[1], From: from, To: markdown.Len()})
+	}
+	return markdown.String(), parsed
+}
+
+// TestEveryWriteKeepsTheCounts holds R7c: right after each write of R7's writers (plan, the four
+// lists, "R7's tables and writers"), each firing the triggers of the table it writes, with no fold
+// and no recount between, the report's three sides answer the same members, kinds and counts in one
+// snapshot for the configured identity, for none and for another (requireMainsAnswer). The counts
+// are filled once after a seed of every state an item can be in (seedEveryCoverageState). Each write
+// inserts at most twice as many delta rows as the rows it changed in the counted tables
+// (requireDeltaRowsBounded). The queue's two claims, scanPending's and claimRenewal's, leave the
+// state row of every issue whose row they claimed as it was, and a claim that settles nothing, the
+// renewal and the project_key fill insert no delta row.
+//
+// A write of this package is made by its own function or statement: the claims, the embed, the
+// failure and the death by scanPending, claimRenewal.renew, commitEmbeddings and retryRows, and the
+// coverage pass's steps by their statements (insertMissingIssues, repairStaleIssues,
+// dropForeignVectors, readmitForeignDead, settleDeadNothingToEmbed); a document's windows by
+// refs.WriteDocumentWindows, the one writer of them (writeWindows). A write of a package that
+// imports this one is the statement it sends: the version removal of api/artifact_removal.go, the
+// re-import of architecture/importer.go, the vector writes of cmd/dispatch-seed, the project_key
+// fill of store and the whole-text delete of docs/block_index.go.
+func TestEveryWriteKeepsTheCounts(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	q := database.Pool
+	states := seedEveryCoverageState(t, database)
+	const project = "EVRY"
+	for _, issue := range [][2]string{
+		{"EVRY-2", "An issue a primary document moves to"},
+		{"EVRY-3", "An issue whose delete cascades to its result and its handoff"},
+		{"EVRY-4", "An issue whose result its document's delete cascades to"},
+		{"EVRY-BLANK", " "},
+	} {
+		seedIssue(t, database, project, issue[0], issue[1])
+	}
+	// A row that died at a text with nothing to embed, which settleDeadNothingToEmbed settles.
+	updateRow(t, q, "issue", "EVRY-BLANK", `dead = true, confirmed_failures = 10, attempt_count = 12, dead_model = $3`, configuredIdentity)
+	projectDocument := func(slug string) string {
+		t.Helper()
+		var id string
+		if err := q.QueryRow(ctx, `
+			insert into artifacts (project_key, slug, name, kind, created_by, ref_key)
+			values ($1, $2, $2 || '.md', 'doc', '{"kind":"user","id":"alice"}', $1 || '/' || $2)
+			returning id::text`, project, slug).Scan(&id); err != nil {
+			t.Fatalf("seed the project document %s: %v", slug, err)
+		}
+		return id
+	}
+	notes, checked := projectDocument("notes"), projectDocument("checked")
+	var other string
+	if err := q.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+		values ('EVRY-2', $1, 'other', 'other.md', 'doc', '{"kind":"user","id":"alice"}')
+		returning id::text`, project).Scan(&other); err != nil {
+		t.Fatalf("seed EVRY-2's other document: %v", err)
+	}
+	insertResult := func(q querier, issue, artifact string) {
+		t.Helper()
+		mustExec(t, q, `insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+				check_version, check_sha256, role, commit_sha, verdict, actor)
+			values ($1, $1, $2::uuid, 'k1', 1, 'a-check-sha', 'tester', repeat('a', 40), 'pass', '{"kind":"user","id":"alice"}'::jsonb)`,
+			issue, artifact)
+	}
+	insertResult(q, "EVRY-4", checked)
+	seedComponentsArchitecture(t, q, project, 906)
+	insertComponent(t, q, project, "old-a", 906)
+	insertComponent(t, q, project, "old-b", 906)
+	// A stale issue row, which repairStaleIssues points at its issue's text.
+	withTableTriggersOff(t, database, "issues", func(q querier) {
+		mustExec(t, q, `update issues set title = 'A title restored with its trigger off' where key = $1`, states.titleRestored)
+	})
+	// A whole-text row, which the block index retires once its owner's window is current.
+	mustExec(t, q, `select embeddings_enqueue('comment', 'every-write-comment', 'A whole-text row the block index retires')`)
+	// Issue rows with no project, which the project_key fill labels again.
+	mustExec(t, q, `update embeddings set project_key = null where kind = 'issue' and id like 'ORCL-%'`)
+	fillCounts(t, database)
+	requireMainsAnswer(t, database, "after the fill")
+
+	// issues, and embeddings through embeddings_enqueue.
+	requireWriteKept(t, database, "an issue's insert, which its trigger enqueues through embeddings_enqueue", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `insert into issues (key, project_key, number, title, created_by, rank)
+			values ('EVRY-1', $1, 100, 'An issue every write keeps', '{"kind":"user","id":"alice"}', 'A')`, project)
+		return 0
+	})
+	requireWriteKept(t, database, "an issue's row embedded at its text, as commitEmbeddings commits it", func(tx pgx.Tx) int64 {
+		embedRowAs(t, tx, "issue", "EVRY-1", configuredIdentity)
+		return 0
+	})
+	requireWriteKept(t, database, "a title edit", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `update issues set title = 'An issue every write keeps, edited' where key = 'EVRY-1'`)
+		return 0
+	})
+	requireWriteKept(t, database, "a created_at change", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `update issues set created_at = now() - interval '2 hours' where key = 'EVRY-1'`)
+		return 0
+	})
+
+	// artifacts and artifact_versions.
+	var spec string
+	requireWriteKept(t, database, "a primary document's insert", func(tx pgx.Tx) int64 {
+		if err := tx.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('EVRY-1', $1, 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
+			returning id::text`, project).Scan(&spec); err != nil {
+			t.Fatalf("insert EVRY-1's primary document: %v", err)
+		}
+		return 0
+	})
+	requireWriteKept(t, database, "a new primary version", func(tx pgx.Tx) int64 {
+		addVersion(t, tx, spec, 1, "## Summary\n\nThe spec every write keeps.\n")
+		return 0
+	})
+	requireWriteKept(t, database, "a primary version's markdown changed in place", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `update artifact_versions set markdown = '## Summary\n\nThe spec, changed in place.\n' where artifact_id = $1 and number = 1`, spec)
+		return 0
+	})
+	requireWriteKept(t, database, "a version of a document that is not primary", func(tx pgx.Tx) int64 {
+		addVersion(t, tx, other, 1, "Notes on EVRY-2, which are not its spec.")
+		return 0
+	})
+	requireWriteKept(t, database, "an update of is_primary", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `update artifacts set is_primary = false where id = $1`, spec)
+		return 0
+	})
+	requireWriteKept(t, database, "an update of issue_key", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `update artifacts set issue_key = 'EVRY-2', is_primary = true where id = $1`, spec)
+		return 0
+	})
+	requireWriteKept(t, database, "a primary document's removal, its versions first (api/artifact_removal.go)", func(tx pgx.Tx) int64 {
+		for _, table := range []string{"artifact_versions", "doc_updates", "doc_snapshots", "doc_checkpoints", "document_search",
+			"doc_compaction_owed", "search_term_queue", "user_threads"} {
+			mustExec(t, tx, `delete from `+table+` where artifact_id = $1`, spec)
+		}
+		mustExec(t, tx, `delete from artifacts where id = $1`, spec)
+		return 0
+	})
+
+	// embeddings: the windows, through their one writer.
+	twoSections, twoSectionsBlocks := documentOf(
+		[3]string{"h1", "heading", "# Survey"}, [3]string{"p1", "paragraph", "The first section's paragraph."},
+		[3]string{"h2", "heading", "# Findings"}, [3]string{"p2", "paragraph", "The second section's paragraph."})
+	rewritten, rewrittenBlocks := documentOf(
+		[3]string{"h1", "heading", "# Survey"}, [3]string{"p1", "paragraph", "The first section's paragraph, rewritten."},
+		[3]string{"h2", "heading", "# Findings"}, [3]string{"p2", "paragraph", "The second section's paragraph."})
+	oneSection, oneSectionBlocks := documentOf(
+		[3]string{"h1", "heading", "# Survey"}, [3]string{"p1", "paragraph", "The first section's paragraph, rewritten."})
+	for _, write := range []struct {
+		name, markdown string
+		blocks         []model.ArtifactBlock
+	}{
+		{"a document's windows inserted (refs.WriteDocumentWindows)", twoSections, twoSectionsBlocks},
+		{"a document's window rewritten (refs.WriteDocumentWindows)", rewritten, rewrittenBlocks},
+		{"a document's window dropped (refs.WriteDocumentWindows)", oneSection, oneSectionBlocks},
+	} {
+		requireWriteKept(t, database, write.name, func(tx pgx.Tx) int64 {
+			if err := refs.WriteDocumentWindows(ctx, tx, notes, write.markdown, write.blocks); err != nil {
+				t.Fatalf("%s: %v", write.name, err)
+			}
+			return 0
+		})
+	}
+	requireWriteKept(t, database, "a window whose text becomes blank", func(tx pgx.Tx) int64 {
+		enqueueWindow(t, tx, "comment_block", "comment_block/oracle", "current", " \t ", "b1")
+		return 0
+	})
+	requireWriteKept(t, database, "the delete of a whole-text row (docs/block_index.go)", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `delete from embeddings where kind = 'comment' and id = 'every-write-comment'`)
+		return 0
+	})
+	requireWriteKept(t, database, "a delete of an issue's row", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `delete from embeddings where kind = 'issue' and id = 'EVRY-1'`)
+		return 0
+	})
+	requireWriteKept(t, database, "an issue's row enqueued again through embeddings_enqueue", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `select embeddings_enqueue('issue', key, `+issueText+`) from issues i where key = 'EVRY-1'`)
+		return 0
+	})
+
+	// embeddings: the queue's own writes.
+	deps := Deps{Store: database, Embedder: &fakeEmbedder{}}
+	var claimed []pendingRow
+	before := issueStateXmins(t, database)
+	requirePoolWriteKept(t, database, "scanPending's settling of the blank rows and claim of the rest", func() int64 {
+		pending, settled, err := scanPending(ctx, deps)
+		if err != nil || settled == 0 || len(pending) == 0 {
+			t.Fatalf("scanPending = %d claimed, %d settled, %v; want blank rows settled and rows claimed", len(pending), settled, err)
+		}
+		claimed = pending
+		return int64(len(pending) + settled)
+	})
+	requireClaimRefreshedNothing(t, database, "scanPending's claim", claimed, before)
+
+	before = issueStateXmins(t, database)
+	renewal := newClaimRenewal(deps, claimed)
+	renewal.last = time.Now().Add(-renewClaimInterval - time.Second)
+	if deltas := requirePoolWriteKept(t, database, "claimRenewal's renewal of the claim", func() int64 {
+		renewal.renew(ctx)
+		return int64(len(claimed))
+	}); deltas != 0 {
+		t.Errorf("claimRenewal's renewal inserted %d delta rows, want none: a claim moves no count", deltas)
+	}
+	requireClaimRefreshedNothing(t, database, "claimRenewal's renewal", claimed, before)
+
+	requirePoolWriteKept(t, database, "commitEmbeddings' embed of the claimed rows", func() int64 {
+		succeeded, permanent, err := commitEmbeddings(ctx, deps, claimed, fakeVectors(len(claimed)))
+		if err != nil || len(permanent) != 0 || succeeded != len(claimed) {
+			t.Fatalf("commitEmbeddings = %d, %d permanent, %v; want all %d committed", succeeded, len(permanent), err, len(claimed))
+		}
+		return int64(succeeded)
+	})
+	requireWriteKept(t, database, "a title edit that makes an issue's row wait", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `update issues set title = 'An issue a primary document moved to, edited' where key = 'EVRY-2'`)
+		return 0
+	})
+	var reclaimed []pendingRow
+	before = issueStateXmins(t, database)
+	if deltas := requirePoolWriteKept(t, database, "scanPending's claim of a row, settling none", func() int64 {
+		pending, settled, err := scanPending(ctx, deps)
+		if err != nil || settled != 0 || !slices.ContainsFunc(pending, func(row pendingRow) bool { return row.kind == issueKind && row.id == "EVRY-2" }) {
+			t.Fatalf("scanPending = %v, %d settled, %v; want EVRY-2's row claimed and nothing settled", pending, settled, err)
+		}
+		reclaimed = pending
+		return int64(len(pending))
+	}); deltas != 0 {
+		t.Errorf("scanPending's claim inserted %d delta rows, want none: a claim moves no count", deltas)
+	}
+	requireClaimRefreshedNothing(t, database, "scanPending's claim of a row", reclaimed, before)
+	row := reclaimed[slices.IndexFunc(reclaimed, func(row pendingRow) bool { return row.kind == issueKind && row.id == "EVRY-2" })]
+	requirePoolWriteKept(t, database, "retryRows' failure of a row", func() int64 {
+		if blocked := retryRows(ctx, deps, []pendingRow{row}, false); blocked {
+			t.Fatal("retryRows' failure of EVRY-2's row did not write it")
+		}
+		return 1
+	})
+	row.attempts++
+	row.confirmedFailures = retry.DeadLetterAttempts - 1
+	requirePoolWriteKept(t, database, "retryRows' death of a row", func() int64 {
+		if blocked := retryRows(ctx, deps, []pendingRow{row}, true); blocked {
+			t.Fatal("retryRows' death of EVRY-2's row did not write it")
+		}
+		return 1
+	})
+	var dead bool
+	if err := q.QueryRow(ctx, `select dead from embeddings where kind = 'issue' and id = 'EVRY-2'`).Scan(&dead); err != nil || !dead {
+		t.Fatalf("EVRY-2's row is dead %t (%v) after retryRows' death, want dead", dead, err)
+	}
+
+	// embeddings: the coverage pass's steps, each its own statement.
+	for _, step := range []struct {
+		name      string
+		statement string
+		kinds     []string
+		identity  bool
+	}{
+		{"insertMissingIssues", insertMissingIssues, []string{issueKind}, false},
+		{"repairStaleIssues", repairStaleIssues, []string{issueKind}, false},
+		{"dropForeignVectors after an identity change", dropForeignVectors, coverageKinds, true},
+		{"readmitForeignDead", readmitForeignDead, coverageKinds, true},
+		{"settleDeadNothingToEmbed", settleDeadNothingToEmbed, coverageKinds, true},
+	} {
+		requireWriteKept(t, database, step.name, func(tx pgx.Tx) int64 {
+			for _, kind := range step.kinds {
+				args := []any{kind, coverageStatementRows}
+				if step.identity {
+					args = []any{kind, configuredIdentity, coverageStatementRows}
+				}
+				if _, err := tx.Exec(ctx, step.statement, args...); err != nil {
+					t.Fatalf("%s of %s: %v", step.name, kind, err)
+				}
+			}
+			return 0
+		})
+	}
+
+	// embeddings: the writes of other packages.
+	requireWriteKept(t, database, "the seed's vector writes (cmd/dispatch-seed)", func(tx pgx.Tx) int64 {
+		literal := embed.Literal(oneVector())
+		mustExec(t, tx, `
+			update embeddings e
+			   set embedding = v.embedding::vector, model = $1, embedded_hash = e.content_hash,
+			       embedded_at = $2, pending_since = $2, next_attempt_at = $2, attempt_count = 0
+			  from unnest($3::text[], $4::text[], $5::text[]) as v (kind, id, embedding)
+			 where e.kind = v.kind and e.id = v.id`, configuredIdentity, time.Now(),
+			[]string{"document_block", "message_block"}, []string{"document_block/oracle#pending", "message_block/oracle#pending"},
+			[]string{literal, literal})
+		return 0
+	})
+	var labelled int64
+	if deltas := requireWriteKept(t, database, "the project_key fill (store.FillEmbeddingProjectKeys)", func(tx pgx.Tx) int64 {
+		tag, err := tx.Exec(ctx, `
+			update embeddings e set project_key = embeddings_owner_project_key(e.kind, e.id)
+			where e.project_key is null and embeddings_owner_project_key(e.kind, e.id) is not null`)
+		if err != nil {
+			t.Fatalf("fill project_key: %v", err)
+		}
+		labelled = tag.RowsAffected()
+		return 0
+	}); deltas != 0 || labelled == 0 {
+		t.Errorf("the project_key fill labelled %d rows and inserted %d delta rows, want rows labelled and no delta row: it moves no count", labelled, deltas)
+	}
+
+	// components, check_results, handoffs and route_roster.
+	requireWriteKept(t, database, "a source's re-import, delete then insert (architecture/importer.go)", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `delete from components where project_key = $1 and source_id = 1`, project)
+		for _, id := range []string{"new-a", "new-b", "new-c"} {
+			insertComponent(t, tx, project, id, 906)
+		}
+		return 0
+	})
+	requireWriteKept(t, database, "a result's insert", func(tx pgx.Tx) int64 {
+		insertResult(tx, "EVRY-3", notes)
+		return 0
+	})
+	requireWriteKept(t, database, "a handoff's insert", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `insert into handoffs (issue_key, phase, version, body, author)
+			values ('EVRY-3', 'implement', 1, '{}', '{"kind":"user","id":"alice"}'::jsonb)`)
+		return 0
+	})
+	requireWriteKept(t, database, "an issue's delete, which cascades to its result and its handoff", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `delete from issues where key = 'EVRY-3'`)
+		return 0
+	})
+	requireWriteKept(t, database, "a document's delete, which cascades to a result through check_artifact_id", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `delete from artifacts where id = $1`, checked)
+		return 0
+	})
+	requireWriteKept(t, database, "route_roster's upsert", func(tx pgx.Tx) int64 {
+		mustExec(t, tx, `insert into route_roster (answered, sessions, sent_at, expires_at)
+			values (true, '[{"session_id":"s-one"},{"session_id":"s-two"},{"session_id":"s-three"}]'::jsonb, now(), now() + interval '5 seconds')
+			on conflict (id) do update set answered = excluded.answered, sessions = excluded.sessions,
+			  sent_at = excluded.sent_at, expires_at = excluded.expires_at`)
+		return 0
+	})
+
+	// Last, a truncate of embeddings, which empties every window kind.
+	requireWriteKept(t, database, "a truncate of embeddings", func(tx pgx.Tx) int64 {
+		var rows int64
+		if err := tx.QueryRow(ctx, `select count(*) from embeddings`).Scan(&rows); err != nil {
+			t.Fatalf("count embeddings' rows: %v", err)
+		}
+		mustExec(t, tx, `truncate embeddings`)
+		return rows
+	})
+}
+
+// TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff holds R7d: rows written with no trigger
+// firing - an issue's title, an issue's spec in place, a window row of embeddings inserted and
+// another deleted, and a row of each not-indexed table a count keeps (components,
+// artifact_versions, check_results, handoffs), each inside withTableTriggersOff, and an issue
+// written under session_replication_role = replica (withTriggersOff) - are in the counts after one
+// recount (RecountCoverage), which the report's three sides then answer alike (requireMainsAnswerFor).
+// It runs once with an embedder configured, the queue having embedded every row it could with that
+// identity before the writes and the report read for it, and once with none, the report read for
+// no identity. Before the recount the counts miss the writes: the report counts one component fewer
+// than the table holds.
+func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
+	for _, configured := range []struct{ name, identity string }{
+		{"an embedder configured", configuredIdentity},
+		{"no embedder", ""},
+	} {
+		t.Run(configured.name, func(t *testing.T) {
+			ctx := context.Background()
+			database := storetest.Open(t)
+			q := database.Pool
+			states := seedEveryCoverageState(t, database)
+			const project = "OFFT"
+			seedIssue(t, database, project, "OFFT-1", "An issue whose result and handoff are written with their triggers off")
+			seedComponentsArchitecture(t, q, project, 907)
+			var document string
+			if err := q.QueryRow(ctx, `
+				insert into artifacts (project_key, slug, name, kind, created_by, ref_key)
+				values ($1, 'notes', 'notes.md', 'doc', '{"kind":"user","id":"alice"}', $1 || '/notes')
+				returning id::text`, project).Scan(&document); err != nil {
+				t.Fatalf("seed the project document: %v", err)
+			}
+			fillCounts(t, database)
+			if configured.identity != "" {
+				drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(configured.identity)})
+			}
+
+			withTableTriggersOff(t, database, "issues", func(q querier) {
+				mustExec(t, q, `update issues set title = 'A title written with its trigger off' where key = $1`, states.titleEdited)
+			})
+			withTableTriggersOff(t, database, "artifact_versions", func(q querier) {
+				mustExec(t, q, `update artifact_versions set markdown = $2 where artifact_id = $1 and number = 2`,
+					states.specRestoredDocument, "## Summary\n\nThe latest version, written in place with its triggers off.\n")
+				addVersion(t, q, document, 1, "A version written with its table's triggers off.")
+			})
+			withTableTriggersOff(t, database, "embeddings", func(q querier) {
+				enqueueWindow(t, q, "document_block", "document_block/off", "b1", "A window written with its table's triggers off", "b1")
+				mustExec(t, q, `delete from embeddings where kind = 'comment_block' and id = 'comment_block/oracle#current'`)
+			})
+			withTableTriggersOff(t, database, "components", func(q querier) {
+				insertComponent(t, q, project, "written-with-its-triggers-off", 907)
+			})
+			withTableTriggersOff(t, database, "check_results", func(q querier) {
+				mustExec(t, q, `insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+						check_version, check_sha256, role, commit_sha, verdict, actor)
+					values ('OFFT-1', 'OFFT-1', $1::uuid, 'k1', 1, 'a-check-sha', 'tester', repeat('a', 40), 'pass', '{"kind":"user","id":"alice"}'::jsonb)`,
+					document)
+			})
+			withTableTriggersOff(t, database, "handoffs", func(q querier) {
+				mustExec(t, q, `insert into handoffs (issue_key, phase, version, body, author)
+					values ('OFFT-1', 'implement', 1, '{}', '{"kind":"user","id":"alice"}'::jsonb)`)
+			})
+			withTriggersOff(t, database, func(q querier) {
+				mustExec(t, q, `insert into issues (key, project_key, number, title, created_by, rank)
+					values ('OFFT-2', $1, 100, 'An issue written under session_replication_role = replica', '{"kind":"user","id":"alice"}', 'A')`, project)
+			})
+
+			report, err := Coverage(ctx, database, configured.identity)
+			if err != nil {
+				t.Fatalf("Coverage before the recount: %v", err)
+			}
+			var components int64
+			if err := q.QueryRow(ctx, `select count(*) from components`).Scan(&components); err != nil {
+				t.Fatalf("count the components: %v", err)
+			}
+			if kept := notIndexedCountsOf(t, report)["component"]; kept != components-1 {
+				t.Fatalf("before the recount the counts hold %d components of the table's %d, want one fewer: the component written with its triggers off fired a trigger", kept, components)
+			}
+
+			if err := RecountCoverage(ctx, database); err != nil {
+				t.Fatalf("recount: %v", err)
+			}
+			requireMainsAnswerFor(t, database, "after one recount", configured.identity)
+		})
+	}
 }
 
 // ───── the counts loop: the fold, the recount, the fill (R7e to R7i, R7o, R7x) ─────

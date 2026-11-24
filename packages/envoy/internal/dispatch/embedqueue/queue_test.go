@@ -1467,6 +1467,7 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "IDLE", "IDLE-1", "Enqueued by its trigger")
 	insertCommentWithWindow(t, database.Pool, "IDLE-1", "A comment its indexer windowed")
+	fillCounts(t, database)
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity)})
