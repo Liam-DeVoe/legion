@@ -1680,7 +1680,7 @@ the tester or the reviewer, is told to stop writing the workspace and not to com
 the old head, and is then told the new head, and `workflow: the merge forward landed`
 names both heads. A completion of the phase the issue stands in that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
-a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
+a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, which moves nothing, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
 before. Where the task's reviewer step already ran, the reviewer is asked to read the merge and
 approve the new head. A red check sends nothing back from anywhere.

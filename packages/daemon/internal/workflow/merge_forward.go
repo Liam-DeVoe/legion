@@ -366,13 +366,15 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // mergedForwardRefusal is the completion fence of a merge forward (dispatch://INFRA-4374 R1): a
 // completion of testing, reviewing or retro whose commit is the head a merge forward was asked of,
 // once that merge landed and the pull request stands at another head, reports work on code the
-// issue no longer stands on, and is refused with HANDOFF_HEAD_MERGED_FORWARD before anything is
-// recorded (handoff). The merge forward is the record's landed ask (record.MergeForward.Landed)
-// or any that landed before it in the same stretch of work (record.MergeForward.Earlier,
-// mergedForwardOf), so a head the first merge replaced stays fenced after the head that merge
-// left conflicts in its turn and is merged forward again. The refusal names the head that merge
-// replaced, the head it left and the head the pull request stands at now, and tells the role to
-// read what the merge changed and complete again at that head.
+// issue no longer stands on, and is refused with HANDOFF_HEAD_MERGED_FORWARD (handoff), which
+// moves nothing. The workflow keeps that refusal under the completion's key (intake.ApplyFact), so
+// a completion at the new head, its handoff record naming that head where its phase writes one,
+// is a new key and is applied. The merge forward is the record's landed ask
+// (record.MergeForward.Landed) or any that landed before it in the same stretch of work
+// (record.MergeForward.Earlier, mergedForwardOf), so a head the first merge replaced stays fenced
+// after the head that merge left conflicts in its turn and is merged forward again. The refusal
+// names the head that merge replaced, the head it left and the head the pull request stands at
+// now, and tells the role to read what the merge changed and complete again at that head.
 //
 // A completion that names no commit is refused the same way once a merge forward of the record's
 // stretch of work landed: the tester and the reviewer take their commit from the head their

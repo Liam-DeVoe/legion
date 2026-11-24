@@ -118,7 +118,7 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
  * production check is refused `CHECK_NOT_OPEN` once the check is closed (`checkReport`,
  * `packages/daemon/internal/api/handoff.go`), and `CHECK_LOOK_NOT_OPEN` once the look it names
  * has ended (`checkReported`, `packages/daemon/internal/workflow/check.go`). Each of these three
- * records nothing, and the daemon sends any next task itself, so the role does nothing more for
+ * moves nothing, and the daemon sends any next task itself, so the role does nothing more for
  * that work.
  *
  * `HANDOFF_ALREADY_RECORDED` answers a completion or a report under a key the daemon has already
