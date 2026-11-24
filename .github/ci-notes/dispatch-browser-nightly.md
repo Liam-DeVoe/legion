@@ -16,7 +16,16 @@ packages/dispatch/e2e/tools/quarantine-check.ts reads the `dispatch-browser flak
 of the merge jobs of the last 14 days of scheduled runs of this workflow and merge-group runs
 of ci.yaml, and fails on a row flaky in two of them that packages/dispatch/e2e/quarantine.ts
 does not hold, and on an entry of that file held longer than 14 days, each named in its
-summary with the runs and the lines to add or to remove. A pull request's runs are not read,
+summary with the runs and the lines to add or to remove. A row of the embedder job or of the
+two-process job cannot be quarantined: those jobs set no `DISPATCH_E2E_QUARANTINE`, so they run
+a quarantined row as they run the rest, and the quarantine leg, one server process with no
+embedder, runs none of their rows. For such a row the summary names the lines of a fix entry
+instead, and says to fix the row in its own lines or to write that entry. A flaky row that no
+row of the checkout is named as, though the checkout holds its file, is a row renamed or moved
+since its runs, whose flakes cannot be matched to it: the check fails on it as a failed read.
+Until 14 days after cybermonklabs/legion#4523 lands on main, a notice of a run from before it,
+which names a row inside a `describe` by its own title alone, is the one exception: the summary
+names the row it means, and its flakes are not counted. A pull request's runs are not read,
 since a pull request's head can carry its own defect; the tool's head says the rest. It needs
 no other job of this run: what it reads is runs that have already ended, this one's not among
 them, so a flaky row of tonight's full lane is counted by tomorrow's check.
@@ -30,11 +39,14 @@ calls and 13 GraphQL calls of the repository's budgets (the measurement in
 
 `actions: read` is the run listing of the two workflows, `checks: read` the merge jobs' check
 runs and their annotations, read through GraphQL, and `contents: read` the checkout. The tool
-writes nothing to GitHub. For a row flaky in two runs it reads the row's own lines from a
-listing of this checkout and their last change from the file's blame at this commit (one
-GraphQL request per file, which the tool sends itself with the job's token), so it needs the
-install and the contracts build the listing loads; it reads no git history, so the checkout
-stays shallow.
+writes nothing to GitHub. For a row flaky in two runs it reads the row's own lines from listings
+of this checkout as the jobs run the row, in one server process and in two-process mode
+(DISPATCH_E2E_PROCESSES=2, and with DISPATCH_E2E_SIGNIN=oidc for `signin.multiprocess.e2e.ts`),
+and their last change from the file's blame at this commit (one GraphQL request per file, which
+the tool sends itself with the job's token); and it reads the files the quarantine cannot take
+from listings of the embedder job's command and of two-process mode. So it needs the install
+and the contracts build the listings load; it reads no git history, so the checkout stays
+shallow.
 It counts a flake only from a run whose head, the commit the run tested, holds that change, and holds the row's fix too where e2e/quarantine.ts's `fixes` names one.
 GitHub's compare of each such commit with each head says whether the head holds it.
 A run's time does not say it: a nightly started by hand at a branch head blames the branch's own commits, and a merge group of main created after them holds none of them until the branch lands.
@@ -52,6 +64,7 @@ the four after them, 137148928893, 137198886464, 137203993375 and 137215767381 (
 2026-11-22 at 03:15Z, from this issue's pod, the tool's reads of the same 14 days took 22 s: 1,195
 runs in 34 REST calls and 13 GraphQL calls costing 132 points.
 To those the tool adds a REST call, GitHub's compare, for each pair of a candidate row's commit (its last change, and its fix where `fixes` names one) and the head of a flaky run that named the row, and none on a day with no candidate.
+On a day with a candidate it also lists the checkout four times at once (`readCheckout`): the candidates' files in one server process, two-process mode under each of its two environments, and the embedder job's command. In this issue's pod on 2026-11-24 the four took 3.9 to 4.6 s each, run at once beside another test file's listings.
 Before `0d9a0258`, the REST reader's 37
 steps that succeeded on 2026-11-21 and 22 took 68 to 104 s, the longest job 137021330193 of run
 44961580846, 23:28:02Z to 23:29:46Z on 2026-11-21. Seven steps of one day are no fortnight's
@@ -65,14 +78,17 @@ The step's 5 minutes are its work and a wait for GitHub's rate limit. The check 
 limit at 02:14Z on 2026-11-22 (job 137061949842 of run 44974726732), refused `API rate limit
 exceeded for installation`. The tool waits out a refusal that names the time GitHub may be
 asked again: `retry-after`, or `x-ratelimit-reset` where `x-ratelimit-remaining` is 0, for REST
-and for GraphQL alike. It waits by the one rule both of the browser lane's readers of GitHub
+and for GraphQL alike, or, for a 403 or a 429 whose body names a secondary rate limit and that
+carries no `retry-after`, 60 s, GitHub's documented minimum, as gh-read.sh waits it. It waits by
+the one rule both of the browser lane's readers of GitHub
 follow, gh-read.sh's gh_wait_reset and this tool
 (.github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget states it):
 only for a time that falls at least 30 s before the earlier of the job's limit and the step's,
 which the job's env passes as JOB_TIMEOUT_MINUTES and the step's as STEP_TIMEOUT_MINUTES, each
 measured from its start as the tool reads it off the runner's process tree (`readDeadline`).
 A reset that has already passed names no time to wait for, so that refusal takes the tool's three
-attempts, 10 s and then 20 s apart, instead.
+attempts, 10 s and then 20 s apart, instead. Where the tool's waits still differ from
+gh-read.sh's, `gitHub`'s doc comment in the tool names each difference.
 
 The 5 minutes were derived for a cap of 180 s on the waits: a refusal of the step's first read
 leaves all of the step's work after the wait, so 300 - 120 = 180 s. The rule gives another number,

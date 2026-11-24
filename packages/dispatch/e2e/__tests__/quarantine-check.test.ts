@@ -8,17 +8,21 @@
  *  API on a local port: what `readHistory` reads of the answers GitHub gave for eleven runs
  *  (`fixtures/quarantine-answers.fixture.json`) and what `decide` and `report` say of it, what
  *  the reading costs, its pages, the compares `readHolds` reads and what it says of each answer,
- *  and the client's waits for GitHub's rate limit, which read the clock and wait a few real
- *  seconds. The deadline those waits are held to is read off a stand-in `/proc`
- *  (`readDeadline`). Nothing here reads GitHub itself. */
+ *  what `readCheckout` reads of rows of the two-process job through listings of this checkout
+ *  and the stand-in's blames, and the client's waits for GitHub's rate limit, which read the
+ *  clock and wait a few real seconds, or record the wait in place of making it where it is
+ *  GitHub's minute for a secondary limit. The deadline those waits are held to is read off a
+ *  stand-in `/proc` (`readDeadline`). Nothing here reads GitHub itself. */
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { entryLines } from "../quarantine";
+import { rowsOfListing } from "../configurations";
+import { entryLines, rowName, twoProcessRuns, type UnquarantinableFiles } from "../quarantine";
 import {
   annotationsPerPage,
+  type BlameRange,
   blame,
   checkRunsPerPage,
   countedRuns,
@@ -28,17 +32,21 @@ import {
   type Holds,
   lastChange,
   mergeJobOf,
+  ownTitleRows,
   pairKey,
   type RowChange,
   type RunReading,
+  readCheckout,
   readDeadline,
   readHistory,
   readHolds,
   report,
   rowLines,
   suitesPerCall,
+  type Unlisted,
   windowDays,
 } from "../tools/quarantine-check";
+import { rowLimit } from "./bounded-subprocess";
 import {
   blames,
   eighteenDays,
@@ -51,8 +59,16 @@ import {
   readAt,
   stillRows,
 } from "./fixtures/quarantine-history.fixture";
+import { listing } from "./playwright-listing";
 
 const pictures = "pictures.e2e.ts [chromium] a picture uploads @pr";
+
+/** No candidate row the checkout's listings lack: the checkout `readCheckout` reads where they
+ *  hold every row flaky twice. */
+const noneUnlisted: Unlisted = new Map();
+
+/** No file the quarantine cannot take. */
+const noFiles: UnquarantinableFiles = { embedder: [], twoProcess: [] };
 
 /** The rows of `stillRows` with the pictures row's last change read from `ranges`, as the
  *  adapter reads it: its own lines from the listing, their newest commit from the blame. */
@@ -90,18 +106,17 @@ const named = (
   fixes: readonly FixReading[] = [],
   holds: Holds = held(changes, fixes)
 ) =>
-  decide(history, [], fixes, changes, readAt, holds).toQuarantine.map(({ row, runs }) => [
-    `${row.file} ${row.title}`,
-    runs.map((run) => run.id),
-  ]);
+  decide(history, [], fixes, changes, readAt, holds, noneUnlisted).toQuarantine.map(
+    ({ row, runs }) => [`${row.file} ${row.title}`, runs.map((run) => run.id)]
+  );
 
 test("a row flaky in two runs of the fourteen days is named, with its runs and the lines to add", () => {
-  const decision = decide(history, [], [], stillRows, readAt, held(stillRows));
+  const decision = decide(history, [], [], stillRows, readAt, held(stillRows), noneUnlisted);
   expect(decision.toQuarantine.map(({ row, runs }) => [row, runs.map((run) => run.id)])).toEqual([
     [{ file: "pictures.e2e.ts", project: "chromium", title: "a picture uploads @pr" }, [101, 102]],
   ]);
   expect(decision.overdue).toEqual([]);
-  const { annotations, failed, summary } = report(decision, readAt);
+  const { annotations, failed, summary } = report(decision, readAt, noFiles);
   expect(failed).toBe(true);
   expect(summary).toContain(
     "- `pictures.e2e.ts [chromium] a picture uploads @pr`, flaky in 2 runs whose heads hold the " +
@@ -130,9 +145,17 @@ test("a row flaky in two runs of the fourteen days is named, with its runs and t
 });
 
 test("the same history names nothing once that row is quarantined", () => {
-  const decision = decide(history, [picturesEntry], [], stillRows, readAt, held(stillRows));
+  const decision = decide(
+    history,
+    [picturesEntry],
+    [],
+    stillRows,
+    readAt,
+    held(stillRows),
+    noneUnlisted
+  );
   expect(decision.toQuarantine).toEqual([]);
-  const { annotations, failed, summary } = report(decision, readAt);
+  const { annotations, failed, summary } = report(decision, readAt, noFiles);
   expect(failed).toBe(false);
   expect(annotations).toEqual([]);
   expect(summary).toContain("No entry has been held longer than 14 days.");
@@ -141,7 +164,15 @@ test("the same history names nothing once that row is quarantined", () => {
 // `keyed-writes.e2e.ts`'s row is named by two attempts of run 102 and by no other run, and
 // `mermaid.e2e.ts`'s by run 103 and by a nightly 18 days before the reading: each is one run.
 test("a row flaky in one run is not named, however many attempts of it named the row", () => {
-  const decision = decide(history, [picturesEntry], [], stillRows, readAt, held(stillRows));
+  const decision = decide(
+    history,
+    [picturesEntry],
+    [],
+    stillRows,
+    readAt,
+    held(stillRows),
+    noneUnlisted
+  );
   expect(decision.toQuarantine).toEqual([]);
   expect(decision.counted.map((run) => run.id)).toEqual([101, 102, 103, 106]);
 });
@@ -153,9 +184,15 @@ test("a pull request's flaky row does not count", () => {
     run.id === 104 ? { ...run, event: "merge_group" } : run
   );
   expect(
-    decide(asMergeGroup, [picturesEntry], [], stillRows, readAt, held(stillRows)).toQuarantine.map(
-      ({ row, runs }) => [`${row.file} ${row.title}`, runs.map((run) => run.id)]
-    )
+    decide(
+      asMergeGroup,
+      [picturesEntry],
+      [],
+      stillRows,
+      readAt,
+      held(stillRows),
+      noneUnlisted
+    ).toQuarantine.map(({ row, runs }) => [`${row.file} ${row.title}`, runs.map((run) => run.id)])
   ).toEqual([["deep-links.e2e.ts a held chunk lands @firefox", [103, 104]]]);
 });
 
@@ -168,7 +205,7 @@ test("a row flaky twice in runs whose heads do not hold its own lines' last chan
     [pairKey("2".repeat(40), head(102))]: false,
   });
   expect(named(changes, [], holds)).toEqual([]);
-  const decision = decide(history, [], [], changes, readAt, holds);
+  const decision = decide(history, [], [], changes, readAt, holds, noneUnlisted);
   expect(decision.leftOut.map(({ missing, run, why }) => [run.id, missing, why])).toEqual([
     [
       101,
@@ -183,7 +220,7 @@ test("a row flaky twice in runs whose heads do not hold its own lines' last chan
         "2026-11-13T09:00:00Z",
     ],
   ]);
-  expect(report(decision, readAt).summary).toContain(
+  expect(report(decision, readAt, noFiles).summary).toContain(
     "- `pictures.e2e.ts [chromium] a picture uploads @pr` in " +
       "[run 101](https://github.com/cybermonklabs/legion/actions/runs/101) of 2026-11-08 " +
       `(schedule): its head ${head(101)} does not hold its own lines' last change, ` +
@@ -211,9 +248,9 @@ test("a row flaky in one run whose head holds its own lines' last change, and in
   const changes = withPicturesBlame(blames.ownLinesBetween);
   const holds = held(changes, [], { [pairKey("4".repeat(40), head(102))]: false });
   expect(named(changes, [], holds)).toEqual([]);
-  expect(decide(history, [], [], changes, readAt, holds).leftOut.map(({ run }) => run.id)).toEqual([
-    102,
-  ]);
+  expect(
+    decide(history, [], [], changes, readAt, holds, noneUnlisted).leftOut.map(({ run }) => run.id)
+  ).toEqual([102]);
 });
 
 // The fix's commit time says the opposite of the heads: it is before both runs where their heads
@@ -227,11 +264,9 @@ test("a row flaky twice in runs whose heads do not hold its fix is not named, an
   });
   expect(named(stillRows, before, holds)).toEqual([]);
   expect(
-    decide(history, [], before, stillRows, readAt, holds).leftOut.map(({ missing, run, why }) => [
-      run.id,
-      missing,
-      why,
-    ])
+    decide(history, [], before, stillRows, readAt, holds, noneUnlisted).leftOut.map(
+      ({ missing, run, why }) => [run.id, missing, why]
+    )
   ).toEqual([
     [101, "fix", `its head ${head(101)} does not hold its fix, ${fix}`],
     [102, "fix", `its head ${head(102)} does not hold its fix, ${fix}`],
@@ -282,7 +317,8 @@ test("two merge groups created after a row's own lines last changed, whose heads
     [],
     new Map([[`refresh-freshness.e2e.ts [chromium] ${title}`, change]]),
     at,
-    new Map(runs.map((run) => [pairKey(change.oid, run.headSha), false]))
+    new Map(runs.map((run) => [pairKey(change.oid, run.headSha), false])),
+    noneUnlisted
   );
   expect(decision.toQuarantine).toEqual([]);
   expect(decision.leftOut.map(({ missing, run, why }) => [run.id, missing, why])).toEqual([
@@ -299,7 +335,7 @@ test("two merge groups created after a row's own lines last changed, whose heads
         "change, c2a88d81460fd2aad180969d9a04dc1515076732 at 2026-11-20T04:41:21Z",
     ],
   ]);
-  const { failed, summary } = report(decision, at);
+  const { failed, summary } = report(decision, at, noFiles);
   expect(failed).toBe(false);
   expect(summary).toContain(
     `- \`refresh-freshness.e2e.ts [chromium] ${title}\` in ` +
@@ -316,12 +352,12 @@ test("a run whose head cannot be placed against its row's last change is counted
   const reason =
     "GitHub has no compare of the two (a 404 or a 422), so one of them is a commit it does not have";
   const holds = held(stillRows, [], { [pairKey("1".repeat(40), head(101))]: reason });
-  const decision = decide(history, [], [], stillRows, readAt, holds);
+  const decision = decide(history, [], [], stillRows, readAt, holds, noneUnlisted);
   expect(decision.toQuarantine.map(({ runs }) => runs.map((run) => run.id))).toEqual([[101, 102]]);
   const because =
     `counted, though it cannot be told whether its head ${head(101)} holds its own lines' last ` +
     `change, ${"1".repeat(40)} at 2026-10-01T00:00:00Z: ${reason}`;
-  const { summary } = report(decision, readAt);
+  const { summary } = report(decision, readAt, noFiles);
   const section = summary.indexOf("#### Flakes counted from runs that could not be placed");
   expect(summary.slice(section, section + 4)).toEqual([
     "#### Flakes counted from runs that could not be placed",
@@ -341,7 +377,11 @@ test("the summary's count of the runs read says how many flakes it set aside for
     [pairKey("1".repeat(40), head(101))]: false,
     [pairKey("5".repeat(40), head(102))]: false,
   });
-  const { summary } = report(decide(history, [], fixes, stillRows, readAt, holds), readAt);
+  const { summary } = report(
+    decide(history, [], fixes, stillRows, readAt, holds, noneUnlisted),
+    readAt,
+    noFiles
+  );
   expect(summary[2]).toBe(
     "Read the merge jobs of 4 runs of the 14 days before 2026-11-19T02:17:00.000Z: 1 schedule runs of dispatch-browser-nightly.yaml and 3 merge_group runs of ci.yaml. 3 of them named a flaky row. Flakes set aside because the run's head did not hold the row's last change: 1; because it did not hold the row's fix: 1. A pull request's runs are not read: its head can carry its own defect."
   );
@@ -355,10 +395,11 @@ test("a fix whose commit is not on main fails the check", () => {
     fixReadings,
     stillRows,
     readAt,
-    held(stillRows, fixReadings)
+    held(stillRows, fixReadings),
+    noneUnlisted
   );
   expect(decision.offMain).toEqual([picturesFix]);
-  const { annotations, failed } = report(decision, readAt);
+  const { annotations, failed } = report(decision, readAt, noFiles);
   expect(failed).toBe(true);
   expect(annotations).toEqual([
     "::error title=dispatch-browser quarantine::the fix of pictures.e2e.ts [chromium] a picture " +
@@ -374,10 +415,11 @@ test("a fix older than fourteen days is named for its owner to delete, and fails
     fixReadings,
     stillRows,
     readAt,
-    held(stillRows, fixReadings)
+    held(stillRows, fixReadings),
+    noneUnlisted
   );
   expect(decision.spent).toEqual([{ committedDate: "2026-10-20T09:00:00Z", entry: picturesFix }]);
-  const { failed, summary } = report(decision, readAt);
+  const { failed, summary } = report(decision, readAt, noFiles);
   expect(failed).toBe(false);
   expect(summary).toContain('      fixed: "5555555555555555555555555555555555555555",');
 });
@@ -389,10 +431,11 @@ test("an entry held longer than fourteen days is named with its issue and the li
     [],
     stillRows,
     readAt,
-    held(stillRows)
+    held(stillRows),
+    noneUnlisted
   );
   expect(decision.overdue).toEqual([{ days: 18, entry: eighteenDays }]);
-  const { annotations, failed, summary } = report(decision, readAt);
+  const { annotations, failed, summary } = report(decision, readAt, noFiles);
   expect(failed).toBe(true);
   const lines = summary.slice(summary.indexOf("  ```ts") + 1, summary.indexOf("  ```ts") + 8);
   expect(lines).toEqual([
@@ -414,13 +457,209 @@ test("an entry held longer than fourteen days is named with its issue and the li
 test("flaky rows a run counted and no row notice named are reported as unread", () => {
   const short = history.map((run) => (run.id === 106 ? { ...run, unread: 3 } : run));
   const { annotations } = report(
-    decide(short, [picturesEntry], [], stillRows, readAt, held(stillRows)),
-    readAt
+    decide(short, [picturesEntry], [], stillRows, readAt, held(stillRows), noneUnlisted),
+    readAt,
+    noFiles
   );
   expect(annotations).toEqual([
     "::warning title=dispatch-browser quarantine::run 106 counts 3 flaky rows that no row " +
       "notice names, and they are not counted",
   ]);
+});
+
+/** Two merge groups of the fourteen days before `readAt`, runs 201 and 202, each naming every
+ *  notice of `messages`. */
+const twiceFlaky = (messages: readonly string[]): RunReading[] =>
+  [201, 202].map((id, index) => ({
+    createdAt: `2026-11-1${5 + index}T10:00:00Z`,
+    event: "merge_group",
+    flakyRows: [...messages],
+    headSha: head(id),
+    id,
+    unread: 0,
+    url: `https://github.com/cybermonklabs/legion/actions/runs/${id}`,
+  }));
+
+// The embedder job runs `search-tiers.e2e.ts` with no quarantine and the nightly's quarantine leg
+// skips its rows, so the quarantine cannot take one (`quarantineRefusal`): the summary names the
+// lines of a fix entry, which e2e/__tests__/quarantine.test.ts accepts, and not those of a
+// quarantine entry, which it refuses. The control is the same reading with no file the
+// quarantine cannot take, which names a quarantine entry's lines.
+test("a row of the embedder job flaky in two runs is named with a fix entry's lines, since the quarantine cannot take it", () => {
+  const row = {
+    file: "search-tiers.e2e.ts",
+    project: "chromium",
+    title: "a pause makes one embedding",
+  };
+  const change = {
+    committedDate: "2026-10-01T00:00:00Z",
+    lines: "search-tiers.e2e.ts:10-40",
+    oid: "6".repeat(40),
+  };
+  const runs = twiceFlaky([`search-tiers.e2e.ts:10 [chromium] ${row.title}`]);
+  const decision = decide(
+    runs,
+    [],
+    [],
+    new Map([[rowName(row), change]]),
+    readAt,
+    new Map(runs.map((run) => [pairKey(change.oid, run.headSha), true])),
+    noneUnlisted
+  );
+  const { annotations, failed, summary } = report(decision, readAt, {
+    embedder: ["search-tiers.e2e.ts"],
+    twoProcess: [],
+  });
+  expect(failed).toBe(true);
+  const at = summary.findIndex((line) => line.startsWith("  The quarantine cannot take it"));
+  expect(summary.slice(at, at + 11)).toEqual([
+    "  The quarantine cannot take it: its file is `search-tiers.e2e.ts`, which the embedder job " +
+      "runs on both lanes with no quarantine and the nightly's quarantine leg skips, having no " +
+      "embedder: a quarantine entry would leave the row gating as before and run it ungated " +
+      "nowhere. Fix the row in its own lines or write a fix entry. A change to its own lines " +
+      "needs no entry: no flake of a run whose head does not hold that change counts. For a fix " +
+      "elsewhere, the controller files the issue that owns the row, and once the commit that " +
+      "fixes it is on main, add these lines to `fixes` in `packages/dispatch/e2e/quarantine.ts`, " +
+      "with that issue's key for `<KEY>` and the commit's full sha for `<SHA>`:",
+    "",
+    "  ```ts",
+    "    {",
+    '      file: "search-tiers.e2e.ts",',
+    '      project: "chromium",',
+    '      title: "a pause makes one embedding",',
+    '      issue: "dispatch://<KEY>",',
+    '      fixed: "<SHA>",',
+    "    },",
+    "  ```",
+  ]);
+  expect(summary.join("\n")).not.toContain("Add these lines to `quarantine`");
+  expect(annotations).toEqual([
+    "::error title=dispatch-browser quarantine::search-tiers.e2e.ts [chromium] a pause makes one " +
+      "embedding was flaky in 2 runs of 14 days, and the quarantine cannot take a row of " +
+      "search-tiers.e2e.ts: fix the row in its own lines or write a fix entry: " +
+      "https://github.com/cybermonklabs/legion/actions/runs/201 " +
+      "https://github.com/cybermonklabs/legion/actions/runs/202",
+  ]);
+  expect(report(decision, readAt, noFiles).summary).toContain(
+    "  The controller files the issue that owns it. Add these lines to `quarantine` in " +
+      "`packages/dispatch/e2e/quarantine.ts`, with that issue's key for `<KEY>`:"
+  );
+});
+
+// The checkout still holds `pictures.e2e.ts`, and no row of its listings is named `a picture
+// uploads before its rename`: the row was renamed or moved since the two runs named it, and this
+// reading cannot tell which row of the file it is now, so it fails the check as a failed read.
+// The control is the same row with its file gone from the checkout: it does not stand, and fails
+// nothing.
+test("a row flaky twice that no row of its file is named as, while the checkout holds the file, fails the check as a failed read", () => {
+  const renamed = {
+    file: "pictures.e2e.ts",
+    project: "chromium",
+    title: "a picture uploads before its rename",
+  };
+  const runs = twiceFlaky([`pictures.e2e.ts:12 [chromium] ${renamed.title}`]);
+  const decision = decide(
+    runs,
+    [],
+    [],
+    new Map(),
+    readAt,
+    new Map(),
+    new Map([[rowName(renamed), []]])
+  );
+  const { annotations, failed, summary } = report(decision, readAt, noFiles);
+  expect(failed).toBe(true);
+  const section = summary.indexOf("#### Flaky rows this reading could not match");
+  expect(summary.slice(section, section + 3)).toEqual([
+    "#### Flaky rows this reading could not match",
+    "",
+    "- `pictures.e2e.ts [chromium] a picture uploads before its rename`, flaky in 2 runs: " +
+      "[run 201](https://github.com/cybermonklabs/legion/actions/runs/201) of 2026-11-15 " +
+      "(merge_group), [run 202](https://github.com/cybermonklabs/legion/actions/runs/202) of " +
+      "2026-11-16 (merge_group). No row of the checkout's listings is named so, though the " +
+      "checkout holds its file, `pictures.e2e.ts`: the row was renamed or moved inside its file " +
+      "since those runs, and their notices cannot be matched to the row it is now. Its flakes " +
+      "are not counted until those runs leave the 14 days. This is a failed read of those runs " +
+      "and not a finding.",
+  ]);
+  expect(annotations).toEqual([
+    "::error title=dispatch-browser quarantine::pictures.e2e.ts [chromium] a picture uploads " +
+      "before its rename was flaky in 2 runs of 14 days, and no row of pictures.e2e.ts in the " +
+      "checkout is named so: a row renamed or moved since then, whose notices cannot be matched, " +
+      "so this is a failed read and its flakes are not counted until those runs leave the 14 " +
+      "days: https://github.com/cybermonklabs/legion/actions/runs/201 " +
+      "https://github.com/cybermonklabs/legion/actions/runs/202",
+  ]);
+  expect(decision.unmatched).toEqual([{ row: renamed, runs }]);
+  const gone = decide(runs, [], [], new Map(), readAt, new Map(), noneUnlisted);
+  expect(gone.absent).toEqual([renamed]);
+  const goneReport = report(gone, readAt, noFiles);
+  expect(goneReport.failed).toBe(false);
+  expect(goneReport.summary).toContain(
+    "- `pictures.e2e.ts [chromium] a picture uploads before its rename`: the checkout does not " +
+      "hold its file, `pictures.e2e.ts`, so the row does not stand."
+  );
+});
+
+// A run whose head does not hold cybermonklabs/legion#4523 named a row inside a `describe` by its
+// own title alone, so its notice names `offline › saves the draft @firefox` as `saves the draft
+// @firefox`, which no row of the checkout is named. Until such runs leave the 14 days their flakes
+// are not counted, and fail nothing: the summary names the row they mean. `ownTitleRows` is how
+// `readCheckout` finds that row, and it takes no row of another project or file, none whose title
+// only begins with that title, and none outside a `describe`.
+test("a row flaky twice by its own title alone, as runs before full titles named a row inside a describe, is named and not counted", () => {
+  const ownTitle = {
+    file: "offline-edits.e2e.ts",
+    project: "firefox",
+    title: "saves the draft @firefox",
+  };
+  const meant = "offline-edits.e2e.ts [firefox] offline › saves the draft @firefox";
+  const runs = twiceFlaky([`offline-edits.e2e.ts:30 [firefox] ${ownTitle.title}`]);
+  const decision = decide(
+    runs,
+    [],
+    [],
+    new Map(),
+    readAt,
+    new Map(),
+    new Map([[rowName(ownTitle), [meant]]])
+  );
+  const { annotations, failed, summary } = report(decision, readAt, noFiles);
+  expect(summary).toContain(
+    "- `offline-edits.e2e.ts [firefox] saves the draft @firefox`: its notices name a row inside " +
+      "a `describe` by its own title alone, as a run whose head does not hold " +
+      "cybermonklabs/legion#4523 named one, and the checkout's listings name that row " +
+      "`offline-edits.e2e.ts [firefox] offline › saves the draft @firefox`. Its flakes are not " +
+      "counted."
+  );
+  expect(failed).toBe(false);
+  expect(annotations).toEqual([]);
+  expect(decision.ownTitle).toEqual([{ listed: [meant], row: ownTitle }]);
+  expect(
+    ownTitleRows(ownTitle, [
+      {
+        file: "offline-edits.e2e.ts",
+        project: "firefox",
+        title: "offline › saves the draft @firefox",
+      },
+      {
+        file: "offline-edits.e2e.ts",
+        project: "firefox",
+        title: "offline › saves the draft @firefox twice",
+      },
+      {
+        file: "offline-edits.e2e.ts",
+        project: "chromium",
+        title: "offline › saves the draft @firefox",
+      },
+      { file: "drafts.e2e.ts", project: "firefox", title: "offline › saves the draft @firefox" },
+      {
+        file: "offline-edits.e2e.ts",
+        project: "firefox",
+        title: "offline saves the draft @firefox",
+      },
+    ])
+  ).toEqual([meant]);
 });
 
 // Biome breaks a property after its key where the line would pass 100 columns, so a long title
@@ -484,24 +723,26 @@ interface Refusal {
   readonly body: unknown;
 }
 
-/** A stand-in for GitHub's API on a local port, answering from `runs` and `compares`:
+/** A stand-in for GitHub's API on a local port, answering from `runs`, `compares` and `blames`:
  *
  *  - `GET /repos/<repo>/actions/workflows/<workflow>/runs?event=<e>&created=<from>..<to>`: the
  *    runs of that workflow and event created in that range, both ends in it;
  *  - `GET /repos/<repo>/compare/<range>`: the status and body `compares` holds for that range,
  *    and a 404 for a range it does not hold;
- *  - `POST /graphql`: told apart by its variables - `ids` the suites of one call, `id` with
- *    `checkName` a suite's further check runs, `id` alone a check run's further notices, neither
- *    only `rateLimit` - a suite answering the check runs of its run's merge job alone, paged at
- *    `checkRunsPerPage` and `annotationsPerPage` with the offset as the cursor, each answer
- *    costing 1 point of 4,999 left.
+ *  - `POST /graphql`: told apart by its variables - `path` a file's blame, its ranges those
+ *    `blames` holds for the path and none where it holds none, `ids` the suites of one call,
+ *    `id` with `checkName` a suite's further check runs, `id` alone a check run's further
+ *    notices, none of those only `rateLimit` - a suite answering the check runs of its run's
+ *    merge job alone, paged at `checkRunsPerPage` and `annotationsPerPage` with the offset as the
+ *    cursor, each answer costing 1 point of 4,999 left.
  *
  *  Every request is recorded in `seen` with the moment it arrived, and the first requests of
  *  each kind are answered from `refuse.rest` and `refuse.graphql`, in turn, where those hold any. */
 function gitHubStandIn(
   runs: readonly StoodRun[],
   refuse: { rest?: Refusal[]; graphql?: Refusal[] } = {},
-  compares: Readonly<Record<string, { readonly status: number; readonly body: unknown }>> = {}
+  compares: Readonly<Record<string, { readonly status: number; readonly body: unknown }>> = {},
+  blames: Readonly<Record<string, readonly BlameRange[]>> = {}
 ) {
   const seen: { at: number; path: string; variables?: Record<string, unknown> }[] = [];
   const mergeJob = (run: StoodRun) => {
@@ -534,6 +775,12 @@ function gitHubStandIn(
           return Response.json(refusal.body, { headers: refusal.headers, status: refusal.status });
         }
         const after = Number(variables.after ?? 0);
+        if (typeof variables.path === "string") {
+          const ranges = blames[variables.path] ?? [];
+          return Response.json({
+            data: { rateLimit, repository: { object: { blame: { ranges } } } },
+          });
+        }
         if (Array.isArray(variables.ids)) {
           const nodes = variables.ids.map((id) => {
             const run = runs.find((stood) => stood.run.check_suite_node_id === id);
@@ -762,7 +1009,7 @@ test("the recorded answers read as these eleven runs, and decide and report noth
   try {
     const readings = await readHistory(gitHub(server.url, "t"), repository, recordedAt);
     expect(readings).toEqual(recordedReadings);
-    const decision = decide(readings, [], [], new Map(), recordedAt, new Map());
+    const decision = decide(readings, [], [], new Map(), recordedAt, new Map(), noneUnlisted);
     expect(decision.counted).toEqual(recordedReadings);
     expect([...decision.rows].map(([name, { runs }]) => [name, runs.map((run) => run.id)])).toEqual(
       [
@@ -811,7 +1058,7 @@ test("the recorded answers read as these eleven runs, and decide and report noth
       unparsed: [],
       unplaced: [],
     });
-    expect(report(decision, recordedAt)).toEqual({
+    expect(report(decision, recordedAt, noFiles)).toEqual({
       annotations: [],
       failed: false,
       summary: [
@@ -1019,8 +1266,8 @@ test("readHolds compares each commit of a candidate row with each head once, and
       [pairKey(fix, heads[1])]:
         `GitHub refused ${server.url}/repos/${repository}/compare/${pairKey(fix, heads[1])} ` +
         'with HTTP 403: {"message":"Resource not accessible by integration"}, which names no ' +
-        "time it may be asked again (no retry-after, and x-ratelimit-remaining not 0), so it was " +
-        "not asked again",
+        "time it may be asked again (no retry-after, x-ratelimit-remaining not 0, and no " +
+        "secondary rate limit in its body), so it was not asked again",
       [pairKey(fix, heads[2])]: true,
     });
     expect(server.seen.map((request) => request.path).sort()).toEqual(
@@ -1040,6 +1287,102 @@ test("readHolds compares each commit of a candidate row with each head once, and
     server.stop();
   }
 });
+
+// The two-process job runs `*.multiprocess.e2e.ts` under DISPATCH_E2E_PROCESSES=2, and
+// `signin.multiprocess.e2e.ts` under DISPATCH_E2E_SIGNIN=oidc beside it, and a listing in one
+// process holds none of their rows. The first row of a listing under each, flaky in two runs, is
+// read against this checkout's listings and the stand-in's blame of its file: each has its last
+// change, so it is named, and with a fix entry's lines, since the quarantine cannot take a row of
+// the two-process job. Beside them, a row of one of those files that no listing names - renamed
+// since its runs - is unlisted with no row its notices could mean, and fails the read, and a row
+// of a file the checkout does not hold is neither, and does not stand.
+test(
+  "readCheckout lists a row of the two-process job as that job runs it, and the report names it with a fix entry's lines",
+  async () => {
+    const [twoProcessRow, signInRow] = (
+      await Promise.all(
+        twoProcessRuns.map((environment) =>
+          listing(import.meta.url, "e2e/playwright.config.ts", environment)
+        )
+      )
+    ).map((listed) => {
+      const { file, project, title } = rowsOfListing(listed)[0];
+      return { file, project, title };
+    });
+    expect(signInRow.file).toBe("signin.multiprocess.e2e.ts");
+    const renamed = { ...twoProcessRow, title: "a row renamed since its runs" };
+    const gone = {
+      file: "a-deleted.e2e.ts",
+      project: "chromium",
+      title: "a row of a deleted file",
+    };
+    const commit = { committedDate: "2026-11-01T00:00:00Z", oid: "7".repeat(40) };
+    const server = gitHubStandIn(
+      [],
+      {},
+      {},
+      Object.fromEntries(
+        [twoProcessRow, signInRow].map((row) => [
+          `packages/dispatch/e2e/${row.file}`,
+          [{ commit, endingLine: 100_000, startingLine: 1 }],
+        ])
+      )
+    );
+    try {
+      const checkout = await readCheckout(
+        gitHub(server.url, "t"),
+        [twoProcessRow, signInRow, renamed, gone],
+        repository,
+        "main"
+      );
+      expect([...checkout.changes.keys()].sort()).toEqual(
+        [rowName(twoProcessRow), rowName(signInRow)].sort()
+      );
+      expect(Object.fromEntries(checkout.unlisted)).toEqual({ [rowName(renamed)]: [] });
+      expect(checkout.unquarantinable.twoProcess).toContain(twoProcessRow.file);
+      expect(checkout.unquarantinable.twoProcess).toContain(signInRow.file);
+      expect(checkout.unquarantinable.embedder).toContain("search-tiers.e2e.ts");
+      const runs = twiceFlaky(
+        [twoProcessRow, signInRow, renamed, gone].map(
+          (row) => `${row.file}:1 [${row.project}] ${row.title}`
+        )
+      );
+      const decision = decide(
+        runs,
+        [],
+        [],
+        checkout.changes,
+        readAt,
+        new Map(runs.map((run) => [pairKey(commit.oid, run.headSha), true])),
+        checkout.unlisted
+      );
+      expect(decision.toQuarantine.map(({ row }) => rowName(row)).sort()).toEqual(
+        [rowName(twoProcessRow), rowName(signInRow)].sort()
+      );
+      expect(decision.unmatched.map(({ row }) => row)).toEqual([renamed]);
+      expect(decision.absent).toEqual([gone]);
+      const { failed, summary } = report(decision, readAt, checkout.unquarantinable);
+      expect(failed).toBe(true);
+      expect(
+        summary.filter((line) =>
+          line.includes(
+            "which the two-process job runs in the full lane with no quarantine and the " +
+              "nightly's quarantine leg, which runs one server process, never runs"
+          )
+        )
+      ).toHaveLength(2);
+      expect(summary.filter((line) => line === '      fixed: "<SHA>",')).toHaveLength(2);
+      expect(summary.join("\n")).not.toContain("Add these lines to `quarantine`");
+    } finally {
+      server.stop();
+    }
+  },
+  // The two listings that name the rows, at once, then readCheckout's four, at once.
+  rowLimit(
+    { atOnce: ["listing", "listing"] },
+    { atOnce: ["listing", "listing", "listing", "listing"] }
+  )
+);
 
 const listingPath =
   "/repos/o/r/actions/workflows/ci.yaml/runs?event=merge_group" +
@@ -1143,6 +1486,70 @@ test("a secondary rate limit's retry-after is waited out", async () => {
     expect(lines[0]).toContain("with HTTP 403, so it waits until ");
     expect(lines[0]).toContain(", by its retry-after: 1, within this step's limit at ");
     expect(lines[0]).toEndWith(", and asks again.");
+  } finally {
+    server.stop();
+  }
+});
+
+// GitHub sends its secondary rate limit now and then with no retry-after, its body alone naming
+// it, and its documentation asks for a wait of at least a minute then, which gh-read.sh makes too.
+// This row records the wait in place of making it. A deadline 80 s off is too near for that minute
+// and its 30 s margin, and the call fails at once, naming the minute; with five minutes, the call
+// waits the minute and asks again. The second refusal is a 429 in GitHub's older words for it.
+test("a secondary rate limit with no retry-after is a wait of 60 s within the deadline", async () => {
+  const server = gitHubStandIn([], {
+    rest: [
+      {
+        body: {
+          message:
+            "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+        },
+        status: 403,
+      },
+      {
+        body: {
+          message:
+            "You have triggered an abuse detection mechanism. Please wait a few minutes before you try again.",
+        },
+        status: 429,
+      },
+    ],
+  });
+  const waits: number[] = [];
+  const sleep = async (ms: number) => {
+    waits.push(ms);
+  };
+  const lines: string[] = [];
+  const minute =
+    "by its secondary rate limit, which its body names with no retry-after, and GitHub's " +
+    "documented minimum wait of 60 s for one";
+  try {
+    const near = { at: Date.now() + 80_000, of: "step" } as const;
+    await expect(
+      gitHub(server.url, "t", { deadline: near, log: (line) => lines.push(line), sleep }).one(
+        listingPath
+      )
+    ).rejects.toThrow(
+      `${minute}, falls past this step's limit at ${new Date(near.at).toISOString()} less the ` +
+        "30 s the call after the wait needs, so it was not waited for."
+    );
+    expect(waits).toEqual([]);
+    const deadline = fiveMinutesOff();
+    const github = gitHub(server.url, "t", { deadline, log: (line) => lines.push(line), sleep });
+    expect(await github.one(listingPath)).toEqual(emptyListing);
+    expect(server.seen).toHaveLength(3);
+    expect(waits).toHaveLength(1);
+    expect(waits[0]).toBeGreaterThan(59_000);
+    expect(waits[0]).toBeLessThanOrEqual(60_000);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith(
+      `quarantine-check: GitHub refused ${server.url}${listingPath} with HTTP 429, so it waits ` +
+        "until "
+    );
+    expect(lines[0]).toEndWith(
+      `, ${minute}, within this step's limit at ${new Date(deadline.at).toISOString()}, and ` +
+        "asks again."
+    );
   } finally {
     server.stop();
   }
@@ -1317,7 +1724,8 @@ test("a 403 that names no rate limit fails at once, without a wait", async () =>
     await expect(github.one(listingPath)).rejects.toThrow(
       `GitHub refused ${server.url}${listingPath} with HTTP 403: ` +
         '{"message":"Resource not accessible by integration"}, which names no time it may be ' +
-        "asked again (no retry-after, and x-ratelimit-remaining not 0), so it was not asked again."
+        "asked again (no retry-after, x-ratelimit-remaining not 0, and no secondary rate limit " +
+        "in its body), so it was not asked again."
     );
     expect(Date.now() - started).toBeLessThan(9000);
     expect(server.seen).toHaveLength(1);

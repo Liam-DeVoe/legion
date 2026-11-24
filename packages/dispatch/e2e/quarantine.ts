@@ -15,14 +15,17 @@
  *   quarantined rows, under `only` it drops every other row, and with the variable unset the
  *   project is returned as it is, so a listing or a run that names no such mode reads the whole
  *   suite. The shard job's browser step sets `exclude`; the nightly's quarantine leg sets `only`.
- *   The embedder job sets neither, so it runs a quarantined row of its files as it runs the rest.
+ *   The embedder job and the two-process job set neither, so each runs a quarantined row of its
+ *   files as it runs the rest, and the quarantine leg, one process with no embedder, runs no row
+ *   of theirs: the quarantine takes no such row (`quarantineRefusal`).
  * - `e2e/__tests__/quarantine.test.ts` refuses a list of more than `quarantineLimit` rows, an
- *   entry with no issue or no date or a malformed one, an entry of a file the embedder job runs,
- *   and an entry whose row the suite does not run. It never compares a date with today: a pull
- *   request is no place for a check that turns red on a day nobody chose.
+ *   entry with no issue or no date or a malformed one, an entry of a file the embedder job or the
+ *   two-process job runs, and an entry whose row the suite does not run. It never compares a date
+ *   with today: a pull request is no place for a check that turns red on a day nobody chose.
  * - `e2e/tools/quarantine-check.ts`, which the nightly runs, does what depends on the date: it
  *   names a row flaky in two runs of 14 days that is not here, and an entry held longer than 14
- *   days, each with the exact lines to add or to remove.
+ *   days, each with the exact lines to add or to remove; for a flaky row the quarantine cannot
+ *   take, it names the lines of a fix entry instead.
  *
  * This module imports nothing, so the count step of the `quarantine-rows` job of
  * .github/workflows/dispatch-browser.yaml reads it with Bun alone, before any install or build.
@@ -141,6 +144,60 @@ export function rowName(row: QuarantineRow): string {
   return `${row.file} [${row.project}] ${row.title}`;
 }
 
+/** The environments the `multiprocess` job of .github/workflows/dispatch-browser.yaml runs the
+ *  suite under, one a step: two-process mode (`DISPATCH_E2E_PROCESSES=2`, which
+ *  `bun run e2e:multiprocess` sets), and two-process mode signing in through the dev OIDC
+ *  issuer (`DISPATCH_E2E_SIGNIN=oidc`), which runs `signin.multiprocess.e2e.ts` alone. Only a
+ *  listing under one of them holds a row of a `*.multiprocess.e2e.ts` file: one-process mode
+ *  ignores those files (`testIgnore` in e2e/playwright.config.ts). */
+export const twoProcessRuns: readonly Readonly<Record<string, string>>[] = [
+  { DISPATCH_E2E_PROCESSES: "2" },
+  { DISPATCH_E2E_PROCESSES: "2", DISPATCH_E2E_SIGNIN: "oidc" },
+];
+
+/** The files whose rows the quarantine cannot take, as a listing names them: each is run by a job
+ *  of .github/workflows/dispatch-browser.yaml that sets no `DISPATCH_E2E_QUARANTINE`, so it runs
+ *  a quarantined row of theirs as it runs the rest, and the nightly's quarantine leg runs none of
+ *  them. `e2e/__tests__/quarantine.test.ts` and `e2e/tools/quarantine-check.ts` each read them
+ *  from listings of the checkout. */
+export interface UnquarantinableFiles {
+  /** The files `bun run e2e:embedder` runs, from a listing of its command (`embedderCommand` of
+   *  e2e/__tests__/playwright-listing.ts): the embedder job's, on both lanes. Their rows skip
+   *  wherever the server has no fake embedder, the quarantine leg among them. */
+  readonly embedder: readonly string[];
+  /** The files of a listing under each of `twoProcessRuns`: the two-process job's, in the full
+   *  lane. The quarantine leg runs one process, so it never runs them. */
+  readonly twoProcess: readonly string[];
+}
+
+/** Why the quarantine cannot take `row`, or `undefined` where it can: its file is one of `files`,
+ *  so a quarantine entry would leave it gating as before and run it ungated nowhere. Such a row is
+ *  fixed in its own lines or given a fix entry, which the nightly's check reads the same way for
+ *  every row. `quarantineFaults` refuses an entry of such a row through this, and
+ *  `e2e/tools/quarantine-check.ts`'s `report` names a fix entry's lines for it through this in
+ *  place of a quarantine entry's. Whether the row's project can report it flaky at all is
+ *  `quarantineFaults`' own check: the check's rows come from notices of rows that were. */
+export function quarantineRefusal(
+  row: Pick<QuarantineRow, "file">,
+  files: UnquarantinableFiles
+): string | undefined {
+  if (files.embedder.includes(row.file)) {
+    return (
+      "which the embedder job runs on both lanes with no quarantine and the nightly's quarantine " +
+      "leg skips, having no embedder: a quarantine entry would leave the row gating as before " +
+      "and run it ungated nowhere"
+    );
+  }
+  if (files.twoProcess.includes(row.file)) {
+    return (
+      "which the two-process job runs in the full lane with no quarantine and the nightly's " +
+      "quarantine leg, which runs one server process, never runs: a quarantine entry would leave " +
+      "the row gating as before and run it ungated nowhere"
+    );
+  }
+  return undefined;
+}
+
 /** The string Playwright 1.64.1 matches a project's `grep` and `grepInvert` against, for one row:
  *  the project's name, the file's path relative to the config's root, each `describe` title and
  *  the row's own title, joined by single spaces. `createProjectSuite`
@@ -230,15 +287,12 @@ function readEntries(
  *  malformed issue or date, an entry repeated, a project outside `projects` - the projects a
  *  flaky row can come from, which are the ones that retry a failed row on CI and run in the
  *  nightly's quarantine leg (`e2e/__tests__/quarantine.test.ts` reads them from the config) -
- *  and a file of `embedderFiles`, the files `bun run e2e:embedder` runs. That is the embedder
- *  job of .github/workflows/dispatch-browser.yaml, which runs on both lanes and sets no
- *  `DISPATCH_E2E_QUARANTINE`, and the rows of those files skip wherever the server has no fake
- *  embedder, the nightly's quarantine leg among them (`e2e/__tests__/quarantine.test.ts` reads
- *  the files from a listing of that script's command). It reads no date against today. */
+ *  and a row `quarantineRefusal` refuses for its file, one of `unquarantinable`. It reads no
+ *  date against today. */
 export function quarantineFaults(
   entries: readonly UncheckedEntry[],
   projects: readonly string[],
-  embedderFiles: readonly string[]
+  unquarantinable: UnquarantinableFiles
 ): string[] {
   const faults: string[] = [];
   if (entries.length > quarantineLimit) {
@@ -272,13 +326,9 @@ export function quarantineFaults(
           `nightly's quarantine leg does not run; a quarantined row is one of ${projects.join(", ")}`
       );
     }
-    if (typeof file === "string" && embedderFiles.includes(file)) {
-      faults.push(
-        `${name} names the file ${file}, which the embedder job runs on both lanes with no ` +
-          "quarantine and the nightly's quarantine leg skips, having no embedder: the entry " +
-          "would leave the row gating as before and run it ungated nowhere"
-      );
-    }
+    const refusal =
+      typeof file === "string" ? quarantineRefusal({ file }, unquarantinable) : undefined;
+    if (refusal !== undefined) faults.push(`${name} names the file ${file}, ${refusal}`);
     if (repeated) faults.push(`${name} repeats an entry above it`);
   }
   return faults;

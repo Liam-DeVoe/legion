@@ -5,9 +5,16 @@
  *  It exits 1 when it names any of these:
  *
  *  - a row flaky in `flakyRunsToQuarantine` or more runs of the last `windowDays` days that the
- *    quarantine does not hold, with the runs and the lines to add to `quarantine`;
+ *    quarantine does not hold, with the runs and the lines to add to `quarantine`, or, for a row
+ *    the quarantine cannot take (`quarantineRefusal` of `e2e/quarantine.ts`: a row of the
+ *    embedder job or of the two-process job), the lines of a fix entry to add to `fixes`;
  *  - an entry of `quarantine` held longer than `windowDays` days, with its issue and its lines;
- *  - an entry of `fixes` whose commit is not on main.
+ *  - an entry of `fixes` whose commit is not on main;
+ *  - a row flaky in that many runs that no row of the checkout's listings is named as, though its
+ *    file is in the checkout: a row renamed or moved inside its file since those runs, whose
+ *    flakes this cannot match to the row it is now. That is a failed read, and named as one.
+ *    The one exception is a notice of a run before cybermonklabs/legion#4523 that names a row
+ *    inside a `describe` by its own title alone (`countedRuns` says until when).
  *
  *  A fix entry older than `windowDays` days, by its commit's time, is named too, for its owner
  *  to delete, and fails nothing: every flake the window holds is after it.
@@ -30,20 +37,24 @@
  *  through REST (`actions: read`), a day of a workflow a call, and the merge job's check runs in
  *  each run's check suite with their annotations (`checks: read`) through GraphQL, 100 suites a
  *  call and a call more for any page beyond the first (`readSuites`). For a row flaky in two runs
- *  it also reads a listing of its file in this checkout and the file's blame, one GraphQL request
- *  per file, and GitHub's compare of each of the row's commits, its last change and its fix, with
- *  the head of each run that named it, one REST call a pair (`readHolds`). It sends every request
- *  itself with the job's token, through one client and its retry ladder (`gitHub`); a refused
- *  blame fails the check, naming the file, and a refused compare leaves its run counted, and
- *  named. For each fix it reads GitHub's compare of the checkout with the fix's commit.
+ *  it also reads the checkout (`readCheckout`): listings of its file as the jobs run it - in one
+ *  process, and under each of `twoProcessRuns` - and the file's blame, one GraphQL request per
+ *  file, and listings of the embedder job's command and of two-process mode for the files the
+ *  quarantine cannot take; then GitHub's compare of each of the row's commits, its last change
+ *  and its fix, with the head of each run that named it, one REST call a pair (`readHolds`). It
+ *  sends every request itself with the job's token, through one client and its retry ladder
+ *  (`gitHub`); a refused blame fails the check, naming the file, and a refused compare leaves its
+ *  run counted, and named. For each fix it reads GitHub's compare of the checkout with the fix's
+ *  commit.
  *
  *  Those reads are the adapter's, below `report`, and they decide nothing; `flakyRows`,
- *  `rowLines`, `lastChange`, `pairKey`, `decide` and `report` are pure over what was read and the
- *  moment given them, which is how `e2e/__tests__/quarantine-check.test.ts` drives them. It
- *  drives `blame` against a stand-in for GitHub's answer, `readDeadline` against a stand-in for
- *  `/proc`, and `gitHub`, `readHistory` and `readHolds` against a local stand-in for GitHub's
- *  API. Only the command line, `readDeadline` and `gitHub`'s wait for a rate limit read the clock
- *  or the processes.
+ *  `rowLines`, `lastChange`, `ownTitleRows`, `pairKey`, `decide` and `report` are pure over what
+ *  was read and the moment given them, which is how `e2e/__tests__/quarantine-check.test.ts`
+ *  drives them. It drives `blame` against a stand-in for GitHub's answer, `readDeadline` against
+ *  a stand-in for `/proc`, `gitHub`, `readHistory` and `readHolds` against a local stand-in for
+ *  GitHub's API, and `readCheckout` against that stand-in and listings of the checkout. Only the
+ *  command line, `readDeadline` and `gitHub`'s wait for a rate limit read the clock or the
+ *  processes.
  *
  *  Environment: GITHUB_REPOSITORY (`owner/name`), GH_TOKEN or GITHUB_TOKEN, GITHUB_SHA (the
  *  commit checked out; `main` when unset), GITHUB_API_URL (https://api.github.com when unset),
@@ -62,9 +73,9 @@
  *    GITHUB_REPOSITORY=cybermonklabs/legion GH_TOKEN="$(gh auth token)" GITHUB_SHA=<sha> \
  *      bun e2e/tools/quarantine-check.ts
  */
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { listing } from "../__tests__/playwright-listing";
+import { embedderCommand, listing } from "../__tests__/playwright-listing";
 import {
   entryLines,
   type FixEntry,
@@ -72,8 +83,11 @@ import {
   type QuarantineEntry,
   type QuarantineRow,
   quarantine,
+  quarantineRefusal,
   rowName,
   titleSeparator,
+  twoProcessRuns,
+  type UnquarantinableFiles,
 } from "../quarantine";
 
 /** How far back a flaky row counts, and how long an entry may be held: R4's 14 days. */
@@ -91,7 +105,18 @@ export const flakyRunsToQuarantine = 2;
  *  named its merge job `full / merge`, and `before` reads such a run under that name: each run is
  *  read under the one name it carries (`mergeJobOf`). The old name matters while a run created
  *  before the rename is inside the `windowDays` window read back from now, which is until
- *  2026-12-07T21:37:21Z; `before` can be deleted after that. */
+ *  2026-12-07T21:37:21Z; `before` can be deleted after that.
+ *
+ *  The notices' names changed the same way. The merge job of a run whose head holds
+ *  cybermonklabs/legion#4523 names a row by its full title path, its `describe` titles before its
+ *  own (`.github/scripts/dispatch-browser-reading-flake-rate.sh`), and that of a run whose head
+ *  does not names it by its own title alone. So until 14 days after that change lands on main,
+ *  a notice of an older run names a row inside a `describe` by a name no row of the checkout's
+ *  listings has, and its flakes are not counted: `readCheckout` finds the rows whose full title
+ *  ends in that title (`ownTitleRows`), and `decide` names them in `ownTitle` rather than failing
+ *  the read as it does for a row renamed or moved inside its file (`unmatched`). The reading is
+ *  of the notice's shape, so until then a row moved into a `describe` whose notices name its
+ *  title from before the move reads the same way; `ownTitleRows` can be deleted after that. */
 export const countedRuns = [
   {
     before: { at: "2026-11-23T21:37:21Z", mergeJob: "full / merge" },
@@ -182,8 +207,21 @@ export interface Decision extends FlakyRows {
     readonly run: RunReading;
     readonly why: string;
   }[];
-  /** A row flaky in enough runs that the listing of the checkout does not hold. */
+  /** A row flaky in enough runs whose file the checkout does not hold: the row does not stand. */
   readonly absent: readonly QuarantineRow[];
+  /** A row flaky in enough runs whose notices name by its own title alone a row inside a
+   *  `describe` of its file and project that the checkout's listings hold, `listed` by `rowName`,
+   *  as a run whose head does not hold cybermonklabs/legion#4523 named such a row (`countedRuns`
+   *  says until when). Its flakes are not counted. */
+  readonly ownTitle: readonly { readonly row: QuarantineRow; readonly listed: readonly string[] }[];
+  /** A row flaky in enough runs whose file the checkout holds and whose name no row of the
+   *  checkout's listings has, with the runs that named it: a row renamed or moved inside its file
+   *  since those runs, whose notices this reading cannot match to the row it is now. A failed
+   *  read: its flakes are not counted, and the check fails. */
+  readonly unmatched: readonly {
+    readonly row: QuarantineRow;
+    readonly runs: readonly RunReading[];
+  }[];
   /** Each quarantine entry held longer than the window, with how many days it has been held. */
   readonly overdue: readonly { readonly entry: QuarantineEntry; readonly days: number }[];
   /** Each fix entry whose commit main does not hold. */
@@ -255,6 +293,27 @@ export function lastChange(
     .sort((a, b) => Date.parse(b.committedDate) - Date.parse(a.committedDate))[0];
 }
 
+/** The rows of `listed` that a notice naming `row` by its own title alone may mean, by `rowName`:
+ *  those of its file and project inside a `describe` whose full title ends in its title. A run
+ *  whose head does not hold cybermonklabs/legion#4523 named such a row that way (`countedRuns`
+ *  says until when this matters). */
+export function ownTitleRows(row: QuarantineRow, listed: readonly QuarantineRow[]): string[] {
+  return listed
+    .filter(
+      (other) =>
+        other.file === row.file &&
+        other.project === row.project &&
+        other.title.endsWith(`${titleSeparator}${row.title}`)
+    )
+    .map(rowName);
+}
+
+/** Each candidate row that no row of the checkout's listings is named as, though the checkout
+ *  holds its file, by `rowName`, with its `ownTitleRows`: none where its notices name no row the
+ *  checkout holds. A candidate neither here nor in the changes `readCheckout` reads is of a file
+ *  the checkout does not hold. */
+export type Unlisted = ReadonlyMap<string, readonly string[]>;
+
 /** Whether a run's head holds a commit, by `pairKey`: `true` or `false` as GitHub's compare of
  *  the two answers, or, where the compare cannot tell, why. */
 export type Holds = ReadonlyMap<string, boolean | string>;
@@ -289,21 +348,25 @@ function rowCommits(change: RowChange, fix: FixEntry | undefined): RowCommit[] {
 }
 
 /** What `runs` say of `entries` and `fixReadings` at `now`, with `changes` the last change of
- *  each row flaky in `flakyRunsToQuarantine` runs, by `rowName`, and `holds` whether the head of
- *  each run that named such a row holds the row's last change and its fix; a row it holds no
- *  change for is one the checkout's listing does not hold. Such a row counts a run whose head
- *  holds its last change and, where `fixes` names a fix of it, that fix too. A run whose head
- *  `holds` cannot place against one of those commits - GitHub could not tell, or the pair was
- *  not read - is counted, and named in `unplaced` with the reason. A quarantine entry is overdue
- *  when more than `windowDays` calendar days (UTC) lie between the day it was added and the day
- *  of `now`. */
+ *  each row flaky in `flakyRunsToQuarantine` runs, by `rowName`, `holds` whether the head of each
+ *  run that named such a row holds the row's last change and its fix, and `unlisted` what the
+ *  checkout says of such a row it holds no change for (`readCheckout` reads both): a row in
+ *  neither is of a file the checkout does not hold (`absent`); one whose notices name a row
+ *  inside a `describe` by its own title alone is named with that row (`ownTitle`); and any other
+ *  is a row this reading cannot match (`unmatched`), which fails the check. A row with a change
+ *  counts a run whose head holds its last change and, where `fixes` names a fix of it, that fix
+ *  too. A run whose head `holds` cannot place against one of those commits - GitHub could not
+ *  tell, or the pair was not read - is counted, and named in `unplaced` with the reason. A
+ *  quarantine entry is overdue when more than `windowDays` calendar days (UTC) lie between the
+ *  day it was added and the day of `now`. */
 export function decide(
   runs: readonly RunReading[],
   entries: readonly QuarantineEntry[],
   fixReadings: readonly FixReading[],
   changes: ReadonlyMap<string, RowChange>,
   now: Date,
-  holds: Holds
+  holds: Holds,
+  unlisted: Unlisted
 ): Decision {
   const flaky = flakyRows(runs, now);
   const held = new Set(entries.map(rowName));
@@ -311,13 +374,18 @@ export function decide(
   const leftOut: Decision["leftOut"][number][] = [];
   const unplaced: Decision["unplaced"][number][] = [];
   const absent: QuarantineRow[] = [];
+  const ownTitle: Decision["ownTitle"][number][] = [];
+  const unmatched: Decision["unmatched"][number][] = [];
   for (const [name, { row, runs: named }] of [...flaky.rows].sort(([a], [b]) =>
     a.localeCompare(b)
   )) {
     if (named.length < flakyRunsToQuarantine) continue;
     const change = changes.get(name);
     if (change === undefined) {
-      absent.push(row);
+      const listed = unlisted.get(name);
+      if (listed === undefined) absent.push(row);
+      else if (listed.length > 0) ownTitle.push({ listed, row });
+      else unmatched.push({ row, runs: named });
       continue;
     }
     const fix = fixReadings.find((reading) => rowName(reading.entry) === name)?.entry;
@@ -379,8 +447,10 @@ export function decide(
       .filter((reading) => reading.committedDate === undefined)
       .map((r) => r.entry),
     overdue,
+    ownTitle,
     spent,
     toQuarantine,
+    unmatched,
     unplaced,
   };
 }
@@ -392,10 +462,13 @@ function fencedEntry(entry: QuarantineEntry | FixEntry): string[] {
 }
 
 /** The decision for a person and for the log: `summary` is Markdown, the step summary's;
- *  `annotations` are workflow commands, one per finding; `failed` is whether the run must fail. */
+ *  `annotations` are workflow commands, one per finding; `failed` is whether the run must fail.
+ *  A row to quarantine whose file is one of `unquarantinable` (`quarantineRefusal`) is named
+ *  with the lines of a fix entry in place of a quarantine entry's. */
 export function report(
   decision: Decision,
-  now: Date
+  now: Date,
+  unquarantinable: UnquarantinableFiles
 ): { annotations: string[]; failed: boolean; summary: string[] } {
   const today = now.toISOString().slice(0, 10);
   const runLink = (run: RunReading) =>
@@ -431,28 +504,80 @@ export function report(
     );
   }
   for (const { change, row, runs } of decision.toQuarantine) {
+    const refusal = quarantineRefusal(row, unquarantinable);
     summary.push(
       `- \`${rowName(row)}\`, flaky in ${runs.length} runs whose heads hold the last change of ` +
         `its own lines (${change.lines}), ${change.oid} at ${change.committedDate}: ` +
         `${runs.map(runLink).join(", ")}.`,
-      "",
-      `  The controller files the issue that owns it. Add these lines to \`quarantine\` in ` +
-        `\`${quarantinePath}\`, with that issue's key for \`<KEY>\`:`,
-      ...fencedEntry({ ...row, added: today, issue: "dispatch://<KEY>" })
+      ""
+    );
+    const urls = runs.map((run) => run.url).join(" ");
+    if (refusal === undefined) {
+      summary.push(
+        `  The controller files the issue that owns it. Add these lines to \`quarantine\` in ` +
+          `\`${quarantinePath}\`, with that issue's key for \`<KEY>\`:`,
+        ...fencedEntry({ ...row, added: today, issue: "dispatch://<KEY>" })
+      );
+      annotations.push(
+        `::error title=dispatch-browser quarantine::${rowName(row)} was flaky in ${runs.length} ` +
+          `runs of ${windowDays} days and is not quarantined: ${urls}`
+      );
+      continue;
+    }
+    summary.push(
+      `  The quarantine cannot take it: its file is \`${row.file}\`, ${refusal}. Fix the row in ` +
+        "its own lines or write a fix entry. A change to its own lines needs no entry: no flake " +
+        "of a run whose head does not hold that change counts. For a fix elsewhere, the " +
+        "controller files the issue that owns the row, and once the commit that fixes it is on " +
+        `main, add these lines to \`fixes\` in \`${quarantinePath}\`, with that issue's key for ` +
+        "`<KEY>` and the commit's full sha for `<SHA>`:",
+      ...fencedEntry({ ...row, fixed: "<SHA>", issue: "dispatch://<KEY>" })
     );
     annotations.push(
       `::error title=dispatch-browser quarantine::${rowName(row)} was flaky in ${runs.length} ` +
-        `runs of ${windowDays} days and is not quarantined: ${runs.map((run) => run.url).join(" ")}`
+        `runs of ${windowDays} days, and the quarantine cannot take a row of ${row.file}: fix ` +
+        `the row in its own lines or write a fix entry: ${urls}`
     );
   }
-  if (decision.leftOut.length > 0 || decision.absent.length > 0) {
+  if (decision.unmatched.length > 0) {
+    summary.push("", "#### Flaky rows this reading could not match", "");
+  }
+  for (const { row, runs } of decision.unmatched) {
+    summary.push(
+      `- \`${rowName(row)}\`, flaky in ${runs.length} runs: ${runs.map(runLink).join(", ")}. ` +
+        `No row of the checkout's listings is named so, though the checkout holds its file, ` +
+        `\`${row.file}\`: the row was renamed or moved inside its file since those runs, and ` +
+        "their notices cannot be matched to the row it is now. Its flakes are not counted until " +
+        `those runs leave the ${windowDays} days. This is a failed read of those runs and not a ` +
+        "finding."
+    );
+    annotations.push(
+      `::error title=dispatch-browser quarantine::${rowName(row)} was flaky in ${runs.length} ` +
+        `runs of ${windowDays} days, and no row of ${row.file} in the checkout is named so: a row ` +
+        "renamed or moved since then, whose notices cannot be matched, so this is a failed read " +
+        `and its flakes are not counted until those runs leave the ${windowDays} days: ` +
+        runs.map((run) => run.url).join(" ")
+    );
+  }
+  if (decision.leftOut.length > 0 || decision.ownTitle.length > 0 || decision.absent.length > 0) {
     summary.push("", "#### Flakes left out", "");
   }
   for (const { row, run, why } of decision.leftOut) {
     summary.push(`- \`${rowName(row)}\` in ${runLink(run)}: ${why}.`);
   }
+  for (const { listed, row } of decision.ownTitle) {
+    summary.push(
+      `- \`${rowName(row)}\`: its notices name a row inside a \`describe\` by its own title ` +
+        "alone, as a run whose head does not hold cybermonklabs/legion#4523 named one, and the " +
+        `checkout's listings name that row ${listed.map((name) => `\`${name}\``).join(" or ")}. ` +
+        "Its flakes are not counted."
+    );
+  }
   for (const row of decision.absent) {
-    summary.push(`- \`${rowName(row)}\`: no row of the checkout's listing, so it does not stand.`);
+    summary.push(
+      `- \`${rowName(row)}\`: the checkout does not hold its file, \`${row.file}\`, so the row ` +
+        "does not stand."
+    );
   }
   if (decision.unplaced.length > 0) {
     summary.push("", "#### Flakes counted from runs that could not be placed", "");
@@ -517,6 +642,7 @@ export function report(
     annotations,
     failed:
       decision.toQuarantine.length > 0 ||
+      decision.unmatched.length > 0 ||
       decision.overdue.length > 0 ||
       decision.offMain.length > 0,
     summary,
@@ -548,6 +674,16 @@ export interface GitHub {
 /** How long a wait for a primary rate limit runs past the reset GitHub names, in seconds: the
  *  reset is a whole second of GitHub's clock, which the runner's may stand behind. */
 const resetMarginSeconds = 3;
+
+/** How long a call waits for a secondary rate limit whose answer names no `retry-after`, in
+ *  seconds: GitHub's documented minimum of one minute (REST API, "Rate limits for the REST API",
+ *  "Exceeding the rate limit"), which gh-read.sh's gh_wait_reset waits too. */
+const secondaryLimitSeconds = 60;
+
+/** A secondary rate limit as GitHub's answer words it, read as gh-read.sh's `_gh_read_refusal`
+ *  reads it: "You have exceeded a secondary rate limit", or GitHub's older "abuse detection
+ *  mechanism". */
+const secondaryLimitPattern = /secondary rate limit|abuse detection mechanism/i;
 
 const failedRead =
   "This is a failed read of the runs and not a finding: the quarantine was not checked.";
@@ -652,20 +788,22 @@ export function readDeadline(
     : { at: stepEnd * 1000, of: "step" };
 }
 
-/** The time GitHub's answer says it may be asked again, and the header that says it: `retry-after`
- *  seconds from now where it is present (a secondary limit's), never sooner than a second from
- *  now, so a `retry-after: 0` is not asked again in a tight loop; or else `resetMarginSeconds`
- *  past `x-ratelimit-reset` where `x-ratelimit-remaining` is 0 (a primary limit's, REST's or
- *  GraphQL's, which `x-ratelimit-resource` names). That second time is already past where the
- *  reset, plus the margin, has gone by: such an answer names no time to wait for, and `gitHub`'s
- *  ladder takes its own attempts for it rather than ask again once a second until the deadline.
- *  `undefined` where the answer says neither. */
-function rateLimitWait(headers: Headers): { at: number; header: string } | undefined {
+/** The time GitHub's answer says it may be asked again, and what in the answer names it
+ *  (`named`): `retry-after` seconds from now where it is present (a secondary limit's), never
+ *  sooner than a second from now, so a `retry-after: 0` is not asked again in a tight loop; or
+ *  else `resetMarginSeconds` past `x-ratelimit-reset` where `x-ratelimit-remaining` is 0 (a
+ *  primary limit's, REST's or GraphQL's, which `x-ratelimit-resource` names); or else
+ *  `secondaryLimitSeconds` from now where `body`, a 403's or a 429's, names a secondary limit
+ *  (`secondaryLimitPattern`). The reset's time is already past where the reset, plus the margin,
+ *  has gone by: such an answer names no time to wait for, and `gitHub`'s ladder takes its own
+ *  attempts for it rather than ask again once a second until the deadline. `undefined` where the
+ *  answer says none of these. */
+function rateLimitWait(headers: Headers, body: string): { at: number; named: string } | undefined {
   const retryAfter = headers.get("retry-after");
   if (retryAfter !== null && /^\d+$/.test(retryAfter)) {
     return {
       at: Date.now() + Math.max(1, Number(retryAfter)) * 1000,
-      header: `retry-after: ${retryAfter}`,
+      named: `retry-after: ${retryAfter}`,
     };
   }
   const reset = headers.get("x-ratelimit-reset");
@@ -673,10 +811,18 @@ function rateLimitWait(headers: Headers): { at: number; header: string } | undef
     const resource = headers.get("x-ratelimit-resource");
     return {
       at: (Number(reset) + resetMarginSeconds) * 1000,
-      header:
+      named:
         `x-ratelimit-reset: ${reset} (x-ratelimit-remaining: 0` +
         `${resource === null ? "" : `, x-ratelimit-resource: ${resource}`}), plus ` +
         `${resetMarginSeconds} s`,
+    };
+  }
+  if (secondaryLimitPattern.test(body)) {
+    return {
+      at: Date.now() + secondaryLimitSeconds * 1000,
+      named:
+        "secondary rate limit, which its body names with no retry-after, and GitHub's " +
+        `documented minimum wait of ${secondaryLimitSeconds} s for one`,
     };
   }
   return undefined;
@@ -691,7 +837,7 @@ type Attempt =
   | {
       readonly refusal: string;
       readonly what?: string;
-      readonly wait?: { readonly at: number; readonly header: string };
+      readonly wait?: { readonly at: number; readonly named: string };
       readonly final?: boolean;
     };
 
@@ -699,27 +845,41 @@ type Attempt =
  *  and then twice that apart, each bounded at 30 s. The default of `retrySeconds`, 10, is the
  *  ladder's own: 10 s and then 20 s, the ladder `.github/scripts/gh-read.sh` gives the scripts
  *  beside it, whose GH_RETRY_SECONDS sets what `retrySeconds` sets here, and which the tests set
- *  lower. GitHub refuses a call now and then (a 502, a dropped connection), and one refusal must
- *  decide nothing. The ladder holds except where GitHub's answer says more:
+ *  lower. Every wait, the ladder's and a rate limit's, is a call of `sleep`, `Bun.sleep` unless a
+ *  test records the waits in its place. GitHub refuses a call now and then (a 502, a dropped
+ *  connection), and one refusal must decide nothing. The ladder holds except where GitHub's
+ *  answer says more:
  *
  *  - A 403 or 429 with `retry-after`, or with `x-ratelimit-remaining: 0` and `x-ratelimit-reset`,
  *    is GitHub's rate limit, secondary or primary, REST's or GraphQL's; so is GraphQL's primary
- *    limit, which answers 200 with a `RATE_LIMITED` error and those two headers. The call waits
- *    for the time GitHub names (`rateLimitWait`), printing one line through `log` before it, and
- *    asks again; that wait takes none of the three attempts. `deadline` bounds each wait by the
- *    rule gh-read.sh's gh_wait_reset holds the scripts' waits to: a wait is made only when the
- *    time GitHub names falls at least `waitMarginSeconds` before the deadline, and otherwise the
- *    call throws, naming the refusal, that time and the limit. Its default, no deadline, waits for
- *    nothing.
+ *    limit, which answers 200 with a `RATE_LIMITED` error and those two headers; and so is a 403
+ *    or 429 with neither whose body names a secondary rate limit, which GitHub sends now and then
+ *    and which names the time `secondaryLimitSeconds`, 60 s, from now, as gh-read.sh reads it.
+ *    The call waits for the time GitHub names (`rateLimitWait`), printing one line through `log`
+ *    before it, and asks again; that wait takes none of the three attempts. `deadline` bounds
+ *    each wait by the rule gh-read.sh's gh_wait_reset holds the scripts' waits to: a wait is made
+ *    only when the time GitHub names falls at least `waitMarginSeconds` before the deadline, and
+ *    otherwise the call throws, naming the refusal, that time and the limit. Its default, no
+ *    deadline, waits for nothing.
  *  - A primary limit whose reset, plus `resetMarginSeconds`, has already passed names no time to
  *    wait for. The call prints one line through `log` that says so and takes the ladder's three
  *    attempts, `retrySeconds` and then twice that apart: a wait of a second for it would ask
  *    again once a second until the deadline. Such a 403 or `RATE_LIMITED` error does not throw
  *    at once.
- *  - A 403 that carries neither header, such as a permission refusal, and a `RATE_LIMITED` error
- *    that names no time, throw at once: asking again is refused the same way.
+ *  - A 403 that carries neither header and names no secondary limit, such as a permission
+ *    refusal, and a `RATE_LIMITED` error that names no time, throw at once: asking again is
+ *    refused the same way.
  *
- *  A call refused three times otherwise throws, naming the call. */
+ *  A call refused three times otherwise throws, naming the call.
+ *
+ *  Where it still differs from gh-read.sh's gh_wait_reset and gh_read: it waits
+ *  `resetMarginSeconds`, 3 s, past a primary limit's reset, where gh-read.sh waits 1 s; it reads
+ *  that reset off the refusal's own headers, where gh-read.sh reads GET /rate_limit; a reset
+ *  that has already passed takes the ladder's three attempts here, where gh-read.sh asks once
+ *  more at once; it waits for a secondary limit's time itself, where gh-read.sh waits a second
+ *  past it, its clock being whole seconds; a call refused again after a wait may wait again
+ *  here, where gh-read.sh fails it by name; and with no deadline a rate limit throws at once
+ *  here, where gh_read still takes its ladder's two later attempts. */
 export function gitHub(
   api: string,
   token: string,
@@ -727,7 +887,13 @@ export function gitHub(
     deadline = { none: "no time limit was given to wait within" },
     retrySeconds = 10,
     log = (line: string) => console.error(line),
-  }: { deadline?: Deadline; retrySeconds?: number; log?: (line: string) => void } = {}
+    sleep = Bun.sleep,
+  }: {
+    deadline?: Deadline;
+    retrySeconds?: number;
+    log?: (line: string) => void;
+    sleep?: (ms: number) => Promise<unknown>;
+  } = {}
 ): GitHub {
   let calls = 0;
   let graphqlCalls = 0;
@@ -755,12 +921,13 @@ export function gitHub(
         return { body: undefined, next: undefined };
       }
       if (!response.ok) {
-        const refusal = `HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`;
+        const text = await response.text();
+        const refusal = `HTTP ${response.status}: ${text.slice(0, 200)}`;
         if (response.status !== 403 && response.status !== 429) return { refusal };
         return {
           final: response.status === 403,
           refusal,
-          wait: rateLimitWait(response.headers),
+          wait: rateLimitWait(response.headers, text),
           what: `HTTP ${response.status}`,
         };
       }
@@ -782,7 +949,8 @@ export function gitHub(
         return {
           final: true,
           refusal: `HTTP 200 with GraphQL's RATE_LIMITED error: ${String(limited.message).slice(0, 200)}`,
-          wait: rateLimitWait(response.headers),
+          // A primary limit's error: a secondary limit is read from a 403's or a 429's body.
+          wait: rateLimitWait(response.headers, ""),
           what: "GraphQL's RATE_LIMITED error",
         };
       }
@@ -808,7 +976,7 @@ export function gitHub(
         const until = new Date(answer.wait.at).toISOString();
         const named =
           `GitHub refused ${url} with ${answer.refusal}, and the time its rate limit names, ` +
-          `${until} by its ${answer.wait.header}`;
+          `${until} by its ${answer.wait.named}`;
         if ("none" in deadline) {
           throw new Error(`${named}, was not waited for: ${deadline.none}. ${failedRead}`);
         }
@@ -821,24 +989,24 @@ export function gitHub(
         }
         log(
           `quarantine-check: GitHub refused ${url} with ${answer.what}, so it waits until ` +
-            `${until}, by its ${answer.wait.header}, within ${limit}, and asks again.`
+            `${until}, by its ${answer.wait.named}, within ${limit}, and asks again.`
         );
-        await Bun.sleep(Math.max(0, answer.wait.at - Date.now()));
+        await sleep(Math.max(0, answer.wait.at - Date.now()));
         continue;
       }
       if (answer.wait !== undefined) {
         log(
           `quarantine-check: GitHub refused ${url} with ${answer.what}, and the time its rate ` +
             `limit names, ${new Date(answer.wait.at).toISOString()} by its ` +
-            `${answer.wait.header}, has already passed, so it names no time to wait for, and ` +
+            `${answer.wait.named}, has already passed, so it names no time to wait for, and ` +
             `the call takes the ladder's own three attempts, ${retrySeconds} s and then ` +
             `${2 * retrySeconds} s apart.`
         );
       } else if (answer.final) {
         throw new Error(
           `GitHub refused ${url} with ${answer.refusal}, which names no time it may be asked ` +
-            `again (no retry-after, and x-ratelimit-remaining not 0), so it was not asked again. ` +
-            failedRead
+            "again (no retry-after, x-ratelimit-remaining not 0, and no secondary rate limit in " +
+            `its body), so it was not asked again. ${failedRead}`
         );
       }
       refusals += 1;
@@ -847,7 +1015,7 @@ export function gitHub(
           `GitHub refused ${url} three times, the last with ${answer.refusal}. ${failedRead}`
         );
       }
-      await Bun.sleep(refusals * retrySeconds * 1000);
+      await sleep(refusals * retrySeconds * 1000);
     }
   }
   async function everyPage<Item>(
@@ -1178,13 +1346,19 @@ type ListingNode = {
   readonly title?: string;
 };
 
-/** Every row of `report` by `rowName` with its file and line, and every row line of each file. */
-function rowsWithLines(report: { readonly suites?: readonly ListingNode[] }): {
+/** A listing as this reads it: its files' suites, each walked to its specs. */
+type ListingReport = { readonly suites?: readonly ListingNode[] };
+
+/** Every row of `report` by `rowName` with its file and line, every row line of each file, and
+ *  every row. */
+function rowsWithLines(report: ListingReport): {
   lines: Map<string, { file: string; line: number }>;
   fileRows: Map<string, number[]>;
+  rows: QuarantineRow[];
 } {
   const lines = new Map<string, { file: string; line: number }>();
   const fileRows = new Map<string, number[]>();
+  const rows: QuarantineRow[] = [];
   const walk = (node: ListingNode, path: readonly string[]): void => {
     for (const spec of node.specs ?? []) {
       const specLines = fileRows.get(spec.file) ?? [];
@@ -1194,12 +1368,13 @@ function rowsWithLines(report: { readonly suites?: readonly ListingNode[] }): {
         const title = [...path, spec.title].join(titleSeparator);
         const row = { file: spec.file, project: test.projectName ?? "", title };
         lines.set(rowName(row), { file: spec.file, line: spec.line });
+        rows.push(row);
       }
     }
     for (const child of node.suites ?? []) walk(child, [...path, child.title ?? ""]);
   };
   for (const file of report.suites ?? []) walk(file, []);
-  return { fileRows, lines };
+  return { fileRows, lines, rows };
 }
 
 /** The blame of `path` at `expression`: one GraphQL call, `Commit.blame`, on the ladder of the
@@ -1240,34 +1415,65 @@ export async function blame(
   return ranges as BlameRange[];
 }
 
-/** The last change of each row of `candidates` that the checkout's listing holds: its lines
- *  from that listing, and their newest commit from its file's blame at `expression`. */
-async function readChanges(
-  github: GitHub,
+/** What the checkout says of the candidate rows, each a row flaky in `flakyRunsToQuarantine`
+ *  runs: what `decide` reads of them (`changes`, `unlisted`) and what `report` does
+ *  (`unquarantinable`). */
+export interface Checkout {
+  /** The last change of each candidate the checkout's listings hold, by `rowName`: its lines
+   *  from those listings, and their newest commit from its file's blame at the checkout. */
+  readonly changes: ReadonlyMap<string, RowChange>;
+  readonly unlisted: Unlisted;
+  readonly unquarantinable: UnquarantinableFiles;
+}
+
+/** What the checkout at `expression` says of `candidates`. Their rows are listed as the jobs run
+ *  them: in one process, every job's way but the two-process job's, of the candidates' files
+ *  alone - a file filter is a pattern over a spec's path, which may take a file more but never
+ *  leaves out a row of a file it names - and in two-process mode, under each of
+ *  `twoProcessRuns`, whole: one process ignores every `*.multiprocess.e2e.ts`, so a row of
+ *  those files is in no other listing. A row is read by its name, and its lines by its own
+ *  file's rows in those listings. A candidate no listing holds is `unlisted` where the checkout
+ *  holds its file, with its `ownTitleRows`; a candidate of a deleted file is in neither,
+ *  `--pass-with-no-tests` keeping the listing it leaves empty from failing. The two-process
+ *  listings and one of the embedder job's command (`embedderCommand`), listed as
+ *  `e2e/__tests__/quarantine.test.ts` lists them, give the files the quarantine cannot take. The
+ *  four listings run at once. With no candidate it lists nothing and every field is empty: no
+ *  row then reaches what `decide` and `report` read of them. */
+export async function readCheckout(
+  github: Pick<GitHub, "graphql">,
   candidates: readonly QuarantineRow[],
   repository: string,
   expression: string
-): Promise<Map<string, RowChange>> {
+): Promise<Checkout> {
   const changes = new Map<string, RowChange>();
-  if (candidates.length === 0) return changes;
-  // `Listing` (e2e/configurations.ts) declares the fields its own readers take; a spec's `line`
-  // is in the same JSON, which Playwright's JSON reporter writes for every spec. It lists the
-  // candidates' files alone: a file filter is a pattern over a spec's path, which may take a file
-  // more but never leaves out a row of a file it names, and a row is read here by its name and
-  // its lines by its own file's rows. `--pass-with-no-tests` keeps a listing that a deleted file
-  // leaves empty from failing, so the deleted file's rows land in `absent`.
+  const unlisted = new Map<string, readonly string[]>();
+  if (candidates.length === 0) {
+    return { changes, unlisted, unquarantinable: { embedder: [], twoProcess: [] } };
+  }
+  const config = "e2e/playwright.config.ts";
   const files = [...new Set(candidates.map((row) => row.file))];
-  const report = (await listing(import.meta.url, "e2e/playwright.config.ts", {}, [
-    ...files,
-    "--pass-with-no-tests",
-  ])) as { readonly suites?: readonly ListingNode[] };
-  const { fileRows, lines } = rowsWithLines(report);
+  const embedder = embedderCommand();
+  // `Listing` (e2e/configurations.ts) declares the fields its own readers take; a spec's `line`
+  // is in the same JSON, which Playwright's JSON reporter writes for every spec.
+  const [oneProcess, twoProcess, embedderRows] = (await Promise.all([
+    listing(import.meta.url, config, {}, [...files, "--pass-with-no-tests"]),
+    Promise.all(twoProcessRuns.map((environment) => listing(import.meta.url, config, environment))),
+    listing(import.meta.url, config, embedder.environment, embedder.extra),
+  ])) as [ListingReport, ListingReport[], ListingReport];
+  const { fileRows, lines, rows } = rowsWithLines({
+    suites: [oneProcess, ...twoProcess].flatMap((report) => report.suites ?? []),
+  });
   // Each file's blame and its line count, read once for every candidate of the file.
   const read = new Map<string, { length: number; ranges: readonly BlameRange[] }>();
   for (const row of candidates) {
     const name = rowName(row);
     const at = lines.get(name);
-    if (at === undefined) continue;
+    if (at === undefined) {
+      if (existsSync(fileURLToPath(new URL(`../${row.file}`, import.meta.url)))) {
+        unlisted.set(name, ownTitleRows(row, rows));
+      }
+      continue;
+    }
     let file = read.get(at.file);
     if (file === undefined) {
       const ranges = await blame(
@@ -1289,7 +1495,16 @@ async function readChanges(
     }
     changes.set(name, { ...commit, lines: `${at.file}:${start}-${end}` });
   }
-  return changes;
+  return {
+    changes,
+    unlisted,
+    unquarantinable: {
+      embedder: [...rowsWithLines(embedderRows).fileRows.keys()],
+      twoProcess: [
+        ...new Set(twoProcess.flatMap((report) => [...rowsWithLines(report).fileRows.keys()])),
+      ],
+    },
+  };
 }
 
 /** Each fix with its commit's time where `expression` holds it: GitHub's compare of the two
@@ -1392,6 +1607,7 @@ if (import.meta.main) {
     deadline: readDeadline(process.env),
   });
   let decision: Decision;
+  let checkout: Checkout;
   try {
     // The fixes depend on neither the history nor the blames, so they are read beside the first.
     const [runs, fixReadings] = await Promise.all([
@@ -1401,14 +1617,22 @@ if (import.meta.main) {
     const candidates = [...flakyRows(runs, now).rows.values()]
       .filter((seen) => seen.runs.length >= flakyRunsToQuarantine)
       .map((seen) => seen.row);
-    const changes = await readChanges(github, candidates, repository, expression);
-    const holds = await readHolds(github, repository, runs, changes, fixes, now);
-    decision = decide(runs, quarantine, fixReadings, changes, now, holds);
+    checkout = await readCheckout(github, candidates, repository, expression);
+    const holds = await readHolds(github, repository, runs, checkout.changes, fixes, now);
+    decision = decide(
+      runs,
+      quarantine,
+      fixReadings,
+      checkout.changes,
+      now,
+      holds,
+      checkout.unlisted
+    );
   } catch (error) {
     console.error(`::error title=dispatch-browser quarantine::${(error as Error).message}`);
     process.exit(1);
   }
-  const { annotations, failed, summary } = report(decision, now);
+  const { annotations, failed, summary } = report(decision, now, checkout.unquarantinable);
   console.log(summary.join("\n"));
   if (process.env.GITHUB_STEP_SUMMARY) {
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${summary.join("\n")}\n`);

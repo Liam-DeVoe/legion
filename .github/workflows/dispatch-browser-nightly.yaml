@@ -27,7 +27,11 @@ name: Dispatch browser nightly
 # leg of their own, which reports how each ended and fails nothing, while its shard legs leave
 # them out as on every other call. And the `quarantine-check` job does the checks that depend on
 # the date, which no pull request does: it fails the run on a row flaky in two runs of 14 days
-# that is not quarantined, and on an entry held longer than 14 days.
+# that is not quarantined, and on an entry held longer than 14 days. A row of the embedder job or
+# of the two-process job cannot be quarantined, since those jobs read no quarantine and the
+# quarantine leg runs none of their rows, so for such a row it names a fix entry's lines instead;
+# and a flaky row it cannot match to a row of the checkout, though its file is there, fails the
+# run as a failed read.
 #
 # GitHub starts a scheduled run from the default branch alone, so the nightly is main's copy of
 # this file and of the workflow it calls, never a pull request's (e2e.yaml's head comment states

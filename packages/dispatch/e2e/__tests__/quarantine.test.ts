@@ -1,21 +1,22 @@
 /** The quarantine's rules that hold on every pull request (e2e/quarantine.ts): at most ten rows,
  *  each with an issue that owns it and the day it came in, each a row the suite runs in a project
- *  that can report it flaky and in no file the embedder job runs. What depends on the date - an
- *  entry held longer than 14 days, a row flaky twice that is not here - is the nightly's
- *  (`e2e/tools/quarantine-check.ts`), never this file's: a pull request is no place for a check
- *  that turns red on a day nobody chose.
+ *  that can report it flaky and in no file the embedder job or the two-process job runs. What
+ *  depends on the date - an entry held longer than 14 days, a row flaky twice that is not here -
+ *  is the nightly's (`e2e/tools/quarantine-check.ts`), never this file's: a pull request is no
+ *  place for a check that turns red on a day nobody chose.
  *
  *  The faults are read from the module's own list and from the planted ones of
  *  `fixtures/quarantine-entries.fixture.ts`, each refused for the one fault its name says. The
- *  embedder job's files are read from a listing of the command `bun run e2e:embedder` runs. The
- *  rows an entry names are read from a listing of e2e/playwright.config.ts under
- *  DISPATCH_E2E_QUARANTINE=only, which is the nightly's quarantine leg: what it selects is
- *  exactly what the config's own pattern selects, so an entry whose row it does not hold names
- *  no row of the suite. `fixtures/quarantine.config.ts` lists planted rows the same way, under
- *  each of the three selections, which is what shows the pattern takes the rows its entries name
- *  and nothing that only looks like one. Its listing under `exclude` is split again through
- *  `e2e/shard-reporter.ts` over the shard job's four legs, which shows the split by row time
- *  places the rows the pattern leaves, each on one leg, and brings no quarantined row back.
+ *  embedder job's files are read from a listing of the command `bun run e2e:embedder` runs, and
+ *  the two-process job's from a listing under each of `twoProcessRuns`. The rows an entry names
+ *  are read from a listing of e2e/playwright.config.ts under DISPATCH_E2E_QUARANTINE=only, which
+ *  is the nightly's quarantine leg: what it selects is exactly what the config's own pattern
+ *  selects, so an entry whose row it does not hold names no row of the suite.
+ *  `fixtures/quarantine.config.ts` lists planted rows the same way, under each of the three
+ *  selections, which is what shows the pattern takes the rows its entries name and nothing that
+ *  only looks like one. Its listing under `exclude` is split again through `e2e/shard-reporter.ts`
+ *  over the shard job's four legs, which shows the split by row time places the rows the pattern
+ *  leaves, each on one leg, and brings no quarantined row back.
  */
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -32,6 +33,8 @@ import {
   quarantineFaults,
   rowName,
   selectionFaults,
+  twoProcessRuns,
+  type UnquarantinableFiles,
 } from "../quarantine";
 import { rowLimit } from "./bounded-subprocess";
 import { plantedQuarantine } from "./fixtures/quarantine.config";
@@ -45,9 +48,9 @@ import {
 } from "./fixtures/quarantine-entries.fixture";
 import { embedderCommand, listing, retained } from "./playwright-listing";
 
-// Started when the file loads, so the five collect at once. The first lists the real suite under
-// the nightly's quarantine leg, the second the embedder job's rows, the other three the planted
-// config under each selection.
+// Started when the file loads, so the seven collect at once. The first lists the real suite under
+// the nightly's quarantine leg, the second the embedder job's rows, the next two the two-process
+// job's, the other three the planted config under each selection.
 //
 // The first names the entries' files and no other. The pattern `only` adds matches a row's whole
 // grep title, which begins with its project and its file, neither holding a space (`quarantined`
@@ -63,10 +66,18 @@ const quarantinedRows = retained(
   ])
 );
 const embedder = embedderCommand();
-const embedderFiles = retained(
-  listing(import.meta.url, "e2e/playwright.config.ts", embedder.environment, embedder.extra).then(
-    (rows) => [...new Set(rowsOfListing(rows).map((row) => row.file))]
-  )
+const unquarantinable: Promise<UnquarantinableFiles> = retained(
+  Promise.all([
+    listing(import.meta.url, "e2e/playwright.config.ts", embedder.environment, embedder.extra),
+    ...twoProcessRuns.map((environment) =>
+      listing(import.meta.url, "e2e/playwright.config.ts", environment)
+    ),
+  ]).then(([embedderRows, ...twoProcessRows]) => ({
+    embedder: [...new Set(rowsOfListing(embedderRows).map((row) => row.file))],
+    twoProcess: [
+      ...new Set(twoProcessRows.flatMap((rows) => rowsOfListing(rows).map((row) => row.file))),
+    ],
+  }))
 );
 const plantedConfig = "e2e/__tests__/fixtures/quarantine.config.ts";
 const plantedAll = retained(listing(import.meta.url, plantedConfig, {}));
@@ -78,6 +89,17 @@ const plantedOnly = retained(
     "--pass-with-no-tests",
   ])
 );
+
+/** The seven listings above, which every row below waits for some of, all started at once. */
+const sevenListings = [
+  "listing",
+  "listing",
+  "listing",
+  "listing",
+  "listing",
+  "listing",
+  "listing",
+] as const;
 
 /** The projects a quarantined row can belong to: those that take the config's one retry on CI,
  *  which is what makes a row reportable as flaky, and that a run naming no project selects, which
@@ -91,9 +113,9 @@ test(
   "the quarantine holds at most ten rows, each with its issue and its date",
   async () => {
     expect(retryingProjects).toContain("chromium");
-    expect(quarantineFaults(quarantine, retryingProjects, await embedderFiles)).toEqual([]);
+    expect(quarantineFaults(quarantine, retryingProjects, await unquarantinable)).toEqual([]);
   },
-  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
+  rowLimit({ atOnce: sevenListings })
 );
 
 // A fix entry's shape: its row, a dispatch:// issue and a full lower-case sha. Whether the sha
@@ -126,18 +148,18 @@ test("every entry is written as the nightly's check prints it", () => {
 test(
   "a quarantine of eleven rows is refused for its size",
   async () => {
-    expect(quarantineFaults(elevenRows, retryingProjects, await embedderFiles)).toEqual([
+    expect(quarantineFaults(elevenRows, retryingProjects, await unquarantinable)).toEqual([
       "the quarantine holds 11 rows, and R4 of dispatch://INFRA-983 allows 10: fix a quarantined " +
         "row and take its entry out before another goes in",
     ]);
   },
-  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
+  rowLimit({ atOnce: sevenListings })
 );
 
 test(
   "an entry with no issue is refused, and so is an entry with no date",
   async () => {
-    const files = await embedderFiles;
+    const files = await unquarantinable;
     expect(quarantineFaults(withoutIssue, retryingProjects, files)).toEqual([
       "entry 1 (planted.e2e.ts [chromium] a planted row with no owner) has no issue: every " +
         "quarantined row is owned by one, dispatch://<KEY>",
@@ -147,20 +169,20 @@ test(
         'the row came in as added: "YYYY-MM-DD"',
     ]);
   },
-  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
+  rowLimit({ atOnce: sevenListings })
 );
 
 test(
   "an issue that is no dispatch:// reference and a day that is no calendar day are refused",
   async () => {
-    expect(quarantineFaults(malformed, retryingProjects, await embedderFiles)).toEqual([
+    expect(quarantineFaults(malformed, retryingProjects, await unquarantinable)).toEqual([
       "entry 1 (planted.e2e.ts [chromium] a planted row written loosely) names its issue as " +
         '"INFRA-983", which is no dispatch://<KEY> reference such as dispatch://INFRA-983',
       "entry 1 (planted.e2e.ts [chromium] a planted row written loosely) gives the day it came in " +
         'as "2026-02-30", which is no calendar day written YYYY-MM-DD',
     ]);
   },
-  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
+  rowLimit({ atOnce: sevenListings })
 );
 
 test(
@@ -173,7 +195,7 @@ test(
       issue: "dispatch://INFRA-983",
       added: "2026-11-19",
     };
-    expect(quarantineFaults([entry, entry], retryingProjects, await embedderFiles)).toEqual([
+    expect(quarantineFaults([entry, entry], retryingProjects, await unquarantinable)).toEqual([
       "entry 1 (heavy-bodies.e2e.ts [chromium-alone] a planted row) names the project " +
         "chromium-alone, whose rows CI never reports flaky and the nightly's quarantine leg does " +
         `not run; a quarantined row is one of ${retryingProjects.join(", ")}`,
@@ -183,7 +205,7 @@ test(
       "entry 2 (heavy-bodies.e2e.ts [chromium-alone] a planted row) repeats an entry above it",
     ]);
   },
-  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
+  rowLimit({ atOnce: sevenListings })
 );
 
 // The embedder job runs its files with no quarantine, on both lanes, and every other run skips
@@ -192,19 +214,55 @@ test(
 test(
   "an entry of a row only the embedder job runs is refused",
   async () => {
-    const files = await embedderFiles;
+    const files = await unquarantinable;
     // The controls: the planted row is of a file the embedder job's own listing holds, and read
     // against no such file it carries no other fault.
-    expect(files).toContain(embedderRow[0].file);
-    expect(quarantineFaults(embedderRow, retryingProjects, [])).toEqual([]);
+    expect(files.embedder).toContain(embedderRow[0].file);
+    expect(
+      quarantineFaults(embedderRow, retryingProjects, { embedder: [], twoProcess: [] })
+    ).toEqual([]);
     expect(quarantineFaults(embedderRow, retryingProjects, files)).toEqual([
       "entry 1 (search-tiers.e2e.ts [chromium] a planted row of the embedder job) names the file " +
         "search-tiers.e2e.ts, which the embedder job runs on both lanes with no quarantine and " +
-        "the nightly's quarantine leg skips, having no embedder: the entry would leave the row " +
-        "gating as before and run it ungated nowhere",
+        "the nightly's quarantine leg skips, having no embedder: a quarantine entry would leave " +
+        "the row gating as before and run it ungated nowhere",
     ]);
   },
-  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
+  rowLimit({ atOnce: sevenListings })
+);
+
+// The two-process job runs its files in the full lane with no quarantine, and the nightly's
+// quarantine leg runs one server process, so it never runs them: an entry of such a row would
+// leave it gating as before and run it ungated nowhere. Its rows are fixed in their own lines or
+// given a fix entry, which is what the nightly's check names for them. Both of the job's steps
+// are read: `signin.multiprocess.e2e.ts` is listed under DISPATCH_E2E_SIGNIN=oidc alone.
+test(
+  "an entry of a row only the two-process job runs is refused, naming why",
+  async () => {
+    const files = await unquarantinable;
+    const entry = {
+      file: "two-builds.multiprocess.e2e.ts",
+      project: "chromium",
+      title: "a planted row of the two-process job",
+      issue: "dispatch://INFRA-983",
+      added: "2026-11-19",
+    };
+    // The controls: the planted row is of a file the two-process job's listing holds, so is the
+    // sign-in spec, and read against no such file the entry carries no other fault.
+    expect(files.twoProcess).toContain(entry.file);
+    expect(files.twoProcess).toContain("signin.multiprocess.e2e.ts");
+    expect(quarantineFaults([entry], retryingProjects, { embedder: [], twoProcess: [] })).toEqual(
+      []
+    );
+    expect(quarantineFaults([entry], retryingProjects, files)).toEqual([
+      "entry 1 (two-builds.multiprocess.e2e.ts [chromium] a planted row of the two-process job) " +
+        "names the file two-builds.multiprocess.e2e.ts, which the two-process job runs in the " +
+        "full lane with no quarantine and the nightly's quarantine leg, which runs one server " +
+        "process, never runs: a quarantine entry would leave the row gating as before and run " +
+        "it ungated nowhere",
+    ]);
+  },
+  rowLimit({ atOnce: sevenListings })
 );
 
 test(
@@ -212,7 +270,7 @@ test(
   async () => {
     expect(selectionFaults(quarantine, rowsOfListing(await quarantinedRows))).toEqual([]);
   },
-  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
+  rowLimit({ atOnce: sevenListings })
 );
 
 test(
@@ -246,7 +304,7 @@ test(
         "the listing names it",
     ]);
   },
-  rowLimit({ atOnce: ["listing", "listing", "listing", "listing", "listing"] })
+  rowLimit({ atOnce: sevenListings })
 );
 
 // The shard job's browser step runs under `exclude`, and its legs place the selection
@@ -278,10 +336,7 @@ test(
       legs.flatMap((leg) => leg.ran.filter((name) => quarantinedNames.includes(name)))
     ).toEqual([]);
   },
-  // The planted listing under `exclude`, one of the five the file starts at once when it loads,
+  // The planted listing under `exclude`, one of the seven the file starts at once when it loads,
   // then the four legs at once.
-  rowLimit(
-    { atOnce: ["listing", "listing", "listing", "listing", "listing"] },
-    { atOnce: ["listing", "listing", "listing", "listing"] }
-  )
+  rowLimit({ atOnce: sevenListings }, { atOnce: ["listing", "listing", "listing", "listing"] })
 );

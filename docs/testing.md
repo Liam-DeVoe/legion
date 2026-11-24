@@ -344,16 +344,26 @@ When a row may be added to the browser suite:
   days or held in the quarantine longer than 14 days, is a defect: that run's quarantine check
   fails the run and names the row in its summary. The run posts no check, files no issue and
   sends no message; GitHub tells only the person who last edited the workflow's cron line (the
-  workflow's own header says so). The check counts a flaky run only when the commit the run tested
-  holds the last change to the row's own lines, or when GitHub's compare cannot tell, which the
-  summary names. `e2e/quarantine.ts` holds two kinds of entry, each
-  naming the row and the issue that owns it. A quarantine entry, with the date it was added, takes
+  workflow's own header says so). The check reads each row as the job that ran it runs it, the
+  two-process job's in two-process mode among them. It counts a flaky run only when the commit the
+  run tested holds the last change to the row's own lines, or when GitHub's compare cannot tell,
+  which the summary names. A flaky row that no row of the checkout is named as, though its file is
+  still there, fails the check as a failed read: the row was renamed or moved, and its flakes
+  cannot be matched to it. The one exception, until 14 days after cybermonklabs/legion#4523 lands,
+  is a run from before it, whose notice names a row inside a `describe` by its own title alone:
+  its flakes are not counted, and the summary names the row. `e2e/quarantine.ts` holds two kinds
+  of entry, each naming the row and the issue that owns it. A quarantine entry, with the date it
+  was added, takes
   the row out of the pull-request lane and the merge queue, and the row keeps running in the
   scheduled run, where it gates nothing. A fix entry names the commit on `main` that fixed the row
   elsewhere than in its own lines: the row stays in every lane, and the check counts only the
-  flaky runs whose tested commit holds that one, or that the compare cannot place.
-  `e2e/__tests__/quarantine.test.ts` holds the file to at most 10 quarantine entries, each with its
-  issue and its date.
+  flaky runs whose tested commit holds that one, or that the compare cannot place. A row of the
+  `embedder` job or of the two-process job cannot be quarantined: those jobs run every row with no
+  quarantine, and the scheduled run's quarantine leg, one server process with no embedder, runs
+  none of their rows. Such a row is fixed in its own lines or given a fix entry, and the check names
+  a fix entry's lines for it. `e2e/__tests__/quarantine.test.ts` holds the file to at most 10
+  quarantine entries, each with its issue and its date, and refuses an entry of those two jobs'
+  rows.
 
 What a stubbed row may assert, and what only a real-stack row may:
 

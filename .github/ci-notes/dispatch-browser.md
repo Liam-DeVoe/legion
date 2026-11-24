@@ -35,7 +35,11 @@ The quarantine (packages/dispatch/e2e/quarantine.ts, whose head says what reads 
 rows that still run and gate nothing, each owned by an issue. The shard job's browser step
 leaves them out of both lanes, and a call with `quarantine: true` - the nightly's, and no
 other - runs them in the `quarantine` job, whose summary reports how each one ended and which
-fails nothing, so a quarantined row's owner sees whether a fix worked.
+fails nothing, so a quarantined row's owner sees whether a fix worked. The embedder job and the
+two-process job set no DISPATCH_E2E_QUARANTINE, so they run every row of theirs, and the
+`quarantine` job, one server process with no embedder, runs none of their rows: the quarantine
+takes no row of those two jobs. packages/dispatch/e2e/__tests__/quarantine.test.ts refuses such
+an entry, and the nightly's quarantine check names a fix entry's lines for such a row instead.
 
 A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 gives: `services:` is a job-level key and a composite action's step keys do not include
