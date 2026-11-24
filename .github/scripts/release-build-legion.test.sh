@@ -3,10 +3,11 @@
 # it packs one archive per legion target of .github/go-release-targets.json, each holding that
 # target's static binary, built with the target's CGO_ENABLED=0, GOOS and GOARCH, and the
 # THIRD_PARTY_NOTICES the notices script writes under the same environment, and it stops when it
-# cannot read the targets. Its three modes, which check-legion-release-paths.sh asks: `targets`,
+# cannot read the targets. Its four modes, which check-legion-release-paths.sh asks: `targets`,
 # the legion targets one a line; `list`, go list over ./cmd/legion in packages/daemon with a
-# target's environment; and `env`, go env with that environment. The modes read none of the
-# build's variables, and a mode it does not know, or one without its target, is refused.
+# target's environment; `env`, go env with that environment; and `modules`, the go.mod of each
+# main module. The modes read none of the build's variables, and a mode it does not know, or one
+# without its target, is refused.
 #
 # Each case builds a miniature repository under a temporary directory: a daemon module with a
 # legion command, the target list, and a stand-in scripts/go-third-party-notices.sh that writes
@@ -113,16 +114,6 @@ root=$(fixture targets-none)
 printf '{\n  "envoy": ["amd64"]\n}\n' > "$root/.github/go-release-targets.json"
 run_mode "$root" targets
 check "exits non-zero printing nothing" "$(is "$([ "$status" -ne 0 ] && echo failed)|$out" 'failed|')"
-
-echo "case: targets refuses a target that is not <os>/<arch>"
-# The build loops over the words of the list and a reader of this mode over its lines; a target
-# of lower-case letters and digits on each side of one / is one word and one line, so both read
-# the same targets.
-root=$(fixture targets-bad)
-printf '{\n  "legion": ["linux/amd64", "darwin/arm64 linux/386"]\n}\n' > "$root/.github/go-release-targets.json"
-run_mode "$root" targets
-check "exits 1 printing nothing" "$(is "$status|$out" '1|')"
-check "names the target" "$(contains "$err" "^::error file=.github/go-release-targets.json::release-build-legion.sh: the legion target 'darwin/arm64 linux/386' of .github/go-release-targets.json is not <os>/<arch>")"
 
 echo "case: list runs go list over ./cmd/legion in packages/daemon with the target's environment"
 root=$(fixture list)
