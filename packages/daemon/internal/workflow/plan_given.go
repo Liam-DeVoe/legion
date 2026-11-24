@@ -153,7 +153,8 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		return givenVersion{}, intake.PlanRefused([]plan.Refusal{intake.StartedBeforePlans(issue.Key)}), nil
 	}
 	// A first version is held to the tasks its giver writes as a later one is, over no plan, so each
-	// of its tasks is a change; the rules of a later version read the changes over a plan in force.
+	// of its tasks is a change. given.changed keeps the changes over a plan in force alone, as the
+	// rules of a later version and the write's log line read them, so a first version names none.
 	held := plan.Plan{}
 	if given.stored != nil {
 		if refusal := laterVersionRefusal(fact.Issue, given.stored.Version, fact.Plan); refusal != nil {
@@ -449,12 +450,7 @@ func (e *Engine) afterSeveral(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	if !written.started {
 		return nil
 	}
-	now, err := e.store.Issue(ctx, tx, issue.Key)
-	if err != nil {
-		return err
-	}
-	_, err = e.startReady(ctx, tx, *now)
-	return err
+	return e.startReadyNow(ctx, tx, issue.Key)
 }
 
 // stoppedReason is the reason a stopped task's worker is told when version of the plan, given by
@@ -488,7 +484,10 @@ func (e *Engine) waitsAtZero(ctx context.Context, tx pgx.Tx, issue record.Issue)
 	// PlansOfEarlierOwners answers the version in force of each generation, so the generation
 	// names the one stored holds.
 	earlier, err := e.store.PlansOfEarlierOwners(ctx, tx, issue)
-	return err == nil && slices.ContainsFunc(earlier, func(v record.PlanVersion) bool { return v.Generation == issue.Generation }), err
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(earlier, func(v record.PlanVersion) bool { return v.Generation == issue.Generation }), nil
 }
 
 // laterVersionRefusal is the refusal of next, given for issue over held, the version in force:

@@ -46,6 +46,19 @@ func mayStart(stored *record.StoredPlan, task record.PlanTask) bool {
 	return needsDone(stored, task) && (task.PartOf == "" || partsStart(stored, task.PartOf))
 }
 
+// startReadyNow starts each task of the issue keyed key that may start (startReady), on the issue
+// as the store holds it in tx now: what a caller that moved a task, and holds an older copy of the
+// issue, runs once the move may let other tasks start. An issue the store no longer holds starts
+// nothing.
+func (e *Engine) startReadyNow(ctx context.Context, tx pgx.Tx, key string) error {
+	now, err := e.store.Issue(ctx, tx, key)
+	if err != nil || now == nil {
+		return err
+	}
+	_, err = e.startReady(ctx, tx, *now)
+	return err
+}
+
 // lastToFinish says whether the end of s's task ends its issue: each other task of the plan of s's
 // run, as the store holds it in tx, is done or left the workflow (record.TaskLeft). That holds for a
 // plan of one task, and for a run with no plan rows, whose one walk is the issue's own. It is the one

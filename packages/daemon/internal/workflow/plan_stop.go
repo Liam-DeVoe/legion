@@ -407,12 +407,7 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 	}
 	// A task started again at its parts lets its parts that wait start, once it waits for nothing
 	// (mayStart): startReady, the start of each task that waits, starts them.
-	now, err := e.store.Issue(ctx, tx, s.issue.Key)
-	if err != nil {
-		return err
-	}
-	_, err = e.startReady(ctx, tx, *now)
-	return err
+	return e.startReadyNow(ctx, tx, s.issue.Key)
 }
 
 // scopeWalks is the walk of each task of s's plan, in task id order, with s's own walk in place of

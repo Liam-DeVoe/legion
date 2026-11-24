@@ -12,10 +12,6 @@ import (
 // (claim.AgentToken), as the plan states it.
 const maxAgentName = plan.MaxAgentName
 
-// subOwnerPrefix begins the name of each sub-owner's agent (SubOwnerAgent): the claim role of a
-// sub-owner and a dash.
-const subOwnerPrefix = string(claim.RoleSubOwner) + "-"
-
 // SubOwnerAgent is the name of the agent of task's sub-owner, the last part of its claim token
 // (plan.SubOwnerAgent, the one statement of the name, which Validate holds unique among the tasks
 // of a plan). So the sub-owner of one task has one claim token for every version and generation of
@@ -26,10 +22,10 @@ func SubOwnerAgent(task string) claim.Agent {
 }
 
 // IsSubOwnerAgent reports whether agent is the agent of a task's sub-owner (SubOwnerAgent): a name
-// that starts with `sub-owner-`. NameAgents names a step's agent for its role, and no role of the
-// deployment is `sub-owner` or starts with that prefix, so no step's agent is so named.
+// that starts with plan.SubOwnerPrefix. NameAgents names a step's agent for its role, and no role of
+// the deployment is `sub-owner` or starts with that prefix, so no step's agent is so named.
 func IsSubOwnerAgent(agent claim.Agent) bool {
-	return strings.HasPrefix(string(agent), subOwnerPrefix)
+	return strings.HasPrefix(string(agent), plan.SubOwnerPrefix)
 }
 
 // SubOwnerOf is the agent of token where token is the claim of a task's sub-owner: the agent its
