@@ -420,6 +420,14 @@ type slotCredential struct {
 	owner, token, app string
 }
 
+// launcherCredential is what a launcher holds the slot's gh files to for held: the hosts.yml of its
+// default owner and the digest of the token it holds, as a start names them and a credential check
+// asks of them (shimwire.LauncherGitHubCredential, shimwire.LauncherCredentialCheck).
+func (held slotCredential) launcherCredential() shimwire.LauncherGitHubCredential {
+	sum := sha256.Sum256([]byte(held.token))
+	return shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: hex.EncodeToString(sum[:])}
+}
+
 // slotWrite is what one write of a slot's Secret is made for (writeSlotCredential). role judges,
 // on the Secret as the write read it, the role whose App the slot is written for: a refresh's and
 // a step's judge it on what the Secret records (judgeSlot), a launch's on the role it launches;
@@ -646,8 +654,8 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 		r.log.Info("sandbox runtime: the start waits for its slot's gh files to hold its credential",
 			"claim", spec.Claim, "slot", slot, "app", held.app, "generation", spec.Generation)
 	}
-	sum := sha256.Sum256([]byte(held.token))
-	return &shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: hex.EncodeToString(sum[:])}, nil
+	named := held.launcherCredential()
+	return &named, nil
 }
 
 // slotAppChanges is whether a launch of spec into pod, a pod it keeps, would start its claim's slot
