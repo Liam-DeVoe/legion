@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
 // keyAToken and keyBToken are the claims of two agents of the implementer on LEGION-208, as
@@ -129,5 +131,36 @@ func TestAPauseHeldStartIsListedUnderTheClaimItNames(t *testing.T) {
 	}
 	if got := pauseHeldClaim("legion", row, string(claim.RoleImplementer), "", nil); got != keyAToken {
 		t.Errorf("the held start naming no claim is listed under %q, want the implementer's own token %q", got, keyAToken)
+	}
+}
+
+// The starts that wait for a pod are named by the claim each starts, by the rule the outbox's start
+// acts on (StartClaim): the claim a row names, and for a row that names none the claim WorkerClaim
+// gives its role's step. Each claim is named once, in the order of the rows: a row that names the
+// implementer's own claim, a row of the release before that names none and so starts that same
+// claim, and the same row queued twice are one start. Key b's start, which names key b's claim,
+// stays apart from them. A start of a role no token spells is refused naming it.
+func TestTheStartsThatWaitForAPodAreEachTheClaimTheyStartOnce(t *testing.T) {
+	starts := []pods.WaitingStart{
+		{Role: claim.RoleImplementer, Claim: keyAToken},
+		{Role: claim.RoleImplementer},
+		{Role: claim.RoleImplementer, Claim: keyBToken},
+		{Role: claim.RoleImplementer, Claim: keyBToken},
+		{Role: claim.RoleTester},
+	}
+	got, err := StartClaims("legion", "LEGION-208", starts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []pods.WaitingStart{
+		{Role: claim.RoleImplementer, Claim: keyAToken},
+		{Role: claim.RoleImplementer, Claim: keyBToken},
+		{Role: claim.RoleTester, Claim: "legion-legion-legion-208-tester"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the starts = %v, want %v", got, want)
+	}
+	if _, err := StartClaims("legion", "LEGION-208", []pods.WaitingStart{{Role: "Checker"}}, nil); err == nil || !strings.Contains(err.Error(), "Checker") {
+		t.Errorf("the start of Checker = %v, want a refusal naming it", err)
 	}
 }

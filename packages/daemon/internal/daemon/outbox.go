@@ -2463,14 +2463,14 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if payload.Tree != issue.Tree {
 		return fmt.Errorf("supervise row %d tree %s does not match issue %s tree %s", row.ID, payload.Tree, issue.Key, issue.Tree)
 	}
-	// The claim the row acts on is the one it names: the claim a phase worker's start was queued
-	// for, or the one stored claim a row of another op stands for. A row that names none, one the
-	// release before wrote, acts on the claim record.WorkerClaim gives its role's step.
-	token := payload.Claim
-	if token == "" {
-		if token, err = record.WorkerClaim(r.project, row.Issue, payload.Role, rows); err != nil {
-			return fmt.Errorf("derive claim for outbox row %d: the %s of %s: %w", row.ID, payload.Role, row.Issue, err)
-		}
+	// The claim the row acts on is the one record.StartClaim gives it, the rule the served state and
+	// the idle release's notice name a waiting start by too: the claim a phase worker's start was
+	// queued for, or the one stored claim a row of another op stands for, which the row names; and
+	// for a row that names none, one the release before wrote, the claim record.WorkerClaim gives
+	// its role's step.
+	token, err := record.StartClaim(r.project, row.Issue, payload.Role, payload.Claim, rows)
+	if err != nil {
+		return fmt.Errorf("derive claim for outbox row %d: the %s of %s: %w", row.ID, payload.Role, row.Issue, err)
 	}
 	machine, found := r.supervisor.Machine(token)
 	switch payload.Op {

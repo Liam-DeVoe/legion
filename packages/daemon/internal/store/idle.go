@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -773,14 +772,8 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		err := row.Scan(&role, &token)
 		return pods.WaitingStart{Role: claim.Role(role), Claim: claim.Token(token)}, err
 	}
-	starts, err := pgx.CollectRows(waitingForPod, scan)
-	if err != nil {
+	if view.StartsWaitingForPod, err = pgx.CollectRows(waitingForPod, scan); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the starts of %s that wait for its pod: %w", issue, err)
-	}
-	for _, start := range starts {
-		if !slices.Contains(view.StartsWaitingForPod, start) {
-			view.StartsWaitingForPod = append(view.StartsWaitingForPod, start)
-		}
 	}
 	if err := tx.QueryRow(ctx, `select coalesce((select reason from pod_holds
 		where project = $1 and issue = $2 and not ended order by id desc limit 1), '')`,
