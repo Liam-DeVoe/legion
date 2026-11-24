@@ -1830,7 +1830,7 @@ up job and the blob download 2 s each, the refused-download step 0 s, and every 
 What made job 138031009105 the longest is its checkout, 14 s, and "Reading one, the rows",
 11 s, the most that step took over the 48, and its log holds no rate-limit wait.
 
-Each step's own maximum over that sample, summed, is 40 s: Set up job 2 s, checkout 9 s,
+Each step's own maximum over the 2026-11-08 sample, summed, is 40 s: Set up job 2 s, checkout 9 s,
 setup-bun 3 s, `bun install` 7 s, Download every leg's blob report 2 s, Take the newest
 attempt 0 s, Merge the legs' blob reports 3 s, Upload the merged report 3 s, Reading one
 4 s, Reading two 1 s, Reading three 1 s, the verdict step 1 s, the ci-ok report 1 s, Post
@@ -1840,15 +1840,16 @@ One step carries a budget of its own: "Reading one, the rows", which calls
 .github/scripts/dispatch-browser-run-reads.sh and so waits on gh-read.sh's ladder. The
 ladder bounds that wait rather than measuring it - three attempts, each bounded by
 `timeout 30`, with waits of 10 s and 20 s between them, which is 120 s at most - and a
-bound takes no 15 per cent. The step's own work has a measured maximum of 11 s, the 11 s of
-job 137694934103 above (run 45151841335 attempt 2, 12:33:18Z to 12:33:29Z), which replaces the
-4 s of the 2026-11-08 sample, and 11 x 1.15 = 12.65 s, so 120 + 12.65 = 132.65 s, at the next
-whole minute above, is the 3 min that step carries. The rule's two-minute floor does not bind.
+bound takes no 15 per cent. The step's own work has a measured maximum of 11 s, the most it took
+over the 48 merge jobs above, job 138031009105's among them (run 45261148766 attempt 2), which
+replaces the 4 s of the 2026-11-08 sample, and 11 x 1.15 = 12.65 s, so 120 + 12.65 = 132.65 s,
+at the next whole minute above, is the 3 min that step carries. The rule's two-minute floor does
+not bind.
 The step now also runs packages/dispatch/e2e/tools/leg-rows.ts over the shard legs' row lists,
 measured by main at 0.02 to 0.08 s on the development box over three runs, over four legs'
 lists of the full lane's 1,617 rows (1.1 MB: each leg lists the whole selection and the rows it
 ran, so four legs write five selections' worth and this job's two write three, about 0.66 MB).
-Job 137694934103 ran it, on the full lane at e2399655, so that work is inside the 11 s and is
+Job 138031009105 ran it, on the full lane at e15ee5e4, so that work is inside the 11 s and is
 not added to it.
 
 A spent API budget or a secondary rate limit is not in that bound: gh-read.sh's gh_wait_reset
@@ -1859,10 +1860,9 @@ wait never outlives either budget, and the budgets need no room for it: a step t
 wait past them fails by name instead, and a re-run after the reset reads the jobs again.
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
-one step's 180 s, plus the measured maximum of every step without one: the 49 s of pull
-request #3513's runs of 2026-11-15 above, in which the 1 s of "Report a refused blob
-download as a refused read", which runs one `echo` and which no run of that day ran, is what
-this job's other one-command steps measure. 180 + 49 = 229 s, which is 3 min 49 s, so 4 min,
+one step's 180 s, plus the measured maximum of every step without one: the 48 s of the 48 merge
+jobs above, in which "Report a refused blob download as a refused read", which runs one `echo`,
+read 0 s. 180 + 48 = 228 s, which is 3 min 48 s, so 4 min,
 the figure `dispatch-browser.yaml` gives beside the job's `timeout-minutes`. The older sample
 gives the same 4 min: its 40 s less reading one's 4 s is 36 s, and 1 s each for the three steps
 it does not hold - that one, "Reading four, the row durations", which runs one jq over the

@@ -500,7 +500,7 @@ jobs:
     # why: .github/ci-notes/dispatch-browser.md#why-the-merge-job-runs-on-arm64
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget
-    # 180 + 49 = 229 s, which is 3 min 49 s, so 4 min.
+    # 180 + 48 = 228 s, which is 3 min 48 s, so 4 min.
     timeout-minutes: 4
     env:
       JOB_TIMEOUT_MINUTES: 4 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)

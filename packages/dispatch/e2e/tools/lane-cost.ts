@@ -14,17 +14,16 @@
  *  attempt `<attempt>` where the command names one, and leaves out a job that was skipped and one
  *  that has no `started_at` or no `completed_at`. The run's own fields are read at the same
  *  attempt: `runs/<id>`, which GitHub answers with the run's latest attempt, or
- *  `runs/<id>/attempts/<attempt>`. A run of the nightly workflow, whose jobs were named
- *  `full / …` and `re-record`, was not read: its jobs failed the filter above. Since main's #5175
- *  its full lane's jobs are named `dispatch-browser / …`, as those of ci.yaml's full-lane caller
- *  are, and pass it.
+ *  `runs/<id>/attempts/<attempt>`. A run of the nightly workflow reads the same way: its full
+ *  lane's jobs are named `dispatch-browser / …`, as those of ci.yaml's full-lane caller are, and
+ *  pass the filter, and its `re-record` job does not.
  *
- *  A reading reads one lane. ci.yaml calls dispatch-browser.yaml from two jobs since main's
- *  #5175, dispatch-browser (the full lane) and dispatch-browser-pr (the pull-request lane), and a
- *  pull request labelled full-ci runs both in one run, whose jobs carry the same names after the
- *  caller's. So a run whose counted jobs are of more than one caller is refused, naming the
- *  callers it found, rather than summed as one lane; a run of one caller reads as before, its
- *  jobs named `dispatch-browser / …` or `dispatch-browser-pr / …`.
+ *  A reading reads one lane. ci.yaml calls dispatch-browser.yaml from two jobs, dispatch-browser
+ *  (the full lane) and dispatch-browser-pr (the pull-request lane), and a pull request labelled
+ *  full-ci runs both in one run, whose jobs carry the same names after the caller's. So a run
+ *  whose counted jobs are of more than one caller is refused, naming the callers it found, rather
+ *  than summed as one lane; a run of one caller is read, its jobs named `dispatch-browser / …` or
+ *  `dispatch-browser-pr / …`.
  *
  *  - cost: the sum over those jobs of `completed_at` less `started_at`, in seconds. `per_job`
  *    holds each job's, under its name after its caller's (`dispatch-browser / `, say);

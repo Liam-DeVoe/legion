@@ -218,7 +218,7 @@ export default defineConfig({
     // out of a page that reads neither - in the editor's chunks too, which import that package
     // by subpath alone (`packages/proof-editor/src/block-pointers.ts`).
     // The merge of 4b22ece4 read 500,672 bytes, over the budget; the cut in `01fc0e41` brought it
-    // to 499,380, and `97c0cde6`'s focus helper added 105, so the head reads those 499,485 bytes,
+    // to 499,380, and `97c0cde6`'s focus helper added 105, so `4935c4af` reads those 499,485 bytes,
     // 515 under the budget. That cut made two moves. The Inbox's `Blocked on you` strip and the
     // project page's pill left the entry for a file of
     // their own, `features/inbox/BlockedOnYouLink.tsx`, a chunk of 866 bytes the Inbox's and the
