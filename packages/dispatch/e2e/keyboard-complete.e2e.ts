@@ -9557,10 +9557,10 @@ test("k-phone: a tap opens the status menu of today's issue page, and a tap at t
 // on another card's Snooze opens its menu. At 9d3e0777 that tap scrolls the page and opens nothing.
 /** k-phone after a pick that moves a card: six asks at P2 on a phone, a tap on P1 in a low card's
  *  priority menu, which moves that card up into the P1 band, then a tap on another card's Snooze
- *  (R15: "a tap on a control of R4 opens its menu"): its menu opens, and the tap scrolls the page
- *  nowhere. */
+ *  (R15: "a tap on a control of R4 opens its menu"): its menu opens, and the tapped Snooze stays
+ *  where the finger tapped it. */
 // SLOW(>=2s): six asks on a phone, a priority picked by taps, and a second card's Snooze tapped.
-test("k-phone: right after a tap on P1 moves a card, a tap on another card's Snooze opens its menu and scrolls the page nowhere @phone @phone-only", async ({
+test("k-phone: right after a tap on P1 moves a card, a tap on another card's Snooze opens its menu and stays where the finger tapped it @phone @phone-only", async ({
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -9611,15 +9611,18 @@ test("k-phone: right after a tap on P1 moves a card, a tap on another card's Sno
 
   const snooze = inboxRow(page, other).getByRole("button", { name: /^Snooze / });
   await scrollTo(snooze, 0.85);
-  const before = await page.evaluate(() => Math.round(window.scrollY));
-  await snooze.tap();
+  // The scroll above read this Snooze's own box to place it, so it is drawn and has a box.
+  const box = await snooze.boundingBox();
+  if (box === null) throw new Error("k-phone: the other card's Snooze has no box");
+  const before = box.y;
+  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
   await expect(
     listOf(snooze),
     "k-phone: right after the pick, a tap on another card's Snooze opens its menu"
   ).toBeVisible();
-  const after = await page.evaluate(() => Math.round(window.scrollY));
+  const after = (await snooze.boundingBox())?.y;
   expect(
-    Math.abs(after - before),
-    `k-phone: the tap on the Snooze scrolls the page nowhere (scrollY ${before} before, ${after} after)`
+    Math.abs((after ?? Number.NaN) - before),
+    `k-phone: the tapped Snooze stays where the finger tapped it (y ${before} before, ${after} after)`
   ).toBeLessThanOrEqual(4);
 });
