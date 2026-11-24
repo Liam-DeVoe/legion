@@ -18,7 +18,7 @@ const XidRequireGapsEnv = "DISPATCH_XID_REQUIRE_GAP_JUDGMENT"
 // it can read an OS thread's scheduler clocks (read), and whether it can hold a thread, and the
 // memory every thread touches, out of NUMA balancing (hold, xidHoldMemory). Linux does not promise
 // either: gVisor, for example, exposes no /proc/thread-self/schedstat, and a container's seccomp
-// profile may refuse set_mempolicy and mbind. The first caller probes once while locked to an OS
+// profile may refuse get_mempolicy, set_mempolicy and mbind. The first caller probes once while locked to an OS
 // thread, as a marked transaction's goroutine is; every later caller reads that same fact, so a
 // kernel that cannot give the rig either follows the race build and judges window shape alone.
 //
@@ -48,7 +48,7 @@ func xidThreadClocksUnavailable() string {
 		case !xidHoldOnce(probe.hold):
 			probe.unavailable = "this thread cannot be held out of NUMA balancing (its get_mempolicy or its set_mempolicy MPOL_LOCAL failed)"
 		case !probe.memory():
-			probe.unavailable = "the process's memory cannot be held out of NUMA balancing (mbind MPOL_LOCAL was refused)"
+			probe.unavailable = "the process's memory cannot be held out of NUMA balancing (its mbind MPOL_LOCAL was refused, or /proc/self/maps could not be read)"
 		}
 	})
 	return probe.unavailable

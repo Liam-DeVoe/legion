@@ -4,14 +4,18 @@ package storetest
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
 	"strconv"
+	"strings"
 	"testing"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // The rig reads a thread's clocks at both ends of every gap, and while the collector is held off
@@ -46,22 +50,24 @@ func TestReadingAThreadsClocksAllocatesNothing(t *testing.T) {
 
 // On a machine NUMA balancing runs on, a held thread allocates on its own node, as by default,
 // but has no page moved for it while it is held, and gets back the policy it had when it is let
-// go (xidHoldThread). On a machine NUMA balancing leaves alone the hold changes nothing and makes
-// no memory-policy call, so it answers held even in a container whose seccomp profile refuses
-// those calls (EPERM, as a runtime's default profile answers without CAP_SYS_NICE): a hold that
-// made one there would be refused it and answer not held, and the rig would judge no gap on that
-// machine. The test asserts that answer first, on every machine. Where NUMA balancing runs and the
-// hold answers not held, the test asks the kernel itself (xidMempolicyRefusal): where it refuses
-// the hold's calls, the rig holds no thread and judges no gap, and the test stops as the rig's
-// self-tests do (RequireXidGapJudgment); where it permits them, the hold is at fault, and the test
-// fails in every build.
+// go (xidHoldThread). On a machine NUMA balancing leaves alone the hold has nothing to hold, so it
+// answers held, even in a container whose seccomp profile refuses the memory-policy calls (EPERM,
+// as a runtime's default profile answers without CAP_SYS_NICE). The test asserts that answer
+// first, on every machine. Under such a profile that fails a hold that makes one of the calls and
+// heeds its answer, as this hold heeds each answer; a call whose answer the hold ignored would not
+// show. Where NUMA balancing runs and the hold answers not held, the test asks the kernel itself
+// (xidMempolicyRefusal): where it refuses the hold's calls, the rig holds no thread and judges no
+// gap, and the test stops as the rig's self-tests do (RequireXidGapJudgment); where it permits
+// them, the hold is at fault, and the test fails in every build - but on a kernel before Linux 3.8,
+// which takes no MPOL_LOCAL in set_mempolicy, where it stops naming that (xidKernelBefore).
 //
-// The policy itself is compared in a subtest. A machine that refuses the read of a thread's
+// The policy itself is compared in subtests. A machine that refuses the read of a thread's
 // policy, with NUMA balancing off, has no policy to compare and nothing the hold could change, so
-// that subtest skips there, saying so (threadMempolicy).
+// they skip there, saying so (threadMempolicy).
 func TestHoldingAThreadKeepsNUMABalancingOffItUntilItIsLetGo(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	xidRequireBalancingDetector(t)
 	release, held := xidHoldThread()
 	release()
 	if !held && !xidNUMABalancing() {
@@ -69,6 +75,9 @@ func TestHoldingAThreadKeepsNUMABalancingOffItUntilItIsLetGo(t *testing.T) {
 	}
 	if !held {
 		refused, answer := xidMempolicyRefusal()
+		if !refused && xidKernelBefore(3, 8) {
+			testdb.SkipOutsideCI(t, "Linux %s takes no MPOL_LOCAL in set_mempolicy, so the hold cannot be made here: its modes end at MPOL_INTERLEAVE, and set_mempolicy answers EINVAL to mode 4, at MPOL_MAX, until Linux 3.8 makes MPOL_LOCAL a policy (%s)", xidKernelRelease(), answer)
+		}
 		if !refused {
 			t.Fatalf("the rig could not hold this thread out of NUMA balancing, though the kernel refuses neither of the hold's calls (%s): the hold is at fault", answer)
 		}
@@ -88,17 +97,120 @@ func TestHoldingAThreadKeepsNUMABalancingOffItUntilItIsLetGo(t *testing.T) {
 		during := threadMempolicy(t)
 		release()
 		after := threadMempolicy(t)
+		if after != before {
+			t.Errorf("a thread let go has memory policy mode %d, want the %d it had", after, before)
+		}
 		want := before
 		if xidNUMABalancing() {
+			if xidKernelBefore(5, 14) {
+				testdb.SkipOutsideCI(t, "Linux %s reports a thread's MPOL_LOCAL as MPOL_PREFERRED: until Linux 5.14 MPOL_LOCAL is MPOL_PREFERRED with the internal MPOL_F_LOCAL flag, so the held policy, mode %d, cannot be told from it here", xidKernelRelease(), during)
+			}
 			want = xidMempolicyLocal
 		}
 		if during != want {
 			t.Errorf("a held thread's memory policy is mode %d, want %d", during, want)
 		}
-		if after != before {
-			t.Errorf("a thread let go has memory policy mode %d, want the %d it had", after, before)
+	})
+	// The let-go puts back a policy that is not the default by its own call (xidHoldThread's
+	// release), which runs only where NUMA balancing runs and the kernel permits the calls: a thread
+	// that starts at the default never reaches it. So here the thread starts at MPOL_PREFERRED.
+	t.Run("a policy that is not the default is put back when it is let go", func(t *testing.T) {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		node := xidFirstOnlineNode()
+		var mask [16]uint64
+		mask[node/64] |= 1 << (node % 64)
+		_, _, errno := unix.Syscall(unix.SYS_SET_MEMPOLICY, xidMempolicyPreferred, uintptr(unsafe.Pointer(&mask[0])), uintptr(len(mask)*64))
+		if (errno == unix.EPERM || errno == unix.ENOSYS) && !xidNUMABalancing() {
+			t.Skipf("NUMA balancing moves no page on this machine, so the hold makes no memory-policy call and changes nothing, and this thread's memory policy cannot be set here to compare (set_mempolicy: %v)", errno)
+		}
+		if errno != 0 {
+			t.Fatalf("set this thread's memory policy to MPOL_PREFERRED on node %d: %v", node, errno)
+		}
+		defer unix.Syscall(unix.SYS_SET_MEMPOLICY, xidMempolicyDefault, 0, 0)
+		release, held := xidHoldThread()
+		if !held {
+			t.Fatal("the rig could not hold this thread out of NUMA balancing")
+		}
+		release()
+		if after := threadMempolicy(t); after != xidMempolicyPreferred {
+			t.Errorf("a thread let go has memory policy mode %d, want the MPOL_PREFERRED (%d) it had", after, xidMempolicyPreferred)
 		}
 	})
+}
+
+// xidMempolicyPreferred is MPOL_PREFERRED (linux/mempolicy.h).
+const xidMempolicyPreferred = 1
+
+// xidFirstOnlineNode is the first NUMA node /sys/devices/system/node/online names, or 0 where it
+// cannot be read.
+func xidFirstOnlineNode() int {
+	online, err := os.ReadFile("/sys/devices/system/node/online")
+	if err != nil {
+		return 0
+	}
+	digits := strings.TrimSpace(string(online))
+	if end := strings.IndexAny(digits, "-,"); end >= 0 {
+		digits = digits[:end]
+	}
+	node, err := strconv.Atoi(digits)
+	if err != nil || node < 0 || node >= 16*64 {
+		return 0
+	}
+	return node
+}
+
+// xidKernelRelease is the running kernel's release, as uname reports it. A variable, so that a
+// forced run can stand in an older kernel.
+var xidKernelRelease = func() string {
+	var name unix.Utsname
+	if err := unix.Uname(&name); err != nil {
+		return ""
+	}
+	return unix.ByteSliceToString(name.Release[:])
+}
+
+// xidKernelBefore reports whether the running kernel's release is older than major.minor. A
+// release it cannot read is not older.
+func xidKernelBefore(major, minor int) bool {
+	var gotMajor, gotMinor int
+	if _, err := fmt.Sscanf(xidKernelRelease(), "%d.%d", &gotMajor, &gotMinor); err != nil {
+		return false
+	}
+	return gotMajor < major || (gotMajor == major && gotMinor < minor)
+}
+
+// xidNUMABalancingFromFiles reads whether the kernel balances memory across NUMA nodes apart from
+// the rig's detector (xidNUMABalancing): kernel.numa_balancing set to anything but 0, and more than
+// one node directory under /sys/devices/system/node, counted rather than read off the online list
+// as the detector reads it. A variable, so that a forced run can read balancing as on.
+var xidNUMABalancingFromFiles = func() bool {
+	setting, err := os.ReadFile("/proc/sys/kernel/numa_balancing")
+	if err != nil || strings.TrimSpace(string(setting)) == "0" {
+		return false
+	}
+	entries, err := os.ReadDir("/sys/devices/system/node")
+	if err != nil {
+		return false
+	}
+	nodes := 0
+	for _, entry := range entries {
+		if number, ok := strings.CutPrefix(entry.Name(), "node"); ok {
+			if _, err := strconv.Atoi(number); err == nil {
+				nodes++
+			}
+		}
+	}
+	return nodes > 1
+}
+
+// xidRequireBalancingDetector fails the calling test where the rig's detector of NUMA balancing
+// and the test's own reading of the same files disagree: each NUMA test rests on the detector.
+func xidRequireBalancingDetector(t *testing.T) {
+	t.Helper()
+	if detected, read := xidNUMABalancing(), xidNUMABalancingFromFiles(); detected != read {
+		t.Fatalf("the rig's detector reads NUMA balancing as %v, and the test's own reading of /proc/sys/kernel/numa_balancing and /sys/devices/system/node reads it as %v", detected, read)
+	}
 }
 
 // xidMempolicyRefusal asks the kernel whether it refuses the thread hold's memory-policy calls,
@@ -152,20 +264,34 @@ func threadMempolicy(t *testing.T) int {
 // this goroutine's stack lies in - has a policy of its own, MPOL_LOCAL, so no thread's fault moves
 // a page of it and the balancing scan passes over it. With the hold planted to do nothing, the
 // mappings keep the default policy and this test fails. On a machine NUMA balancing leaves alone
-// there is nothing to hold, and the test skips. Where the kernel refuses the memory-policy calls,
-// as a container's seccomp profile may, the rig holds nothing and judges no gap, and the test
-// stops as the rig's self-tests do (RequireXidGapJudgment).
+// there is nothing to hold: the hold answers held there, which under a seccomp profile that
+// refuses mbind fails a hold that makes the call and heeds its answer, and the test then skips.
+// Where NUMA balancing runs and the hold answers not held, the test asks the kernel itself: where
+// it refuses mbind, the rig holds nothing and judges no gap, and the test stops as the rig's
+// self-tests do (RequireXidGapJudgment); an unreadable /proc/self/maps, or an mbind the kernel
+// permits, fails it by name.
 func TestHoldingTheMemoryKeepsNUMABalancingOffItsMappings(t *testing.T) {
-	if !xidNUMABalancing() {
-		t.Skip("NUMA balancing moves no page on this machine, so there is no memory to hold")
-	}
+	xidRequireBalancingDetector(t)
 	object := new([4096]byte)
 	object[0] = 1
 	var onStack byte
-	if !xidHoldMemory() {
-		// xidHoldMemory answers false only where the kernel refuses mbind (EPERM or ENOSYS): the
-		// rig holds no memory, and judges no gap.
-		t.Log("the kernel refused mbind MPOL_LOCAL (EPERM or ENOSYS), so the rig holds no memory out of NUMA balancing")
+	held := xidHoldMemory()
+	if !xidNUMABalancing() {
+		if !held {
+			t.Fatal("the memory hold answered not held on a machine NUMA balancing leaves alone, where it makes no mbind")
+		}
+		t.Skip("NUMA balancing moves no page on this machine, so there is no memory to hold")
+	}
+	if !held {
+		if _, err := os.ReadFile("/proc/self/maps"); err != nil {
+			t.Fatalf("the memory hold answered not held, and /proc/self/maps, which it reads the mappings off, cannot be read: %v", err)
+		}
+		page := uintptr(unsafe.Pointer(object)) &^ uintptr(os.Getpagesize()-1)
+		_, _, errno := unix.Syscall6(unix.SYS_MBIND, page, uintptr(os.Getpagesize()), xidMempolicyLocal, 0, 0, 0)
+		if errno != unix.EPERM && errno != unix.ENOSYS {
+			t.Fatalf("the memory hold answered not held, though the kernel does not refuse mbind (mbind MPOL_LOCAL of a heap page answered %v, errno %d): the hold is at fault", errno, uintptr(errno))
+		}
+		t.Logf("the kernel refused mbind MPOL_LOCAL (%v), so the rig holds no memory out of NUMA balancing", errno)
 		RequireXidGapJudgment(t)
 		t.Fatal("the kernel refused the memory hold's mbind, yet the rig judges gaps")
 	}
