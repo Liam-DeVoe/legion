@@ -14,10 +14,11 @@ import {
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
+import { pickFromList } from "./filters";
 import { focusHolder } from "./focus";
 import { nextFrames } from "./frames";
 import { watchWrites } from "./keyed-writes";
-import { pickFromMenu, statusTrigger } from "./menus";
+import { statusTrigger } from "./menus";
 import { clearIssueCreator, resetDatabase } from "./seed";
 import { expect, type Locator, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -270,7 +271,7 @@ test("issue header copies its key and persists its title, status, and route", as
     await issueTitle.fill("First decision revised");
     await issueTitle.press("Enter");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ title: "First decision revised" });
-    await pickFromMenu(statusTrigger(page), "Todo");
+    await pickFromList(statusTrigger(page), "Todo");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ status: "todo" });
     await page.getByRole("button", { name: "Messages default to no route" }).click();
     await page.getByLabel("Message route").fill("role:legion-controller-core");

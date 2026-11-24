@@ -833,9 +833,15 @@ test("the header closes an issue and reopens it into Backlog", async () => {
     });
 
     expect(await screen.findByText("This issue is closed.")).toBeTruthy();
+    // A closed issue's status is held, never disabled: it keeps the focus, and a press of it
+    // opens nothing and writes nothing.
     const closedStatus = screen.getByRole("button", { name: pickNamed("Status") });
-    expect(closedStatus).toBeDisabled();
+    expect(closedStatus).toHaveAttribute("aria-disabled", "true");
+    expect(closedStatus).not.toHaveAttribute("disabled");
     expect(closedStatus).toHaveTextContent("Done");
+    await user.click(closedStatus);
+    expect(menuOpen(), "a press opened the closed issue's status list").toBe(false);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
 
     await openIssueActions();
     // The control is named by the words it shows, so a voice user who says what it reads
@@ -1424,16 +1430,19 @@ test.each([
 
 // The keeper finds the document's chip from where the lost control stood (`chipOfLostAction`):
 // the box `ApprovalChip` draws the chip in holds only the chip, its two actions and the dialogs it
-// opens. The Status menu's trigger stands on the same line but outside that box, so when the
-// issue's read turns closed and disables it, the focus goes on to "Issue actions", not to the
-// chip, whether the document's request still waits on the reader or not.
+// opens. The Status menu's trigger stands on the same line but outside that box, and when the
+// issue's read turns closed it is held (`aria-disabled`), never disabled, so it keeps the focus:
+// neither the chip nor "Issue actions" takes it, a press of it opens nothing and nothing is
+// written, whether the document's request still waits on the reader or not.
 test.each([
   "waits on the reader",
   "is answered",
-])("the Status menu disabled as the issue turns closed while the document's request %s leaves the focus on Issue actions, not on the chip", async (request) => {
+])("the Status menu held as the issue turns closed while the document's request %s keeps the focus, not on the chip", async (request) => {
+  const user = userEvent.setup();
   const open =
     request === "is answered" ? answeredApprovalIssue("approved") : awaitingApprovalIssue();
   const restore = stubHeader(open);
+  const patchIssue = answerIssuePatches();
   const queryClient = headerClient();
   const view = renderHeader("/issues/CORE-1", queryClient);
 
@@ -1450,13 +1459,18 @@ test.each([
         status: "done",
       });
     });
-    await waitFor(() => expect(status).toBeDisabled());
+    await waitFor(() => expect(status).toHaveAttribute("aria-disabled", "true"));
+    expect(status).not.toHaveAttribute("disabled");
 
-    const issueActions = screen.getByRole("button", { name: "Issue actions" });
-    await waitFor(() => expect(issueActions).toHaveFocus());
+    await act(settle);
+    expect(status).toHaveFocus();
     expect(chip).toBeInTheDocument();
     expect(chip).not.toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(menuOpen(), "Enter opened the closed issue's status list").toBe(false);
+    expect(patchIssue).not.toHaveBeenCalled();
   } finally {
+    patchIssue.mockRestore();
     view.unmount();
     restore();
   }

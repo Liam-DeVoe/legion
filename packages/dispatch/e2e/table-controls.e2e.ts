@@ -3953,20 +3953,23 @@ async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
 }
 
 /**
- * What R8's four lists drew at commit 6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, which was the
- * merge base, `fork_point(main@origin | @)`, when this reading was made, in each project the row
- * runs in: `chromium` at 1440x900 and `iphone` at its own 390x664.
+ * What R8's four lists drew at commit bdbce69a7da8c48fa5aa5b6d26373f65cae53514, the merge base,
+ * `fork_point(main@origin | @)`, since the forward merge 702816d8 brought that main commit in, in
+ * each project the row runs in: `chromium` at 1440x900 and `iphone` at its own 390x664. Every
+ * value is the one the first reading took at the earlier merge base,
+ * 6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8: the two readings drew the same parts and the same
+ * sizes, item by item, in both projects.
  *
- * Measured, not written from the code. That commit's `packages/dispatch/web` was built in a
- * scratch tree by `vite build` with this workspace's `node_modules`; outside `web/src` only
- * documents, CI and tests differed between that commit and the head the reading ran at, so the
- * server, the contracts and the build were that head's own. The build was served to this row in
+ * Measured, not written from the code, in builds Job `infra-3135-krows-base-swts8` on
+ * 2026-11-23. The merge base's `packages/dispatch/web` was built in that Job by `vite build` over
+ * the head's install; outside `packages/dispatch/web` and `e2e` only `packages/dispatch/AGENTS.md`
+ * differed between the merge base and the head the reading ran at, `868402ec`, so the server,
+ * the contracts and the build tools were that head's own. The build was served to this row in
  * place of `web/dist` by `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh), over the row's own
- * seed, and the row was run over it in both projects: `drawnItems` read each list until its
- * reading was the one written here, and a list whose reading never was would have been printed
- * with each value it drew instead. Every list's was, in both projects. The Delivery list's rows
- * are found by `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds
- * write `aria-rowindex` on each pull request's row in the list's body.
+ * seed, and the row was run over it in both projects, with a line that printed each list's last
+ * reading (`drawnItems`, and `linedHeights` for the lists whose heights the fonts decide). The
+ * Delivery list's rows are found by `tbody tr[aria-rowindex]`, because the base's carry no
+ * `data-pr-row`: both builds write `aria-rowindex` on each pull request's row in the list's body.
  *
  * Every size kept as a number is one the CSS fixes, which a runner with other fonts draws the
  * same: none moved when this pod drew the lists in three other fonts (`linedHeights`). The Board
@@ -7482,11 +7485,14 @@ test("clear brush window pressed with the Window control scrolled out of sight s
 // the focus goes to the list's first row, and the list scrolls to its top. The architect's ruling
 // of 2026-11-21 06:0xZ (open-items.md, "The selection bar's return"): after a bulk action takes
 // away the row marked last, the focus goes to the row that now stands at that row's place when it
-// is in sight, else to the nearest row in sight before it, else to the list's own stop. It never
-// scrolls and never goes to the body. A focused control taken away, for which Firefox and WebKit
+// is in sight, else to the nearest row in sight before it, else to the list's own stop, and never
+// to the body. That ruling also said the press never scrolls; INFRA-3135's architect's ruling of
+// 2026-11-23 11:42Z replaces that rule: the press scrolls by no more than the line that closes
+// above the list in its commit (below `sm`, Mark all read's line), so the landing's row stands
+// where the row marked last stood. A focused control taken away, for which Firefox and WebKit
 // fire no `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own
 // focus row (e2e/playwright.config.ts).
-test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the marked row's place in sight, and scrolls nothing @firefox @webkit", async ({
+test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the marked row's place in sight, and scrolls by no more than the line that closes above the list @firefox @webkit", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -7543,6 +7549,20 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         top: Math.round(own.top),
       };
     });
+  /** Where the list's box stands in the page and where a row stands on screen: the row `id`
+   *  names, else the row that holds the focus. */
+  const rowAndList = (id: string | null) =>
+    page.evaluate((rowId) => {
+      const frame = document.querySelector('[data-testid="inbox-list"]');
+      const row =
+        rowId === null
+          ? document.activeElement?.closest("[data-inbox-row]")
+          : document.querySelector(`[data-inbox-row="${CSS.escape(rowId)}"]`);
+      return {
+        listTop: (frame?.getBoundingClientRect().top ?? 0) + window.scrollY,
+        rowTop: row?.getBoundingClientRect().top ?? null,
+      };
+    }, id);
   const wrong: string[] = [];
   for (const size of [
     { height: 900, width: 1440 },
@@ -7603,14 +7623,7 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
       const before = await landing();
       // One instant is the point here too: where the row marked last stands on screen and where
       // the list's box stands in the page, just before the press.
-      const stood = await page.evaluate((id) => {
-        const frame = document.querySelector('[data-testid="inbox-list"]');
-        const row = document.querySelector(`[data-inbox-row="${CSS.escape(id)}"]`);
-        return {
-          listTop: (frame?.getBoundingClientRect().top ?? 0) + window.scrollY,
-          rowTop: row?.getBoundingClientRect().top ?? null,
-        };
-      }, marked[0] as string);
+      const stood = await rowAndList(marked[0] as string);
       await page.keyboard.press("Enter");
       for (const id of marked) await expect(inboxRowOf(id)).toHaveCount(0);
       await expect(bar).toHaveCount(0);
@@ -7636,14 +7649,7 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
       // by the height that closed above the list in the press's commit and no more: below `sm`,
       // Mark all read's line, which goes with the last unread threads. One read of the list's box
       // and the landing's row: every hand-off of the press has run, and nothing else moves them.
-      const placed = await page.evaluate(() => {
-        const frame = document.querySelector('[data-testid="inbox-list"]');
-        const row = document.activeElement?.closest("[data-inbox-row]");
-        return {
-          listTop: (frame?.getBoundingClientRect().top ?? 0) + window.scrollY,
-          rowTop: row?.getBoundingClientRect().top ?? null,
-        };
-      });
+      const placed = await rowAndList(null);
       const closed = stood.listTop - placed.listTop;
       if (
         placed.rowTop === null ||

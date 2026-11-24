@@ -47,6 +47,9 @@ const tool = fileURLToPath(new URL("../tools/unit-repeat.ts", import.meta.url));
 
 const SEED = 4242;
 
+/** How many runs of each file a stopped leg (`stoppedLeg`) asks the tool for. */
+const STOPPED_LEG_RERUNS = 2;
+
 /** Passes its first run and fails every later one. */
 const failsAfterFirstRun = `import { describe, expect, test } from "bun:test";
 
@@ -966,7 +969,7 @@ async function stoppedLeg(
       "--lane",
       "harness",
       "--reruns",
-      "2",
+      String(STOPPED_LEG_RERUNS),
       "--seed",
       String(SEED),
       "--out",
@@ -1246,6 +1249,40 @@ function killedRow(pidFile: string, of: "process.pid" | "process.ppid"): string 
 /** The second file of a lane whose row kills a worker or Bun's test process. */
 const besideIt = 'import { test } from "bun:test";\n\ntest("beside it", () => {});\n';
 
+/** As `killedRow` with `process.ppid`, Bun's test process, whose row first spins until every run
+ *  of `beside`, the lane's other file, has ended, as the progress file the tool's preload writes
+ *  says (`DISPATCH_UNIT_REPEAT_PROGRESS`: a `done` line of that file's load for each of
+ *  `STOPPED_LEG_RERUNS` runs). Bun's test process, killed, ends every worker with it, and the
+ *  tool names each file whose runs had not all ended (`runningAt`), so a `besideIt` that had not
+ *  yet loaded when the row wrote its pid is named too, as `loading`. That is a true report of a
+ *  race the row did not mean to make: on a loaded runner the other worker can still be loading
+ *  when the driver sends its SIGKILL, 50 ms after the pid is written (CI runs 45299115821 and
+ *  45301348753 of cybermonklabs/legion#3729). Waiting for it leaves the killed row's file the
+ *  only one in a run, whatever the runner's load. */
+function killedAfterRow(pidFile: string, beside: string): string {
+  const written = `${pidFile}.writing`;
+  return (
+    'import { test } from "bun:test";\n' +
+    'import { readFileSync, renameSync, writeFileSync } from "node:fs";\n\n' +
+    "const besideEnded = () => {\n" +
+    '  const lines = readFileSync(process.env.DISPATCH_UNIT_REPEAT_PROGRESS ?? "", "utf8")\n' +
+    '    .split("\\n")\n' +
+    '    .filter((line) => line !== "")\n' +
+    "    .map((line) => JSON.parse(line));\n" +
+    "  const loads = new Set(\n" +
+    `    lines.filter((line) => line.event === "load" && line.file === ${JSON.stringify(beside)}).map((line) => line.load)\n` +
+    "  );\n" +
+    '  return lines.filter((line) => line.event === "done" && loads.has(line.load)).length;\n' +
+    "};\n\n" +
+    'test("is killed", () => {\n' +
+    `  while (besideEnded() < ${STOPPED_LEG_RERUNS}) {}\n` +
+    `  writeFileSync(${JSON.stringify(written)}, String(process.ppid));\n` +
+    `  renameSync(${JSON.stringify(written)}, ${JSON.stringify(pidFile)});\n` +
+    "  for (;;) {}\n" +
+    "});\n"
+  );
+}
+
 driverRow(
   "a worker killed in a row names its file and row, and the progress file stays",
   async () => {
@@ -1292,13 +1329,17 @@ driverRow(
   async () => {
     // The lie: when Bun's test process itself is killed from outside, Bun writes no junit file,
     // and the report says only that: no file and no row is named, and the progress file that
-    // records the row is deleted. Here the row writes its parent's pid, Bun's test process, and
-    // spins; the driver sends that process a SIGKILL, and the tool no signal at all.
+    // records the row is deleted. Here the row waits for every run of the file beside it to end
+    // (`killedAfterRow`), writes its parent's pid, Bun's test process, and spins; the driver sends
+    // that process a SIGKILL, and the tool no signal at all.
     const directory = scratch();
     const pid = join(directory, "test-process-pid");
     const { code, report, left } = await stoppedLeg(
       directory,
-      { "killed.test.ts": killedRow(pid, "process.ppid"), "beside.test.ts": besideIt },
+      {
+        "killed.test.ts": killedAfterRow(pid, "e2e/__tests__/beside.test.ts"),
+        "beside.test.ts": besideIt,
+      },
       [pid],
       { graceMs: 120_000, namesMs: 120_000 },
       { killFrom: pid }

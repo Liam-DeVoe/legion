@@ -258,8 +258,8 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Type-ahead");
-    // Every PATCH this page sends, so a status a type-ahead picked is caught even though the
-    // pill would show it for only as long as the reader stayed.
+    // Every PATCH this page sends, so a status a list picked is caught even though the pill would
+    // show it for only as long as the reader stayed.
     const patched: string[] = [];
     page.on("request", (request) => {
       if (request.method() === "PATCH") {
@@ -268,9 +268,10 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
     });
 
     // Three of the status labels begin with `t` (Triage, Todo, Testing), so a `t` that reached
-    // the Status menu would pick one of them, and a `t` on the priority list's trigger would
-    // open that list, instead of starting the tab chord. `s` opens the status's menu and `p` the
-    // priority's list (dispatch://INFRA-2160), and Escape closes each with nothing written.
+    // the status's list would narrow it, and a `t` on the status's or the priority's list trigger
+    // would open that list with `t` in its text box, instead of starting the tab chord. `s` opens
+    // the status's list and `p` the priority's (dispatch://INFRA-2160), and Escape closes each
+    // with nothing written.
     for (const [key, control] of [
       ["s", statusTrigger(page)],
       ["p", listTrigger(page, `Priority of ${issue.key}`)],

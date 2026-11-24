@@ -1130,14 +1130,20 @@ test("an issue the table stops listing drops out of the selection and out of wha
 // so the selection empties and the bar goes while it holds the focus. The row after the issue
 // marked last moves up into its place, where the reader can see it, and its checkbox takes the
 // focus with no scroll. The first row, nine rows above the window, would scroll the box back to
-// its top through `focusRow`. A read of the list that no longer lists the two issues stands in
-// for that press here. No focus rescue is mounted (`table()` without `rescued`), so the bar reads
-// every loss as the reader's own (`causedByReader`). In the app the same read with no press of
-// the reader's is a loss they did not cause, and the bar leaves it to the page's rescue.
+// its top through `focusRow`. The press is the bar's Take out of epic, by Enter, whose writes
+// land and whose read of the list after them no longer lists the two issues. No focus rescue is
+// mounted (`table()` without `rescued`): the press arms the bar's own hand-off (`armOnPress`),
+// which the action's run holds until its read has settled (`perform`), so the bar reads its
+// going as the reader's (`causedByReader`). In the app the same read with no press of the
+// reader's is a loss they did not cause, and the focus stays on the page.
 test("the List's bar gone with the focus after the issue marked last left the list hands the focus to the row now at its place, with no scroll", async () => {
   const user = userEvent.setup();
+  const send = spyOn(api, "send").mockImplementation(
+    async (request) => savedIssue(request.path.split("/").at(-1) ?? "") as never
+  );
+  restores.push(() => send.mockRestore());
   const issues = Array.from({ length: 20 }, (_, index) => issue(`CORE-${index + 1}`));
-  const { client } = table(issues);
+  table(issues);
   await screen.findByRole("checkbox", { name: "Select CORE-20" });
   // The rows in the order the table draws them, and the three this case reads.
   const order = [...document.querySelectorAll("[data-issue-row]")].map(
@@ -1149,12 +1155,16 @@ test("the List's bar gone with the focus after the issue marked last left the li
   restores.push(layRowsOut("[data-issue-row]", 9));
   await user.click(screen.getByRole("checkbox", { name: `Select ${marked}` }));
   await user.click(screen.getByRole("checkbox", { name: `Select ${last}` }));
-  act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+  act(() =>
+    within(screen.getByRole("toolbar", { name: "Selected issues" }))
+      .getByRole("button", { name: "Take out of epic" })
+      .focus()
+  );
   const moves = watchMoves();
   restores.push(moves.restore);
-  // The listing answers from `issues`, so the read again no longer lists the two issues.
+  // The listing answers from `issues`, so the read after the writes no longer lists the two.
   issues.splice(0, issues.length, ...issues.filter(({ key }) => key !== marked && key !== last));
-  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await user.keyboard("{Enter}");
   await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
   const landing = screen.getByRole("checkbox", { name: `Select ${next}` });
   await waitFor(() => expect(landing).toHaveFocus());

@@ -35,6 +35,7 @@ import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle
 import { EmptyState } from "../../components/EmptyState";
 import { filterChips } from "../../components/filter-chips";
 import {
+  armOnPress,
   controlsLikeRow,
   focusNoScroll,
   inSightWhole,
@@ -1104,9 +1105,10 @@ function AgentFilterBar({
  * as the composer's chip names it. Clear selection goes with the selection it empties, and the
  * focus it held goes to the select-all checkbox before it while the reader can see it
  * (`useFocusPlace`). While no row matches, that checkbox is disabled and the header holds no
- * other control, so the page's rescue walks the focus back over the main content to the nearest
- * control before the header that the reader can see and that takes no typed text: the Filter
- * button.
+ * other control, so the walk goes back over the main content - the page's rescue's, or, where
+ * none is mounted, the header's own hand-off's - to the nearest control before the header that
+ * the reader can see and that takes no typed text: the Filter button. The header arms its own
+ * hand-off at a press inside it (`armOnPress`).
  */
 function SelectionHeader({
   current,
@@ -1138,9 +1140,12 @@ function SelectionHeader({
     () => null
   );
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the header needs no role of its own.
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the header (`armOnPress`), so the header needs no role of its own.
     <div
       className="mb-2 flex min-h-11 items-center gap-x-2 px-[13px] md:min-h-8"
+      onChangeCapture={armOnPress}
+      onClickCapture={armOnPress}
+      onKeyDownCapture={armOnPress}
       onFocus={noteFocus}
       ref={header}
     >

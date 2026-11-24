@@ -91,7 +91,8 @@ export function IssuePropertiesRow({
   // held by the header's writes (`pickStatus`: a keyed write in the issue's line, sent after the
   // write in flight), so the press lands on the control as it does with nothing edited, and the
   // header and Details read one status, the newest one held. No write holds the status list, not
-  // even its own: only a closed issue disables it.
+  // even its own: only a closed issue holds it (`aria-disabled`, never disabled, so it keeps the
+  // focus, and a press of it or `s` opens nothing).
   const status = writes.pendingStatus ?? issue.status;
   // What the status list's trigger shows: the status a pick is saving, else the issue's.
   const statusShown = statusText(status);
@@ -196,21 +197,21 @@ export function IssuePropertiesRow({
       {/* The prototype's `.pill`: the status's shape and word inside a rule of its colour, which
           is the status list's trigger (the shared single pick, with D5's rules: `STATUS_MENU`),
           24 px tall at every width, the least a target may be (WCAG 2.5.8). Its list holds every
-          open status on an open issue, and every status on a closed one, whose trigger is
-          disabled, since its way back is Reopen; the status shown is picked. The shape is an
-          svg and not text, since the page's typeface lacks ◐; it hides itself from assistive
-          technology and holds no words. */}
+          open status on an open issue, and every status on a closed one, whose trigger is held
+          (`aria-disabled`) and takes no pick, since its way back is Reopen; the status shown is
+          picked. The shape is an svg and not text, since the page's typeface lacks ◐; it hides
+          itself from assistive technology and holds no words. */}
       <MultiSelect
+        ariaDisabled={isClosed}
         chevron={false}
-        disabled={isClosed}
         emptyMessage="No status matches that."
         label={PROPERTY_LABELS.status}
         marks={STATUS_MARKS}
         menu={STATUS_MENU}
         mode="single"
-        onOpenChange={setStatusOpen}
+        onOpenChange={(next) => setStatusOpen(next && !isClosed)}
         onPick={(picked) => {
-          if (picked !== status) writes.pickStatus(picked);
+          if (!isClosed && picked !== status) writes.pickStatus(picked);
         }}
         open={statusOpen}
         optionLabel={statusText}

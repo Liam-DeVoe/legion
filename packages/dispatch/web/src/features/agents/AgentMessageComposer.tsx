@@ -176,7 +176,7 @@ export function AgentMessageComposer({
   const titles = new Map((issues.data ?? []).map((issue) => [issue.key, issue.title]));
   /** The committed issue, once the open list has come back without it: closed since it was
    *  picked. The list and the toggle keep naming it, marked, until the reader picks another -
-   *  the issue header's Status select keeps a closed issue's own status among its options the same
+   *  the issue header's Status pick keeps a closed issue's own status among its options the same
    *  way - so what the picker shows, what the toggle says and where the message goes stay one
    *  issue; a send to it posts, since a closed issue takes comments. */
   const committedClosed = issueKey !== "" && issues.data !== undefined && !titles.has(issueKey);

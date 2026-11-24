@@ -2,7 +2,7 @@ import { beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
@@ -12,8 +12,7 @@ import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtim
 import { onFakeClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
-import { choicesOf } from "../../__tests__/menu-picks";
+import { listOf, panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerRequests } from "../../__tests__/network";
 import {
   artifactRecordHandler,
@@ -41,6 +40,7 @@ import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
+import { PendingWritesIndicator } from "../writes/PendingWritesIndicator";
 import { IssuePage } from "./IssuePage";
 
 const issue = {
@@ -2901,8 +2901,12 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
   const view = renderIssuePage();
 
   try {
-    const openStatus = await screen.findByRole("button", { name: pickNamed("Status") });
-    expect(await choicesOf(user, openStatus)).not.toContain("Done");
+    // An open issue's list offers no Done: an issue closes through Close issue.
+    const openStatus = await findStatusTrigger();
+    await user.click(openStatus);
+    expect(rows(within(panelOf(openStatus)).getByRole("listbox"))).not.toContain("Done");
+    await user.keyboard("{Escape}");
+    expect(statusList()).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Close issue" }));
     await waitFor(() =>
@@ -2919,9 +2923,10 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     });
 
     expect(await screen.findByText("This issue is closed.")).toBeTruthy();
-    const closedStatus = screen.getByRole("button", { name: pickNamed("Status") });
-    expect(closedStatus).toBeDisabled();
-    expect(closedStatus).toHaveTextContent("Done");
+    // A closed issue's Status takes no pick: its trigger is held, never disabled.
+    const closedStatus = statusTrigger();
+    expect(closedStatus).toHaveAttribute("aria-disabled", "true");
+    expect(closedStatus).toHaveAccessibleName("Status Done");
 
     await user.click(screen.getByRole("button", { name: "Reopen issue" }));
     await waitFor(() =>
@@ -2939,9 +2944,7 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     await waitFor(() =>
       expect(screen.queryByText("This issue is closed.")).not.toBeInTheDocument()
     );
-    expect(await screen.findByRole("button", { name: pickNamed("Status") })).toHaveTextContent(
-      "Backlog"
-    );
+    await waitFor(() => expect(statusTrigger()).toHaveAccessibleName("Status Backlog"));
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -2961,24 +2964,344 @@ test("IssuePage lets a human move a Todo issue to In progress", async () => {
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
-    const status = await screen.findByRole("button", { name: pickNamed("Status") });
-    expect(status).toHaveTextContent("Todo");
-    expect(await choicesOf(user, status)).toEqual([
+    const status = await findStatusTrigger();
+    expect(status).toHaveAccessibleName("Status Todo");
+    await user.click(status);
+    const list = within(panelOf(status)).getByRole("listbox", { name: "Status options" });
+    expect(rows(list)).toEqual([
       "Triage",
       "Icebox",
       "Backlog",
-      "Todo",
+      "✓Todo",
       "In progress",
       "Testing",
       "Needs review",
       "Retro",
     ]);
-    await user.click(status);
-    expect(screen.getByRole("option", { name: "Todo" })).toHaveAttribute("aria-selected", "true");
-    await user.click(screen.getByRole("option", { name: "In progress" }));
+
+    await user.click(within(list).getByRole("option", { name: "In progress" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+/** The issue header's Status: the shared list's single pick, named `Status` and then the status
+ *  it shows (`MultiSelect`). */
+function statusTrigger(): HTMLElement {
+  return within(screen.getByTestId("issue-state-actions")).getByRole("button", {
+    name: pickNamed("Status"),
+  });
+}
+
+/** The header's Status, once the page has drawn the header. */
+async function findStatusTrigger(): Promise<HTMLElement> {
+  return within(await screen.findByTestId("issue-state-actions")).findByRole("button", {
+    name: pickNamed("Status"),
+  });
+}
+
+/** The list the Status stands open on, or `null` while it is shut. */
+function statusList(): HTMLElement | null {
+  return screen.queryByRole("listbox", { name: "Status options" });
+}
+
+/** Opens the Status and picks the row named `name`. */
+async function pickStatus(user: UserEvent, name: string): Promise<void> {
+  const trigger = statusTrigger();
+  await user.click(trigger);
+  await user.click(within(panelOf(trigger)).getByRole("option", { name }));
+}
+
+/** The `issue` scope's `s` as `?` lists it: enabled while the Status takes input. */
+const statusKey = () =>
+  appKeymap.describe().find((entry) => entry.scope === "issue" && entry.id === "status");
+
+// The header's Status, one case per row of its states (INFRA-3135 t27): the shared list's single
+// pick, whose text box narrows the statuses, held by `aria-disabled` while its write is out. It
+// takes D5's rules (dispatch://INFRA-2160, `MultiSelect`'s `menu`): `s` opens it, every close
+// gives the focus back where it was as the list opened, and a pick while it is held writes nothing
+// and leaves the list open. A closed issue's is held too, since its way back is Reopen.
+
+test("the header's Status holds a text box that narrows the statuses to the words typed in it", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage();
+
+  try {
+    const trigger = await findStatusTrigger();
+    expect(trigger).toHaveAccessibleName("Status Todo");
+    await user.click(trigger);
+    const box = await screen.findByRole("combobox", { name: "Search statuses" });
+    expect(box).toHaveFocus();
+    const list = listOf(box);
+    expect(list).toHaveAccessibleName("Status options");
+    expect(rows(list)).toHaveLength(8);
+
+    await user.keyboard("re");
+    expect(rows(list)).toEqual(["In progress", "Needs review", "Retro"]);
+    await user.keyboard("t");
+    expect(rows(list)).toEqual(["Retro"]);
+    await user.keyboard("x");
+    expect(within(list).queryAllByRole("option")).toEqual([]);
+    expect(within(list).getByText("No status matches that.")).toBeTruthy();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("a pick from the header's Status sends one write of that status, and a pick of the status it shows sends none", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, status: "in_progress" });
+  const view = renderIssuePage();
+
+  try {
+    await findStatusTrigger();
+    // As a select set to the value it holds fires nothing.
+    await pickStatus(user, "Todo");
+    expect(statusList()).toBeNull();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await pickStatus(user, "In progress");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("while its write is out the header's Status is held by aria-disabled, keeps the focus, and is never disabled", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const save = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockReturnValue(save.promise);
+  const view = renderIssuePage();
+
+  try {
+    const trigger = await findStatusTrigger();
+    expect(trigger).not.toHaveAttribute("aria-disabled");
+    await pickStatus(user, "In progress");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
+    );
+
+    expect(trigger).toHaveAttribute("aria-disabled", "true");
+    expect(trigger).not.toHaveAttribute("disabled");
+    expect(trigger).toHaveFocus();
+    // It shows the status out while the write is.
+    expect(trigger).toHaveAccessibleName("Status In progress");
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("while its write is out a press of the header's Status opens nothing, and a pick from the list that stood open sends no second write", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const save = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockReturnValue(save.promise);
+  const view = renderIssuePage();
+
+  try {
+    const trigger = await findStatusTrigger();
+    await user.click(trigger);
+    const list = await screen.findByRole("listbox", { name: "Status options" });
+    // A write of the issue's status goes out while the list stands open: the one the palette's
+    // Close issue row sends.
+    const close = appKeymap.actions().find((action) => action.id === "close");
+    act(() => close?.run());
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "done" }, keyedAttempt)
+    );
+    expect(trigger).toHaveAttribute("aria-disabled", "true");
+
+    // D5's held rule: the pick writes nothing and the list stays open, and Escape closes it and
+    // gives the focus back to the trigger the press opened it from.
+    await user.click(within(list).getByRole("option", { name: "Backlog" }));
+    expect(statusList()).not.toBeNull();
+    await user.keyboard("{Escape}");
+    expect(statusList()).toBeNull();
+    expect(trigger).toHaveFocus();
+    for (const press of ["{Enter}", " ", "{ArrowDown}", "b"]) {
+      await user.keyboard(press);
+      expect(statusList(), press).toBeNull();
+      expect(textBoxes(), press).toEqual([]);
+    }
+    await user.click(trigger);
+    expect(statusList()).toBeNull();
+    expect(trigger).toHaveFocus();
+    expect(patchIssue.mock.calls.map((call) => call[1])).toEqual([{ status: "done" }]);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("once its write is answered the header's Status shows the server's status and keeps the focus", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const save = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockReturnValue(save.promise);
+  const view = renderIssuePage();
+
+  try {
+    const trigger = await findStatusTrigger();
+    const header = within(screen.getByTestId("issue-header"));
+    await pickStatus(user, "In progress");
+    await waitFor(() => expect(trigger).toHaveAttribute("aria-disabled", "true"));
+    expect(header.getByText("Saving…")).toBeTruthy();
+    await act(async () => {
+      save.resolve({ ...issue, status: "in_progress" });
+      await save.promise;
+    });
+
+    await waitFor(() => expect(trigger).not.toHaveAttribute("aria-disabled"));
+    expect(trigger).toHaveAccessibleName("Status In progress");
+    expect(trigger).toHaveFocus();
+    expect(header.queryByText("Saving…")).toBeNull();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("a refused write of the header's Status is reported in the pending changes and not in the header, and the Status shows the issue's status again", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = renderIssuePage("/issues/CORE-1", undefined, undefined, queryClient);
+  // The shell's indicator, which reports a status pick's refusal (`statusPickOnly`).
+  const indicator = render(
+    <QueryClientProvider client={queryClient}>
+      <PendingWritesIndicator />
+    </QueryClientProvider>
+  );
+
+  try {
+    const trigger = await findStatusTrigger();
+    await pickStatus(user, "Backlog");
+    await waitFor(() =>
+      expect(screen.getByTestId("pending-writes")).toHaveTextContent(
+        "Not saved: CORE-1 set to backlog — the write was refused"
+      )
+    );
+
+    const header = screen.getByTestId("issue-header");
+    expect(within(header).queryByRole("alert")).toBeNull();
+    expect(within(header).queryByText("Could not update this issue.")).toBeNull();
+    expect(trigger).not.toHaveAttribute("aria-disabled");
+    expect(trigger).toHaveAccessibleName("Status Todo");
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    indicator.unmount();
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("a press of a closed issue's Status opens nothing", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage({ ...issue, closed_at: "2026-09-12T10:00:00Z", status: "done" });
+  const patchIssue = answerIssuePatches();
+  const view = renderIssuePage();
+
+  try {
+    const trigger = await findStatusTrigger();
+    expect(trigger).toHaveAccessibleName("Status Done");
+    expect(trigger).toHaveAttribute("aria-disabled", "true");
+    expect(trigger).not.toHaveAttribute("disabled");
+
+    await user.click(trigger);
+    expect(statusList()).toBeNull();
+    await user.keyboard("{ArrowDown}");
+    expect(statusList()).toBeNull();
+    expect(textBoxes()).toEqual([]);
+    expect(statusKey()?.enabled).toBe(false);
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("`s` opens the header's Status list while it takes input, and is not offered while its write holds it", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const save = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockReturnValue(save.promise);
+  const view = renderIssuePage();
+
+  try {
+    const trigger = await findStatusTrigger();
+    expect(statusKey()?.enabled).toBe(true);
+    // R4: `s` opens the list, with the focus in its text box, not on the trigger alone.
+    await user.keyboard("s");
+    expect(statusList()).not.toBeNull();
+    expect(screen.getByRole("combobox", { name: "Search statuses" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(statusList()).toBeNull();
+
+    await pickStatus(user, "In progress");
+    await waitFor(() => expect(trigger).toHaveAttribute("aria-disabled", "true"));
+    act(() => trigger.blur());
+    expect(statusKey()?.enabled).toBe(false);
+    await user.keyboard("s");
+    expect(statusList()).toBeNull();
+    expect(document.activeElement === document.body).toBe(true);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("Escape closes the header's Status list and gives the focus back where it was as the list opened, whether its write holds it or not", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const save = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockReturnValue(save.promise);
+  const view = renderIssuePage();
+
+  try {
+    const trigger = await findStatusTrigger();
+    // `s` on the page: Escape gives the focus back to the page.
+    await user.keyboard("s");
+    expect(statusList()).not.toBeNull();
+    await user.keyboard("{Escape}");
+    expect(statusList()).toBeNull();
+    expect(document.activeElement === document.body).toBe(true);
+
+    // A press of the trigger, and a write of the status out while the list stands open (the
+    // palette's Close issue row): Escape gives the focus back to the held trigger.
+    await user.click(trigger);
+    expect(statusList()).not.toBeNull();
+    const close = appKeymap.actions().find((action) => action.id === "close");
+    act(() => close?.run());
+    await waitFor(() => expect(trigger).toHaveAttribute("aria-disabled", "true"));
+    await user.keyboard("{Escape}");
+    expect(statusList()).toBeNull();
+    expect(trigger).toHaveFocus();
   } finally {
     view.unmount();
     patchIssue.mockRestore();

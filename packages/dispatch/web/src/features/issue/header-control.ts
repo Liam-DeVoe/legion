@@ -19,7 +19,7 @@ export function usableControl(selector: string): HTMLElement | null {
     return null;
   }
   const disabled =
-    ((node instanceof HTMLButtonElement || node instanceof HTMLSelectElement) && node.disabled) ||
+    (node instanceof HTMLButtonElement && node.disabled) ||
     node.getAttribute("aria-disabled") === "true";
   return disabled ? null : node;
 }

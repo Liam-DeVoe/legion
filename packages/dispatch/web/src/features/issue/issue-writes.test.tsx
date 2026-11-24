@@ -9,7 +9,6 @@ import { realClock } from "../../__tests__/fake-clock";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { panelOf, pickNamed, rows } from "../../__tests__/list-picks";
-import { pickFromMenu } from "../../__tests__/menu-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -804,17 +803,14 @@ test("IssuePage drains a title draft after a different issue write settles", asy
   const { unmount } = renderIssuePage();
 
   try {
-    await pickFromMenu(
-      user,
-      await screen.findByRole("button", { name: pickNamed("Status") }),
-      "Backlog"
-    );
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
 
-    // The status menu takes focus when it is used, which would blur (and submit) an open title
-    // editor as a click does in a browser; open the editor after that write is away.
+    // The Status takes focus when it is used, which would blur (and submit) an open title editor
+    // as a click does in a browser; open the editor after that write is away.
     const title = await openTitleEditor();
     await user.clear(title);
     await user.click(title);
@@ -845,7 +841,7 @@ test("IssuePage does not submit a route that was typed but never saved", async (
   try {
     const status = await screen.findByRole("button", { name: pickNamed("Status") });
     const route = await openRouteEditor();
-    await pickFromMenu(user, status, "Backlog");
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -980,11 +976,8 @@ test("IssuePage retries a failed drained title before sending the queued route",
   const { unmount } = renderIssuePage();
 
   try {
-    await pickFromMenu(
-      user,
-      await screen.findByRole("button", { name: pickNamed("Status") }),
-      "Backlog"
-    );
+    const status = await screen.findByRole("button", { name: pickNamed("Status") });
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -1725,11 +1718,7 @@ test("IssuePage sends a refused title no second time as a status pick lands afte
     });
     await screen.findByText("Could not update this issue.");
 
-    await pickFromMenu(
-      user,
-      await screen.findByRole("button", { name: pickNamed("Status") }),
-      "Backlog"
-    );
+    await pickIn(user, () => screen.getByRole("button", { name: pickNamed("Status") }), "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -1817,7 +1806,7 @@ test("IssuePage sends a route that waited behind a failed status write ahead of 
 
   try {
     const status = await screen.findByRole("button", { name: pickNamed("Status") });
-    await pickFromMenu(user, status, "Backlog");
+    await pickIn(user, () => status, "Backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -2174,7 +2163,7 @@ test("a board move then a header status change land in press order after an outa
       moved = moveCard?.("CORE-1", "in_progress", 0);
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    await pickFromMenu(user, status, "Backlog");
+    await pickIn(user, () => status, "Backlog");
     up = true;
     act(() => {
       window.dispatchEvent(new Event("online"));

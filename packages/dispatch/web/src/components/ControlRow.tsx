@@ -18,7 +18,7 @@ import { AnchoredPanel } from "./AnchoredPanel";
 import { Chip } from "./Chip";
 import { type ControlRowScope, useControlRowKeys } from "./control-keys";
 import { CONTROL, type ControlSize, controlIn } from "./control-names";
-import { useFocusPlace } from "./focus-place";
+import { armOnPress, useFocusPlace } from "./focus-place";
 import { PANEL_FRAME } from "./PanelTrigger";
 
 /** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
@@ -464,10 +464,13 @@ export function ControlRow({
     );
   const own = "flex min-w-0 flex-col gap-2";
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of a slot took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the row needs no role of its own.
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of a slot took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the row (`armOnPress`), so the row needs no role of its own.
     <div
       className={className === undefined ? own : `${own} ${className}`}
       data-control={CONTROL.controlRow}
+      onChangeCapture={armOnPress}
+      onClickCapture={armOnPress}
+      onKeyDownCapture={armOnPress}
       onFocus={noteFocus}
       ref={rowRef}
     >
