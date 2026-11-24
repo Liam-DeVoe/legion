@@ -1366,9 +1366,14 @@ func (m *projectMove) restartDuringRelease(t *testing.T) {
 		t.Fatalf("the unfinished release had stopped %v and left running %v, want claims of both", stopped, unreached)
 	}
 	running, _ := r.readRelease()
-	r.stopDaemon()
-	<-done
+	// The restart comes before the release's command is drained. The rig holds the API's socket
+	// while no daemon runs (idleRigOptions.holdStream), so the command's next read waits in that
+	// socket's queue rather than being refused, and it ends only once the restarted daemon answers
+	// it. Drained first, the daemon would stay down until the command's own wait ran out, and a run
+	// that waited so long found the role processes of the pods the release had not reached no
+	// longer all there to adopt.
 	r.restart()
+	<-done
 	ended, _ := r.readRelease()
 	if ended.ID != running.ID || ended.EndedBy != store.ProjectReleaseEndedByBoot || ended.FinishedAt != nil {
 		t.Errorf("the unfinished release reads %+v after the restart, want release %d ended by a boot before it finished", ended, running.ID)
