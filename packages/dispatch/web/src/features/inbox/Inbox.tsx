@@ -490,6 +490,25 @@ function ThreadShortRow({
   );
 }
 
+/** The reading view's own mark for a thread row below 1280 px, named as every other control of a
+ *  thread row is (`useThreadLine`): a root its author deleted reads as the deleted line. */
+function ThreadReadingViewMark({
+  marked,
+  onMark,
+  row,
+  thread,
+}: {
+  marked: boolean;
+  onMark: (id: string) => void;
+  row: InboxListRow;
+  thread: MyReplyRow;
+}): ReactNode {
+  const line = useThreadLine(thread);
+  return (
+    <MarkCheckbox caption="Select" id={rowId(row)} marked={marked} name={line} onMark={onMark} />
+  );
+}
+
 /**
  * The drawer's row: the question's whole card, under a head of two lines, each a named group:
  *
@@ -2003,17 +2022,22 @@ export function Inbox({
                         <span aria-hidden="true">←</span>
                         Inbox
                       </button>
-                      <MarkCheckbox
-                        caption="Select"
-                        id={rowId(subject)}
-                        marked={marked.has(rowId(subject))}
-                        name={
-                          subject.kind === "ask"
-                            ? controlName(subject.ask, undefined)
-                            : questionLine(subject.thread.subject)
-                        }
-                        onMark={onMark}
-                      />
+                      {subject.kind === "ask" ? (
+                        <MarkCheckbox
+                          caption="Select"
+                          id={rowId(subject)}
+                          marked={marked.has(rowId(subject))}
+                          name={controlName(subject.ask, undefined)}
+                          onMark={onMark}
+                        />
+                      ) : (
+                        <ThreadReadingViewMark
+                          marked={marked.has(rowId(subject))}
+                          onMark={onMark}
+                          row={subject}
+                          thread={subject.thread}
+                        />
+                      )}
                     </div>
                     <div className="min-h-0 min-w-0">
                       <ReadingPane
