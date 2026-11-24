@@ -640,8 +640,8 @@ var goingRowlessRuns = `
 // nodes, not gone and more than an hour old, whose row a process of the release before deleted
 // (goingRowlessRuns). Each run either read answers is taken by goRunGone through the sweep's one
 // loop over runs (eachGoingRun). Both reads always run: a pass whose context ended fails the read
-// that comes after, under that read's name, so a shutdown during the first read's loop names the
-// end twice, once from that loop and once from the second read. It logs one line where it did
+// that comes after, under that read's name, so a shutdown during the first read's loop can name
+// the end twice, once from that loop and once from the second read. It logs one line where it did
 // anything: how many runs of the first read and nodes of the second it stated gone, and how many
 // runs' rows it removed.
 func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {

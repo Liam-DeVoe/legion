@@ -1780,11 +1780,12 @@ func withoutTheAddedFields(t *testing.T, path string, answer any) {
 	documents := map[string]artifactNode{}
 	for _, name := range []string{"links", "linked_from"} {
 		for i, item := range list(name) {
-			link, isObject := object(fmt.Sprintf("%s[%d]", name, i), item)
+			at := fmt.Sprintf("%s[%d]", name, i)
+			link, isObject := object(at, item)
 			if !isObject {
 				continue
 			}
-			place := fmt.Sprintf("%s[%d].node", name, i)
+			place := at + ".node"
 			node, isObject := object(place, link["node"])
 			if !isObject {
 				continue

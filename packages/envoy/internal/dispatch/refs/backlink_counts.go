@@ -743,11 +743,11 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		exclude = ` and not (r.kind = any($4))`
 	}
 	counted, join, keyed, _ := target.read(`r.to_id`)
-	// source is the arm's test of the node its mention comes from, a predicate, true where it
-	// makes none.
+	// rest is the arm's own tests of its row, and source its test of the node its mention comes
+	// from; each is a predicate, source true where it makes none.
 	arm := func(relation, rest, source string) string {
 		return `select ` + counted + ` from ` + relation + join + `
-			where r.to_kind = '` + target.kind + `' and ` + keyed + rest + exclude + ` and ` + source
+			where r.to_kind = '` + target.kind + `' and ` + keyed + ` and ` + rest + exclude + ` and ` + source
 	}
 	arms := []string{
 		// refs_to (to_kind, to_id). heldByABlock belongs on this arm alone: it is gated on
@@ -757,7 +757,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// view's readers do not. The source-kind filter is this arm's alone for the same reason:
 		// every other arm's from_kind is a literal, or one of a list of literals (storedSQL), of a
 		// kind nodeRegistry resolves, so the filter would drop nothing there.
-		arm(`refs r`, ` and r.from_kind = any($2) and not `+heldByABlock("r"),
+		arm(`refs r`, `r.from_kind = any($2) and not `+heldByABlock("r"),
 			gatedEnd(refsSources, `r.from_kind`, `r.from_id`, false, backlinkSeen)),
 		// block_refs_to_source (to_kind, to_id, (artifact_id::text)), by its first two columns,
 		// over the rows that name no node. The view's own arm lists a block[] pointer's row only
@@ -765,7 +765,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// with no limit is listed without the call; this arm repeats both, so the count is the
 		// rows the list shows. A pointer whose target is retyped out of its allowed types leaves
 		// the count the moment it leaves the list, with no rewrite of either.
-		arm(`block_refs r`, ` and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
+		arm(`block_refs r`, `(r.to_types is null or block_ref_listed(r.to_types, r.to_id))
 			and `+rowNamesNoNode(`r.node_kind`),
 			gatedKind("block", `r.from_node`, backlinkSeen)),
 		// The same links in the store, read through graph_tuples_as_of_in: every current
@@ -778,7 +778,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// listed without the lookup. Its own test of the citing block is the view's state rule and
 		// this registry's predicate made out of one read of that block's node row
 		// (liveVisibleNode).
-		arm(`graph_tuples r`, ` and r.from_kind = 'block' and r.kind <> '`+TupleInDocument+`'
+		arm(`graph_tuples r`, `r.from_kind = 'block' and r.kind <> '`+TupleInDocument+`'
 			and r.kind <> '`+graphstore.TuplePartOf+`' and `+currentTuple("r")+`
 			and (r.kind = 'mentions' or block_ref_listed(block_pointer_targets(r.from_id, r.kind), r.to_id))
 			and `+blockRefCarries(BlockNodeKind, "r"),
@@ -789,7 +789,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	// that node, stands (migration 20261116094101). An ask's shaped declares no targets, so it
 	// carries no types test.
 	if target.kind == BlockNodeKind {
-		arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'
+		arms = append(arms, arm(`graph_tuples r`, `r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'
 			and `+currentTuple("r")+` and `+blockRefCarries(graphstore.KindAsk, "r"),
 			liveVisibleNode(graphstore.KindAsk, `r.from_id`)))
 	}
@@ -799,7 +799,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	// holds is listed while that block is one of the item's current ones, and the count copies
 	// the view's answer rather than correcting it.
 	for _, item := range itemKinds {
-		arms = append(arms, arm(itemBlockLinks(item), ` and `+itemBlockCurrent,
+		arms = append(arms, arm(itemBlockLinks(item), itemBlockCurrent,
 			gatedKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
 	}
 	return arms

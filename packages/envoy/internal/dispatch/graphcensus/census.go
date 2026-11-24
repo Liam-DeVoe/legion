@@ -1292,8 +1292,8 @@ func authorLogin(actor string) string {
 // proved of a session is read off its alias_of (storedOwners). A node written on the shared
 // bearer, or by a pod on a session its body names, names that session, which is so on both sides;
 // a node whose made_by names only a workload states none, and that workload is on neither.
-var reasoningAuthored = currentAuthors(`(held.kind in ('` + graphstore.KindLens + `', '` + graphstore.KindRisk + `', '` +
-	graphstore.KindConstraint + `') or (held.kind = '` + refs.BlockNodeKind + `' and ` + graphstore.FindingIDSQL("held.id") + `))`)
+var reasoningAuthored = currentAuthors(`(` + kindIn("held.kind", []string{graphstore.KindLens, graphstore.KindRisk, graphstore.KindConstraint}) +
+	` or (held.kind = '` + refs.BlockNodeKind + `' and ` + graphstore.FindingIDSQL("held.id") + `))`)
 
 // goneRunsAuthored is the author every run whose row is gone states now - one the sweep stated gone
 // and removed the rows of an hour after it was asked (api's sweepGoingRequests), or one a process
