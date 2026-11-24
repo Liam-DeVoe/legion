@@ -657,7 +657,7 @@ func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHo
 	}
 	stopped := m.stopPrevious(ctx)
 	m.timers[TimerPodStart] = armed{seq: granted.Seq}
-	parked := &wake{kind: WakeLaunch, state: m.claim.State, ran: true, park: hold, again: m.launchFromTop(l)}
+	parked := &wake{kind: WakeLaunch, state: m.claim.State, ran: true, park: hold, again: m.launchFromTop(l), start: l.start}
 	parked.run = func(ctx context.Context) error {
 		if parked.park == nil {
 			return m.launchTries(ctx, l, nil)
@@ -737,6 +737,11 @@ func podEndFor(state ClaimState, live podHoldEnd) podHoldEnd {
 // up its hold, which leaves the gate as a failed launch at the end of this decision (endPodPark),
 // and the pause's gate holds it in the park's place and stops the claim for the pause in its next
 // decision, a launch owed (pauseGate, pauseStopDue).
+//
+// A grant whose start's work the issue left during the park starts nothing either, by the rule
+// every park's end keeps (startLeftWhileParked): the claim is suspended for the daemon, and the
+// hold, which the wake gave up but the machine still records, leaves the gate at the end of this
+// decision as a suspension's (endPodPark), so the pod goes to the next start that waits.
 func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	if waiting == nil || waiting.park == nil {
@@ -750,7 +755,11 @@ func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 		waiting.park = nil
 		return m.pauseGate(ctx, waiting, pause)
 	}
-	m.wake, m.podPark = nil, nil
+	m.wake = nil
+	if left, err := m.startLeftWhileParked(ctx, waiting.start, waiting.again); left {
+		return err
+	}
+	m.podPark = nil
 	return waiting.run(ctx)
 }
 

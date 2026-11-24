@@ -2903,37 +2903,54 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 //
 // start is the work a workflow start brings the claim back for (StartWork, revive), the zero
 // StartWork for every other launch. Its caller judged it under this lock already (startHolds),
-// so a launch that runs here is not judged twice; one the gate parks is judged again at its
-// wake's turn, since the wait can be tens of minutes over a wave and the issue can leave the
-// start's work meanwhile. A launch that turn finds left behind starts no process: the claim,
-// written launching with none for the wait (parkWake), is suspended for the daemon with its
-// session kept, and the start of the role's next work resumes it (startLeft).
+// so a launch that runs here is not judged twice. A launch that waited is judged again where its
+// wait ends (startLeftWhileParked): at the end of a park — the pacing's turn, the pod gate's grant,
+// the pause's let-out (runWake, podStartDue) — and here, where a retry relaunchLater armed comes
+// back over a claim left launching with no process (the probe interval's, the session store's,
+// the lifecycle check's).
 func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, cause string, start StartWork) error {
 	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, cause, start) }
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
-	return m.reserveWake(ctx, exempt, func(ctx context.Context) error {
-		if parked := m.claim.State == StateLaunching && m.claim.Locator == nil; parked {
-			if err := m.startHolds(ctx, start); errors.Is(err, ErrStartLeft) {
-				return m.startLeft(ctx, err)
-			} else if err != nil {
-				return m.relaunchRefused(ctx, again, err)
-			}
-		}
+	if left, err := m.startLeftWhileParked(ctx, start, again); left {
+		return err
+	}
+	return m.reserveWake(ctx, exempt, start, func(ctx context.Context) error {
 		return m.launchNow(ctx, charged, exempt, requested, cause, start)
 	}, again)
 }
 
-// startLeft ends a start's launch the pacing parked and whose work the issue left during the wait
-// (launchAfter): the claim records no process, so none is stopped, and it is suspended for the
-// daemon, its session kept, the end a launch the tree's lifecycle refuses over a claim with no
-// process takes too (relaunchRefused). The task the start handed it names a phase and is retired
+// startLeftWhileParked is the one rule a start that waited keeps where its wait ends: a claim
+// written launching with no process — the state every park and every armed retry leaves it in
+// (waitOnMachine, askPod, pauseGate, relaunchLater) — whose start's work its issue has left since
+// starts no process (startLeft). It answers whether the launch ends here, and what ending it
+// answered: the start left, or its read failed, which relaunchRefused tries again with again.
+// A claim that still records its process, or that was not left launching, was judged by the
+// decision that raised its launch and is judged by nothing here, and so is the zero StartWork.
+func (m *Machine) startLeftWhileParked(ctx context.Context, start StartWork, again func(context.Context) error) (bool, error) {
+	if m.claim.State != StateLaunching || m.claim.Locator != nil {
+		return false, nil
+	}
+	switch err := m.startHolds(ctx, start); {
+	case err == nil:
+		return false, nil
+	case errors.Is(err, ErrStartLeft):
+		return true, m.startLeft(ctx, err)
+	default:
+		return true, m.relaunchRefused(ctx, again, err)
+	}
+}
+
+// startLeft ends a start's launch that waited and whose work the issue left during the wait
+// (startLeftWhileParked): the claim records no process, so none is stopped, and it is suspended
+// for the daemon, its session kept, the end a launch the tree's lifecycle refuses over a claim with
+// no process takes too (relaunchRefused). The task the start handed it names a phase and is retired
 // unsent with the suspension (settle), and the start of the role's next work resumes the claim by
 // rule. A suspension for the daemon is no stranded claim of a role that works no step the task
 // stands at (workflow.Stranded).
 func (m *Machine) startLeft(ctx context.Context, err error) error {
-	m.log.Info("supervise: the launch this start's wake held is of work its issue has left; suspending the claim with no process started", "error", err)
+	m.log.Info("supervise: the launch this start waited for is of work its issue has left; suspending the claim with no process started", "error", err)
 	return m.suspended(ctx, SuspendedByDaemon, nil)
 }
 
@@ -3127,7 +3144,7 @@ func (m *Machine) pauseHeldTry(ctx context.Context, l launchTry, pause int64) er
 	}
 	return m.pauseGate(ctx, &wake{reserved: m.deps.Clock.Now(), kind: WakeLaunch, state: m.claim.State, ran: true,
 		run:   func(ctx context.Context) error { return m.launchTries(ctx, l, nil) },
-		again: m.launchFromTop(l)}, pause)
+		again: m.launchFromTop(l), start: l.start}, pause)
 }
 
 // writeTry is a fresh try of the launch (launchTries): the claim at the next generation with a
