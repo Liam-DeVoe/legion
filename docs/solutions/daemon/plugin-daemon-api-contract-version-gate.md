@@ -145,8 +145,7 @@ the number cost until dispatch://INFRA-1569:
 
 - **Any diff that changes a shape the plugin parses adds its contract entry in the same commit as
   the shape change** (`bash scripts/daemon-contract-entry.sh <slug>`; a bump of the constant and
-  the manifest then), and the pull request body names the entry — the contract change, not a `!`
-  marker, is how this repository signals the incompatibility (Sami's rule). Put "grep the diff for
+  the manifest then), and the pull request body names the entry. Put "grep the diff for
   `LegionDaemonApi`" on the planner's checklist and the reviewer's.
 - Until dispatch://INFRA-1569 a number claimed on a long-lived branch could be taken first by
   another branch: LEGION-16 (#961) had also taken 2 for the controller handshake, and after
