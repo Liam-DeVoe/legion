@@ -303,7 +303,7 @@ jobs:
   # why: .github/ci-notes/dispatch-browser.md#the-bun-rows-that-need-a-postgresql-and-why-they-are-a-job-of-this-file
   # 120 + 240 + 451 = 811 s, 13 min 31 s, rounded up to 14 minutes.
   postgres-rows:
-    name: ${{ 'postgres-rows' }}
+    name: ${{ github.event_name && 'postgres-rows' }}
     needs: binaries
     # Its files hold only rows main runs in no job of ci.yaml, so it runs in the full lane alone.
     if: inputs.lane == 'full'
@@ -354,7 +354,7 @@ jobs:
   # why: .github/ci-notes/dispatch-browser.md#the-recordings-job-the-guard-on-the-stubbed-layers-recordings
   # 300 + 240 + 491 = 1,031 s, 17 min 11 s, rounded up to 18 minutes.
   recordings:
-    name: ${{ 'recordings' }}
+    name: ${{ github.event_name && 'recordings' }}
     needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
@@ -435,7 +435,7 @@ jobs:
 
   # why: .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs
   multiprocess:
-    name: ${{ 'multiprocess' }}
+    name: ${{ github.event_name && 'multiprocess' }}
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
@@ -587,7 +587,7 @@ jobs:
   # why: .github/ci-notes/dispatch-browser.md#why-each-visual-row-stops-its-pages-writes-and-runs-once
   # 240 + 333 + 120 = 693 s -> 12 min.
   visual:
-    name: ${{ 'visual' }}
+    name: ${{ github.event_name && 'visual' }}
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 12

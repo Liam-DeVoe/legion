@@ -49,7 +49,7 @@ env:
 jobs:
   # why: .github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries
   changes:
-    name: ${{ 'changes' }}
+    name: ${{ github.event_name && 'changes' }}
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
@@ -180,7 +180,7 @@ jobs:
   scripts-held:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.scripts-held == 'true') }}
-    name: ${{ 'test / test' }}
+    name: ${{ github.event_name && 'test / test' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     env: {JOB_TIMEOUT_MINUTES: 30}
@@ -192,7 +192,7 @@ jobs:
   ci-images:
     needs: changes
     if: needs.changes.outputs.ci-images == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ 'ci-images / ci-images' }}
+    name: ${{ github.event_name && 'ci-images / ci-images' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     env: {JOB_TIMEOUT_MINUTES: 25}
@@ -207,7 +207,7 @@ jobs:
   tool-fallback:
     needs: [changes, ci-images]
     if: ${{ !cancelled() && needs.changes.outputs.tool-fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
-    name: ${{ 'tool-fallback / tool-fallback' }}
+    name: ${{ github.event_name && 'tool-fallback / tool-fallback' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env: {JOB_TIMEOUT_MINUTES: 25}
@@ -285,7 +285,7 @@ jobs:
   tool-fallback-arm:
     needs: [changes, ci-images]
     if: ${{ !cancelled() && needs.changes.outputs.tool-fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
-    name: ${{ 'tool-fallback-arm / tool-fallback-arm' }}
+    name: ${{ github.event_name && 'tool-fallback-arm / tool-fallback-arm' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 40
     env: {JOB_TIMEOUT_MINUTES: 40}
@@ -343,7 +343,7 @@ jobs:
 
   # why: .github/ci-notes/ci.md#the-carriers
   daemon-go:
-    name: ${{ 'daemon-go / daemon-go' }}
+    name: ${{ github.event_name && 'daemon-go / daemon-go' }}
     needs: [changes, go-daemon]
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.go-daemon == 'true') }}
     runs-on: ubuntu-24.04-arm
@@ -359,7 +359,7 @@ jobs:
 
   # why: .github/ci-notes/ci.md#why-the-race-step-runs-in-legs-of-its-own
   daemon-go-race:
-    name: ${{ 'daemon-go / daemon-go-race' }}
+    name: ${{ github.event_name && 'daemon-go / daemon-go-race' }}
     needs: [changes, go-daemon]
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.go-daemon == 'true') }}
     runs-on: ubuntu-24.04-arm
@@ -374,7 +374,7 @@ jobs:
   plugin-pack:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.plugin-pack == 'true') }}
-    name: ${{ 'plugin-pack / plugin-pack' }}
+    name: ${{ github.event_name && 'plugin-pack / plugin-pack' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env: {JOB_TIMEOUT_MINUTES: 30}
@@ -387,7 +387,7 @@ jobs:
   daemon-live:
     needs: changes
     if: needs.changes.outputs.daemon-live == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ 'daemon-live / daemon-live' }}
+    name: ${{ github.event_name && 'daemon-live / daemon-live' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env: {JOB_TIMEOUT_MINUTES: 40}
@@ -433,7 +433,7 @@ jobs:
   kind-image:
     needs: [changes, ci-images]
     if: ${{ !cancelled() && needs.changes.outputs.kind == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
-    name: ${{ 'kind / image' }}
+    name: ${{ github.event_name && 'kind / image' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env: {JOB_TIMEOUT_MINUTES: 45}
@@ -467,7 +467,7 @@ jobs:
   docs:
     needs: changes
     if: needs.changes.outputs.docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ 'docs' }}
+    name: ${{ github.event_name && 'docs' }}
     # why: .github/ci-notes/ci.md#the-docs-jobs-scopes
     permissions:
       contents: read
@@ -501,7 +501,7 @@ jobs:
   web-cold:
     needs: changes
     if: needs.changes.outputs.web-cold == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ 'web-cold / web-cold' }}
+    name: ${{ github.event_name && 'web-cold / web-cold' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
@@ -540,7 +540,7 @@ jobs:
   pi-held:
     needs: changes
     if: needs.changes.outputs.pi-held == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ 'pi-legion / pi-legion' }}
+    name: ${{ github.event_name && 'pi-legion / pi-legion' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 28
     env: {JOB_TIMEOUT_MINUTES: 28}
@@ -555,7 +555,7 @@ jobs:
   claude-envoy-names:
     needs: [changes, pi]
     if: needs.changes.outputs.pi == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ 'claude-envoy / private-names' }}
+    name: ${{ github.event_name && 'claude-envoy / private-names' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
@@ -569,7 +569,7 @@ jobs:
   dispatch-browser:
     needs: changes
     if: needs.changes.outputs.dispatch-browser == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ 'dispatch-browser' }}
+    name: ${{ github.event_name && 'dispatch-browser' }}
     # why: .github/ci-notes/ci.md#the-dispatch-browser-jobs-scopes
     permissions:
       contents: read
@@ -584,7 +584,7 @@ jobs:
   dispatch-browser-pr:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.dispatch-browser-pr == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ 'dispatch-browser-pr' }}
+    name: ${{ github.event_name && 'dispatch-browser-pr' }}
     permissions:
       contents: read
       actions: read
@@ -757,9 +757,9 @@ jobs:
       - *report
 
   envoy-go:
-    name: ${{ 'envoy-go / envoy-go' }}
+    name: ${{ github.event_name && 'envoy-go / envoy-go' }}
     needs: [changes, go-envoy-held]
-    if: ${{ !cancelled() && needs.changes.outputs.go-envoy-held == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    if: &held-carrier ${{ !cancelled() && needs.changes.outputs.go-envoy-held == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
@@ -770,9 +770,9 @@ jobs:
       - *report
 
   envoy-go-race:
-    name: ${{ 'envoy-go-race / envoy-go-race' }}
+    name: ${{ github.event_name && 'envoy-go-race / envoy-go-race' }}
     needs: [changes, go-envoy-held]
-    if: ${{ !cancelled() && needs.changes.outputs.go-envoy-held == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    if: *held-carrier
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
@@ -783,9 +783,9 @@ jobs:
       - *report
 
   envoy-go-race-api:
-    name: ${{ 'envoy-go-race-api / envoy-go-race-api' }}
+    name: ${{ github.event_name && 'envoy-go-race-api / envoy-go-race-api' }}
     needs: [changes, go-envoy-held]
-    if: ${{ !cancelled() && needs.changes.outputs.go-envoy-held == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    if: *held-carrier
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
@@ -796,9 +796,9 @@ jobs:
       - *report
 
   envoy-go-race-docs:
-    name: ${{ 'envoy-go-race-docs / envoy-go-race-docs' }}
+    name: ${{ github.event_name && 'envoy-go-race-docs / envoy-go-race-docs' }}
     needs: [changes, go-envoy-held]
-    if: ${{ !cancelled() && needs.changes.outputs.go-envoy-held == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    if: *held-carrier
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
@@ -809,9 +809,9 @@ jobs:
       - *report
 
   envoy-go-docs-finalizers:
-    name: ${{ 'envoy-go-docs-finalizers / envoy-go-docs-finalizers' }}
+    name: ${{ github.event_name && 'envoy-go-docs-finalizers / envoy-go-docs-finalizers' }}
     needs: [changes, go-envoy-held]
-    if: ${{ !cancelled() && needs.changes.outputs.go-envoy-held == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    if: *held-carrier
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
@@ -822,9 +822,9 @@ jobs:
       - *report
 
   dispatch-memory:
-    name: ${{ 'dispatch-memory / dispatch-memory' }}
+    name: ${{ github.event_name && 'dispatch-memory / dispatch-memory' }}
     needs: [changes, go-envoy-held]
-    if: ${{ !cancelled() && needs.changes.outputs.go-envoy-held == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    if: *held-carrier
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env: {JOB_TIMEOUT_MINUTES: 10}
@@ -852,7 +852,7 @@ jobs:
   text-checks:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.text-checks == 'true') }}
-    name: ${{ 'text-checks / text-checks' }}
+    name: ${{ github.event_name && 'text-checks / text-checks' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     env: {JOB_TIMEOUT_MINUTES: 15}
@@ -865,7 +865,7 @@ jobs:
   notices:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.notices == 'true') }}
-    name: ${{ 'notices / notices' }}
+    name: ${{ github.event_name && 'notices / notices' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     env: {JOB_TIMEOUT_MINUTES: 30}
@@ -878,7 +878,7 @@ jobs:
   worker-image:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.worker-image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ 'worker-image' }}
+    name: ${{ github.event_name && 'worker-image' }}
     uses: ./.github/workflows/worker-image.yaml
     # why: .github/ci-notes/ci.md#the-worker-image-jobs-scopes
     permissions:
@@ -894,7 +894,7 @@ jobs:
   browser-image:
     needs: changes
     if: needs.changes.outputs.browser-image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ 'browser-image' }}
+    name: ${{ github.event_name && 'browser-image' }}
     uses: ./.github/workflows/browser-image.yaml
     # why: .github/ci-notes/ci.md#the-browser-image-job
     permissions:
@@ -938,7 +938,7 @@ jobs:
 
   # why: .github/ci-notes/ci.md#the-merge-queues-cancel-act
   cancel-started:
-    name: ${{ 'cancel-started' }}
+    name: ${{ github.event_name && 'cancel-started' }}
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10

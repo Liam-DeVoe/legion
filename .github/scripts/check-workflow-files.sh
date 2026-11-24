@@ -28,9 +28,11 @@
 #      (`./.github/workflows/…`) and counts a call to another repository's workflow as one call;
 #   6. ci.yaml routing more than 32 jobs (the keys of its jobs map) besides its carriers, each held
 #      part a job of its own: a carrier is a job that only carries the old check-run name of a job
-#      split into legs, whose steps are exactly a sparse checkout of .github, one step and the step
-#      that reports to ci-ok (.github/actions/ci-ok-report). A carrier with any other step is
-#      counted as a job;
+#      split into legs, whose steps are exactly a sparse checkout of .github, a step that runs
+#      .github/scripts/leg-verdict.sh and the step that reports to ci-ok
+#      (.github/actions/ci-ok-report), the shape check-ci-layout.sh's rule 32 holds a carrier to. A
+#      carrier with any other step, and a job of three steps whose middle one runs anything else (a
+#      check of its own, as claude-envoy-names runs), is counted as a job;
 #   7. a dorny/paths-filter step whose filter text - its `filters` input inline, or the file that
 #      input names - is 10,000 bytes or more. The filters select jobs by package area, one area a
 #      job, and a filter that lists files one by one, as the deleted filter file did, is what this
@@ -111,6 +113,7 @@ JOB_LIMIT = 32
 FILTER_LIMIT = 10_000
 ROUTER_LIMIT = 63_000
 REPORT_ACTION = "./.github/actions/ci-ok-report"
+LEG_VERDICT = ".github/scripts/leg-verdict.sh"
 # Where the rule the two size refusals enforce is written down: what a workflow file holds, and
 # where the rest goes.
 RULE = ".github/ci-notes/README.md"
@@ -282,14 +285,15 @@ def filter_steps(path: Path) -> list:
 
 
 def is_carrier(job: dict) -> bool:
-    """A job that only carries a split job's old check-run name: a sparse checkout of .github, one
-    step, and the report to ci-ok, and nothing else."""
+    """A job that only carries a split job's old check-run name: a sparse checkout of .github,
+    LEG_VERDICT over the split job's legs, and the report to ci-ok, and nothing else."""
     steps = job.get("steps") or []
     if len(steps) != 3 or not all(isinstance(s, dict) for s in steps):
         return False
-    checkout, _, report = steps
+    checkout, verdict, report = steps
     sparse = str((checkout.get("with") or {}).get("sparse-checkout", "")).strip()
     return (str(checkout.get("uses", "")).startswith("actions/checkout@") and sparse == ".github"
+            and str(verdict.get("run", "")).split()[:1] == [LEG_VERDICT]
             and report.get("uses") == REPORT_ACTION)
 
 
@@ -612,7 +616,7 @@ for path in targets:
                 path,
                 f"{path} routes {len(counted)} jobs besides its carriers, above the limit of {JOB_LIMIT}: "
                 f"{', '.join(counted)}. A carrier is a job whose steps are a sparse checkout of "
-                f".github, one step and the report to ci-ok, and any other job counts; fold a new "
+                f".github, {LEG_VERDICT} and the report to ci-ok, and any other job counts; fold a new "
                 f"job's steps into a leg of a job of the same runner and events." + limits(path),
             )
 

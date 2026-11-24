@@ -31,7 +31,8 @@ A `workflow_dispatch` run of `ci.yaml` runs every job but `kind`, `agent-harness
 `gh workflow run ci.yaml --ref <branch> -f kind-and-agent-harness=true` also runs `kind` and `agent-harness`, and is the way to run `kind` at a head.
 
 A check whose `ci_check` names a check run of `kind` is proved by such a run with `kind-and-agent-harness` true, at the pull request's head, started after the pull request's own run.
-A job that a dispatch run skips carries an expression for its name, as `pr-title` does since cybermonklabs/legion#4750, so that its skipped record never carries the name that a `ci_check` gives.
+A job that a dispatch run skips carries a name that is an expression reading a context, as `pr-title` does since cybermonklabs/legion#4750, and a job of one name writes it `${{ github.event_name && '<name>' }}`, so that its skipped record carries the expression's text and never the name that a `ci_check` gives.
+An expression of string literals alone is not enough: GitHub evaluates it even for a skipped job, as `${{ 'kind / image' }}` gave skipped check run 138611450495 the name `kind / image` in pull request run 45440587594.
 A called workflow whose calling job the dispatch run skips, such as `worker-image`, writes no check run under its own jobs' names.
 A check of a check run that runs in merge groups alone, such as `dispatch-two-builds / dispatch-two-builds-same`, is a `default_branch` check, read from a merge-group run.
 

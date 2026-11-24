@@ -1196,23 +1196,45 @@ def check_event_gates(documents: dict, pins, problems: list) -> None:
 
 # ---------------------------------------------------------------- rule 25: expression names
 CANNOT_SKIP = re.compile(r"^\s*(?:\$\{\{)?\s*(?:always\(\)|!\s*cancelled\(\))\s*(?:\}\})?\s*$")
+NAME_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
+# A name an expression reads outside its string literals that is neither a function's (followed
+# by `(`) nor a literal word: a context, such as github, matrix or needs.
+CONTEXT_NAME = re.compile(r"(?<![\w.-])[A-Za-z_][\w-]*(?![\w-]|\s*\()")
+LITERAL_WORDS = {"true", "false", "null", "NaN", "Infinity"}
+
+
+def reads_context(name: str) -> bool:
+    """Whether an expression of a `name:` reads a context, rather than string literals, operators
+    and functions of them alone."""
+    return any(word not in LITERAL_WORDS
+               for found in NAME_EXPRESSION.finditer(name)
+               for word in CONTEXT_NAME.findall(STRING_LITERAL.sub("''", found.group(1))))
 
 
 def check_expression_names(documents: dict, problems: list) -> None:
     """Rule 25: every job of ci.yaml, and every job of a workflow it calls, that a run can skip
-    carries a `name:` that is an expression, so its skipped record carries the expression's text
-    rather than a name a reader takes for a check that ran."""
+    carries a `name:` that is an expression reading a context, so its skipped record carries the
+    expression's text rather than a name a reader takes for a check that ran. GitHub evaluates a
+    name that reads no context even for a job it skips: pull request run 45440587594 wrote check
+    run 138611450495, skipped, as `kind / image` for `${{ 'kind / image' }}`, while pr-title's
+    name, which reads github.event_name, left its own text on check run 138610203753."""
     for path, document in documents.items():
         for job_id, job in (document.get("jobs") or {}).items():
             condition = (job or {}).get("if")
             if condition is None or CANNOT_SKIP.match(str(condition)):
                 continue
-            if "${{" not in str((job or {}).get("name", "")):
-                problems.append(error(path, f"job {job_id} of {path} has an if: that can skip it and "
-                                            + ("no name:" if "name" not in (job or {}) else
-                                               f"the literal name `{job['name']}`")
-                                            + ", so its skipped record carries a plain name; give it a name that is an "
-                                              f"expression, such as `${{{{ '{job_id}' }}}}`"))
+            name = str((job or {}).get("name", ""))
+            if "${{" in name and reads_context(name):
+                continue
+            problems.append(error(path, f"job {job_id} of {path} has an if: that can skip it and "
+                                        + ("no name:" if "name" not in (job or {}) else
+                                           f"the literal name `{name}`" if "${{" not in name else
+                                           f"the name `{name}`, an expression that reads no context, which "
+                                           f"GitHub evaluates even for a skipped job")
+                                        + ", so its skipped record carries a plain name; give it a name that is an "
+                                          f"expression reading a context, such as "
+                                          f"`${{{{ github.event_name && '{job_id}' }}}}`"))
 
 
 # ---------------------------------------------------------------- rule 26: runners

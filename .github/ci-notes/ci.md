@@ -60,10 +60,13 @@ its area matches or the unnamed-file step finds a file no area names; the job he
 attempt of a merge-group run
 (.github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries
 says why every job needs its own), a matrix with `fail-fast: false` whose legs each carry a
-`name:` that is an expression giving the check-run name, its steps in a composite action
-.github/actions/<job>/ (one subfolder per leg with steps of its own) and its last step the
-ci-ok-report step; and the job's id in the ci-ok job's `needs:`, without which the verdict is
-reached before that job ends and says nothing about it. CI_OK_SELECTED_BY (this file's env)
+`name:` that is an expression giving the check-run name and reading a context (a job of one
+name writes `${{ github.event_name && '<name>' }}`, since GitHub evaluates a name of string
+literals alone even for a skipped job: #a-dispatched-runs-check-names), its steps in a
+composite action .github/actions/<job>/ (one subfolder per leg with steps of its own) and its
+last step the ci-ok-report step; and the job's id in the ci-ok job's `needs:`, without which
+the verdict is reached before that job ends and says nothing about it. CI_OK_SELECTED_BY (this
+file's env)
 maps the job only where the output its `if:` tests is not named after the job (a carrier, or
 kind-image on kind's output), and CI_OK_PULL_REQUEST_ONLY names it when its `if:` admits only
 pull_request. A job that calls a workflow passes `ci-ok-changes: ${{ toJSON(needs.changes) }}`
@@ -186,9 +189,9 @@ says, so a job moved from one runner to the other reads a cold entry until
 
 ## The steps and services every job repeats are YAML anchors
 
-Three steps and three Postgres services stand word for word in many jobs of this file. Each is
-written out once, in the first job that has it, under a YAML anchor, and every other job names
-it with an alias:
+Three steps, three Postgres services and one `if:` stand word for word in many jobs of this file.
+Each is written out once, in the first job that has it, under a YAML anchor, and every other job
+names it with an alias:
 
   * `&checkout`, the checkout of the whole tree, and `&checkout-github`, the sparse checkout of
     `.github` alone that the carriers and claude-envoy-names make;
@@ -196,7 +199,9 @@ it with an alias:
   * the Postgres service in its three shapes: `&postgres-tcp`, whose health check reads the
     port (go-daemon, daemon-live); `&postgres`, whose health check reads the socket
     (agent-harness, airlock-arm); `&postgres-pg-legs`, started only for the legs whose matrix
-    sets `pg` (go-envoy, envoy-held).
+    sets `pg` (go-envoy, envoy-held);
+  * `&held-carrier`, the `if:` of go-envoy-held's six carriers, envoy-go to dispatch-memory: each
+    runs under go-envoy-held's gate and `!cancelled()` (#the-carriers).
 
 GitHub Actions reads anchors and aliases in a workflow file. It does not read the merge key
 `<<:`, and this file does not use it. The other readers of this file expand each alias into the
@@ -204,7 +209,7 @@ node it names: actionlint 1.7.12; PyYAML, which every check under `.github/scrip
 this file loads it with (check-ci-layout.sh's ci_layout.py and UniqueKeyLoader,
 check-workflow-files.sh, check-test-reach.sh, check-image-trigger-paths.sh, go_test_steps.py
 and go-test-step-expansion.py, ci_router_outputs.py); and yq, through which ci-ok.sh and
-ci-ok-report.sh read it. So a rule that reads a job's steps or services reads the anchored
+ci-ok-report.sh read it. So a rule that reads a job's steps, services or `if:` reads the anchored
 node in every job that names it. The aliases keep this file under the 63,000 bytes
 check-workflow-files.sh holds it to (its rule 9; every other workflow file 64,000). An edit to
 an anchored step changes that step in every job that names it. A job whose step or service must
@@ -755,7 +760,8 @@ type=gha,scope=worker-image`), into a docker archive each kind leg downloads
 worker-image build of its head to take the image from. It needs ci-images because its buildx
 driver pulls BuildKit's row of .github/ci-images.yaml, and carries `!cancelled()`, as
 tool-fallback does, so a ci-images job that `changes` skipped holds nothing back. It is the
-`kind / image` part it was, named by an expression, and reads the kind output.
+`kind / image` part it was, named by `${{ github.event_name && 'kind / image' }}`, which reads a
+context (#a-dispatched-runs-check-names), and reads the kind output.
 
 It ends at its upload. The leak guard's test (scripts/e2e/leak-guard-image-probe.sh), which a
 merge group runs in no worker-image job, ran here before the upload until CI run 45300865457,
@@ -1845,7 +1851,9 @@ dispatched run's success as the head's ci-ok, and its skipped pr-title as the he
 
 So on such a run the `ci-ok` job is named `ci-ok (dispatch)`, and the reconcile step, "Set every
 other ci-ok on this head to this job's conclusion", is skipped, since every ci-ok that step could
-set is the pull request's or the queue's. GitHub evaluates a job's name only when the job runs.
+set is the pull request's or the queue's. GitHub evaluates a job's name that reads a context only
+when the job runs (a name of string literals alone it evaluates on a skipped job too, as the last
+paragraph of this section shows).
 ci-ok runs on every event, so it is `ci-ok` on a pull request, a merge group and the bypass
 check's dispatch on main, and GitHub evaluates its name when the job is queued, after its needs:
 on scratch run 44872165102 the queued check run 136750697832 was already named ci-ok. pr-title
@@ -1861,7 +1869,7 @@ edit of a pull request, draft or not, still posts its own.) pr-title needs no jo
 can read nothing but the event: `${{ github.event_name == 'workflow_dispatch' && 'pr-title
 (dispatch)' || 'pr-title' }}`. Its dispatch arm is never evaluated, since the job runs on no
 dispatch, and what keeps a skipped pr-title from posting a pass under that name is that its name
-is an expression at all.
+is an expression that reads a context.
 
 Which dispatch is of main is read by a shell test, not by an expression. GitHub's expression
 `==` and `!=` ignore case, so `github.ref != 'refs/heads/main'` is false for the branches
@@ -1894,6 +1902,20 @@ nothing races. check-ci-layout.sh holds both jobs to their one `name:` (ci_layou
 DISPATCH_NAMES), the reconcile step to its one `if:` (RECONCILE_IF), the changes job to the
 output and the exact step (REF_OUTPUT, REF_STEP_RUN), and every other job to a name that can
 evaluate to neither check.
+
+An expression of string literals alone is not enough: GitHub evaluates it even for a job it
+skips, so the skipped record carries the name itself. Pull request run 45440587594 wrote check
+run 138611450495, skipped, as `kind / image`, from kind-image's `${{ 'kind / image' }}`, newer
+than dispatch run 45440563929's success 138610991474 under that name; that dispatch run wrote
+skipped `worker-image` (138610455464) and `dispatch-browser-pr` (138610457467) from names of the
+same form. A name that reads a context stays unevaluated: pr-title's left its expression's text
+(check run 138610203753), and kind's legs left `kind / ${{ matrix.leg }}` (138611450560). So each
+job a run can skip, in this file or in a workflow it calls, whose name is one string writes it
+`${{ github.event_name && '<name>' }}`: github.event_name is a non-empty string on every event
+(the caller's, in a called workflow), so the job's check run carries `<name>` when it runs, and
+its skipped record the text `github.event_name && '<name>'`. check-ci-layout.sh's rule 25 refuses
+a job a run can skip whose name is no expression or one that reads no context, and ci-ok.jq reads
+the guarded form as the string it gives.
 
 ## A lane label turns on one held job on a pull request
 

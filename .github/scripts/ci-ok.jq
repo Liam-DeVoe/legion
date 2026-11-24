@@ -104,11 +104,15 @@ def matrix_legs:
       | if length == 0 then [{}] else . end
     end;
 
-# One term of a name's expression, for one leg: a string literal, `matrix.<key>`, or
-# `format('<text>', <term>, …)`. null for any other form.
+# One term of a name's expression, for one leg: a string literal, `matrix.<key>`,
+# `format('<text>', <term>, …)`, or `github.event_name && <term>`, which gives that term:
+# github.event_name is a non-empty string on every event, the caller's in a called workflow. That
+# last form is how a job of one name reads a context (check-ci-layout.sh's rule 25 says why it
+# must). null for any other form.
 def name_term($leg):
   if test("^'(?:[^']|'')*'$") then .[1:-1] | gsub("''"; "'")
   elif test("^matrix\\.[A-Za-z0-9_-]+$") then ($leg[.[7:]] // "") | tostring
+  elif test("^github\\.event_name\\s*&&") then sub("^github\\.event_name\\s*&&\\s*"; "") | name_term($leg)
   elif test("^format\\(") then
     (capture("^format\\(\\s*'(?<f>(?:[^']|'')*)'\\s*(?<a>(?:,[^,()]*)*)\\)$") // null) as $c
     | if $c == null then null
@@ -121,7 +125,8 @@ def name_term($leg):
 
 # The check-run name a job's `name:` gives one leg: the text itself, or the value of the one
 # expression it is, `<term> || <term> …` giving its first term that is not empty. null for any
-# other form, such as one that reads a context other than `matrix`.
+# other form, such as one that reads a context other than `matrix`, or `github.event_name` other
+# than as the guard above.
 def leg_name($leg):
   if type != "string" then null
   elif test("\\$\\{\\{") | not then .
@@ -144,7 +149,7 @@ def check_run_jobs($judged):
       ($job.value.name | leg_name($leg)) as $name
       | if $name == null then
           if ($judged | any(. == $job.key)) then
-            error("job \($job.key)'s name: \($job.value.name) is no form ci-ok.jq reads: a string, or one expression of string literals, matrix.<key>, format(…) and ||")
+            error("job \($job.key)'s name: \($job.value.name) is no form ci-ok.jq reads: a string, or one expression of string literals, matrix.<key>, format(…), github.event_name && <term> and ||")
           else . end
         elif $name == "" or $name == $job.key then .
         else .[$name] = $job.key end));

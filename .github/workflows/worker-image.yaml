@@ -98,7 +98,7 @@ permissions:
 
 jobs:
   build:
-    name: ${{ 'build' }}
+    name: ${{ github.event_name && 'build' }}
     # An attest-only call (attest_digest) attests what the caller's earlier call built, so it skips
     # the build. Every other run leaves attest_digest out (ci.yaml's call on a pull request,
     # release.yaml's build-only call, workflow_dispatch), so it builds.
@@ -356,7 +356,7 @@ jobs:
   # output, so the caller passes the `image` its earlier build call reported (release.yaml's
   # worker_image_attest, from needs.worker_image.outputs.image) and that value wins here.
   attest:
-    name: ${{ 'attest' }}
+    name: ${{ github.event_name && 'attest' }}
     needs: build
     if: ${{ !cancelled() && github.event_name != 'pull_request' && !inputs.skip_attest && (needs.build.result == 'success' || (needs.build.result == 'skipped' && inputs.attest_digest != '')) }}
     runs-on: ubuntu-24.04

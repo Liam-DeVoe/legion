@@ -24,7 +24,8 @@
 # and unnamed-file verdict say which failed job no pull request of the group's files ran, and hold
 # the line that names it, its step summary, and its absence where a changed file matched no filter.
 # The check-run names of legs named by an expression are read off a ci.yaml of the case's own
-# (CI_OK_WORKFLOW): one with no such name, but where a case reads a leg named by an expression.
+# (CI_OK_WORKFLOW): one with no such name, but where a case reads a leg or a job named by an
+# expression.
 #
 # A job that ends `failure` is asked about: ci-ok.sh reads the check runs on this run's head to
 # tell a job the platform killed from one the change broke (runner-shutdown.sh), so each case
@@ -605,6 +606,31 @@ workflow=$work/ci.yaml
 run_ci_ok "$(needs success "$selects_envoy" success typecheck=success envoy-client=failure worker-image=success docs=skipped)"
 check "without the name in ci.yaml the leg's check run is no job's, and the failure stands" \
   "$(contains "$out" '^envoy-client: failure (selected: needs.changes.outputs.envoy_client is true)$')"
+
+echo "case: a job of one name, guarded by github.event_name, whose runner was shut down"
+# A job a run can skip and whose name is one string writes it
+# `${{ github.event_name && '<name>' }}`, which reads a context, so GitHub leaves the expression's
+# text on its skipped record, where it evaluates a name of string literals alone
+# (check-ci-layout.sh's rule 25). When the job runs, its check run carries the string, here
+# broker-client / broker-client for envoy-client, and no job id: only the name read off ci.yaml
+# through that guard ties its check run to its job.
+check_runs changes lint typecheck 'broker-client / broker-client' worker-image docs
+annotations 'broker-client / broker-client' \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+cat >"$work/ci-guarded.yaml" <<'YAML'
+jobs:
+  envoy-client:
+    name: ${{ github.event_name && 'broker-client / broker-client' }}
+YAML
+workflow=$work/ci-guarded.yaml
+run_ci_ok "$(needs success "$selects_envoy" success typecheck=success envoy-client=failure worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "reads the name through the guard" "$(is "$(contains "$out" 'is no form ci-ok.jq reads')" false)"
+check "reads the job as cancelled" \
+  "$(contains "$out" '^envoy-client: cancelled (selected: needs.changes.outputs.envoy_client is true)$')"
+check "names the shutdown" "$(contains "$out" 'a runner shutdown cut this one off')"
+workflow=$work/ci.yaml
 
 echo "case: a job ci-ok judges whose name ci-ok.jq cannot read"
 cat >"$work/ci-bad-name.yaml" <<'YAML'

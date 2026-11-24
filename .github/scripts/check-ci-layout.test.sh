@@ -13,7 +13,8 @@
 # another count than its name's as its `with: legs` (written out or read off the matrix), ci-ok's
 # reconcile step renamed and its hold step's if: drifted from the term the reconcile negates,
 # an AUDITED_SCRIPTS pin a script's text has moved past, pr-title needing changes, a literal name
-# on a job a run can skip (worker-image, an agent-harness part, dispatch-browser.yaml's visual),
+# on a job a run can skip (worker-image, an agent-harness part, dispatch-browser.yaml's visual), a
+# name of string literals alone on one (kind-image, dispatch-browser.yaml's recordings),
 # a changes output reading another step, the airlock job on x64, the race step dropping a package
 # the fill names, a push-only if: in an action only ci.yaml runs, a cache key drifting inside an
 # action and a cache path drifting inside one ci-caches.yaml runs too, an install that loses its
@@ -204,7 +205,7 @@ replace "$ci" $'leg-verdict.sh \'envoy-go-race-api (1/2)\' \'envoy-go-race-api (
   $'leg-verdict.sh \'envoy-go-race-api (1/2)\' \'envoy-go-race-api (2/2)\'\n'
 replace "$ci" $'  airlock-arm:\n' \
   "  plugin-pack-carrier:
-    name: \${{ 'plugin-pack / plugin-pack' }}
+    name: \${{ github.event_name && 'plugin-pack / plugin-pack' }}
     needs: [changes, plugin-pack]
     if: \${{ !cancelled() && needs.changes.outputs.plugin-pack == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     runs-on: ubuntu-24.04-arm
@@ -217,12 +218,18 @@ replace "$ci" $'  airlock-arm:\n' \
 
   airlock-arm:
 "
-replace "$ci" "name: \${{ 'worker-image' }}" 'name: worker-image'
+replace "$ci" "name: \${{ github.event_name && 'worker-image' }}" 'name: worker-image'
 replace "$ci" "name: \${{ format('agent-harness / {0}', matrix.leg) }}" 'name: agent-harness'
-replace "$root/.github/workflows/dispatch-browser.yaml" "    name: \${{ 'visual' }}"$'\n' ''
+replace "$root/.github/workflows/dispatch-browser.yaml" "    name: \${{ github.event_name && 'visual' }}"$'\n' ''
+# a name GitHub evaluates even for a skipped job: string literals alone, in ci.yaml and in a
+# workflow it calls
+replace "$ci" "name: \${{ github.event_name && 'kind / image' }}" "name: \${{ 'kind / image' }}"
+replace "$root/.github/workflows/dispatch-browser.yaml" "name: \${{ github.event_name && 'recordings' }}" \
+  "name: \${{ 'recordings' || 'recordings (full)' }}"
 replace "$ci" $'    strategy:\n      fail-fast: false\n      matrix:\n        include:\n          - {leg: lint,' \
   $'    strategy:\n      matrix:\n        include:\n          - {leg: lint,'
-replace "$ci" "name: \${{ 'text-checks / text-checks' }}" "name: \${{ 'text-check / text-check' }}"
+replace "$ci" "name: \${{ github.event_name && 'text-checks / text-checks' }}" \
+  "name: \${{ github.event_name && 'text-check / text-check' }}"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the carrier with a fourth step (rule 32)" "$(has "$out" "carrier envoy-go holds 4 step(s)")"
@@ -232,6 +239,14 @@ check "names the carrier of a job that is not split (rule 32)" \
 check "names worker-image's literal name (rule 25)" "$(has "$out" "job worker-image of .github/workflows/ci.yaml has an if: that can skip it and the literal name")"
 check "names agent-harness's literal name (rule 25)" "$(has "$out" "job agent-harness of .github/workflows/ci.yaml has an if: that can skip it and the literal name")"
 check "names the visual job with no name (rule 25)" "$(has "$out" "job visual of .github/workflows/dispatch-browser.yaml has an if: that can skip it and no name:")"
+check "names kind-image's name of string literals alone (rule 25)" \
+  "$(has "$out" "job kind-image of .github/workflows/ci.yaml has an if: that can skip it and the name \`\${{ 'kind / image' }}\`, an expression that reads no context, which GitHub evaluates even for a skipped job")"
+check "and gives it a name that reads a context" \
+  "$(has "$out" "give it a name that is an expression reading a context, such as \`\${{ github.event_name && 'kind-image' }}\`")"
+check "names recordings' expression of literals and || in the called workflow (rule 25)" \
+  "$(has "$out" "job recordings of .github/workflows/dispatch-browser.yaml has an if: that can skip it and the name \`\${{ 'recordings' || 'recordings (full)' }}\`, an expression that reads no context")"
+check "and passes over every name that reads a context" \
+  "$(is "$(grep -c 'an expression that reads no context' <<<"$out" || true)" 2)"
 check "names the matrix without fail-fast: false (rule 29)" "$(has "$out" "job lint's matrix does not set fail-fast: false")"
 check "names main's check-run name the layout lost (rule 30)" "$(has "$out" "carries the check-run name \`text-checks / text-checks\`")"
 

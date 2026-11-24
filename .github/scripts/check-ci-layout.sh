@@ -54,7 +54,11 @@
 #       go-test.sh call with no --jsonfile; GO_TEST_RETRY=off anywhere but kind's runtime legs and
 #       ci_pins.NO_RETRY_SCRIPT, which must turn it off for its runs against a mutant.
 #   25. a job of ci.yaml or of a workflow it calls that a run can skip and whose name: is no
-#       expression, so its skipped record carries a plain name.
+#       expression, or an expression that reads no context, so its skipped record carries a plain
+#       name: GitHub evaluates a name of string literals alone even for a skipped job (pull request
+#       run 45440587594's skipped check run 138611450495 carries `kind / image`, from
+#       `${{ 'kind / image' }}`), and leaves a name that reads one, `${{ github.event_name && … }}`,
+#       as its text.
 #   26. a job of ci_pins.ARM_JOBS on another runner.
 #   27. a group of liveGroups that is not in exactly one kind leg's -run (ci_pins.LIVE_GROUPS).
 #   28. an if: of a job, a leg, a step or an inner job, or a matrix entry, that names the event or

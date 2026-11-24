@@ -4,7 +4,8 @@
 # workflows, nested calls included, reads less than 10,000 bytes of filter text and sets
 # JOB_TIMEOUT_MINUTES and STEP_TIMEOUT_MINUTES to the timeout-minutes they stand for, and ci.yaml
 # is within 63,000 bytes and routes at most 32 jobs besides the carriers of a split job's old
-# name; and a refusal of size tells the author where to move text, never into a filter file.
+# name, a carrier being a job of three steps whose middle one runs leg-verdict.sh; and a refusal
+# of size tells the author where to move text, never into a filter file.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs.
@@ -422,11 +423,12 @@ check "names .github/ci-notes/README.md, where the rule is" \
 check "read one file" \
   "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
-# router <file> <jobs> [carriers] [extra]: a ci.yaml of <jobs> jobs that run a step and
-# [carriers] carriers - a sparse checkout of .github, one step and the report to ci-ok - the
-# first of them with a fourth step when [extra] is given.
+# router <file> <jobs> [carriers] [odd]: a ci.yaml of <jobs> jobs that run a step and [carriers]
+# carriers - a sparse checkout of .github, leg-verdict.sh and the report to ci-ok - the first of
+# them with a fourth step when [odd] is `extra`, and with a middle step that runs a check of its
+# own in leg-verdict.sh's place when it is `own`.
 router() {
-  local file=$1 jobs=$2 carriers=${3:-0} extra=${4:-} index
+  local file=$1 jobs=$2 carriers=${3:-0} odd=${4:-} index
   printf 'name: CI\non: pull_request\njobs:\n' >"$file"
   for ((index = 1; index <= jobs; index++)); do
     printf '  job%02d:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo test\n' "$index" >>"$file"
@@ -435,8 +437,12 @@ router() {
     printf '  carrier%02d:\n    runs-on: ubuntu-24.04\n    steps:\n' "$index" >>"$file"
     printf '      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n' >>"$file"
     printf '        with: {sparse-checkout: .github, persist-credentials: false}\n' >>"$file"
-    printf '      - run: .github/scripts/leg-verdict.sh one two\n' >>"$file"
-    if [ "$index" = 1 ] && [ -n "$extra" ]; then printf '      - run: echo a fourth step\n' >>"$file"; fi
+    if [ "$index" = 1 ] && [ "$odd" = own ]; then
+      printf '      - run: .github/scripts/check-private-names.sh packed\n' >>"$file"
+    else
+      printf '      - run: .github/scripts/leg-verdict.sh one two\n' >>"$file"
+    fi
+    if [ "$index" = 1 ] && [ "$odd" = extra ]; then printf '      - run: echo a fourth step\n' >>"$file"; fi
     printf '      - {if: always(), uses: ./.github/actions/ci-ok-report}\n' >>"$file"
   done
 }
@@ -463,6 +469,17 @@ check "exits 1" "$(is "$status" 1)"
 check "counts the carrier with a fourth step" \
   "$(contains "$out" 'routes 33 jobs besides its carriers, above the limit of 32: .*carrier01')"
 check "and not the carrier of three steps" "$(is "$(contains "$out" 'carrier02')" false)"
+
+echo "case: a job of three steps whose middle step is no leg-verdict.sh is a job"
+# claude-envoy-names' shape: the sparse checkout of .github, a check of its own and the report. It
+# carries no split job's name, so it is routed like any other job.
+root=$(fixture three-steps-own-check)
+router "$root/.github/workflows/ci.yaml" 32 2 own
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the job whose middle step is no leg-verdict.sh" \
+  "$(contains "$out" 'routes 33 jobs besides its carriers, above the limit of 32: .*carrier01')"
+check "and not the carrier that runs leg-verdict.sh" "$(is "$(contains "$out" 'carrier02')" false)"
 
 # filters <file> <bytes>: a workflow whose paths-filter step reads .github/areas.yaml, padded to
 # <bytes>.
