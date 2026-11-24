@@ -86,7 +86,8 @@ func compareRuns(left, right Step) int {
 // bound, each rounded up to the microsecond). Each issue carries its plan (the node of its newest
 // generation, nil where it has none), the rating of each retro in the order the retros ran, the
 // earliest start and the latest end its runs hold (nil where none holds one), and its count of
-// runs of kind step that failed. A finished issue Legion never ran is listed with none of these.
+// runs of kind step that failed. It also carries the counts of its runs that name an agent on their
+// set model (SetModelSteps). A finished issue Legion never ran is listed with none of these.
 //
 // It is one statement for the whole project, whatever the number of issues: the project's
 // finished issues, each left-joined through the `part_of` tuples into it (workflow_tuples_inbound,
@@ -168,6 +169,17 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 			}
 			if step.Kind == StepKindStep && step.Result == ResultFailed {
 				issue.FailedSteps++
+			}
+			// A run that names an agent falls in one count (SetModelSteps). A node that holds no
+			// answers does not know them, so its run is unknown, never on.
+			switch {
+			case step.Agent == "":
+			case step.SetModel == "" || step.Answers == nil:
+				issue.SetModelSteps.Unknown++
+			case slices.ContainsFunc(*step.Answers, func(answer StepAnswer) bool { return answer.Model != step.SetModel }):
+				issue.SetModelSteps.Off++
+			default:
+				issue.SetModelSteps.On++
 			}
 			if step.Rating != nil {
 				issue.Ratings = append(issue.Ratings, Rating{Rating: step.Rating.Rating, Reason: step.Rating.Reason, StepID: step.ID, EndedAt: step.EndedAt})
