@@ -43,10 +43,11 @@ jobs:
     # bounds the step); after that step's seconds, the skip counter's test's own timeout-minutes
     # of 15 is 21; after that step's 15 at most, the unit step's own timeout-minutes of 45 is 66
     # (its -timeout bounds each package, not the step, so the step has a limit of its own, and its
-    # comment below says why 45); after that step's 45 at most, natslive's default 10, the bus
-    # matrix's own 5, the auth service's own 5, the edge grant's own 5 and the edge listener's own
-    # 10 (its relay socket's rows wait out a 30 s token twice and a consumer's 60 s ack wait) are
-    # 101, the integration step's 5 is less, and the callout check's own 6, after the seconds
+    # comment below says why 45); after that step's 45 at most, the connections report's own 1,
+    # natslive's default 10, the bus matrix's own 5, the auth service's own 5, the edge grant's
+    # own 5 and the edge listener's own 10 (its relay socket's rows wait out a 30 s token twice and
+    # a consumer's 60 s ack wait) are 102, the integration step's 5 is less, and the callout
+    # check's own 6, after the seconds
     # those two steps measure, is less too.
     timeout-minutes: 105
     services:
@@ -183,6 +184,18 @@ jobs:
       - name: Test the database skip counter
         timeout-minutes: 15
         run: packages/envoy/scripts/database-skips.test.sh
+      # The unit step below runs up to four test binaries at once against this one service, and
+      # some of them run their own tests several at a time, each test on a database and pools of
+      # its own, so this samples the service's client connections every 2 s from here on, and the
+      # step after the unit step prints the peak against max_connections: a change that makes the
+      # step open more at once shows there before it shows as a 53300 refusal. Postgres's own
+      # background processes are not counted, and each sample counts one connection of the
+      # sampler's own. The loop runs in the background past its own step, until the runner ends
+      # the job.
+      - name: Sample the service's connections while the unit tests run
+        run: |
+          # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
+          nohup bash -c 'while :; do docker exec "$1" psql -U postgres -Atc "select count(*) from pg_stat_activity where backend_type = '"'"'client backend'"'"'" >> "$2" 2>/dev/null; sleep 2; done' _ "${{ job.services.postgres.id }}" "$RUNNER_TEMP/pg-connections.txt" >/dev/null 2>&1 &
       # Everything the three race jobs run is left out here, since they run it under the detector,
       # and so is internal/integration, which the integration step below tests, and
       # internal/textcheck, whose tests are the text-check job's: that job runs them in a job
@@ -225,6 +238,20 @@ jobs:
         # The refs package's xid window test runs here, so this step judges gaps too.
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
+      - name: Report the service's peak connections
+        if: always()
+        # It only measures, so it may neither fail nor hold the job: each read falls back to
+        # UNKNOWN, the read of max_connections gives up after 10 s, and the step after a minute.
+        timeout-minutes: 1
+        run: |
+          allowed=$(timeout 10 docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_connections" 2>/dev/null) || allowed=""
+          peak=$(sort -n "$RUNNER_TEMP/pg-connections.txt" 2>/dev/null | tail -n 1) || peak=""
+          samples=$(wc -l 2>/dev/null < "$RUNNER_TEMP/pg-connections.txt") || samples=0
+          if [ -n "$peak" ]; then
+            echo "pg connections: the peak of ${peak} over ${samples} samples, max_connections ${allowed:-UNKNOWN}"
+          else
+            echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed:-UNKNOWN})"
+          fi
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
       - name: Vet agentloop's live proof (no model call)
