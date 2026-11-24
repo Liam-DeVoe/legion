@@ -295,7 +295,7 @@ func TestWithoutNamesTheTracersMemoryIsWhatWasMappedSinceTheTraceStarted(t *test
 	}
 
 	previous := xidMappedBeforeTrace.Load()
-	t.Cleanup(func() { xidMappedBeforeTrace.Store(previous) })
+	testcleanup.Add(t, func() { xidMappedBeforeTrace.Store(previous) })
 	xidMappedBeforeTrace.Store(&[]xidTracerRange{})
 	named := line(pages(0, 16), anonymous+" [anon: Go: trace buffer]") + line(pages(16, 32), anonymous+" [anon: Go: heap]") +
 		line(pages(32, 48), anonymous+" [anon: Go: trace arena alloc]")
@@ -322,7 +322,7 @@ func TestABeginThatFindsNoTracerMemoryIsUnknown(t *testing.T) {
 	tracer := NewXidTracer()
 	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
 	xidFindTracerMemory = func([]byte) []xidTracerRange { return nil }
-	t.Cleanup(func() { xidFindTracerMemory = xidTracerRanges })
+	testcleanup.Add(t, func() { xidFindTracerMemory = xidTracerRanges })
 	report := tracer.Measure(t, traced.Pool, func() {
 		ctx := MarkXid(context.Background())
 		tx, err := traced.Pool.Begin(ctx)
