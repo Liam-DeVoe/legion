@@ -6309,7 +6309,9 @@ test("a date the reader gives the search bar's Updated since is their press, so 
     await page.keyboard.type("Harbour");
     await control(controlRow(bar), CONTROL.panelTrigger).click();
     const filters = page.getByRole("dialog", { name: "Filter" });
-    const since = filters.getByLabel("Updated since");
+    // The label whole: once the date is set, the top of the panel lists its chip, whose
+    // "Remove Updated since …" holds these words too, and the chip is not the box.
+    const since = filters.getByLabel("Updated since", { exact: true });
     await expect(since).toBeVisible();
     const day = await page.evaluate(() => {
       const next = new Date();
@@ -6631,10 +6633,13 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   /** The words a trigger shows. */
   const shown = (trigger: Locator) => async () =>
     (await trigger.innerText()).replace(/\s+/g, " ").trim();
-  /** The search bar's chip for one narrowing. */
+  /** The search bar's chip for one narrowing, where the open Filter panel lists it at its top: the
+   *  panel lists each narrowing that is on at every width, while the bar's line takes its chips
+   *  out below 640 px and puts the ones that do not fit behind `+N more` (R8). The panel stands
+   *  open across both of the bar's lists. */
   const chip = (narrowing: string) => async () =>
     (
-      await control(controlRow(palette), CONTROL.chip).evaluateAll((chips) =>
+      await control(filters, CONTROL.chip).evaluateAll((chips) =>
         chips.map((node) => node.getAttribute("aria-label") ?? "")
       )
     )
@@ -6755,9 +6760,13 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       word: "prog",
       left: ["In progress"],
       picked: /^Remove Status In progress filter$/,
-      // The control now at its place is the Author box, which takes typed text, and no control
-      // stands before it, so the hand-off passes over the box to the panel's own stop.
-      focusAfterPick: filters,
+      // The control now at its place is the Author box, which takes typed text, so the hand-off
+      // passes over the box to the control before it: the chip the pick put at the top of the
+      // panel, which lists each narrowing that is on (R8).
+      focusAfterPick: filters.getByRole("button", {
+        exact: true,
+        name: "Remove Status In progress filter",
+      }),
     },
     {
       name: "the List's Move to epic",
