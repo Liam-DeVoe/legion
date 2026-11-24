@@ -4,7 +4,6 @@ import { borderDefault, pagePaperBg, skeletonBg } from "../../theme/classes";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { parseIssuePath } from "../refs/routes";
 import { IconRail } from "./IconRail";
-import type { MarginDrawer, MarginDrawerPage } from "./margin-slot";
 import type { ShellNavigation } from "./shell-navigation";
 
 /**
@@ -14,9 +13,10 @@ import type { ShellNavigation } from "./shell-navigation";
  *
  * WHY A CHUNK. Every page of the dashboard parses the entry chunk before it draws anything, and
  * a reader who has not turned the new page on draws none of this: not the icon rail, not the
- * Details drawer's rules, not the frame's skeleton. So this module is a chunk of its own
- * (`frame-chunk.ts`), which the shell loads only for that reader, and its imports - the rail and
- * the attribute that keeps reference cards off the page - are imported by no module of the entry.
+ * frame's skeleton. So this module is a chunk of its own (`frame-chunk.ts`), which the shell
+ * loads only for that reader, and its imports - the rail and the attribute that keeps reference
+ * cards off the page - are imported by no module of the entry. Details' drawer is not here: the
+ * shell makes it from its own state, wherever this answers a frame (`AppShell`, `app.tsx`).
  *
  * WHY A FUNCTION THE SHELL CALLS, AND NOT A COMPONENT AROUND THE SHELL. A reader can turn the
  * page on or off at any moment, in this tab or another (`stored-choice.ts`), and the shell must
@@ -28,16 +28,9 @@ import type { ShellNavigation } from "./shell-navigation";
  * the shell's one frame context (`frame-context.ts`).
  */
 
-/** What the frame is computed from: the address, and the shell's own state, which it keeps for
- *  the frame - Details' and the navigation sheet's - so that a change of the choice keeps it. */
+/** What the frame is computed from: the address, and the navigation sheet's state, which the
+ *  shell keeps for the frame so that a change of the choice keeps it. */
 export interface FrameInput {
-  /** The issue Details was opened on, if it is open: `AppShell` forgets it as the reader
-   *  leaves that issue, so every load opens Details closed and so does every move to another
-   *  issue, and coming back to the issue - by a link or by Back - finds it closed. */
-  readonly detailsFor: string | undefined;
-  /** What the new page's root hands Details: its words and its address rule
-   *  (`drawer-page.ts`), so that the shell imports neither. */
-  readonly drawerPage: MarginDrawerPage | undefined;
   /** The address the shell is on. */
   readonly location: { readonly pathname: string; readonly search: string };
   /** Whether the navigation's sheet is open. */
@@ -47,19 +40,11 @@ export interface FrameInput {
    *  query would draw the rail over the page wherever the two disagree, which is every width from
    *  768 to 959 px at a 20 px default font. */
   readonly railFits: boolean;
-  readonly setDetailsFor: (issue: string | undefined) => void;
-  /** Tells the shell whether Details' drawer is drawn, which it is only once the margin's chunk
-   *  is in (`MarginDrawer.setDrawn`): until then the shell itself calls off an open of Details on
-   *  Escape (`AppShell`, `app.tsx`). */
-  readonly setDetailsDrawn: (drawn: boolean) => void;
-  readonly setDrawerPage: (page: MarginDrawerPage | undefined) => void;
   readonly setNavigationOpen: (open: boolean) => void;
 }
 
 /** What the new issue page's frame changes in the shell, on an issue's address. */
 export interface ShellFrame {
-  /** The margin as Details, a drawer over the page. */
-  readonly drawer: MarginDrawer;
   /** What `<main>` holds while the page's code loads. */
   readonly fallback: ReactNode;
   /** `<main>`'s attributes in the frame: its references open no card on hover (R6). */
@@ -71,8 +56,6 @@ export interface ShellFrame {
   readonly navigation: ShellNavigation | undefined;
   /** The icon rail where the sidebar stands, or nothing below `md`. */
   readonly rail: (props: ComponentProps<typeof IconRail>) => ReactNode;
-  /** What Shift+M does in the frame: the margin is Details, which it opens and closes. */
-  readonly toggleDetails: () => void;
 }
 
 /** The frame of the address `input` names, `undefined` off an issue's address. */
@@ -118,69 +101,17 @@ function IssueFrameFallback(): ReactNode {
   );
 }
 
-/** A drawer as the shell last handed it, with what it was made from. */
-interface HandedDrawer {
-  readonly detailsFor: string | undefined;
-  readonly drawer: MarginDrawer;
-  readonly drawerPage: MarginDrawerPage | undefined;
-  readonly issue: string | undefined;
-}
-
-/**
- * The last drawer each shell was handed, by that shell's own setter, which lives as long as the
- * shell does: a frame computed again for something Details does not read - the navigation's
- * sheet, the width, a move between two views of one issue - hands back the same drawer, as a
- * memo of what it is made from would. The margin's effects and the page's callbacks run on the
- * drawer, and would run again for nothing on a new one.
- */
-const handedDrawers = new WeakMap<FrameInput["setDetailsFor"], HandedDrawer>();
-
-/** What held the focus as Details was last opened, on every drawer handed after that open
- *  (`MarginDrawer.openedFrom`). The drawer handed for the open is made in the render the open's
- *  update brings, after the press that recorded it. */
-let openedFrom: Element | null = null;
-
-function drawerOf(
-  issue: string | undefined,
-  { detailsFor, drawerPage, setDetailsDrawn, setDetailsFor, setDrawerPage }: FrameInput
-): MarginDrawer {
-  const handed = handedDrawers.get(setDetailsFor);
-  if (
-    handed !== undefined &&
-    handed.detailsFor === detailsFor &&
-    handed.drawerPage === drawerPage &&
-    handed.issue === issue
-  ) {
-    return handed.drawer;
-  }
-  const drawer: MarginDrawer = {
-    open: detailsFor !== undefined && detailsFor === issue,
-    openedFrom,
-    page: drawerPage,
-    setDrawn: setDetailsDrawn,
-    setOpen: (open: boolean) => {
-      if (open) openedFrom = document.activeElement;
-      setDetailsFor(open ? issue : undefined);
-    },
-    setPage: setDrawerPage,
-  };
-  handedDrawers.set(setDetailsFor, { detailsFor, drawer, drawerPage, issue });
-  return drawer;
-}
-
 /**
  * The frame (R1, R14): on an issue's address, since the shell asks only for a reader who chose
  * the new page. In it an icon rail of 56 px stands where the sidebar stands, from Tailwind's
  * `md` up, and below that the page's header draws the control that opens the navigation
- * (`ShellNavigation`); the margin is Details, a drawer over the page. Every other page keeps the
- * shell exactly as it is for every other reader.
+ * (`ShellNavigation`); the margin is Details, a drawer over the page, which the shell makes
+ * (`AppShell`). Every other page keeps the shell exactly as it is for every other reader.
  */
 export const frameOf: FrameOf = (input) => {
   const { location, navigationOpen, railFits, setNavigationOpen } = input;
   if (parseIssuePath(location.pathname, location.search) === undefined) return undefined;
-  const drawer = drawerOf(parseIssuePath(location.pathname)?.key, input);
   return {
-    drawer,
     fallback: <IssueFrameFallback />,
     mainAttributes: FRAME_MAIN_ATTRIBUTES,
     mainClass: FRAME_MAIN_CLASS,
@@ -188,6 +119,5 @@ export const frameOf: FrameOf = (input) => {
       ? undefined
       : { onOpen: () => setNavigationOpen(true), open: navigationOpen },
     rail: (props) => (railFits ? <IconRail {...props} /> : null),
-    toggleDetails: () => drawer.setOpen(!drawer.open),
   };
 };

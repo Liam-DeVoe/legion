@@ -20,7 +20,7 @@ import { routeHasMargin } from "../refs/routes";
 import { DIALOG_SCOPE, useKeymap } from "../shell/keymap";
 import {
   COMPACT_VIEWPORT_QUERY,
-  dialogOpen,
+  escapeClosesDrawer,
   PHONE_VIEWPORT_QUERY,
   useDialog,
   useMediaQuery,
@@ -355,27 +355,17 @@ function DetailsDrawer({
       closeButton.current?.focus({ preventScroll: true });
     }
     // Escape closes the drawer before the page's own Escape does anything else: the press is the
-    // drawer's alone. A field keeps its own Escape, which leaves the field, wherever it is -
-    // inside the drawer or beside it. So does a layer over the drawer or inside it: an open
-    // dialog - the navigation's sheet, the list of keys - closes on its own Escape and leaves the
-    // drawer open under it, with the focus on its field, on the dialog itself (the first frame of
-    // one that names no text field or whose field took no focus as it opened), or gone to the
-    // page (a press on the list's text), and a menu open in the drawer closes before the drawer
-    // does, since Escape closes the innermost layer.
+    // drawer's alone. It passes by what the shell's Escape for a Details not drawn yet passes by,
+    // since both read one rule (`escapeClosesDrawer`): a field keeps its own Escape, which leaves
+    // the field, wherever it is - inside the drawer or beside it. So does a layer over the drawer
+    // or inside it: an open dialog - the navigation's sheet, the list of keys - closes on its own
+    // Escape and leaves the drawer open under it, with the focus on its field, on the dialog
+    // itself (the first frame of one that names no text field or whose field took no focus as it
+    // opened), or gone to the page (a press on the list's text). The drawn drawer adds one check
+    // of its own: a menu open in it closes before the drawer does, since Escape closes the
+    // innermost layer, and a drawer not drawn yet holds no menu.
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      const target = event.target;
-      const field =
-        target instanceof HTMLElement &&
-        (target.isContentEditable ||
-          target.tagName === "SELECT" ||
-          target.tagName === "TEXTAREA" ||
-          (target instanceof HTMLInputElement &&
-            !["button", "checkbox", "radio", "reset", "submit"].includes(target.type)));
-      if (field) return;
-      if (target instanceof Element && target.closest('[role="dialog"]') !== null) return;
-      if (dialogOpen()) return;
-      if (box.current?.querySelector('[role="menu"]') != null) return;
+      if (!escapeClosesDrawer(event) || box.current?.querySelector('[role="menu"]') != null) return;
       event.preventDefault();
       setOpenNow.current(false);
     };

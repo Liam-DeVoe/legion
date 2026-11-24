@@ -44,8 +44,8 @@ const Margin = lazyChunk(() => import("./Margin").then((module) => ({ default: m
 
 /** What the shell tells the margin beside its own props: `drawer` is whether the margin is the
  *  new issue page's Details drawer, which the shell's frame makes it on an issue's address for a
- *  reader who chose that page (`app.tsx`'s `issueFrame`; `frame-shell.tsx` gives the margin its
- *  drawer exactly where it gives the shell a frame). */
+ *  reader who chose that page (`app.tsx`'s `issueFrame`; `AppShell` makes the margin its drawer
+ *  exactly where the frame chunk's `frameOf` gives the shell a frame). */
 interface MarginColumnProps extends MarginProps {
   drawer: boolean;
 }

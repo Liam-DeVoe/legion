@@ -10,7 +10,7 @@ import {
   createProject,
   createProjectDocument,
 } from "./api";
-import { acrossABreakpoint, openAt } from "./frames";
+import { acrossABreakpoint, nextFrames, openAt } from "./frames";
 import {
   closeDetails,
   contentsPane,
@@ -680,6 +680,56 @@ test("Escape pressed in a field before the margin's chunk is in is the field's, 
 
     releaseMargin();
     await expect(marginShell(page), "Details did not open once the margin was in").toBeVisible();
+  });
+});
+
+// The shell's Escape while Details' open waits for its chunk and a drawn Details' own Escape read
+// one rule of what a field is (`escapeClosesDrawer`, `web/src/features/shell/useDialog.ts`): every
+// input but the button family, a checkbox and a radio keeps its own Escape, so a range input does,
+// as a select does. The new page draws no such input, so the row adds one to the document. An
+// Escape on it calls nothing off while the margin's chunk is held, and once Details is drawn it
+// leaves Details open.
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on its row, and
+// the margin's chunk held on the wire and then released.
+test("Escape pressed on a range input before the margin's chunk is in calls nothing off, as it leaves a drawn Details open", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    const releaseMargin = await holdMarginChunk(page);
+    await gotoIssue(page, `/issues/${key}`);
+    await expectOpeningLanded(page);
+    await focusThePage(page);
+    await page.keyboard.press("Shift+M");
+    await expect(detailsControl(page), "Shift+M did not ask for Details").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await expect(marginShell(page), "Details opened with the margin's chunk held").toHaveCount(0);
+    await page.evaluate(() => {
+      const range = document.createElement("input");
+      range.type = "range";
+      range.setAttribute("aria-label", "The row's range");
+      document.body.append(range);
+    });
+    const range = page.getByRole("slider", { exact: true, name: "The row's range" });
+    await range.focus();
+    await expect(range, "the range input took no focus").toBeFocused();
+    await page.keyboard.press("Escape");
+    await nextFrames(page);
+    await expect(
+      detailsControl(page),
+      "the Escape on a range input called the open off"
+    ).toHaveAttribute("aria-expanded", "true");
+
+    releaseMargin();
+    await expect(marginShell(page), "Details did not open once the margin was in").toBeVisible();
+    await expect(range, "the drawn Details took the focus from the range input").toBeFocused();
+    await page.keyboard.press("Escape");
+    await nextFrames(page);
+    await expect(
+      marginShell(page),
+      "the Escape on a range input closed the drawn Details"
+    ).toBeVisible();
   });
 });
 

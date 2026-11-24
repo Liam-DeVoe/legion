@@ -126,6 +126,38 @@ export function dialogOpen(): boolean {
   return openDialogs.size > 0;
 }
 
+/**
+ * Whether `event` is an Escape that closes Details, the new issue page's drawer: the drawn
+ * drawer's own Escape (`features/margin/Margin.tsx`), and the shell's while Details is asked for
+ * and not drawn yet (`AppShell`, `app.tsx`), which calls the open off. Both listeners read this
+ * one rule, so an Escape that leaves a drawn Details open calls no waiting open off. It passes by:
+ * - an Escape already handled;
+ * - one that ends an input method's composition, which is the input method's;
+ * - one in a field, which keeps its own Escape to leave the field or close its picker: an
+ *   editable element, a select, a textarea, and every input but the button family, a checkbox
+ *   and a radio. A range, a colour and a file input are fields here, though they take no typed
+ *   text (`isEditableTarget` in `keymap.ts` counts only the inputs that do);
+ * - one in a dialog, or under an open dialog (`dialogOpen`), which closes on its own Escape.
+ */
+export function escapeClosesDrawer(event: KeyboardEvent): boolean {
+  const { target } = event;
+  const field =
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.tagName === "SELECT" ||
+      target.tagName === "TEXTAREA" ||
+      (target instanceof HTMLInputElement &&
+        !["button", "checkbox", "radio", "reset", "submit"].includes(target.type)));
+  return (
+    event.key === "Escape" &&
+    !event.defaultPrevented &&
+    !event.isComposing &&
+    !field &&
+    !(target instanceof Element && target.closest('[role="dialog"]') !== null) &&
+    !dialogOpen()
+  );
+}
+
 /** Where an open dialog gives the focus back when it closes, and whether it made its own element
  *  focusable to take the focus as it opened. */
 interface FocusRecord {

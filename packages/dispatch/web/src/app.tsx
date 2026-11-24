@@ -34,7 +34,7 @@ import { issueTabChunk } from "./features/issue/tab-chunks";
 import { frameIfLoaded, loadFrame } from "./features/issue-page/frame-chunk";
 import { ShellFrameContext } from "./features/issue-page/frame-context";
 import type { FrameOf } from "./features/issue-page/frame-shell";
-import type { MarginDrawerPage, MarginFill } from "./features/issue-page/margin-slot";
+import type { MarginDrawer, MarginDrawerPage, MarginFill } from "./features/issue-page/margin-slot";
 import {
   outlineChosenInThisBrowser,
   useStoredIssuePageChoice,
@@ -77,7 +77,6 @@ import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
   appKeymap,
-  isEditableTarget,
   type KeyBindingDescription,
   MOD_KEY_LABEL,
   useKeymap,
@@ -88,7 +87,7 @@ import { ShortcutHelpHost } from "./features/shell/ShortcutHelpHost";
 import { SIGN_OUT_SETTLE_MS, SignInChannel } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
-  dialogOpen,
+  escapeClosesDrawer,
   MD_VIEWPORT_QUERY,
   READING_PANE_QUERY,
   useDialog,
@@ -628,6 +627,14 @@ function NavigationContents({
   );
 }
 
+/** Details while it is open, in one state so that the drawer made for the open reads the focus of
+ *  the press that opened it: the issue it was opened on, and what held the focus at that press
+ *  (`MarginDrawer.openedFrom`). */
+interface OpenDetails {
+  readonly issue: string | undefined;
+  readonly openedFrom: Element | null;
+}
+
 /**
  * The shell every signed-in page is drawn in, drawn the same way for both issue-page choices.
  * `frameOf` is the new issue page's frame (`features/issue-page/frame-shell.tsx`), for a reader
@@ -680,12 +687,14 @@ function AppShell({
   // The issue the address names, if any: the page the focus moves by, and the issue Details was
   // opened on.
   const issueKey = parseIssuePath(location.pathname)?.key;
-  // Details, the new issue page's margin as a drawer: the issue it was opened on while it is
-  // open, and what the page's root hands it (`FrameInput`, `features/issue-page/frame-shell.tsx`).
-  // The shell keeps both for the frame, so a change of the choice keeps them, and forgets the
-  // first in the render that leaves that issue.
-  const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
-  if (detailsFor !== undefined && detailsFor !== issueKey) setDetailsFor(undefined);
+  // Details, the new issue page's margin as a drawer: while it is open, the issue it was opened on
+  // and what held the focus at the press that opened it (`OpenDetails`), and what the page's root
+  // hands it (`MarginDrawerPage`). The shell keeps both for the frame, so a change of the choice
+  // keeps them, and forgets the first in the render that leaves that issue: every load opens
+  // Details closed, and so does every move to another issue, and coming back to the issue - by a
+  // link or by Back - finds it closed.
+  const [details, setDetails] = useState<OpenDetails | undefined>(undefined);
+  if (details !== undefined && details.issue !== issueKey) setDetails(undefined);
   const [drawerPage, setDrawerPage] = useState<MarginDrawerPage | undefined>(undefined);
   // Whether Details' drawer is drawn, which it is only once the margin's chunk is in: the drawer
   // says so as it mounts and as it goes (`MarginDrawer.setDrawn`, `features/margin/Margin.tsx`).
@@ -700,21 +709,34 @@ function AppShell({
   // chose the new page and whose frame is in. Every other page, and every other reader's issue
   // page, keeps the shell below exactly as it was.
   const frame = useMemo(
-    () =>
-      frameOf?.({
-        detailsFor,
-        drawerPage,
-        location,
-        navigationOpen,
-        railFits,
-        setDetailsDrawn,
-        setDetailsFor,
-        setDrawerPage,
-        setNavigationOpen,
-      }),
-    [detailsFor, drawerPage, frameOf, location, navigationOpen, railFits]
+    () => frameOf?.({ location, navigationOpen, railFits, setNavigationOpen }),
+    [frameOf, location, navigationOpen, railFits]
   );
   const issueFrame = frame !== undefined;
+  // Details' drawer, wherever the frame is. It is the same object while nothing it reads changes,
+  // since the margin's effects and the page's callbacks run on it and would run again for nothing
+  // on a new one: a frame computed again for the navigation's sheet, the width or a move between
+  // two views of one issue changes nothing it reads. An open of a drawer that is already open
+  // changes nothing either: the drawer keeps the focus recorded at its open.
+  const detailsDrawer = useMemo<MarginDrawer | undefined>(
+    () =>
+      issueFrame
+        ? {
+            open: details !== undefined,
+            openedFrom: details?.openedFrom,
+            page: drawerPage,
+            setDrawn: setDetailsDrawn,
+            setOpen: (open) =>
+              setDetails(
+                open
+                  ? (details ?? { issue: issueKey, openedFrom: document.activeElement })
+                  : undefined
+              ),
+            setPage: setDrawerPage,
+          }
+        : undefined,
+    [details, drawerPage, issueFrame, issueKey]
+  );
   // In the frame Details opens only once the margin's chunk is in, which can be long after the
   // press that asked for it, and until then no drawer is drawn to take its Escape. So while
   // Details is asked for and not drawn, Escape calls the open off, and the chunk that lands after
@@ -722,28 +744,18 @@ function AppShell({
   // drawer's Escape, kept for the window before the drawer is: a listener on the document, in the
   // bubble phase, as the drawer's is, so it answers before the keymap's own listener on the window
   // (`KeymapProvider`) - a focused outline row would otherwise take the key to leave the tree -
-  // and marks the key handled, which every binding of the keymap passes over. It passes by much
-  // what the drawer passes by: an Escape already handled, one in a text field
-  // (`isEditableTarget`) or in a dialog, one under an open dialog, and one that ends an input
-  // method's composition. Not a binding of the keymap, which would add a row to the list of keys
-  // (`ShortcutHelp.tsx` lists every binding, one that does not apply greyed).
-  const detailsWaiting = frame?.drawer.open === true && !detailsDrawn;
+  // and marks the key handled, which every binding of the keymap passes over. It passes by what
+  // the drawn drawer passes by, since both read one rule (`escapeClosesDrawer`, `useDialog.ts`):
+  // only the drawer's check for a menu open in it is the drawn drawer's own. Not a binding of the
+  // keymap, which would add a row to the list of keys (`ShortcutHelp.tsx` lists every binding, one
+  // that does not apply greyed).
+  const detailsWaiting = detailsDrawer?.open === true && !detailsDrawn;
   useEffect(() => {
     if (!detailsWaiting) return;
     const callOff = (event: KeyboardEvent) => {
-      const { target } = event;
-      if (
-        event.key !== "Escape" ||
-        event.defaultPrevented ||
-        event.isComposing ||
-        isEditableTarget(target) ||
-        (target instanceof Element && target.closest('[role="dialog"]') !== null) ||
-        dialogOpen()
-      ) {
-        return;
-      }
+      if (!escapeClosesDrawer(event)) return;
       event.preventDefault();
-      setDetailsFor(undefined);
+      setDetails(undefined);
     };
     document.addEventListener("keydown", callOff);
     return () => document.removeEventListener("keydown", callOff);
@@ -849,8 +861,8 @@ function AppShell({
   // What the shell hands the new issue page and the margin beside it, drawn at one place for
   // every reader and every page (`features/issue-page/frame-context.ts`).
   const frameValue = useMemo(
-    () => ({ drawer: frame?.drawer, fill, fillSlot, navigation: frame?.navigation, openHelp }),
-    [fill, fillSlot, frame, openHelp]
+    () => ({ drawer: detailsDrawer, fill, fillSlot, navigation: frame?.navigation, openHelp }),
+    [detailsDrawer, fill, fillSlot, frame, openHelp]
   );
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
@@ -925,12 +937,15 @@ function AppShell({
     },
     {
       // In the new issue page's frame the margin is Details, which this key opens and closes at
-      // every width (`frame.toggleDetails`). Its id follows the gate, so that crossing it
+      // every width (`detailsDrawer`). Its id follows the gate, so that crossing it
       // registers the binding again and the list of keys reads the label of the shell it is in.
       id: frame === undefined ? "toggle-margin" : "toggle-details",
       keys: "Shift+M",
       label: frame === undefined ? "Toggle margin" : "Open or close Details",
-      run: () => (frame === undefined ? setMarginHidden(!marginHidden) : frame.toggleDetails()),
+      run: () =>
+        detailsDrawer === undefined
+          ? setMarginHidden(!marginHidden)
+          : detailsDrawer.setOpen(!detailsDrawer.open),
       // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
       // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
       when: () => frame !== undefined || (!isCompactViewport && hasMargin),

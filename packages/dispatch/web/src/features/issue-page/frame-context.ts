@@ -20,12 +20,12 @@ import type { ShellNavigation } from "./shell-navigation";
  * own, would each put a provider's code there too.
  *
  * So this carries only what crosses between the shell, the page and the margin. What the frame
- * computes from the shell's state - Details and the navigation for the page's header - is the
- * frame chunk's code (`frame-shell.tsx`), and the providers only the page reads are the page's
- * own, fed from here (`IssueOutlinePage.tsx`). The margin slot's hooks read it directly
- * (`margin-slot.tsx`), since the margin reads them outside the page as well as the page inside
- * it. Outside the shell - a test that draws a part on its own - it is undefined, and every hook
- * over it answers as no frame and no slot.
+ * computes from the shell's state - the navigation for the page's header - is the frame chunk's
+ * code (`frame-shell.tsx`), Details' drawer is the shell's own (`AppShell`), and the providers
+ * only the page reads are the page's own, fed from here (`IssueOutlinePage.tsx`). The margin
+ * slot's hooks read it directly (`margin-slot.tsx`), since the margin reads them outside the page
+ * as well as the page inside it. Outside the shell - a test that draws a part on its own - it is
+ * undefined, and every hook over it answers as no frame and no slot.
  */
 export interface ShellFrameValue {
   /** The margin as the new page's Details drawer, on an issue's address for a reader who chose
