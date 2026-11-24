@@ -332,6 +332,24 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			took = "a facet of the pod that is fixed for its life moved, so the launching role cannot start in that pod"
 		}
 	}
+	// A pod whose launchers are not bound to it is replaced by this launch on its own account
+	// (launcherBound), so the bindings are read before the update round is asked of the pod: a
+	// round's reading that keeps the pod, and tells the issue it stays, would be followed at once
+	// by this launch's replacement of it (INFRA-341's reviewer's point 10).
+	if !replace {
+		bound, err := r.launcherBound(bounded, s, pod, &l)
+		if err != nil {
+			return fail("read its pod's launcher bindings", err)
+		}
+		replace = !bound
+		if covered && replace {
+			// One launcher bound wrongly says nothing of the others: a launcher of the pod that
+			// is connected and authenticated for it can still read the workspace (launchTaken,
+			// GPT-6.1 Sol's point 4 on #5285 at 0259f8af), and the read is unread only where none
+			// can make it.
+			took = "the pod's launchers are not bound to it"
+		}
+	}
 	// A live pod a round covers that this launch would keep may be the pod of an update round
 	// that is over: no role process runs in it, and nothing holds it, so the round is about to
 	// replace it. A role started in it now would have its first turn ended by that replacement
@@ -354,20 +372,6 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			r.log.Info("sandbox runtime: this launch replaces the pod of an update round that its bound or its answers ended; the role starts in a new pod",
 				"pod", pod.Name, "uid", pod.UID, "claim", spec.Claim)
 			replace, kind = true, roundReplacement
-		}
-	}
-	if !replace {
-		bound, err := r.launcherBound(bounded, s, pod, &l)
-		if err != nil {
-			return fail("read its pod's launcher bindings", err)
-		}
-		replace = !bound
-		if covered && replace {
-			// One launcher bound wrongly says nothing of the others: a launcher of the pod that
-			// is connected and authenticated for it can still read the workspace (launchTaken,
-			// GPT-6.1 Sol's point 4 on #5285 at 0259f8af), and the read is unread only where none
-			// can make it.
-			took = "the pod's launchers are not bound to it"
 		}
 	}
 	if !replace {

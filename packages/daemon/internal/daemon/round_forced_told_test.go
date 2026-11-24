@@ -52,7 +52,7 @@ func TestARoundOverADriftThatBreaksThePodSaysWhatItTook(t *testing.T) {
 			if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 {
 				t.Fatalf("the round read the workspace %d times, want once before the replacement", len(reads))
 			}
-			told := rig.architectNotices(record.NoticeKind("workspace-taken"))
+			told := rig.architectNotices(record.WorkspaceTakenNotice)
 			if len(told) != tc.notes || (tc.notes == 1 && !strings.Contains(told[0].Reason, passedOverCommit)) {
 				t.Fatalf("the architect was told %+v, want %d workspace-taken notice(s), naming the commit %s", told, tc.notes, passedOverCommit)
 			}

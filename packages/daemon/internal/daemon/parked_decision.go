@@ -149,7 +149,7 @@ func (r *outbox) tellControllerOfKeptPod(ctx context.Context, issue string, row 
 				r.log.Info("outbox disk notice handed to the controller before under this key", args...)
 				return
 			}
-			r.log.Info("outbox disk notice sent to the controller: its architect will not hold its role again", args...)
+			r.log.Info("outbox disk notice sent to the controller: no architect will hear it", args...)
 		})
 		if !fresh {
 			return nil

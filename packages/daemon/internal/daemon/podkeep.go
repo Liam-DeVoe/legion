@@ -386,17 +386,26 @@ func (s *supervision) tellLaunchTook(ctx context.Context, taken runtime.TakenPod
 // made of pod although the read of its workspace before it found work that no branch or tag on
 // origin holds (work, failed nil), or failed (failed): why the round replaced the pod, the roles of
 // named with their states, what the read found, and whether the work is gone or on a kept volume
-// (kept). The architect reads it in its session and people read it in its history, so it follows
+// (kept, read once the replacement is made). A round over a drift its roles can keep working
+// under replaced the pod only because its disk was a kept volume when the round read it
+// (roundKeeps); where the replacement then found the volume failed and marked it for a reset, kept
+// is false, and the notice says the next launch deletes the volume (INFRA-341's reviewer's point
+// 9). The architect reads it in its session and people read it in its history, so it follows
 // ASD-STE100. The read's error is the far side's text as the daemon keeps it (readError).
 func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.Claim, work runtime.WorkspaceWork, failed error, kept bool) string {
 	why := "The round was over a drift that breaks the pod, so no role could keep working in the pod."
-	if !runtime.BreaksPod(reasons) {
-		why = "The pod's disk is a kept volume that the issue's next pod mounts, so the replacement did not delete the disk."
-	}
 	gone, lost := "The pod and its disk are gone.", "Work that is not on a branch at origin is lost."
-	if kept {
+	switch {
+	case runtime.BreaksPod(reasons) && kept:
 		gone = "The pod is gone. Its disk is a kept volume, and the volume is still there."
 		lost = "Work that is not on a branch at origin is on that volume. The next pod of this issue mounts the volume."
+	case kept:
+		why = "The pod's disk is a kept volume that the issue's next pod mounts, so the replacement did not delete the disk."
+		gone = "The pod is gone. Its disk is a kept volume, and the volume is still there."
+		lost = "Work that is not on a branch at origin is on that volume. The next pod of this issue mounts the volume."
+	case !runtime.BreaksPod(reasons):
+		why = "The pod's disk was a kept volume when the round read it, so the round replaced the pod. The replacement found that the volume failed, and marked it for a reset."
+		gone = "The pod is gone. The next launch of this issue deletes its volume and makes a new one."
 	}
 	parts := []string{fmt.Sprintf("The daemon replaced the pod of %s (pod %s) for the update round %s. %s %s %s", issue, pod, round, roundOpenedFor(reasons), why, gone)}
 	if len(named) > 0 {

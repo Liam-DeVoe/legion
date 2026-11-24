@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -208,7 +209,7 @@ func TestAnUpdateRoundKeepsAPodWhoseDiskHoldsUnpushedWork(t *testing.T) {
 		if sent := promptsOf(rig.workers[claim.RoleArchitect], roundHeldTask); len(sent) == 0 {
 			t.Fatalf("the architect was sent %+v once the round ended, want the task the round held", rig.workers[claim.RoleArchitect].Prompts())
 		}
-		if reason, pod := rig.keptReason(); reason != "unpushed_work" || pod != podUpdatePod {
+		if reason, pod := rig.keptReason(); reason != pods.DeclineUnpushedWork || pod != podUpdatePod {
 			t.Fatalf("the decline row reads %q of pod %q, want unpushed_work of the round's pod %s", reason, pod, podUpdatePod)
 		}
 		told := rig.architectNotices(record.WorkspaceKeptNotice)
@@ -343,7 +344,7 @@ func TestAnUpdateRoundKeepsAPodWhoseDiskHoldsUnpushedWork(t *testing.T) {
 		rig.answerRound(podUpdateDrift, claim.RoleImplementer, claim.RoleTester)
 
 		rig.roundEndsKept("over a read that cannot be made", claim.RoleImplementer, claim.RoleTester)
-		if reason, pod := rig.keptReason(); reason != "workspace_unread" || pod != podUpdatePod {
+		if reason, pod := rig.keptReason(); reason != pods.DeclineWorkspaceUnread || pod != podUpdatePod {
 			t.Fatalf("the decline row reads %q of pod %q, want workspace_unread of the round's pod %s", reason, pod, podUpdatePod)
 		}
 		rig.noRoundOver("while the read cannot be made", claim.RoleImplementer, claim.RoleTester)

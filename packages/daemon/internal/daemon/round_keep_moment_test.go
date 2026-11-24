@@ -10,10 +10,14 @@ package daemon
 // turn that runs once the read is made. The same holds for the keep a round makes at its read.
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -79,5 +83,65 @@ func TestAKeptPodIsReadAgainAfterATurnThatStartedAsItsRoundRead(t *testing.T) {
 	}
 	if reads := rig.workspaceReads(); reads != 2 {
 		t.Fatalf("the kept pod's workspace was read %d times after the implementer's turn ended, want once: that turn ran as the round read", reads-1)
+	}
+}
+
+// INFRA-341's reviewer's point 12: a round's keep over a read that could not be made is read again
+// once pods.DeclineUnreadRetry has passed since that read, with no turn of the issue between, and
+// not before: one read at the hour, and none at the sweeps after it while it still fails.
+func TestAKeptPodWhoseReadFailedIsReadAgainAfterTheRetry(t *testing.T) {
+	t.Parallel()
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.rt.FailWorkspaceWork(podUpdateIssue, errRoundRead)
+	rig.answerRound(podUpdateDrift, keptRoles...)
+	rig.roundEndsKept("over a read that cannot be made", keptRoles...)
+	reads := rig.workspaceReads()
+
+	rig.clock.advance(pods.DeclineUnreadRetry - time.Minute)
+	for range roundSweeps {
+		rig.tick()
+	}
+	if more := rig.workspaceReads() - reads; more != 0 {
+		t.Fatalf("the kept pod was read %d times before %s passed with no turn, want none", more, pods.DeclineUnreadRetry)
+	}
+	rig.clock.advance(time.Minute)
+	for range roundSweeps {
+		rig.tick()
+	}
+	if more := rig.workspaceReads() - reads; more != 1 {
+		t.Fatalf("the kept pod was read %d times once %s passed, want once: the read moves the keep's moment", more, pods.DeclineUnreadRetry)
+	}
+}
+
+// INFRA-341's reviewer's point 12: the holder the boot binds (plan.launchRounds, daemon.run) and
+// prepareSandbox hands the Sandbox runtime as its RoundPodEnds, LaunchTakes and LaunchTook forwards
+// each call to what it was bound to, and before it is bound keeps every pod, records nothing,
+// refuses nothing and tells nobody.
+func TestTheLaunchHolderForwardsEachHookItIsBoundTo(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	taken := runtime.TakenPod{Issue: podUpdateIssue, PodUID: podUpdatePod, Err: errRoundRead}
+	holder := &launchRounds{}
+	if ends, err := holder.ends(ctx, "token", podUpdatePod); ends || err != nil {
+		t.Fatalf("an unbound holder's ends = %t, %v; want the pod kept", ends, err)
+	}
+	if err := holder.takes(ctx, taken); err != nil {
+		t.Fatalf("an unbound holder's takes = %v, want nothing refused", err)
+	}
+	holder.took(ctx, taken)
+
+	var asked, recorded, told int
+	refused := errors.New("the store refuses the record")
+	holder.bind(func(context.Context, claim.Token, string) (bool, error) { asked++; return true, nil },
+		func(context.Context, runtime.TakenPod) error { recorded++; return refused },
+		func(context.Context, runtime.TakenPod) { told++ })
+	if ends, err := holder.ends(ctx, "token", podUpdatePod); !ends || err != nil || asked != 1 {
+		t.Fatalf("the bound holder's ends = %t, %v after %d readings; want the bound reading's answer, once", ends, err, asked)
+	}
+	if err := holder.takes(ctx, taken); !errors.Is(err, refused) || recorded != 1 {
+		t.Fatalf("the bound holder's takes = %v after %d records; want the bound record's error, once", err, recorded)
+	}
+	if holder.took(ctx, taken); told != 1 {
+		t.Fatalf("the bound holder told %d times, want once", told)
 	}
 }
