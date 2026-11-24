@@ -287,15 +287,12 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 }
 
 // actsAsOwnApp is whether role acts as the App of the owner's own role, the architect's, by the one
-// role-to-App rule (appauth.AppRoleFor), where the workflow can read it: a name of Legion's, whose
-// App the rule names whatever the deployment's settings or a plan say. A role a plan or the
-// deployment defines is answered false, since its App is the deployment's settings or the plan's
-// type, which the daemon reads (appauth.RoleApps), so its end queues the write-back, and the
-// runtime rewrites nothing where the slot holds that App already (runtime.SlotCredentials).
+// role-to-App rule (appauth.AppRoleFor), asked with no deployment and no plan: it names the App of
+// a name of Legion's whatever the deployment's settings or a plan say, and answers any other name
+// ErrRoleNotDefined, which is false here. Such a role is one a plan or the deployment defines,
+// whose App the daemon reads (appauth.RoleApps), so its end queues the write-back, and the runtime
+// rewrites nothing where the slot holds that App already (runtime.SlotCredentials).
 func actsAsOwnApp(role claim.Role) bool {
-	if !plan.IsLegionName(string(role)) {
-		return false
-	}
 	app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 	if err != nil {
 		return false
