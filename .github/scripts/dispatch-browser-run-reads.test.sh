@@ -879,7 +879,7 @@ wait_asked=$(sleeps)
 check "exits 0" "$(is "$status" 0)"
 check "reads the reset from the rate_limit route once" "$(is "$(rate_calls)" 1)"
 check "calls the jobs route twice: refused, then answered" "$(is "$(calls)" 2)"
-check "writes the attempt that answered" "$(is "$(entries)" 7)"
+check "writes the attempt that answered" "$(is "$(entries)" 9)"
 check "logs the wait, naming the reset and the job's limit" \
   "$(contains "$out" "^::warning::the API budget is spent until $(utc "$reset"); waiting [0-9]* s for it, within this job's limit at ")"
 check "asks sleep once, for the seconds to a second past the reset" \
