@@ -1589,8 +1589,10 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 // SettleVersion is SnapshotVersion written as the document's settlement writes its version
 // (settlement.commitVersion), inside the caller's joined transaction and under the owner lock it
 // holds: the version moves the open approval request as a settlement's does, keeping it with the
-// person where it stores byte for byte the text that person was asked about (MoveApprovalAsk's
-// bySettlement); on a closed issue it moves no request and carries no approval
+// person where it holds the text that person was asked about (MoveApprovalAsk's bySettlement,
+// restoresVersionText): byte for byte, or, where another renderer version stored that text or
+// none stamped it, as stored text this build reads as the version's text (readsAs);
+// on a closed issue it moves no request and carries no approval
 // (versionWrite.closedIssue); and it opens, moves or deletes the edit notice as a settlement's
 // version does (settledEditNotice). Under a context its caller marked as a comment's writes
 // (WithCommentMarks) it runs owner-verified, so a closed issue's document takes it. It writes the
@@ -1601,10 +1603,16 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 // settlement those writes arm would write the same version a settle delay later.
 //
 // It is that same version. The settlement versions the document when an update since the latest
-// version changed its content and the rendering differs from it; a snapshot when the rendering
-// differs and an update changed the content or the latest version does not read as it
+// version changed its content and the latest version does not hold the rendering
+// (latestVersionRow.holds: byte for byte, or, for a version another renderer version wrote or
+// none stamped, as markdown this build reads as that rendering); a snapshot when the latest
+// version does not hold the rendering and, where this renderer version wrote that version, an
+// update since changed the content or its markdown does not read as the rendering
 // (snapshotVersion). For a transaction that changed the content itself, both rules come to the
-// rendering differing. It names no version, and keeps no editor of a closed issue's
+// latest version not holding the rendering. A renderer change alone writes no version under
+// either rule, since the latest version holds the same tree in another renderer version's
+// spelling (TestSettlementWritesNoVersionForAnotherRendererVersionsSpellingOfTheSameTree).
+// It names no version, and keeps no editor of a closed issue's
 // (versionWrite.keptEditor): the version credits this transaction's writer, whose change it holds,
 // so its credit is never only a kept editor (settlementVersionCredit.kept). Its approval move and
 // carry are the ones the settlement's version of the same text would make. The settlement
