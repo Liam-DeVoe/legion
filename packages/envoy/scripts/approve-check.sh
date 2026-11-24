@@ -22,8 +22,10 @@
 #      same review on the same placeholder is refused 407. (e) the scan of every file the session
 #      and the sign-in wrote under the box, of the session's stderr and stdout, and of the session's
 #      environment, finds no candidate whose SHA-256 is a minted token's the broker logged, and no
-#      private key whose thumbprint is a logged binding; a scan that read no file, no file under a
-#      path it was named, or a broker log that names no minted token or no binding is UNKNOWN.
+#      private key, as PEM or as a JWK, whose thumbprint is a logged binding; a scan that read no
+#      file, no file under a path it was named, any one file, directory or process environment it
+#      could not read, or a broker log that names no minted token or no binding is UNKNOWN. A
+#      symbolic link whose target does not exist holds no data: the scan names it and reads nothing.
 #   2. --approve --approve-allow-all: the allow list off. (i) the comment and the token mint reach
 #      Dispatch, which refuses them APPROVE_ONLY_TOKEN and records no comment; (ii) the review is
 #      recorded with the person as its author.
@@ -42,8 +44,9 @@
 # It prints one line per step, "approve-check: <step>: PASS|FAIL|UNKNOWN <what it read>", and
 # exits 0 when every step passed, 1 when one failed, 2 on a usage error, and 3 when none failed and
 # one is UNKNOWN: a stack that did not start, a sign-in or a setup that did not complete, or a scan
-# that compared nothing. The Postgres server is LEGION_TEST_PG_DSN, else DATABASE_URL, as
-# dev-stack.sh reads them. It needs what dev-stack.sh needs, and bun, openssl and patch.
+# that compared nothing or could not read a file, a directory or a process environment it was
+# given. The Postgres server is LEGION_TEST_PG_DSN, else DATABASE_URL, as dev-stack.sh reads them.
+# It needs what dev-stack.sh needs, and bun, openssl and patch.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
