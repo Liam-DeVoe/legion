@@ -9,7 +9,7 @@ Your role prompt gives the workspace, push, handoff, `handoff_complete`, waits a
 
 ## Every phase
 
-1. Read the issue, then your task, then the report each `Step <j> (<step>) reported: <word> version <v>.` line of it names (`dispatch handoff-read --issue <issue> --phase <word> --version <v>`), or, for a deployment's role, which writes none, its runs (`dispatch steps --issue <issue>`).
+1. Read the issue, then your task, then the report each `Step <j> (<step>) reported: <word> version <v>.` line of it names (`dispatch handoff-read --issue <issue> --phase <word> --version <v>`), or, for a deployment's role, which writes none, its runs (below).
    Where your task has no such line, `dispatch steps --issue <issue>` lists the step runs; without `--version` the command reads a phase's newest report.
    Your architect's decisions for you come in your task and your messages: read no other document for them.
    A record beats your memory.
@@ -78,7 +78,7 @@ Your role prompt gives the workspace, push, handoff, `handoff_complete`, waits a
 ## Pull request and merge gate
 
 - The implementer opens the pull request with the line `Dispatch: <KEY>` in its body.
-  A later phase that pushes uses that branch, and a later phase that edits a pull request edits that one.
+  A later phase pushes only to that branch and edits only that pull request.
 
 - No deferrals.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
