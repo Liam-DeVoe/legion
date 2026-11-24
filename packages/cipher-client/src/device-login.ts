@@ -128,10 +128,10 @@ const MOST_LIFETIME_SECONDS = 3600;
 
 /**
  * `value`, a positive number of seconds, as a refusal prints it: the shortest digits that read
- * back as it (`Number.prototype.toString`), with no exponent, so a huge one shows every digit
- * (`1e+21`), as the Go helper prints one, and a tiny one is no `0` (`1e-9`). `toString` writes an
- * exponent only from 1e21 up and below 1e-6, so the point falls past every digit or before them
- * all.
+ * back as it (`Number.prototype.toString`), with no exponent, so a huge one shows every digit where
+ * `toString` writes `1e+21`, as the Go helper prints one, and a tiny one is no `0` where it writes
+ * `1e-9`. `toString` writes an exponent only from 1e21 up and below 1e-6, so the point falls past
+ * every digit or before them all.
  */
 function seconds(value: number): string {
   const [mantissa = "", exponent] = String(value).split("e");
@@ -302,19 +302,19 @@ function loginOf(
     typeof answered["credential_expires_at"] === "string" ? answered["credential_expires_at"] : ""
   );
   const refreshToken = answered.refresh_token ?? "";
-  const seconds = Math.min(answered.expires_in ?? 0, MOST_LIFETIME_SECONDS);
+  const accessSeconds = Math.min(answered.expires_in ?? 0, MOST_LIFETIME_SECONDS);
   if (
     credentialId === "" ||
     Number.isNaN(expiresAt.getTime()) ||
     refreshToken === "" ||
-    !(seconds > 0) ||
+    !(accessSeconds > 0) ||
     answered.token_type.toLowerCase() !== TOKEN_TYPE_DPOP.toLowerCase()
   ) {
     throw new BrokerTradeFailedError(
       `the secrets broker at ${urlForText(endpoint, BROKER_URL_SETTING)} answered the device login without a credential_id, an RFC 3339 credential_expires_at, a refresh_token, a positive expires_in or a DPoP-bound token`
     );
   }
-  const accessExpiresAt = new Date(now + seconds * 1000);
+  const accessExpiresAt = new Date(now + accessSeconds * 1000);
   return {
     key,
     credentialId: printable(credentialId, "credential_id", endpoint),
@@ -370,25 +370,33 @@ function codeLeft(
 
 /**
  * What must change at the broker before a device code it answers can be polled, for a broker that
- * named the interval `named`, or none where it is undefined, and a code that lives
- * `lifetimeSeconds` here, past no hour (the caller names the hour where it ends the code). This
- * machine polls at the interval named, 1 s at least, so where that is 1 s, or the code lives 1 s
- * or less, no interval the broker names helps, and only a longer lifetime does.
+ * named the interval `named`, or none where it is undefined, that this machine polls at
+ * `intervalSeconds`, and a code that lives `lifetimeSeconds` here, past no hour (the caller names
+ * the hour where it ends the code). This machine polls at the interval named, 1 s at least, so
+ * where that is 1 s, or the code lives 1 s or less, no interval the broker names helps, and only a
+ * longer lifetime does. `by` is the words before each `shorter` and `longer`, with their trailing
+ * space: none, or `a millisecond or more ` where the code's end, whole milliseconds, misses a
+ * lifetime less than one past the interval.
  */
-function unpollableRemedy(named: number | undefined, lifetimeSeconds: number): string {
+function unpollableRemedy(
+  named: number | undefined,
+  intervalSeconds: number,
+  lifetimeSeconds: number,
+  by = ""
+): string {
   if (named === undefined) {
     return lifetimeSeconds > LEAST_POLL_SECONDS
-      ? `it names a poll interval shorter than its codes' lifetime, or its codes live longer than ${DEFAULT_POLL_SECONDS} s`
-      : `its codes live longer than ${DEFAULT_POLL_SECONDS} s, or than both ${LEAST_POLL_SECONDS} s and a poll interval it names`;
+      ? `it names a poll interval ${by}shorter than its codes' lifetime, or its codes live ${by}longer than ${DEFAULT_POLL_SECONDS} s`
+      : `its codes live ${by}longer than ${DEFAULT_POLL_SECONDS} s, or than both ${LEAST_POLL_SECONDS} s and a poll interval it names`;
   }
-  if (named < LEAST_POLL_SECONDS) {
-    return `its codes live longer than ${LEAST_POLL_SECONDS} s, the least poll interval this machine keeps`;
+  if (intervalSeconds === LEAST_POLL_SECONDS) {
+    return `its codes live ${by}longer than ${LEAST_POLL_SECONDS} s, the least poll interval this machine keeps`;
   }
   if (lifetimeSeconds > LEAST_POLL_SECONDS)
-    return "its poll interval is shorter than its codes' lifetime";
+    return `its poll interval is ${by}shorter than its codes' lifetime`;
   return named >= MOST_LIFETIME_SECONDS
-    ? "its poll interval is shorter than an hour and its codes live longer than it"
-    : "its codes live longer than its poll interval";
+    ? `its poll interval is shorter than an hour and its codes live ${by}longer than it`
+    : `its codes live ${by}longer than its poll interval`;
 }
 
 /**
@@ -415,7 +423,7 @@ function unpollableAnswer(
   const lapses = "the code would lapse before its first poll";
   const verdict = "no device login works at that broker until";
   if (lifetimeSeconds <= 0) {
-    return `a device code that had already lapsed, with ${interval}; ${verdict} ${unpollableRemedy(named, lifetimeSeconds)}`;
+    return `a device code that had already lapsed, with ${interval}; ${verdict} ${unpollableRemedy(named, intervalSeconds, lifetimeSeconds)}`;
   }
   const hour = lifetimeSeconds < answered.expires_in;
   const answer = hour
@@ -424,11 +432,11 @@ function unpollableAnswer(
   // The hour is whole seconds and the end whole milliseconds, so only a lifetime the broker named
   // can fall under a millisecond past the interval.
   if (intervalSeconds < lifetimeSeconds) {
-    return `${answer}, under a millisecond apart: ${lapses}, as this machine counts a code's time in whole milliseconds; ${verdict} its poll interval is a millisecond or more shorter than its codes' lifetime`;
+    return `${answer}, under a millisecond apart: ${lapses}, as this machine counts a code's time in whole milliseconds; ${verdict} ${unpollableRemedy(named, intervalSeconds, lifetimeSeconds, "a millisecond or more ")}`;
   }
   const remedy = hour
     ? "its poll interval is shorter than an hour"
-    : unpollableRemedy(named, lifetimeSeconds);
+    : unpollableRemedy(named, intervalSeconds, lifetimeSeconds);
   return `${answer}: ${lapses}; ${verdict} ${remedy}`;
 }
 
@@ -447,16 +455,14 @@ function unpollableAnswer(
  * 8628 Section 3.5), so a code that lapses no later than its first poll could never be polled:
  * it is refused here, before its user code is shown, by the test {@link finishDeviceLogin}
  * applies too ({@link codeLeft}), since an approval of it would mint a launcher credential bound
- * to a key no process holds. The Go helper's `Login` refuses such a code too, but the two part on
- * some answers: there a lifetime of 0 is none, polled for the hour, and a code's end is dated less
- * the request's round trip, so on a slow path it refuses a code this shows (`pollLogin`'s doc
- * lists these). The refusal names the broker's interval and lifetime, or the hour this machine
- * polls a code at most where that ends the code first, and what must change at the broker
- * ({@link unpollableAnswer}): asking again would meet the same answer. A refusal of the device
- * authorization is worded as every broker refusal is (`brokerRefusal`). A refusal of an answer
- * this machine will not use names the broker as `urlForText` does, as {@link printable}'s does,
- * and prints of the answer at most its interval and lifetime, numbers oauth4webapi checked
- * finite, in digits.
+ * to a key no process holds. The Go helper's `Login` refuses such a code too; where the two read
+ * an answer apart, `pollLogin`'s doc lists it. The refusal names the broker's interval and
+ * lifetime, or the hour this machine polls a code at most where that ends the code first, and what
+ * must change at the broker ({@link unpollableAnswer}): asking again would meet the same answer. A
+ * refusal of the device authorization is worded as every broker refusal is (`brokerRefusal`). A
+ * refusal of an answer this machine will not use names the broker as `urlForText` does, as
+ * {@link printable}'s does, and prints of the answer at most its interval and lifetime, numbers
+ * oauth4webapi checked finite, in digits.
  */
 export async function startDeviceLogin(options: {
   readonly brokerUrl: string;

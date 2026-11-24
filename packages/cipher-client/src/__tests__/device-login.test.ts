@@ -633,7 +633,7 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
     ],
     [
       { expiresIn: 0 },
-      `a device code that had already lapsed, with a poll interval of 1 s${lapsed} its codes live longer than its poll interval`,
+      `a device code that had already lapsed, with a poll interval of 1 s${lapsed} its codes live longer than 1 s, the least poll interval this machine keeps`,
     ],
     [
       { interval: null, expiresIn: 0 },
@@ -665,6 +665,20 @@ test("a broker's code no poll could reach is refused before it is shown, naming 
     [
       { interval: 5, expiresIn: 5.0005 },
       "a device code that lives 5.0005 s, with a poll interval of 5 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until its poll interval is a millisecond or more shorter than its codes' lifetime",
+    ],
+    // The same, where the interval used is the floor of 1 s, whether the broker named less or 1 s
+    // itself, and the 5 s of a broker that names none.
+    [
+      { interval: 0.5, expiresIn: 1.0005 },
+      "a device code that lives 1.0005 s, with a poll interval of 0.5 s, so one of 1 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps",
+    ],
+    [
+      { interval: 1, expiresIn: 1.0005 },
+      "a device code that lives 1.0005 s, with a poll interval of 1 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until its codes live a millisecond or more longer than 1 s, the least poll interval this machine keeps",
+    ],
+    [
+      { interval: null, expiresIn: 5.0005 },
+      "a device code that lives 5.0005 s, with no poll interval, so one of 5 s, under a millisecond apart: the code would lapse before its first poll, as this machine counts a code's time in whole milliseconds; no device login works at that broker until it names a poll interval a millisecond or more shorter than its codes' lifetime, or its codes live a millisecond or more longer than 5 s",
     ],
   ] as const) {
     const stub = broker(options);
@@ -746,39 +760,46 @@ test("the start and the poll agree on which code a poll reaches, to the millisec
 // poll, or have lapsed. It is refused at once, naming the code, not waited out and said to have
 // expired before the person approved it; asking again starts a code `startDeviceLogin` checks.
 test("a code handed to the poll that lapses no later than its first poll is refused at once", async () => {
+  // The wall clock stands still, so each row's time left is what the row set, to the millisecond.
+  const now = Date.now();
+  const still = spyOn(Date, "now").mockReturnValue(now);
   const stub = broker();
-  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-  for (const [handed, says] of [
-    [
-      { ...started, intervalSeconds: 1_800 },
-      /^lapses in (59\d(\.\d{1,3})?|600) s, no later than its first poll, 1800 s on/,
-    ],
-    // A fraction of a second is printed as it is, so the time left reads shorter than the wait.
-    [
-      { ...started, intervalSeconds: 4.5, expiresAt: new Date(Date.now() + 4_200) },
-      /^lapses in 4\.\d{1,3} s, no later than its first poll, 4\.5 s on/,
-    ],
-    [
-      { ...started, expiresAt: new Date(Date.now() - 1_000) },
-      /^had lapsed before its first poll, 1 s on/,
-    ],
-    [
-      { ...started, intervalSeconds: 5_000, expiresAt: new Date(Date.now() + 7_200_000) },
-      /^would lapse here before its first poll, 5000 s on, as this machine polls a device code for an hour at most/,
-    ],
-  ] as const) {
-    const { waits, sleep } = recordedWaits();
-    const refusal = await finishDeviceLogin(handed, { path: loginPath(), sleep }).then(
-      () => null,
-      (error: unknown) => error as Error
-    );
-    const message = refusal?.message ?? "";
-    expect(message, String(says)).toStartWith(`the code ${STAND_IN_USER_CODE} `);
-    expect(message.slice(`the code ${STAND_IN_USER_CODE} `.length), String(says)).toMatch(says);
-    expect(message, String(says)).toEndWith(
-      `, so no poll could reach it; ask again with: ${DEVICE_LOGIN_COMMAND}`
-    );
-    expect(waits, String(says)).toHaveLength(0);
+  try {
+    const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+    for (const [handed, says] of [
+      [
+        { ...started, intervalSeconds: 1_800 },
+        /^lapses in 600 s, no later than its first poll, 1800 s on/,
+      ],
+      // A fraction of a second is printed as it is, so the time left reads shorter than the wait.
+      [
+        { ...started, intervalSeconds: 4.5, expiresAt: new Date(now + 4_200) },
+        /^lapses in 4\.2 s, no later than its first poll, 4\.5 s on/,
+      ],
+      [
+        { ...started, expiresAt: new Date(now - 1_000) },
+        /^had lapsed before its first poll, 1 s on/,
+      ],
+      [
+        { ...started, intervalSeconds: 5_000, expiresAt: new Date(now + 7_200_000) },
+        /^would lapse here before its first poll, 5000 s on, as this machine polls a device code for an hour at most/,
+      ],
+    ] as const) {
+      const { waits, sleep } = recordedWaits();
+      const refusal = await finishDeviceLogin(handed, { path: loginPath(), sleep }).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      const message = refusal?.message ?? "";
+      expect(message, String(says)).toStartWith(`the code ${STAND_IN_USER_CODE} `);
+      expect(message.slice(`the code ${STAND_IN_USER_CODE} `.length), String(says)).toMatch(says);
+      expect(message, String(says)).toEndWith(
+        `, so no poll could reach it; ask again with: ${DEVICE_LOGIN_COMMAND}`
+      );
+      expect(waits, String(says)).toHaveLength(0);
+    }
+  } finally {
+    still.mockRestore();
   }
   expect(stub.polls).toHaveLength(0);
 });

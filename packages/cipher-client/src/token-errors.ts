@@ -207,14 +207,14 @@ export class TradeUnansweredError extends Error {
 /**
  * A trade, or a step of a device login, that ended other than in a refusal: the broker gave no
  * answer, a 5xx, an answer that is not this grant's, or one this machine will not use (a field
- * holding a control character, a device code no poll could reach). Its message names the identity
- * traded or the login, the broker as `urlForText` names it, and the failure by its class
- * (`errorClass`) or the answer by the numbers in it that were checked finite, printed as digits,
- * and nothing else a peer wrote, so a caller prints it whole; it keeps no cause, since the
- * library's error can hold the answer it read. The class says nothing of whether asking again
- * cures it: a trade's loop tries again (`BrokerTokenClient`), and {@link DEVICE_LOGIN_COMMAND}
- * prints it and stops; a device code no poll could reach says in its message that asking again
- * meets the same answer.
+ * holding a control character, a device code no poll could reach). Its message names the broker as
+ * `urlForText` names it and what failed: the identity traded and the failure by its class
+ * (`errorClass`), the field of the answer this machine will not use, or the numbers in it that
+ * were checked finite, printed as digits; it holds nothing else a peer wrote, so a caller prints it
+ * whole, and it keeps no cause, since the library's error can hold the answer it read. The class
+ * says nothing of whether asking again cures it: a trade's loop tries again (`BrokerTokenClient`),
+ * and {@link DEVICE_LOGIN_COMMAND} prints it and stops; a device code no poll could reach says in
+ * its message that asking again meets the same answer.
  */
 export class BrokerTradeFailedError extends Error {
   constructor(message: string) {
