@@ -146,7 +146,7 @@ func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 		shared = []string{"core/common.md", filepath.Join("core", name+".md"), "mechanics/headless.md", name + ".md"}
 		daemonParts = []string{name + ".md", "worker-common.md"}
 	case claim.RoleMerger:
-		shared, daemonParts = []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "worker-common.md"}
+		shared, daemonParts = []string{"mechanics/headless.md", "merger.md"}, []string{"merger.md", "architect-common.md"}
 	default:
 		return Parts{}, fmt.Errorf("compose role prompt: unsupported role %q", role)
 	}
