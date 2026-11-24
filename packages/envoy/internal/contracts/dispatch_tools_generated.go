@@ -803,7 +803,7 @@ var DispatchTools = []DispatchTool{
 	},
 	{
 		Name:        "dispatch_set_default_repository",
-		Label:       ToolLabel{Kind: "write", Verb: "set", Present: "Setting the default repository of {project}", Past: "Set the default repository of {project}"},
+		Label:       ToolLabel{Kind: "write", Verb: "set", Present: "Setting the default repository of {project} to {repo|none}", Past: "Set the default repository of {project} to {repo|none}"},
 		Description: "Set or clear a project's default repository: the repository an issue of the project resolves to when neither the issue nor an issue above it names one. Use it when a person names the repository a project's work is done in. Undo does not change it back: change the setting again to put it back.",
 		Arguments: []ToolField{
 			{Name: "project", Kind: ToolFieldString, Required: true, Description: "Project key, such as DSP."},

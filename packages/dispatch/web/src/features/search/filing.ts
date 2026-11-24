@@ -7,6 +7,13 @@ import type { GoingContextInput } from "../../api/types";
 import { goingBounds } from "../going/going-store";
 import { showNotice } from "../going/Notice";
 import { STARTED_RUN, withRunFrame } from "../going/run-frames";
+import {
+  endWords,
+  providerRefused,
+  providerRefusedWords,
+  type RunState,
+  reasonCode,
+} from "../going/run-states";
 import { buildIssuePath } from "../refs/routes";
 
 /**
@@ -149,15 +156,44 @@ const LEADING_CODE = /^[A-Z][A-Z0-9_]*: */u;
  *  "Not filed" says already. */
 const NOT_FILED_WORDS = /^the issue was not filed: */u;
 
-/** Why a new-issue run filed nothing, from its end's reason, in words the person reads after "Not
- *  filed": never a code, nor "not filed" a second time, and the near copy by its key and title
- *  where the create was refused as one. */
-function reasonWords(reason: string): string {
+/** The code of a new-issue run's reason that says its create filed nothing (`goingNewIssueEnd`);
+ *  any other code is the run's own failure or stop, before or beside its create. */
+const NOT_FILED_CODE = "NEW_ISSUE_NOT_FILED";
+
+/** A create Dispatch answered with a status and no words of its own, such as a 503 from a proxy
+ *  in front of it: "its create answered 503". */
+const CREATE_ANSWERED = /^its create answered (\d+)$/u;
+
+/** A create that never ran, because the run ended first: "its create is skipped and did not
+ *  run". */
+const CREATE_NOT_RUN = /^its create is \S+ and did not run$/u;
+
+/** A create's status in words: Dispatch failing or out of reach, busy, or refusing it. */
+function createStatusWords(status: number): string {
+  if (status >= 500) return "Dispatch could not file it just now.";
+  if (status === 429) return "Dispatch is busy.";
+  return "Dispatch refused it.";
+}
+
+/** Why a new-issue run that ended `state` at `level` filed nothing, from its end's reason, in
+ *  words the person reads after "Not filed": never a code, a status or a service's own words, nor
+ *  "not filed" a second time, and the near copy by its key and title where the create was refused
+ *  as one. A run that failed or stopped before its create says why as the bar's own run says it
+ *  (`endWords`), as the short answer's failure does; a refusal of the model's provider offers no
+ *  Continue here, where Try again is the one next step. */
+function reasonWords(state: RunState, level: string, reason: string): string {
+  if (reasonCode(reason) !== NOT_FILED_CODE) {
+    if (providerRefused(reason)) return `${providerRefusedWords(reason)}.`;
+    return endWords(state, reason, level, "")?.text ?? "Dispatch filed nothing.";
+  }
   const why = reason.replace(LEADING_CODE, "").replace(NOT_FILED_WORDS, "").trim();
   const nearCopy = NEAR_COPY.exec(why);
   if (nearCopy !== null) {
     return `a near copy is filed already: ${nearCopy[1]}, ${nearCopy[2]}`;
   }
+  const answered = CREATE_ANSWERED.exec(why);
+  if (answered !== null) return createStatusWords(Number(answered[1]));
+  if (CREATE_NOT_RUN.test(why)) return "Dispatch stopped before it filed the issue.";
   const words = why.replace(LEADING_CODE, "").trim();
   return words === "" ? "Dispatch filed nothing." : words;
 }
@@ -227,7 +263,7 @@ export async function fileNewIssue({
       });
       return;
     }
-    fail(reasonWords(end?.reason ?? ""));
+    fail(reasonWords(frames.state, run.level, end?.reason ?? ""));
   } catch (error) {
     fail(apiErrorMessage(error, "Dispatch could not be reached."));
   } finally {

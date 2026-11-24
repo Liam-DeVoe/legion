@@ -8,6 +8,7 @@ import { QueryError } from "../../components/QueryError";
 import {
   card,
   focusVisibleRing,
+  radioRing,
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
@@ -29,10 +30,9 @@ const MODES: readonly { readonly mode: Mode; readonly label: string; readonly do
   },
 ];
 
-/** A radio drawn by the page rather than the browser, so its ring reads on either scheme: a
- *  slate ring at more than 3:1 against the card in light and in dark (WCAG 1.4.11), filled in
- *  the page's blue once chosen. The browser's own ring all but vanished on the dark card. */
-const RADIO = `size-4 shrink-0 cursor-pointer appearance-none rounded-full border-2 border-slate-500 outline-none checked:border-[5px] checked:border-sky-600 focus-visible:ring-2 focus-visible:ring-offset-2 dark:border-slate-400 dark:checked:border-sky-400 ${focusVisibleRing}`;
+/** A radio drawn by the page rather than the browser, so its ring reads on either scheme
+ *  (`radioRing`), filled in the page's blue once chosen. */
+const RADIO = `size-4 shrink-0 cursor-pointer appearance-none rounded-full border-2 outline-none checked:border-[5px] focus-visible:ring-2 focus-visible:ring-offset-2 ${radioRing} ${focusVisibleRing}`;
 
 /**
  * The person's own command-bar setting: its mode, which says which changes of a run's plan wait
@@ -109,45 +109,50 @@ export function CommandBarSection(): ReactNode {
       {settings.data === undefined ? null : (
         // The setting in a card, as every other section's controls are, under the name spec
         // v61 gives it, "Approval mode"; "Mode" alone is the name of Fast, Standard and Deep.
-        <fieldset className={`mt-6 space-y-3 rounded-xl border p-4 ${card}`}>
+        <fieldset className={`mt-6 rounded-xl border p-4 ${card}`}>
           <legend className={`float-left mb-1 w-full text-sm font-medium ${textPrimaryOnSurface}`}>
             Approval mode
           </legend>
-          {MODES.map(({ does, label, mode }) => (
-            // The radio's name is its label alone; what the mode does describes it.
-            <div className="flex items-start gap-2 text-sm" key={mode}>
-              <input
-                aria-describedby={`${ids}-${mode}`}
-                checked={chosen === mode}
-                className={`mt-0.5 ${RADIO}`}
-                id={`${ids}-${mode}-radio`}
-                name="going-mode"
-                onChange={() => choose(mode)}
-                type="radio"
-                value={mode}
-              />
-              <div>
-                <label
-                  className={`cursor-pointer font-medium ${textPrimaryOnSurface}`}
-                  htmlFor={`${ids}-${mode}-radio`}
-                >
-                  {label}
-                </label>
-                <p className={`text-xs ${textMutedOnSurface}`} id={`${ids}-${mode}`}>
-                  {does}
-                </p>
+          {/* The legend floats so it sits inside the card rather than on its border, and what
+              follows clears it: a row is a flex box, which stands beside a float rather than under
+              it, so each row stood to the right of the full-width legend, past the screen's edge. */}
+          <div className="clear-left space-y-3">
+            {MODES.map(({ does, label, mode }) => (
+              // The radio's name is its label alone; what the mode does describes it.
+              <div className="flex items-start gap-2 text-sm" key={mode}>
+                <input
+                  aria-describedby={`${ids}-${mode}`}
+                  checked={chosen === mode}
+                  className={`mt-0.5 ${RADIO}`}
+                  id={`${ids}-${mode}-radio`}
+                  name="going-mode"
+                  onChange={() => choose(mode)}
+                  type="radio"
+                  value={mode}
+                />
+                <div>
+                  <label
+                    className={`cursor-pointer font-medium ${textPrimaryOnSurface}`}
+                    htmlFor={`${ids}-${mode}-radio`}
+                  >
+                    {label}
+                  </label>
+                  <p className={`text-xs ${textMutedOnSurface}`} id={`${ids}-${mode}`}>
+                    {does}
+                  </p>
+                </div>
               </div>
-            </div>
-          ))}
-          <p
-            className={`text-xs ${textMutedOnSurface}`}
-            data-testid="going-settings-saved"
-            role="status"
-          >
-            {saved === undefined
-              ? null
-              : `Saved: ${MODES.find((one) => one.mode === saved)?.label ?? saved}.`}
-          </p>
+            ))}
+            <p
+              className={`text-xs ${textMutedOnSurface}`}
+              data-testid="going-settings-saved"
+              role="status"
+            >
+              {saved === undefined
+                ? null
+                : `Saved: ${MODES.find((one) => one.mode === saved)?.label ?? saved}.`}
+            </p>
+          </div>
         </fieldset>
       )}
       {refusal === undefined ? null : (

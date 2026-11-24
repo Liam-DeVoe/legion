@@ -559,8 +559,8 @@ export const dispatchRouteToolSpecs = [
     label: {
       kind: "write",
       verb: "set",
-      present: "Setting the default repository of {project}",
-      past: "Set the default repository of {project}",
+      present: "Setting the default repository of {project} to {repo|none}",
+      past: "Set the default repository of {project} to {repo|none}",
     },
     example: { project: "DSP", repo: "acme/infra" },
     description: `Set or clear a project's default repository: the repository an issue of the project resolves to when neither the issue nor an issue above it names one. Use it when a person names the repository a project's work is done in. ${NOT_UNDONE_SETTING}`,

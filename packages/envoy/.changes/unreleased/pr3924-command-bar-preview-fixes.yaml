@@ -47,4 +47,7 @@ body: |-
   reads "Partly undone" and offers "Undo the rest". A plan row that sets a project's default
   repository names it, and a clear says so in red. Enter approves a plan only when Approve would.
   A filing belongs to the open of the bar it was made in, Try again files with its first context,
-  and a refused filing names the near copy.
+  and a refused filing names the near copy. A run's step that sets a project's default repository
+  names it ("to none" for a clear), and a filing that fails says why in words, never a status or
+  a model service's own: "Dispatch could not file it just now", "Dispatch stopped before it filed
+  the issue", or a failed run's sentence, such as "Dispatch could not reach the model".

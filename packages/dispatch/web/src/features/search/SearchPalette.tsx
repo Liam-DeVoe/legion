@@ -26,6 +26,7 @@ import {
   borderDefault,
   card,
   dangerText,
+  expandedButtonAccent,
   kbdHint,
   searchHitBg,
   searchHitText,
@@ -1176,7 +1177,7 @@ function PaletteDialog({
           aria-controls={FILTERS_PANEL_ID}
           aria-expanded={filtersOpen}
           // Pressed while the filters show, as History is pressed while it shows.
-          className={`${secondaryButtonCompact} aria-expanded:border-sky-600 aria-expanded:bg-sky-50 dark:aria-expanded:border-sky-400 dark:aria-expanded:bg-sky-950`}
+          className={`${secondaryButtonCompact} ${expandedButtonAccent}`}
           data-testid="search-filters-button"
           onClick={() => setFiltersOpen((shown) => !shown)}
           type="button"

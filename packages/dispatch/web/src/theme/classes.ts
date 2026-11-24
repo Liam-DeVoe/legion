@@ -68,6 +68,9 @@ export const SURFACE_RECESSED = pair(P.WHITE, P.SLATE_950);
 export const surfaceBg = "bg-white dark:bg-slate-900";
 export const surfaceMutedBg = "bg-slate-100 dark:bg-slate-800";
 export const surfaceMutedHoverBg = "hover:bg-slate-100 dark:hover:bg-slate-800";
+/** `surfaceMutedHoverBg` for the row the keyboard's focus is on (a menu's focused item), so the
+ *  key and the pointer fill a row alike. */
+export const surfaceMutedFocusBg = "focus:bg-slate-100 dark:focus:bg-slate-800";
 export const surfaceMutedStrongBg = "bg-slate-200 dark:bg-slate-700";
 export const surfaceRecessedBg = "bg-white dark:bg-slate-950";
 /** An `animate-pulse` skeleton placeholder: `SURFACE_MUTED`'s shades reused directly (both
@@ -689,6 +692,23 @@ export const secondaryButtonCompact = `min-h-11 shrink-0 rounded-lg border px-3 
  *  Approve, Continue in Deep beside Continue - at the same height: its 1 px border and 7 px of
  *  padding make the primary's 8 px, so the two read as one row of choices. */
 export const secondaryButtonPaired = `shrink-0 rounded-lg border px-3 py-[7px] text-sm font-medium whitespace-nowrap ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
+
+/** A secondary button held down while what it opens shows: History while History shows
+ *  (`aria-pressed`), Filters while the filters show (`aria-expanded`). The border takes the
+ *  focus accent and the fill `selectedCardBg`'s shades, so its `secondaryButtonText` words are
+ *  "secondary text on callout-info", whose shades the fill shares; no new check is needed. */
+export const pressedButtonAccent =
+  "aria-pressed:border-sky-600 aria-pressed:bg-sky-50 dark:aria-pressed:border-sky-400 dark:aria-pressed:bg-sky-950";
+export const expandedButtonAccent =
+  "aria-expanded:border-sky-600 aria-expanded:bg-sky-50 dark:aria-expanded:border-sky-400 dark:aria-expanded:bg-sky-950";
+
+/** The ring of a radio the page draws rather than the browser (the browser's own ring all but
+ *  vanished on the dark card), filled in the focus accent once chosen. The ring is `TEXT_MUTED`'s
+ *  shades, which "muted text on surface" already holds at 4.5:1 on a card, above the 3:1 a
+ *  control's boundary needs (WCAG 1.4.11); the chosen fill is `FOCUS_ACCENT`, which "focus ring
+ *  on surface" holds at 3:1. */
+export const radioRing =
+  "border-slate-500 checked:border-sky-600 dark:border-slate-400 dark:checked:border-sky-400";
 
 // ---------------------------------------------------------------------------------------------
 // The navigation rail: a deliberately constant-dark surface (unlike everything else in this

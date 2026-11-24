@@ -9,6 +9,7 @@ import {
   surfaceMutedBg,
   surfaceMutedHoverBg,
   textMutedOnSurface,
+  textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -228,7 +229,9 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
                     >
                       {STATE_WORDS[row.state]}
                     </span>
-                    <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>
+                    {/* The row's time sits on the card at rest and on the muted fill while the
+                        row is the one Enter opens, so it takes the muted shade that reads on both. */}
+                    <span className={`shrink-0 text-xs ${textMutedOnSurfaceMuted}`}>
                       <Timestamp at={row.conversation.newest_at} />
                     </span>
                   </button>

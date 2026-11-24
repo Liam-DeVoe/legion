@@ -18,12 +18,14 @@ import {
   focusVisibleRing,
   focusWithinBorder,
   inputClasses,
+  pressedButtonAccent,
   primaryButtonBg,
   primaryButtonEnabledHoverBg,
   secondaryButtonBorder,
   secondaryButtonCompact,
   secondaryButtonHoverBorder,
   secondaryButtonText,
+  surfaceMutedFocusBg,
   surfaceMutedHoverBg,
   textMutedOnSurface,
   textPrimaryOnSurface,
@@ -180,7 +182,7 @@ export function LevelControl(): ReactNode {
               aria-checked={level === chosen}
               // The row the focus is on is filled and ringed in the page's blue, never the
               // browser's own black outline.
-              className={`flex min-h-11 w-full items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm outline-none focus:bg-slate-100 focus-visible:ring-2 sm:min-h-8 dark:focus:bg-slate-800 ${focusVisibleRing} ${textPrimaryOnSurface} ${surfaceMutedHoverBg}`}
+              className={`flex min-h-11 w-full items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm outline-none focus-visible:ring-2 sm:min-h-8 ${focusVisibleRing} ${textPrimaryOnSurface} ${surfaceMutedHoverBg} ${surfaceMutedFocusBg}`}
               data-level={level}
               key={level}
               onClick={() => choose(level)}
@@ -317,7 +319,7 @@ export function ConversationHeader({
       {named}
       <button
         aria-pressed={history}
-        className={`${secondaryButtonCompact} aria-pressed:border-sky-600 aria-pressed:bg-sky-50 dark:aria-pressed:border-sky-400 dark:aria-pressed:bg-sky-950`}
+        className={`${secondaryButtonCompact} ${pressedButtonAccent}`}
         data-testid="going-history-button"
         onClick={onHistory}
         type="button"

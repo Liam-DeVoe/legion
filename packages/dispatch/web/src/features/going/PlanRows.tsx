@@ -16,6 +16,7 @@ import { QueryError } from "../../components/QueryError";
 import { issueProject } from "../../lib/issue-key";
 import {
   borderDefault,
+  borderTransparent,
   calloutDangerBorder,
   calloutWarningBorder,
   dangerText,
@@ -936,7 +937,7 @@ export function PlanRowView({
     ? calloutDangerBorder
     : changed
       ? calloutWarningBorder
-      : "border-transparent";
+      : borderTransparent;
   return (
     <li
       className={`border-t py-2 outline-none first:border-t-0 focus-visible:ring-2 ${focusVisibleRing} ${borderDefault}`}

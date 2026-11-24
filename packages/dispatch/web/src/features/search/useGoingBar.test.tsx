@@ -448,6 +448,49 @@ test("a filing that files nothing stays in the bar in words, naming a near copy,
   }
 });
 
+// Every failure of a filing says why in words a person reads, as the short answer's failure does:
+// a create Dispatch answered with a bare status, a create the run ended before, and the agent's
+// own failure each read as a sentence, never as the server's or the model service's words.
+const NOT_FILED_IN_WORDS: readonly (readonly [string, string, string])[] = [
+  [
+    "a create answered 503",
+    "NEW_ISSUE_NOT_FILED: the issue was not filed: its create answered 503",
+    "Not filed: Dispatch could not file it just now.",
+  ],
+  [
+    "a create the run never ran",
+    "NEW_ISSUE_NOT_FILED: the issue was not filed: its create is skipped and did not run",
+    "Not filed: Dispatch stopped before it filed the issue.",
+  ],
+  [
+    "a model service that failed",
+    "MODEL_FAILED: azure: 502 Bad Gateway",
+    "Not filed: Dispatch could not reach the model.",
+  ],
+];
+
+for (const [what, reason, words] of NOT_FILED_IN_WORDS) {
+  test(`a filing that ends with ${what} says why in words`, async () => {
+    const user = userOnFakeClock();
+    createGoingRun.mockResolvedValue(newIssueRun("run-not-filed"));
+    const { ends, stream } = holdRunStreams();
+    const bar = renderBar();
+    try {
+      await enterOnFile(user);
+      await waitFor(() => expect(ends).toHaveLength(1));
+      await act(async () => {
+        ends[0]?.({ offers: [], reason, state: "failed" });
+      });
+      await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "failed"));
+      expect(lineWords().textContent).toBe(words);
+      expect(lineRow()).toHaveTextContent("Try again");
+    } finally {
+      stream.mockRestore();
+      bar.unmount();
+    }
+  });
+}
+
 test("a filing Dispatch refuses to start says so in the bar, and a word typed after lets it go", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();
