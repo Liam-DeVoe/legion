@@ -8,7 +8,7 @@ import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/t
 import type { BarActionProps, BarActionRefusal } from "../../components/BarAction";
 import { textGlyph } from "../../components/bar-look";
 import { ControlRow } from "../../components/ControlRow";
-import { CONTROL, controlIn } from "../../components/control-names";
+import { CONTROL, controlIn, lastControlIn } from "../../components/control-names";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useCappedAddressParam, usePageAddress } from "../../lib/page-address";
@@ -495,6 +495,17 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
     owner: { issue: issueKey ?? "" },
     refusal,
   });
+  // The staged file's line hands the focus it goes with - its Upload landed, its Cancel pressed -
+  // to the bar's **Upload**, which the same commit draws again as the bar's last action, or to
+  // **More** where the bar holds its actions there (`ArtifactUploadStaging`).
+  const uploadAction = useCallback(
+    () =>
+      tab.current === null
+        ? null
+        : (lastControlIn(tab.current, CONTROL.barAction) ??
+          controlIn(tab.current, CONTROL.moreMenu)),
+    []
+  );
   const filterQuery = filter.trim().toLocaleLowerCase();
   const visibleArtifacts =
     filterQuery === ""
@@ -537,7 +548,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
       />
       {/* What the bar's actions open stands under the bar, outside it. */}
       {newDocument.form}
-      <ArtifactUploadStaging upload={upload} />
+      <ArtifactUploadStaging handBack={uploadAction} upload={upload} />
       {refusal === undefined ? null : (
         <p className={`text-xs ${textMutedOnSurface}`} id={refusal.id}>
           {refusal.words}

@@ -21,6 +21,7 @@ import {
   type WriteMethod,
 } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
+import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -693,12 +694,38 @@ export function ArtifactUploadRow({ upload }: { readonly upload: ArtifactUpload 
  *  became of the last upload (`ArtifactUploadStatus`), on a line of their own: under the
  *  Artifacts tab's control bar, whose **Upload** action picks the file, or in place of
  *  `ArtifactUploadRow`'s button. Nothing is drawn while no file is staged and no upload has
- *  anything to say. The two presses are held while the upload is out (`heldPress`). */
-export function ArtifactUploadStaging({ upload }: { readonly upload: ArtifactUpload }): ReactNode {
+ *  anything to say. The two presses are held while the upload is out (`heldPress`).
+ *
+ *  The line goes with the focus it holds when its Upload lands or its Cancel discards the file,
+ *  and it hands that focus to what `handBack` names (`useFocusPlace`): the Artifacts tab's
+ *  **Upload**, drawn again in the bar by the same commit, or **More** where the bar holds its
+ *  actions there, so a keyboard reader is back on the control that stages the next file rather
+ *  than on the page's body. A press inside the line arms that hand-off at its root
+ *  (`armOnPress`), so only the reader's own press moves the focus. In `ArtifactUploadRow` the
+ *  line goes with the component, and the row's own button takes its place. */
+export function ArtifactUploadStaging({
+  handBack,
+  upload,
+}: {
+  /** The control that takes the focus the line goes with, or null where none is drawn. */
+  readonly handBack?: () => HTMLElement | null;
+  readonly upload: ArtifactUpload;
+}): ReactNode {
+  const line = useRef<HTMLDivElement>(null);
+  const noteFocus = useFocusPlace(
+    () => line.current,
+    () => handBack?.() ?? null
+  );
   const status = <ArtifactUploadStatus upload={upload} />;
   if (upload.pendingFile === null) return status;
   return (
-    <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the focus handler only notes which control of the line took the focus, for the hand-off when a commit takes the line away (`useFocusPlace`), and the capture handlers only arm that hand-off at a press inside the line (`armOnPress`), so the line needs no role of its own.
+    <div
+      className="flex w-full min-w-0 flex-wrap items-center gap-2"
+      {...ARM_ON_PRESS}
+      onFocus={noteFocus}
+      ref={line}
+    >
       <span className={`min-w-0 truncate text-sm ${textMutedOnSurface}`}>
         {upload.pendingFile.name}
       </span>

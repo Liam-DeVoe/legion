@@ -341,6 +341,51 @@ test("New document's form and a staged file stand under the bar, and the bar off
   }
 });
 
+// R8 put the staged file's line under the bar, outside it, so the bar's own hand-off no longer
+// covers it: the line hands off the focus it goes with itself. Its Upload, pressed by the
+// keyboard, keeps the focus while the upload is out; the upload lands, the line goes, and the
+// focus is on the bar's Upload, drawn again in the same commit, rather than on the page's body.
+// Its Cancel hands the focus there too.
+test("a staged file's Upload and Cancel hand the focus to the bar's Upload as the line goes", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+  // The issue holds no notes.md yet, so this upload has no base to name.
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockRejectedValue(
+    new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
+  );
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(madeResponse());
+  const stage = async () => {
+    await user.upload(
+      screen.getByLabelText("Upload artifact"),
+      new File(["notes"], "notes.md", { type: "text/markdown" })
+    );
+    return screen.findByRole("textbox", { name: "Summary (optional)" });
+  };
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    const summary = await stage();
+    await waitFor(() => expect(ownerArtifactText).toHaveBeenCalledTimes(1));
+    screen.getByRole("button", { name: "Upload" }).focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(summary).not.toBeInTheDocument());
+    expect(uploadArtifact).toHaveBeenCalledTimes(1);
+    expect(within(bar()).getByRole("button", { name: "Upload" })).toHaveFocus();
+
+    await stage();
+    screen.getByRole("button", { name: "Cancel" }).focus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("textbox", { name: "Summary (optional)" })).not.toBeInTheDocument();
+    expect(within(bar()).getByRole("button", { name: "Upload" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    ownerArtifactText.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
 // INFRA-3135. The same by the keyboard alone: Tab reaches the filter box and then New document,
 // and Enter opens the form with the focus in Title; Tab twice reaches Cancel, and Enter closes
 // the form with the focus back on New document, so the next Tab goes on to Upload rather than

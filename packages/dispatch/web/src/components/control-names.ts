@@ -37,6 +37,13 @@ export function controlIn(root: ParentNode, name: ControlName): HTMLElement | nu
   return root.querySelector<HTMLElement>(`[data-control="${name}"]`);
 }
 
+/** The last control `root` holds under the name `name`, in the page's order, or null: the
+ *  Artifacts tab's **Upload**, the last of its bar's actions. */
+export function lastControlIn(root: ParentNode, name: ControlName): HTMLElement | null {
+  const named = root.querySelectorAll<HTMLElement>(`[data-control="${name}"]`);
+  return named[named.length - 1] ?? null;
+}
+
 /** The control bar's own width under which it takes its narrow layout (`ControlRow`). One width,
  *  so that each width has one layout a check can read; a browser row reads the bar against it. */
 export const NARROW_BELOW = 640;
