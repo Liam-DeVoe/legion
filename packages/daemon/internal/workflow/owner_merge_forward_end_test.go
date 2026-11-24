@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"context"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -12,17 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
-
-// phaseRowsOf is every phases row of key as the store holds it now.
-func phaseRowsOf(t *testing.T, pool *pgxpool.Pool, key string) []record.PhaseRow {
-	t.Helper()
-	var rows []record.PhaseRow
-	seedRecord(t, pool, func(tx pgx.Tx) (err error) {
-		rows, err = record.NewStore().Phases(context.Background(), tx, key)
-		return err
-	})
-	return rows
-}
 
 // askedAtReview is LEGION-208 at the reviewer's step of words, the steps of task a, with the merge
 // forward of its pull request #42 asked in reviewing and not landed, of the claim the implementer's
@@ -44,7 +32,7 @@ func askedAtReview(t *testing.T, words ...string) (*pgxpool.Pool, *Engine, recor
 	}
 	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
 	pr := recordedPR(t, pool, root.Key)
-	agent := record.PhaseRowOf(phaseRowsOf(t, pool, root.Key), claim.RoleImplementer).Claim
+	agent := storedPhaseRow(t, pool, root.Key, claim.RoleImplementer).Claim
 	if agent == "" {
 		t.Fatalf("%s holds no implementer's phases row to name the agent asked: this fixture proves nothing", root.Key)
 	}
