@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -39,13 +40,21 @@ var errMergeForwardWaits = wait.New("the merge-forward message waits for its own
 // no pull request or one that is not open, it holds no merge forward or one of another head, or the
 // row is an ask or a hold and the merge forward has landed. Role-message rows run in no order of
 // the issue's, so a hold still queued behind its landed would otherwise tell the worker to wait for
-// a head that already came. What follows - a claim that failed or retired, the design gate, the
-// wake and the publish - is deliverHeld's, as it is a merge-queue removal's. The message reaches the
-// claim it names (record.MergeForwardMessage.Claim), the worker of its role's step when the
-// workflow wrote it; a row the release before wrote names none and reaches the claim the record
-// gives that step when it runs (workerToken). A message that reaches the issue's owner and asks an
-// act as its role waits, once the owner's session runs, for the owner's slot to hold that role's
-// App (ownerSlotActs).
+// a head that already came. What follows - the design gate, the wake and the publish - is
+// deliverHeld's, as it is a merge-queue removal's. The message reaches the claim it names
+// (record.MergeForwardMessage.Claim), the worker of its role's step when the workflow wrote it; a
+// row the release before wrote names none and reaches the claim the record gives that step when it
+// runs (workerToken). A message that reaches the issue's owner and asks an act as its role waits,
+// once the owner's session runs, for the owner's slot to hold that role's App (ownerSlotActs).
+//
+// No row ends on its claim's end while the workflow still delivers it and nobody hears of it. A
+// message to the issue's owner whose claim has failed or retired waits for the owner's next start
+// (heldMessage.outlives): the owner's own steps wait on the ask, and the next phase start of a
+// child starts its failed architect again (the workflow's reviveArchitect). An ask or a review to
+// another agent's claim that failed or retired finishes undelivered, and the architect that owns
+// the issue is told it will not reach that agent (mergeForwardLost). A hold or a landed to such a
+// claim finishes undelivered with no more: its agent is the worker of the step the issue stands
+// at, whose failed claim holds that step, and whose retry starts it again at the record's head.
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")
@@ -75,43 +84,93 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		r.log.Info("outbox merge-forward message finished undelivered: the workflow no longer delivers it", append(attributes, "why", left)...)
 		return nil
 	}
+	owner, err := record.OwnerClaim(*issue)
+	owners := err == nil && owner == token
+	var told func(context.Context, supervise.Claim, string) error
+	if owners && payload.Step == record.MergeForwardAsk {
+		told = func(ctx context.Context, before supervise.Claim, recipient string) error {
+			return r.mergeForwardTold(ctx, row.Issue, payload.Head, token, before, recipient)
+		}
+	}
 	return r.deliverHeld(ctx, row, heldMessage{issue: *issue, token: token, role: payload.Role,
 		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), message: payload.Message(row.Issue, *pr),
 		attributes: attributes,
 		claimEnded: "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
 		delivered:  "outbox merge-forward message delivered",
-		holds:      func(ctx context.Context) error { return r.ownerSlotActs(ctx, row, *issue, token, payload) }})
+		holds:      func(ctx context.Context) error { return r.ownerSlotActs(ctx, row, token, owners, payload) },
+		outlives:   owners,
+		ended: func(ctx context.Context, state supervise.ClaimState) error {
+			return r.mergeForwardLost(ctx, row, *issue, token, payload, state)
+		},
+		told: told})
+}
+
+// mergeForwardTold records the session the merge-forward ask of head reached agent, the issue's
+// owner, in (record.Store.MarkMergeForwardTold), in a transaction of its own before the row is
+// finished, as an owner-step's telling is recorded (ownerStepTold): recipient, the session the
+// listener forwarded the publish to, where it names one the claim did not hold before, else the
+// session the owner's claim recorded as it was read before the publish (before). A delivered row is
+// deleted, so this is what the owner's catch-up at a later launch reads to name the ask only to a
+// session that was not told it (workflow's untoldMergeForward). A claim that recorded no session,
+// with no recipient named, records nothing, and the owner's next launch is told the ask in its
+// catch-up: a repeat, never an ask left untold.
+func (r *outbox) mergeForwardTold(ctx context.Context, issue, head string, agent claim.Token, before supervise.Claim, recipient string) error {
+	session := before.Session
+	if recipient != "" && !before.HoldsSession(recipient) {
+		session = recipient
+	}
+	if session == "" {
+		return nil
+	}
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return r.records.MarkMergeForwardTold(ctx, tx, issue, head, agent, session)
+	}); err != nil {
+		return fmt.Errorf("record whom the merge-forward ask of %s reached: %w", issue, err)
+	}
+	return nil
 }
 
 // ownerSlotActs is the hold of a merge-forward message that reaches token where token is the
-// owner of issue (record.OwnerClaim): the owner works the step of the message's role, so the message
-// asks it for an act as that role, and the owner's slot holds the App of the role the act is done
-// as. The ask is an act as the implementer, the merge forward the record holds asked of the owner,
-// for which the slot acts as the implementer (record.OwnersMergeForward), so the runtime writes the
-// slot and the ask waits until its gh files hold the implement App. The review a landing asks of
-// the reviewer is an act as the reviewer, an approval GitHub refuses from the pull request's
-// author, the implement App, so it waits while the owner's slot acts as an App of another role,
-// through the owner's retro of its own implementation step and through a merge forward asked of it,
-// and then until the write-back of the owner's own App has reached its gh files: it reaches the
-// owner once, after that write-back. The landed told to the worker of the issue's phase, the
-// owner's own step, says to go on with that step at the new head, so it waits the same way for that
-// step's App. The hold asks no act, only that the worker stop writing the workspace, and goes at
-// once. A message to another agent's claim waits for nothing here.
-func (r *outbox) ownerSlotActs(ctx context.Context, row record.OutboxRow, issue record.Issue, token claim.Token, payload record.MergeForwardMessage) error {
-	if payload.Step == record.MergeForwardHold {
+// owner of the row's issue (owners, record.OwnerClaim): the message asks the owner for an act as
+// the message's role, so the owner's slot holds the App of that role first (ownerSlotFor, the gate
+// an owner-step passes too). The ask is an act as the agent of the task's implementation step, the
+// merge forward the record holds asked of the owner, for which the slot acts as the implementer
+// (record.OwnersMergeForward), so the runtime writes the slot and the ask waits until its gh files
+// hold the implement App. The review a landing asks of the reviewer is an act as the reviewer, an
+// approval GitHub refuses from the pull request's author, the implement App, so it waits while the
+// owner's slot acts as an App of another role, through the owner's retro of its own implementation
+// step and through a merge forward asked of it, and then until the write-back of the owner's own
+// App has reached its gh files: it reaches the owner once, after that write-back. The landed told to
+// the owner at its own step (record.Issue.StepWorkerRole) says to go on with that step at the new
+// head, so it waits the same way for that step's App. The hold asks no act, only that the worker
+// stop writing the workspace, and goes at once. A message to another agent's claim waits for
+// nothing here.
+func (r *outbox) ownerSlotActs(ctx context.Context, row record.OutboxRow, token claim.Token, owners bool, payload record.MergeForwardMessage) error {
+	if !owners || payload.Step == record.MergeForwardHold {
 		return nil
 	}
-	if owner, err := record.OwnerClaim(issue); err != nil || owner != token {
-		return nil
-	}
-	_, slot, err := r.ownerRoles(ctx, token)
-	if err != nil {
-		return err
-	}
-	if !r.sameApp(ctx, row.Issue, slot, payload.Role) {
-		return fmt.Errorf("%w: the merge-forward %s row %d of %s waits for %s's slot to act as %s, and it acts as %s",
-			errMergeForwardWaits, payload.Step, row.ID, row.Issue, token, payload.Role, slot)
-	}
-	_, err = r.slotHoldsApp(ctx, row, token, payload.Role, errMergeForwardWaits, "merge-forward "+string(payload.Step)+" row")
+	_, err := r.ownerSlotFor(ctx, row, token, payload.Role, errMergeForwardWaits, "merge-forward "+string(payload.Step)+" row")
 	return err
+}
+
+// mergeForwardLost tells the architect that owns issue, with one checks-red notice routed as
+// every notice of the issue but an owner-step is, that an ask or a review of a merge forward will
+// not reach token, its agent, another agent than the issue's owner, whose claim has failed or
+// retired (state): the issue keeps its phase, nobody merges or reviews for that message, and the
+// workflow asks once for each head, so nothing asks again at that head. The notice names what
+// starts that claim again: a move back into its step, or an operator's retry of it. A hold or a
+// landed tells nobody more (mergeForwardMessage).
+func (r *outbox) mergeForwardLost(ctx context.Context, row record.OutboxRow, issue record.Issue, token claim.Token, payload record.MergeForwardMessage, state supervise.ClaimState) error {
+	var lost string
+	switch payload.Step {
+	case record.MergeForwardAsk:
+		lost = fmt.Sprintf("nobody merges %s forward onto head %s", payload.Base, payload.Head)
+	case record.MergeForwardReview:
+		lost = fmt.Sprintf("nobody reviews the merge that landed at head %s", payload.Landed)
+	default:
+		return nil
+	}
+	reason := fmt.Sprintf("the merge-forward %s of head %s did not reach the %s: its claim %s has %s, so %s. A move back into that role's step starts the claim again, and so does an operator's retry of it",
+		payload.Step, payload.Head, payload.Role, token, state, lost)
+	return r.enqueueNotice(ctx, row.Issue, record.Notice{Kind: "checks-red", Role: payload.Role, Phase: issue.Phase, Reason: reason})
 }

@@ -54,10 +54,10 @@ func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record
 // brings the implementer to the merge: its row wakes a released implementer, waits while no
 // session holds the role, and publishes once one does, on the role's own topic under the row's
 // key. A message about an ask the record no longer holds at that head (a newer ask replaced it,
-// or the workflow dropped it), an ask or a hold still queued once the merge landed, a message of a
-// pull request that is not open, and a message to a claim that will never hold its role again end
-// with nothing published (workflow.MergeForwardAt); a landed still queued once the merge landed is
-// delivered.
+// or the workflow dropped it), an ask or a hold still queued once the merge landed, and a message
+// of a pull request that is not open end with nothing published (workflow.MergeForwardAt); an ask
+// to another agent's claim that has retired ends with nothing published to it, and its architect
+// is told (mergeForwardLost); a landed still queued once the merge landed is delivered.
 func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
 		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
@@ -201,7 +201,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		})
 	}
 
-	t.Run("a retired implementer is not told", func(t *testing.T) {
+	t.Run("a retired implementer is not told, and the architect is", func(t *testing.T) {
 		publisher := &holderPublisher{}
 		runner, sup, pool, logs := mergeForwardRunner(t, publisher, asked)
 		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-208", claim.RoleImplementer),
@@ -210,8 +210,12 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		}
 		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
 		drainAt(t, runner, 0, "the row's attempt")
-		if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 0 {
-			t.Fatalf("the row made %d publishes and %d rows are left, want the row finished with nothing published", attempts, outboxRows(t, pool))
+		// The ask's row is finished; the one row left is the checks-red notice that tells the
+		// architect the ask did not reach the implementer (mergeForwardLost).
+		notices := architectNoticesQueued(t, pool)
+		if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 1 || len(notices) != 1 || notices[0].Kind != "checks-red" {
+			t.Fatalf("the row made %d publishes, left %d rows and queued the notices %+v; want the row finished with nothing published and one checks-red notice",
+				attempts, outboxRows(t, pool), notices)
 		}
 		if lines := loggedLines(t, logs.String(), mergeForwardEnded); len(lines) != 1 || lines[0]["state"] != string(supervise.StateRetired) {
 			t.Fatalf("the row logged %v, want one line naming the retired claim", lines)

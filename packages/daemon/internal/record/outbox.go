@@ -504,11 +504,10 @@ type Notice struct {
 	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
 	Volume *VolumeNearFull `json:"volume,omitempty"`
 	// OwnerStep is the run an owner-step notice tells (OwnerStepNotice): the place of the step or
-	// the retro and the count of starts that began its run, carried by no other kind
-	// (validateOutboxPayload). The notice is delivered only while that run is open: a notice of a
-	// run that ended — the retro over, the owner's report in, a role's earlier step of two — is
-	// stale, and the daemon's executor finishes it undelivered. A row written before this field
-	// names none, and the executor delivers it only while the owner's slot acts as its step's role.
+	// the retro and the count of starts that began its run. Every owner-step carries it, and no
+	// other kind does (validateOutboxPayload). The notice is delivered only while that run is open:
+	// a notice of a run that ended — the retro over, the owner's report in, a role's earlier step of
+	// two — is stale, and the daemon's executor finishes it undelivered.
 	OwnerStep *NoticeStep `json:"ownerStep,omitempty"`
 }
 
@@ -2381,8 +2380,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Pause != nil {
 			return fmt.Errorf("a %s notice carries a project pause; only the controller's project-paused and project-resumed notices do", value.Kind)
 		}
-		if value.OwnerStep != nil && value.Kind != OwnerStepNotice {
-			return fmt.Errorf("a %s notice carries the run of an owner's step; only an owner-step notice does", value.Kind)
+		if (value.OwnerStep != nil) != (value.Kind == OwnerStepNotice) {
+			return fmt.Errorf("a %s notice carries the run of an owner's step only when it is an owner-step, and an owner-step names the run it tells", value.Kind)
 		}
 		if (value.Kind == VolumeNearFullNotice) != (value.Volume != nil) {
 			return fmt.Errorf("a %s notice carries a volume sweep only when it is one", value.Kind)

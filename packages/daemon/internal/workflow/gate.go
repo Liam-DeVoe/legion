@@ -951,12 +951,14 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // No phase is moved and no turn is interrupted: the gate holds the merger's start while it is
 // closed (the daemon's supervise row) and releases it at the opening, and every other worker
 // decides for itself what the version means for the work in hand. A phase no worker holds names
-// nobody. The gate is the root's, so the root's architect is told, once. A member at a place its
-// owner works (record.Issue.RoleAt is the architect: an acceptance the owner does, a step of the
-// key owner, the owner's retro) is passed over, since that place is an architect's own: the root's
-// is the root's architect, told once as such, and a child's own architect is not told of the root's
-// gate, whose merge hold reaches the child's merger once it holds merging. The fresh agent of a
-// step acceptance with no key is told as any worker is.
+// nobody. The gate is the root's, so the root's architect is told, once. Each member's worker is
+// addressed by the role of its step (record.Issue.StepWorkerRole), so the owner at a step of its own
+// plan, a child's own architect among them, is told as a fresh worker of that step would be: it
+// builds to the same design. A member whose place's role is the architect with no step of its own
+// (an acceptance the owner does on an issue with no plan rows) is passed over: the root's is the
+// root's architect, told once as such, and a child's own architect is not told of the root's gate
+// as an architect, since the gate's merge hold reaches the child's merger once it holds merging.
+// The fresh agent of a step acceptance with no key is told as any worker is.
 //
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every claim of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
@@ -981,13 +983,11 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil {
 		return err
 	}
-	// The members first, then the root's architect, since the gate is the root's. A member at a place
-	// its owner works is passed over, since that place is an architect's own: the root's is the
-	// root's architect, told once below, and a child's own architect is not told of the root's gate,
-	// whose merge hold reaches the child's merger once it holds merging.
+	// The members first, then the root's architect, since the gate is the root's. The root's own
+	// step is the root's architect's, which addressRoles then tells once.
 	recipients := make([]roleRecipient, 0, len(members)+1)
 	for _, member := range members {
-		if role := member.RoleAt(member.Phase); role != claim.RoleArchitect {
+		if role := member.StepWorkerRole(member.Phase); role != claim.RoleArchitect {
 			recipients = append(recipients, roleRecipient{issue: member.Key, role: role, row: member.Key})
 		}
 	}

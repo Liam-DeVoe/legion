@@ -45,14 +45,15 @@ func slotCalls(rt *fake.Runtime, token claim.Token) []string {
 //     the owner's own App when the row runs: no write while step 1 runs, whose owner-step writes
 //     that step's App, and one once the task stands at step 2, the reviewer's step, which the
 //     runtime makes for the App it judges for the slot; it waits for nothing.
-//  5. A notice owner-step of step 1 that runs after the task moved to step 2 finishes unpublished,
-//     with one log line, and asks the runtime nothing.
+//  5. A notice owner-step of step 1 that runs after the task moved to step 2, whose run ended with
+//     the move, finishes unpublished, with one log line, and asks the runtime nothing.
 func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	owner := mustClaimToken(t, "LEGION-1", claim.RoleArchitect)
+	stepOne := record.NoticeStep{Task: "a", Kind: "step", Place: 1, Starts: 1}
 	issue := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
 		Title: "LEGION-1", Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", LastDispatchSeq: 1}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -67,7 +68,13 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
-		return records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps)
+		if err := records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps); err != nil {
+			return err
+		}
+		_, err := records.RaiseStepStarts(ctx, tx, "LEGION-1", stepOne.StepPlace(), func(starts int64) record.StepRecord {
+			return record.StepRecord{Task: "a", Kind: "step", Step: 1, Agent: string(owner), Generation: 1, StartedAt: new(now)}
+		})
+		return err
 	}); err != nil {
 		t.Fatalf("seed LEGION-1 at its owner's implementer step: %v", err)
 	}
@@ -82,7 +89,7 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 		return len(delivered)
 	}
 	told := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: record.OwnerStepNotice, Role: claim.RoleImplementer,
-		Phase: phase.Implementing, Reason: "Step 1 of 2: implementer:owner. Build the widget."}, now))
+		Phase: phase.Implementing, Reason: "Step 1 of 2: implementer:owner. Build the widget.", OwnerStep: &stepOne}, now))
 	again := func() {
 		t.Helper()
 		told.LeaseToken = leaseOutboxRow(t, pool, told.ID)
@@ -151,6 +158,9 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 			if err := records.MoveTask(ctx, tx, "LEGION-1", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
 				return err
 			}
+			if _, _, err := records.EndStepStart(ctx, tx, "LEGION-1", stepOne.StepPlace()); err != nil {
+				return err
+			}
 			moved := issue
 			moved.Phase = phase.Reviewing
 			return records.PutIssue(ctx, tx, moved)
@@ -163,7 +173,7 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 	t.Run("5 a notice of a step that no longer runs", func(t *testing.T) {
 		before := len(slotCalls(rt, owner))
 		stale := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: record.OwnerStepNotice, Role: claim.RoleImplementer,
-			Phase: phase.Implementing, Reason: "Step 1 of 2: implementer:owner. Build the widget."}, now))
+			Phase: phase.Implementing, Reason: "Step 1 of 2: implementer:owner. Build the widget.", OwnerStep: &stepOne}, now))
 		if err := runner.execute(ctx, stale); err != nil {
 			t.Fatalf("the notice of step 1 at step 2 = %v, want it finished", err)
 		}
@@ -173,14 +183,8 @@ func TestAnOwnerStepIsToldOnceItsSlotHoldsTheStepsApp(t *testing.T) {
 		if got := slotCalls(rt, owner)[before:]; len(got) != 0 {
 			t.Fatalf("the stale notice asked the runtime %q of the owner's slot, want nothing", got)
 		}
-		lines := staleLines(t, logged.String())
-		if len(lines) != 1 {
+		if lines := staleLines(t, logged.String()); len(lines) != 1 {
 			t.Fatalf("the log holds %d lines of the stale notice, want one:\n%s", len(lines), logged.String())
-		}
-		// The notice names no run, so the executor judges it by the role the owner's slot acts as,
-		// which it read, and the line says what it read.
-		if slot := lines[0]["slot"]; slot != string(claim.RoleArchitect) {
-			t.Fatalf("the stale notice's line names the slot %v, want the architect it read:\n%s", slot, logged.String())
 		}
 	})
 }

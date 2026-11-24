@@ -138,12 +138,7 @@ func askedOfChild(t *testing.T, agent claim.Token) *pgxpool.Pool {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: agent, StepTask: "a", StepPlace: 1, Entry: 1})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
 		Branch: "legion/LEGION-209", Base: "main", HeadSHA: "head-43", Failing: []string{},
-		MergeForward: &record.MergeForward{Head: "head-43", Base: "main", Phase: phase.Reviewing, Why: record.ConflictCheckNotGreen, AskedAt: stepClock}})
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(t.Context(), `update pull_requests set merge_forward = jsonb_set(merge_forward, '{agent}', to_jsonb($2::text)) where issue = $1`,
-			"LEGION-209", string(agent))
-		return err
-	})
+		MergeForward: &record.MergeForward{Head: "head-43", Base: "main", Phase: phase.Reviewing, Agent: agent, Why: record.ConflictCheckNotGreen, AskedAt: stepClock}})
 	return pool
 }
 

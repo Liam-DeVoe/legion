@@ -832,7 +832,7 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 			return err
 		}
 	}
-	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
+	if err := e.clearGeneration(ctx, tx, child); err != nil {
 		return err
 	}
 	if err := e.enterChild(ctx, tx, *root, fact, next, recordedResolution(child)); err != nil {
@@ -1234,7 +1234,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// since the review a landed merge forward asks of the reviewer is made with none
 	// (record.MergeForwardReview).
 	if current {
-		if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
+		if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, fact.Claim, reported, fact.Commit, pr); fenced {
 			return refusal, nil
 		}
 	}

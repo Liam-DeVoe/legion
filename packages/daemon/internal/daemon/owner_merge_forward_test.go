@@ -3,18 +3,22 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // mergeForwardHead is the head the merge forward of these tests is asked of, and mergeForwardLanded
@@ -25,8 +29,8 @@ const (
 )
 
 // askedOf records what a merge forward asked in at leaves on LEGION-1: the implementer's phases row
-// running step 1 of the plan under implementer, the claim the ask reached (record.WorkerClaim), and
-// the open pull request #42 at the head that conflicted, holding the ask, not landed.
+// running step 1 of the plan under implementer, and the open pull request #42 at the head that
+// conflicted, holding the ask of implementer (record.MergeForward.Agent), not landed.
 func (r *ownerHoldRig) askedOf(t *testing.T, implementer claim.Token, at phase.Phase) {
 	t.Helper()
 	ctx := context.Background()
@@ -37,7 +41,7 @@ func (r *ownerHoldRig) askedOf(t *testing.T, implementer claim.Token, at phase.P
 		}
 		return r.records.PutPullRequest(ctx, tx, record.PullRequest{Issue: "LEGION-1", Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-1",
 			State: record.PullRequestOpen, HeadSHA: mergeForwardHead, Failing: []string{},
-			MergeForward: &record.MergeForward{Head: mergeForwardHead, Base: "main", Phase: at, Why: record.ConflictCheckNotGreen, AskedAt: r.now}})
+			MergeForward: &record.MergeForward{Head: mergeForwardHead, Base: "main", Phase: at, Agent: implementer, Why: record.ConflictCheckNotGreen, AskedAt: r.now}})
 	}); err != nil {
 		t.Fatalf("record the merge forward asked of LEGION-1 in %s: %v", at, err)
 	}
@@ -260,13 +264,84 @@ func TestTheReviewOfAMergeForwardReachesTheOwnerOnceItsSlotHoldsTheReviewApp(t *
 	})
 }
 
+// landsThroughTheWorkflow lands the merge forward of LEGION-1's pull request through the workflow
+// itself: the synchronize that moves the head off the head the merge forward was asked of
+// (workflow's mergeForwardLanded), which records the landing and queues what it tells.
+func (r *ownerHoldRig) landsThroughTheWorkflow(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	engine := workflow.New(r.records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	if _, err := intake.ApplyFact(ctx, r.pool, "github", "synchronize-the-merge", intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 42,
+		Branch: "legion/LEGION-1", Base: "main", HeadSHA: mergeForwardLanded, Before: mergeForwardHead, Sender: "legion-implementer[bot]"}, engine); err != nil {
+		t.Fatalf("apply the synchronize that lands LEGION-1's merge forward: %v", err)
+	}
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		pr, err := r.records.PullRequest(ctx, tx, "LEGION-1")
+		if err == nil && (pr == nil || pr.MergeForward == nil || pr.MergeForward.Landed != mergeForwardLanded) {
+			err = fmt.Errorf("the record holds the pull request %+v", pr)
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("the synchronize did not land the merge forward, so this case proves nothing: %v", err)
+	}
+}
+
+// queuedRow is the one row of LEGION-1's outbox whose payload matches, leased as the runner leases
+// a row before it executes it.
+func (r *ownerHoldRig) queuedRow(t *testing.T, what string, matches func(record.OutboxPayload) bool) record.OutboxRow {
+	t.Helper()
+	rows, err := r.pool.Query(context.Background(), "select id, kind, payload from outbox where issue = 'LEGION-1' order by id")
+	if err != nil {
+		t.Fatalf("read LEGION-1's outbox: %v", err)
+	}
+	var found []record.OutboxRow
+	for rows.Next() {
+		row := record.OutboxRow{Issue: "LEGION-1"}
+		var kind string
+		if err := rows.Scan(&row.ID, &kind, &row.Payload); err != nil {
+			t.Fatalf("read a row of LEGION-1's outbox: %v", err)
+		}
+		row.Kind = record.OutboxKind(kind)
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			t.Fatalf("decode row %d: %v", row.ID, err)
+		}
+		if matches(payload) {
+			found = append(found, row)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read LEGION-1's outbox: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("LEGION-1's outbox holds %d rows of %s, want one", len(found), what)
+	}
+	row := found[0]
+	row.LeaseToken = leaseOutboxRow(t, r.pool, row.ID)
+	return row
+}
+
+// ran executes row as the runner does and deletes it once the executor finished it.
+func (r *ownerHoldRig) ran(t *testing.T, row record.OutboxRow, what string) {
+	t.Helper()
+	if err := r.runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("%s = %v", what, err)
+	}
+	if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
+		t.Fatalf("finish row %d: %v", row.ID, err)
+	}
+}
+
 // While the owner's slot acts as the implementer for a merge forward asked of it, nothing asks the
 // owner for an act as another role. The owner's review step of `implementer:owner reviewer:owner`
 // and its acceptance of `implementer:owner acceptance:owner`, told while the ask is open, wait as a
-// notice held for its architect, with no stale line, since their runs go on; so does such a notice
-// that names no run, a row the release before wrote. Once the merge forward landed and the
-// write-back wrote the slot, each is told once. The landed message the landing sends the owner's
-// review step, which tells it to go on at the new head, waits the same way.
+// notice held for its architect, with no stale line, since their runs go on. The merge then lands
+// through the workflow (landsThroughTheWorkflow), which queues the write-back of the owner's slot
+// and the landed to the owner, addressed by the step's role (record.Issue.StepWorkerRole), as a
+// fresh worker of that step is told. Once the write-back ran, each notice is told once. The landed,
+// which tells the owner's step to go on at the new head, waits for the slot's gh files to hold the
+// App of that step's role, and then is told.
 func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -285,18 +360,16 @@ func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 			r.started(t, "step", 1, true)
 			r.started(t, "step", 2, false)
 			r.askedOf(t, r.owner, tc.at)
+			// The phases row step 2's start raised under the owner's claim (workflow's
+			// startOwnersStep), which a message to that step's worker is addressed by.
+			if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+				return r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-1", Role: tc.role, Claim: r.owner, Entry: 1, StepTask: "a", StepPlace: 2})
+			}); err != nil {
+				t.Fatalf("record the phases row of step 2: %v", err)
+			}
 			r.rt.ScriptSlotHolds(nil)
 			notice := record.Notice{Kind: record.OwnerStepNotice, Role: tc.role, Phase: tc.at, Reason: "Step 2 of 2.",
 				OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 2, Starts: 1}}
-			legacy := notice
-			legacy.OwnerStep = nil
-			before := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", legacy, r.now))
-			if err := r.runner.execute(ctx, before); !errors.Is(err, errNoticeWaits) {
-				t.Fatalf("the owner-step of step 2 that names no run, while the merge forward is open = %v, want a notice held for its architect", err)
-			}
-			if _, err := r.pool.Exec(ctx, "delete from outbox where id = $1", before.ID); err != nil {
-				t.Fatalf("drop the row that names no run: %v", err)
-			}
 			row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", notice, r.now))
 			if err := r.runner.execute(ctx, row); !errors.Is(err, errNoticeWaits) {
 				t.Fatalf("the owner-step of step 2 while the merge forward is open = %v, want a notice held for its architect", err)
@@ -308,8 +381,11 @@ func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 				t.Fatalf("the owner-step of step 2 logged %d stale lines while the merge forward is open, want none: its run goes on", len(lines))
 			}
 
-			r.lands(t, false)
-			r.writtenBack(t)
+			r.landsThroughTheWorkflow(t)
+			r.ran(t, r.queuedRow(t, "the write-back of the owner's slot", func(payload record.OutboxPayload) bool {
+				request, ok := payload.(record.SuperviseRequest)
+				return ok && request.Op == "slot_credential" && request.Claim == r.owner
+			}), "the write-back the landing queued")
 			row.LeaseToken = leaseOutboxRow(t, r.pool, row.ID)
 			if err := r.runner.execute(ctx, row); err != nil {
 				t.Fatalf("the owner-step of step 2 once the merge forward landed = %v", err)
@@ -317,17 +393,19 @@ func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 			if got := r.published(); len(got) != 1 {
 				t.Fatalf("the owner-step of step 2 published %v once the merge forward landed, want one", got)
 			}
-			if tc.role != claim.RoleReviewer {
-				return
+			landed := r.queuedRow(t, "the landed to the owner's step", func(payload record.OutboxPayload) bool {
+				message, ok := payload.(record.MergeForwardMessage)
+				return ok && message.Step == record.MergeForwardLanded
+			})
+			if message, _ := record.DecodeOutboxPayload(landed); message.(record.MergeForwardMessage).Claim != r.owner ||
+				message.(record.MergeForwardMessage).Role != tc.role {
+				t.Fatalf("the landing queued the landed %+v, want it to the owner's claim %s as the %s", message, r.owner, tc.role)
 			}
 			r.rt.ScriptSlotHolds(runtime.ErrSlotCredentialPending)
-			landed := record.MergeForwardMessage{Role: claim.RoleReviewer, Claim: r.owner, Step: record.MergeForwardLanded, Head: mergeForwardHead,
-				Landed: mergeForwardLanded, Base: "main", Phase: tc.at, PullRequest: 42}
-			waits(t, r.sent(t, landed), "the landed to the owner's review step while its slot's files hold another App")
+			waits(t, r.runner.execute(ctx, landed), "the landed to the owner's step while its slot's files hold another App")
 			r.rt.ScriptSlotHolds(nil)
-			if err := r.sent(t, landed); err != nil {
-				t.Fatalf("the landed to the owner's review step once its slot holds the reviewer's App = %v", err)
-			}
+			landed.LeaseToken = leaseOutboxRow(t, r.pool, landed.ID)
+			r.ran(t, landed, "the landed to the owner's step once its slot holds the App of the step's role")
 			if got := r.published(); len(got) != 2 {
 				t.Fatalf("the notices published %v after the landed, want the owner-step and the landed", got)
 			}

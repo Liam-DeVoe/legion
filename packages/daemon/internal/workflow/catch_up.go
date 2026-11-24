@@ -175,6 +175,13 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 	if ownStep != "" {
 		reason += fmt.Sprintf("; at a step of yours, which no worker does: %s at %s (do it as its owner-step notice says, then report it with complete_step)", issue.Key, ownStep)
 	}
+	asked, err := untoldMergeForward(ctx, tx, store, issue)
+	if err != nil {
+		return err
+	}
+	if asked != "" {
+		reason += "; " + asked
+	}
 	if relaunch != "" {
 		reason = relaunch + "\n\n" + reason
 	}
@@ -185,6 +192,35 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		notice.PacedAt, notice.PacedFrom = paced, now
 	}
 	return EnqueueNaming(ctx, tx, store, issue.Key, issue.Tree, notice, kept, at)
+}
+
+// untoldMergeForward is the words of the merge forward the record holds asked of issue's owner and
+// still open (record.OwnersMergeForward) where the session the owner's claim runs in now was not
+// told it, and "" where no such ask stands: no ask row of it is still queued, whose delivery tells
+// it (record.Store.MergeForwardAskPending), and the session its ask reached (record.MergeForward.Told)
+// is not the session the owner's claim records now (record.Store.ClaimSession). A fresh session —
+// after the owner's claim failed, or a launch whose resume of the session told failed — holds
+// nothing of the one told, and the ask asks an act that no step's notice repeats, so the catch-up
+// of that launch names it, with its head and base, as the ask would. A resumed session holds the
+// ask's message and is not told it again, and no second message of the ask is written for it.
+func untoldMergeForward(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue) (string, error) {
+	pr, err := store.PullRequest(ctx, tx, issue.Key)
+	if err != nil || !record.OwnersMergeForward(issue, pr) {
+		return "", err
+	}
+	asked := pr.MergeForward
+	if pending, err := store.MergeForwardAskPending(ctx, tx, issue.Key, asked.Agent, asked.Head); err != nil || pending {
+		return "", err
+	}
+	if asked.Told != "" {
+		session, err := store.ClaimSession(ctx, tx, asked.Agent)
+		if err != nil || session == asked.Told {
+			return "", err
+		}
+	}
+	return fmt.Sprintf("a merge forward the daemon asked of you, still open and not told to this session: pull request #%d of %s at head %s conflicts with %s; "+
+		"merge %s forward in the issue workspace and push the issue branch, with no handoff and no completion for the merge",
+		pr.Number, issue.Key, asked.Head, asked.Base, asked.Base), nil
 }
 
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a

@@ -254,14 +254,13 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // It is the one writer of the end of each step on a walk, so it is the one place an owner's slot is
 // given its own App back at a step's end: where the run it ends is a step of a stored plan whose
 // start named an architect (the owner, or the architect above that ran the step for it,
-// ownerAgent), it queues a supervise slot_credential of the owner's claim in the same transaction,
-// which writes the owner's slot back to its own App when it runs (ownerSlotCredential). The end of
-// the owner's retro queues it only where the retro was done as another role than the owner's own
-// (record.RetroActsAs over the walk's steps), the one retro whose slot was switched: the retro of
-// the owner's own implementation step. The owner's retro of a task with no step of the type
-// implementation is done as itself, and its slot held the owner's own App throughout. A merge's
-// start names the merger, so its end queues none. A run on no step of its walk is ended, and its
-// write-back queued, by endOffWalk.
+// ownerAgent), and the one rule of what the owner's place switches the slot to gives a role for
+// the place (record.OwnersPlaceActsAs, which the daemon's ActsAs reads while the place runs), it
+// queues a supervise slot_credential of the owner's claim in the same transaction, which writes the
+// owner's slot back to its own App when it runs (ownerSlotCredential). So the owner's retro of a
+// task with no step of the type implementation, done as itself, queues none: its slot held the
+// owner's own App throughout. A merge's start names the merger, so its end queues none. A run on no
+// step of its walk is ended, and its write-back queued, by endOffWalk.
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w Walk, site stepSite, end StepEnd) error {
 	step, ok := stepAt(w, before, site)
 	if !ok {
@@ -275,7 +274,7 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 	if err != nil || !ended || !w.Stored {
 		return err
 	}
-	if step.place.Kind == record.PlaceRetro && record.RetroActsAs(w.Steps) == claim.RoleArchitect {
+	if _, switched := record.OwnersPlaceActsAs(step.at, claim.Role(step.role), w.Steps); !switched {
 		return nil
 	}
 	return e.ownerSlotCredential(ctx, tx, before, agent)
@@ -295,12 +294,11 @@ func (e *Engine) ownerSlotCredential(ctx context.Context, tx pgx.Tx, issue recor
 	if _, of, ok := agent.Cut(); !ok || of != claim.Agent(claim.RoleArchitect) {
 		return nil
 	}
-	owner, err := record.OwnerClaim(issue)
-	if err != nil {
+	row, ok := record.OwnerSlotWriteBack(issue)
+	if !ok {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "slot_credential", Tree: issue.Tree, Role: claim.RoleArchitect,
-		Claim: owner, Generation: issue.Generation})
+	return e.enqueue(ctx, tx, issue.Key, row)
 }
 
 // endRun is the one writer of the end of a run, the run at place on issue, for both of its callers:
