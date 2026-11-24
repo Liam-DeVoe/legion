@@ -76,7 +76,7 @@ analyze() {
 # fence's residual (iam_holder).
 live_iam() {
   local check="$1" step="${CHECK_STEP[$1]}" resource="${CHECK_RESOURCE[$1]}" witness_member="${CHECK_WITNESS[$1]:-}"
-  local holders what identity role attached perms how designed hattached text chains=0 residuals="${#RESIDUALS[@]}"
+  local holders what identity role attached perms how designed hattached text chains=0 allowances
   if [ -n "${CHECK_MISSING[$check]:-}" ]; then
     unknown "$step" "${CHECK_MISSING[$check]}"
     return
@@ -137,8 +137,8 @@ live_iam() {
         "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
   done 3<"$WORK/analysis.rec"
   if unchanged; then
-    residuals=$((${#RESIDUALS[@]} - residuals))
-    pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}$([ "$residuals" -eq 0 ] || echo ", beside $residuals that reach the broker's pod fence's residual through the account, each an ALLOWANCE")"
+    allowances="$(allowed)"
+    pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}$([ "$allowances" -eq 0 ] || echo ", beside $allowances that reach the broker's pod fence's residual through the account, each an ALLOWANCE")"
   fi
 }
 # iam_holder CHECK IDENTITY RIGHT ROLE RESOURCE PERMISSIONS ATTACHED: a holder iam_verdict judged a

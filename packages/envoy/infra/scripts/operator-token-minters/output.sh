@@ -65,10 +65,12 @@ crash_report() {
   echo "operator-token-minters: stopped before its end, ${#UNKNOWNS[@]} unknown: exit 2"
 }
 # mark, then unchanged: whether a step recorded no finding and no UNKNOWN since its mark, so it
-# prints PASS only then; credited, how many credits it recorded since, which its PASS names.
-mark() { MARK_F="${#FINDINGS[@]}" MARK_U="${#UNKNOWNS[@]}" MARK_C="${#CREDITS[@]}"; }
+# prints PASS only then; credited and allowed, how many credits and residual ALLOWANCEs it recorded
+# since, which its PASS names.
+mark() { MARK_F="${#FINDINGS[@]}" MARK_U="${#UNKNOWNS[@]}" MARK_C="${#CREDITS[@]}" MARK_A="${#RESIDUALS[@]}"; }
 unchanged() { [ "${#FINDINGS[@]}" -eq "$MARK_F" ] && [ "${#UNKNOWNS[@]}" -eq "$MARK_U" ]; }
 credited() { echo "$((${#CREDITS[@]} - MARK_C))"; }
+allowed() { echo "$((${#RESIDUALS[@]} - MARK_A))"; }
 have() { command -v "$1" >/dev/null; }
 # The unit separator joins a record's fields; rec.jq says why. JQ_REC, prepended to a small inline
 # jq program, defines rec there as `include "rec";` does in the .jq files.

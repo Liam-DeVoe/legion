@@ -29,11 +29,11 @@
 #     otherwise runs as envoy-broker or takes a Secret of the broker's: --db-secret, a token Secret of
 #     the namespace, or any Secret a pod named envoy-broker-* that runs as envoy-broker takes (its
 #     NATS seeds and hold keys among them). A pod made before the fence keeps any name;
-#   - no webhook this check reads (webhook-backends.jq: one that can match a guarded namespace, or
-#     a cluster-scoped object, which no namespaceSelector holds back) calls a Service in dispatch:
-#     whoever enters a pod there that backs it changes what the webhook does to the operator's next
-#     pod or cluster-scoped write, and the fence does not refuse that entry (admission-backends.sh
-#     asks it).
+#   - no webhook of the cluster's configurations calls a Service in dispatch, whatever its selectors
+#     and rules (admission_power's WEBHOOK_SERVICES): whoever enters a pod there that backs it
+#     changes what the webhook does to each object it admits, and the fence does not refuse that
+#     entry. The webhooks whose objects this check judges (webhook-backends.jq) are fewer; the
+#     fence's credit stands on none being backed in dispatch at all.
 # A fence the renders or the cluster lack, or hold otherwise (a binding of Warn or Audit, a policy of
 # failurePolicy Ignore, a selector that misses dispatch, an exception added), or beside a pod or a
 # webhook backend as above, credits nothing: what it would refuse stays a finding and the step prints
@@ -45,14 +45,15 @@
 # portforward), outright or limited by name, live or declared, and in who can become envoy-broker by
 # it. Each such grant prints a CREDIT line and goes into --report's `credited`, the grant kept as
 # evidence. Its use on dispatch's other pods the fence does not refuse: those pods hold none of the
-# broker's Secrets and back no webhook this check reads, but they are Dispatch's own, whose database
-# login can write the writer hold's tables. That residual is broker-fence.json's, tracked by
-# INFRA-4604: each credited grant that reaches those pods (one without `targets`) also prints an
-# ALLOWANCE line naming it (residual_allowance) and goes into --report's `residuals`, which holds the
-# residual's ALLOWANCE lines alone (`allowances` holds the run's flags). Who can become such a
-# grant's holder reaches the residual too: a ServiceAccount is followed (RESIDUAL_SAS, reviews.sh)
-# and a Google service account's minters are read (step-live-iam.sh), each chain to it an ALLOWANCE
-# naming the chain and the residual, or a finding where it reaches more. In the guarded rights a
+# broker's Secrets and back no webhook, but they are Dispatch's own, whose database login can write
+# the writer hold's tables. That residual is broker-fence.json's, tracked by INFRA-4604: each
+# credited grant that reaches those pods (one without `targets`) also prints an ALLOWANCE line naming
+# it (residual_allowance) and goes into --report's `residuals`, which holds the residual's ALLOWANCE
+# lines alone (`allowances` holds the run's flags). Who can become such a grant's holder reaches the
+# residual too: a ServiceAccount is followed (RESIDUAL_SAS, reviews.sh) and a Google service
+# account's minters are read (step-live-iam.sh), to a fixed point, each chain to it an ALLOWANCE
+# naming the chain and the residual; a chain that reaches an account with a finding, or that gives
+# its holder more than the residual, is a finding. In the guarded rights a
 # grant is credited only when the broker's pair is the one guarded pair in dispatch: entry into
 # another pod there reaches the other pair. Everything else stays a finding: a change of a pod in
 # dispatch (patch and update of pods: broker-pod-update admits a change of any pod's metadata, and a

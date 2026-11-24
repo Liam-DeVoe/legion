@@ -40,8 +40,11 @@
 admission_power() {
   local kube="$1" step="$2" guarded id url policies allowlist sns sname why engines
   POWER_RIGHTS='[]'
-  # WEBHOOK_SERVICES: the Services the cluster's webhooks that can match a guarded namespace call
-  # (webhook-backends.jq's services), "" when the list was not read; broker-fence.sh reads it.
+  # WEBHOOK_SERVICES: the Service of every webhook of the cluster's configurations ({id, ns, name}),
+  # read from the list is_list holds to its shape, whatever the webhook's selectors or rules, so no
+  # filter of webhook-backends.jq's can leave one out; "" when the list was not read.
+  # broker-fence.sh reads it: entry into a backend's pod changes what its webhook does to every
+  # object it admits.
   WEBHOOK_SERVICES=""
   guarded="$(printf '%s\n' "${GUARDED[@]%%/*}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
   if ! kubectl --kubeconfig "$kube" get mutatingwebhookconfigurations,validatingwebhookconfigurations -o json >"$WORK/webhooks.json" 2>"$WORK/webhooks.err"; then
@@ -52,7 +55,9 @@ admission_power() {
     unknown "$step" "the API server's list of webhook configurations could not be read, so no webhook's backend is reviewed: $(first_line "$WORK/webhooks.err")"
   else
     POWER_RIGHTS="$(jq -c .rights "$WORK/webhooks.out")"
-    WEBHOOK_SERVICES="$(jq -c .services "$WORK/webhooks.out")"
+    WEBHOOK_SERVICES="$(jq -c '[.items[] | (.kind // "") as $kind | .metadata.name as $config | .webhooks[]?
+      | select(.clientConfig.service != null) | {id: "\($kind) \($config)/\(.name)", ns: .clientConfig.service.namespace, name: .clientConfig.service.name}]' \
+      "$WORK/webhooks.json" 2>/dev/null)" || WEBHOOK_SERVICES=""
     while IFS=$'\t' read -r id url; do
       unknown "$step" "the webhook $id can match a guarded namespace and calls $url, outside the cluster, whose holders this check cannot read"
     done < <(jq -r '.urls[] | [.id, .url] | @tsv' "$WORK/webhooks.out")
