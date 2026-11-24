@@ -612,8 +612,8 @@ RULES = {
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
-        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
-        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:762-763")),
+        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:257 stats agents/<name>.md for each task agent"),
+        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:700-701")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
         ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:28"),
         (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:236"),
