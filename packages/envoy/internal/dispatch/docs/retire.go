@@ -34,13 +34,15 @@ var ErrDocumentRetired = errors.New("docs: the document is retired already")
 // RetiredDocumentError is a write refused because its document is retired: a live write
 // (joinLiveWrite), a version (NamedVersion, SnapshotVersion) or a rebuild (RebuildDocument), each
 // refused by retiredWriteRefusal. It holds the document's id, name and slug, and the issue it
-// belongs to (nil for a project document), read off the owner the write locked. api answers it as
-// it answers a write it refuses itself: 409 DOCUMENT_RETIRED naming the document, or 409
+// belongs to (nil for a project document), read off the owner the write locked, and the number of
+// its latest saved version (savedVersionNumber). api answers it as it answers a write it refuses
+// itself: 409 DOCUMENT_RETIRED naming the document and the address of that version, or 409
 // DECISIONS_ARE_NODES for an issue's decisions document (retiredDocumentRefusal). It is
 // ErrDocumentRetired.
 type RetiredDocumentError struct {
 	ID, Name, Slug string
 	IssueKey       *string
+	LatestVersion  int
 }
 
 func (e *RetiredDocumentError) Error() string {
@@ -49,18 +51,22 @@ func (e *RetiredDocumentError) Error() string {
 
 func (e *RetiredDocumentError) Unwrap() error { return ErrDocumentRetired }
 
-// retiredWriteRefusal refuses a write into artifactID, whose owner lockArtifactOwner read in the
-// write's transaction: a RetiredDocumentError, logged at Info naming the document, where the read
-// found it retired (artifactOwner.Retired), and nil where it stands. The refusal is an input a
+// retiredWriteRefusal refuses a write into artifactID, whose owner lockArtifactOwner read in tx,
+// the write's transaction: a RetiredDocumentError, logged at Info naming the document, where the
+// read found it retired (artifactOwner.Retired), and nil where it stands. The refusal is an input a
 // route answers with a documented 409 in ordinary use - an agent that still holds a retired
 // decisions document's address writes to it - and no fault, so it logs no warning. The retirement
 // takes the same lock, so it committed before that read or waits for the write's transaction.
-func retiredWriteRefusal(artifactID string, owner artifactOwner) error {
+func retiredWriteRefusal(ctx context.Context, tx pgx.Tx, artifactID string, owner artifactOwner) error {
 	if !owner.Retired {
 		return nil
 	}
+	latest, err := savedVersionNumber(ctx, tx, artifactID)
+	if err != nil {
+		return err
+	}
 	slog.Info("dispatch: refuse a write into a retired document", "document", artifactID)
-	return &RetiredDocumentError{ID: artifactID, Name: owner.Name, Slug: owner.Slug, IssueKey: owner.IssueKey}
+	return &RetiredDocumentError{ID: artifactID, Name: owner.Name, Slug: owner.Slug, IssueKey: owner.IssueKey, LatestVersion: latest}
 }
 
 // errRetirementReason refuses a retirement that says not why: the reason is the event's record of

@@ -328,12 +328,13 @@ func replyToOf(t *testing.T, tx pgx.Tx, parent string) string {
 // made a row for, a copied block under the ask it was copied from, a block in a quote, and a block
 // after a closed code fence; never a block not settled yet, one whose copied_from names no ask, an
 // id an older version alone declares, a `#` inside an attribute's value, or a directive inside
-// fenced code - backticks or tildes, in a quote, a fence a shorter run or the other character does
-// not close, one nothing closes - even one whose copied_from names an ask that exists. An id is
-// read as pmdoc reads a block's `#id` shortcut, to the first character such an id cannot hold, so
-// a block whose id holds one no bare `#id` in prose can name (`q:1`) is mapped under the whole id
-// its row carries. Each maps to the reference text.Extract reads from that ask's dispatch://
-// address, which for a question of a project document is that document's and not an issue's.
+// fenced code - backticks or tildes, in a quote, opened on a footnote's label line, a fence a
+// shorter run or the other character does not close, one nothing closes - even one whose
+// copied_from names an ask that exists. An id is read as pmdoc reads a block's `#id` shortcut, to
+// the first character such an id cannot hold, so a block whose id holds one no bare `#id` in prose
+// can name (`q:1`) is mapped under the whole id its row carries. Each maps to the reference
+// text.Extract reads from that ask's dispatch:// address, which for a question of a project
+// document is that document's and not an issue's.
 func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -376,6 +377,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 		"~~~md\n```\n"+copiedFrom("tilde", source)+"~~~\n\n"+
 		"> ```\n> "+copiedFrom("quotedfence", source)+"> ```\n\n"+
 		"````\n```\n"+copiedFrom("longer", source)+"````\n\n"+
+		"Footnoted.[^n]\n\n[^n]: ```\n    "+copiedFrom("footnoted", source)+"    ```\n\n"+
 		copiedFrom("after", source)+"Which?\n:::\n\n"+
 		"```\n"+copiedFrom("unclosed", source))
 	insertScopeVersion(t, tx, handbook, 1, ":::ask{#rule}\nWhich?\n:::\n")

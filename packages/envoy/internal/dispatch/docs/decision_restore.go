@@ -1018,6 +1018,7 @@ func (r *issueRestore) askBlockOf(ask string) (issueDocument, string, bool) {
 // kept for one release: decisions-step
 func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error) {
 	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	twoBuilds, err := anotherBuildServes(ctx, r.tx)
 	if err != nil {
 		return graphstore.NoEvent, err
@@ -1055,10 +1056,11 @@ func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error
 				return false
 			}
 			live.Children = next.Children
-			// kept for one release: stored-ask-state
-			if !twoBuilds {
-				withoutAsklessAskAttributes(live, withAsk)
+			// kept for one release: roll-window-attributes
+			if twoBuilds {
+				return true
 			}
+			withoutAsklessAskAttributes(live, withAsk)
 			return true
 		})
 		return err
@@ -1825,6 +1827,7 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 // kept for one release: decisions-step
 func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	twoBuilds, err := anotherBuildServes(ctx, r.tx)
 	if err != nil {
 		return graphstore.NoEvent, err
@@ -2010,15 +2013,20 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 				changed = true
 			}
 		}
+		// The one-build strip of a block that has no ask row and is no copy of an ask is R10's and
+		// stays; the roll window's branch goes with it, and the lighter strip of a block that has
+		// an ask goes with the form a version keeps.
+		// kept for one release: roll-window-attributes
+		if twoBuilds {
+			return true
+		}
+		strip := withoutStoredAskAttributes
 		// kept for one release: stored-ask-state
-		if !twoBuilds {
-			strip := withoutUnkeptAskAttributes
-			if !withAsk[id] {
-				strip = withoutStoredAskAttributes
-			}
-			if strip(node) {
-				changed = true
-			}
+		if withAsk[id] {
+			strip = withoutUnkeptAskAttributes
+		}
+		if strip(node) {
+			changed = true
 		}
 		return true
 	})
@@ -2029,16 +2037,21 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 
 // withoutAsklessAskAttributes takes every attribute a version can store off each ask block of tree
 // that withAsk does not name (askBlocksWithAnAsk) - one that has no ask row and is no copy of an
-// ask, which keeps none of the eight (R10) - and reports whether it changed one.
-//
-// kept for one release: stored-ask-state
+// ask, which keeps none of the eight (R10) - and reports whether it changed one. The strip is
+// R10's and stays; the blocks withAsk names are passed over only while a version keeps a form of
+// each ask, and that goes with it.
 func withoutAsklessAskAttributes(tree *pmdoc.Node, withAsk map[string]bool) bool {
 	changed := false
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		if node.Type == "ask" {
-			if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); !withAsk[id] && withoutStoredAskAttributes(node) {
-				changed = true
-			}
+		if node.Type != "ask" {
+			return true
+		}
+		// kept for one release: stored-ask-state
+		if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); withAsk[id] {
+			return true
+		}
+		if withoutStoredAskAttributes(node) {
+			changed = true
 		}
 		return true
 	})
@@ -2075,6 +2088,7 @@ func (r *issueRestore) refuseUnwrittenReadings() error {
 // kept for one release: decisions-step
 func (r *issueRestore) writePresentDocuments(ctx context.Context) error {
 	// kept for one release: roll-window-attributes
+	// kept for one release: stored-ask-state
 	twoBuilds, err := anotherBuildServes(ctx, r.tx)
 	if err != nil {
 		return err
@@ -2417,10 +2431,22 @@ func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock,
 		// The spec held no block of it: every pointer it carries in is the pass's own.
 		restore.shape = restoredShape{added: pointers}
 	}
+	// While another build serves, the block keeps the attributes a version can store, which that
+	// build's pages read. The one-build strip is R10's and stays; this branch goes with the roll
+	// window.
 	// kept for one release: roll-window-attributes
-	if !twoBuilds {
-		withoutStoredAskAttributes(node)
+	if twoBuilds {
+		return movedAskBlock(node, restore)
 	}
+	withoutStoredAskAttributes(node)
+	return movedAskBlock(node, restore)
+}
+
+// movedAskBlock is node, the block movedBlockOf builds for restore, read back as the document's
+// own markdown pipeline makes it.
+//
+// kept for one release: decisions-step
+func movedAskBlock(node *pmdoc.Node, restore *restoredBlock) (*pmdoc.Node, error) {
 	block, err := parsedTypedBlock(node, "ask")
 	if err != nil {
 		return nil, fmt.Errorf("write the ask block %s of the decisions document, which no row names, into the spec: %w", restore.work.BlockID, err)
