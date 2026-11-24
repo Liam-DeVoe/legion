@@ -25,20 +25,17 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// world is what the fake kubectl and ssh answer: the pods the API lists in each namespace
-// (podsIn, else pods for any namespace), the namespaces the API refuses or does not hold
-// (namespaceErr, keyed by the namespace, or by <context>/<namespace> for one context alone) and
-// the pod lists it fails (podsErr), and each host query's output, this machine's (--this-machine,
-// run through sh) under the key here. hostAnswers is consumed in order, so a test can make the
-// second proof differ from the first. The fake answers kubectl only as the proof calls it, with
-// the namespace as namespace/<ns> and --namespace=<ns>, never a word of its own.
+// world is what the fake kubectl and ssh answer: the pods the API lists, each node's runtime list
+// (or the error reading it), and each host query's output, this machine's (--this-machine, run
+// through sh) under the key here. hostAnswers is consumed in order, so a test can make the second
+// proof differ from the first.
 type world struct {
-	pods         string
-	podsIn       map[string]string
-	namespaceErr map[string]error
-	podsErr      map[string]error
-	hostAnswers  map[string][]string
-	hostErr      map[string]error
+	pods        string
+	nodes       string
+	running     map[string]string
+	runningErr  map[string]error
+	hostAnswers map[string][]string
+	hostErr     map[string]error
 	// hang names the programs ("kubectl", or the ssh program) whose calls never answer until
 	// their context ends, as a connected request that stops answering does.
 	hang  map[string]bool
@@ -61,36 +58,24 @@ func (w *world) run(ctx context.Context, name string, args ...string) ([]byte, e
 		return nil, ctx.Err()
 	}
 	if name == "kubectl" {
-		kube := ""
 		if len(args) > 2 && args[0] == "--context" {
-			kube, args = args[1], args[2:]
+			args = args[2:]
 		}
 		if !strings.HasPrefix(args[0], "--request-timeout=") {
 			return nil, fmt.Errorf("kubectl called without its request timeout: %v", args)
 		}
 		args = args[1:]
 		switch {
-		case len(args) == 4 && args[0] == "get" && strings.HasPrefix(args[1], "namespace/") && args[2] == "-o" && args[3] == "name":
-			namespace := strings.TrimPrefix(args[1], "namespace/")
-			if err := w.namespaceErr[kube+"/"+namespace]; err != nil {
-				return nil, err
-			}
-			if err := w.namespaceErr[namespace]; err != nil {
-				return nil, err
-			}
-			return []byte(args[1] + "\n"), nil
-		case len(args) == 5 && args[0] == "get" && args[1] == "pods" && strings.HasPrefix(args[2], "--namespace=") && args[3] == "-o" && args[4] == "json":
-			namespace := strings.TrimPrefix(args[2], "--namespace=")
-			if err := w.podsErr[namespace]; err != nil {
-				return nil, err
-			}
-			if pods, ok := w.podsIn[namespace]; ok {
-				return []byte(pods), nil
-			}
-			if w.pods == "" {
-				return []byte(noPods), nil
-			}
+		case args[0] == "get" && args[1] == "pods":
 			return []byte(w.pods), nil
+		case args[0] == "get" && args[1] == "nodes":
+			return []byte(w.nodes), nil
+		case args[0] == "get" && args[1] == "--raw":
+			node := strings.Split(args[2], "/")[4]
+			if err := w.runningErr[node]; err != nil {
+				return nil, err
+			}
+			return []byte(w.running[node]), nil
 		}
 		return nil, fmt.Errorf("unexpected kubectl %v", args)
 	}
@@ -122,7 +107,7 @@ func TestACallThatStopsAnsweringBlocksTheProofWithinItsBound(t *testing.T) {
 		args    []string
 		blocked string
 	}{
-		{"kubectl", []string{"--kube-context", "prod", "--namespace", "envoy"}, "kubernetes prod: namespace envoy: read it: kubectl did not finish within 200ms"},
+		{"kubectl", []string{"--kube-context", "prod"}, "kubernetes prod: list pods: kubectl did not finish within 200ms"},
 		{"ssh", []string{"--host", "box-1"}, "host box-1: unreachable or the query failed: ssh did not finish within 200ms"},
 	} {
 		t.Run(c.program, func(t *testing.T) {
@@ -181,9 +166,8 @@ func created(t *testing.T, js natsgo.JetStreamContext, bucket string) time.Time 
 }
 
 // Every writer proven ended, recreate deletes the bucket and creates it again with its copied
-// configuration: a new stream with the session bucket's age. Each named namespace is read, its
-// existence and then its pods, through the API alone, no node's runtime list is read, and the host
-// query is taken twice, before the delete and before the create.
+// configuration: a new stream with the session bucket's age. The kubelet's runtime list of every
+// node is read, and the host query is taken twice, before the delete and before the create.
 func TestRecreateOnceEveryWriterIsProvenEnded(t *testing.T) {
 	uri, js := server(t)
 	config, _ := bus.CopiedBucketConfig(bus.SessionBucket, 1)
@@ -191,8 +175,9 @@ func TestRecreateOnceEveryWriterIsProvenEnded(t *testing.T) {
 		t.Fatalf("create the bucket: %v", err)
 	}
 	before := created(t, js, bus.SessionBucket)
-	w := &world{hostAnswers: map[string][]string{"box-1": {clean(212), clean(213)}}}
-	code, stdout, stderr := runCommand(t, w, nil, "recreate", "--nats", uri, "--bucket", bus.SessionBucket, "--kube-context", "prod", "--namespace", "envoy", "--namespace", "dispatch", "--host", "box-1")
+	w := &world{pods: noPods, nodes: "node-a node-b", running: map[string]string{"node-a": noPods, "node-b": noPods},
+		hostAnswers: map[string][]string{"box-1": {clean(212), clean(213)}}}
+	code, stdout, stderr := runCommand(t, w, nil, "recreate", "--nats", uri, "--bucket", bus.SessionBucket, "--kube-context", "prod", "--host", "box-1")
 	if code != 0 {
 		t.Fatalf("recreate = %d\n%s%s", code, stdout, stderr)
 	}
@@ -203,26 +188,20 @@ func TestRecreateOnceEveryWriterIsProvenEnded(t *testing.T) {
 	if !info.Created.After(before) || info.Config.MaxAge != bus.SessionBucketMaxAge {
 		t.Fatalf("the bucket after recreate: created %s (before %s), max age %s; want a new stream with %s", info.Created, before, info.Config.MaxAge, bus.SessionBucketMaxAge)
 	}
-	calls := strings.Join(w.calls, "\n")
-	for _, namespace := range []string{"envoy", "dispatch"} {
-		for _, call := range []string{"kubectl --context prod --request-timeout=45s get namespace/" + namespace + " -o name", "kubectl --context prod --request-timeout=45s get pods --namespace=" + namespace + " -o json"} {
-			if !strings.Contains(calls, call) {
-				t.Fatalf("the proof never read %q; calls:\n%s", call, calls)
-			}
+	for _, call := range []string{"kubectl --context prod --request-timeout=45s get --raw /api/v1/nodes/node-a/proxy/runningpods/", "kubectl --context prod --request-timeout=45s get --raw /api/v1/nodes/node-b/proxy/runningpods/"} {
+		if !strings.Contains(strings.Join(w.calls, "\n"), call) {
+			t.Fatalf("the proof never read %q; calls:\n%s", call, strings.Join(w.calls, "\n"))
 		}
-	}
-	if strings.Contains(calls, "proxy") || strings.Contains(calls, "--all-namespaces") || strings.Contains(calls, " nodes") {
-		t.Fatalf("the proof read beyond the named namespaces' pods:\n%s", calls)
 	}
 	if len(w.hostAnswers["box-1"]) != 0 {
 		t.Fatalf("the host was queried %d times, want twice", 2-len(w.hostAnswers["box-1"]))
 	}
 }
 
-// Each thing that may still run a writer refuses, and leaves the bucket as it was: a listener pod
-// the API lists in a named namespace, a named namespace the API does not hold, a pod list that does
-// not answer, a host running envoy-listener, an unreachable host, a host query cut short or reading
-// no process, and an open writer connection in the census.
+// Each thing that may still run a writer refuses, and leaves the bucket as it was: a pod the API
+// lists, a force-deleted pod its node's runtime still runs, a node whose runtime list does not
+// answer, a host running envoy-listener, an unreachable host, a host query cut short or reading no
+// process, and an open writer connection in the census.
 func TestEveryWriterNotProvenEndedRefuses(t *testing.T) {
 	census := func(name string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -235,21 +214,22 @@ func TestEveryWriterNotProvenEndedRefuses(t *testing.T) {
 		connz   string
 		blocked string
 	}{
-		{"a listener pod the API lists", world{podsIn: map[string]string{"envoy": podJSON("envoy", "hub-listener-0", "uid-1", "node-a", "listener", false)}},
-			"", "pod envoy/hub-listener-0 (uid uid-1, node node-a) runs container listener, which writes " + bus.InterestBucket},
-		{"a namespace the API does not hold", world{namespaceErr: map[string]error{"envoy": errors.New(`Error from server (NotFound): namespaces "envoy" not found`)}},
-			"", `namespace envoy: read it: Error from server (NotFound): namespaces "envoy" not found`},
-		{"a pod list that does not answer", world{podsErr: map[string]error{"envoy": errors.New("Error from server (Forbidden)")}},
-			"", "list pods in namespace envoy: Error from server (Forbidden)"},
-		{"a host running envoy-listener", world{hostAnswers: map[string][]string{"box-1": {"4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"}}},
+		{"a listener pod the API lists", world{pods: podJSON("hub", "hub-listener-0", "uid-1", "node-a", "listener", false), nodes: "node-a", running: map[string]string{"node-a": noPods}},
+			"", "pod hub/hub-listener-0 (uid uid-1, node node-a) runs container listener"},
+		{"a force-deleted pod its runtime still runs", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": podJSON("dispatch", "dispatch-7", "uid-2", "node-a", "envoy-listener", false)}},
+			"", "node node-a's runtime still runs pod dispatch/dispatch-7 (uid uid-2) container envoy-listener"},
+		{"a runtime list that does not answer", world{pods: noPods, nodes: "node-a", runningErr: map[string]error{"node-a": errors.New("Error from server (Forbidden)")}},
+			"", "node node-a: read its runtime's running pods: Error from server (Forbidden)"},
+		{"no node to read", world{pods: noPods, nodes: ""}, "", "the node list is empty"},
+		{"a host running envoy-listener", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": noPods}, hostAnswers: map[string][]string{"box-1": {"4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"}}},
 			"", "host box-1: process 4242 envoy-listener runs"},
-		{"an unreachable host", world{hostErr: map[string]error{"box-1": errors.New("ssh: connect to host box-1 port 22: Connection timed out")}},
+		{"an unreachable host", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": noPods}, hostErr: map[string]error{"box-1": errors.New("ssh: connect to host box-1 port 22: Connection timed out")}},
 			"", "host box-1: unreachable or the query failed"},
-		{"a host query cut short", world{hostAnswers: map[string][]string{"box-1": {"processes=12\n"}}},
+		{"a host query cut short", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": noPods}, hostAnswers: map[string][]string{"box-1": {"processes=12\n"}}},
 			"", "host box-1: the query did not run to its end"},
-		{"a host query that read no process", world{hostAnswers: map[string][]string{"box-1": {clean(0)}}},
+		{"a host query that read no process", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": noPods}, hostAnswers: map[string][]string{"box-1": {clean(0)}}},
 			"", "host box-1: the query read no process at all"},
-		{"an open listener connection", world{hostAnswers: map[string][]string{"box-1": {clean(150)}}},
+		{"an open listener connection", world{pods: noPods, nodes: "node-a", running: map[string]string{"node-a": noPods}, hostAnswers: map[string][]string{"box-1": {clean(150)}}},
 			"envoy-role-lane", `connection "envoy-role-lane" from 100.64.0.9:41000 as "UABC" is open`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -259,7 +239,7 @@ func TestEveryWriterNotProvenEndedRefuses(t *testing.T) {
 				t.Fatalf("create the bucket: %v", err)
 			}
 			before := created(t, js, bus.InterestBucket)
-			args := []string{"recreate", "--nats", uri, "--bucket", bus.InterestBucket, "--kube-context", "prod", "--namespace", "envoy", "--host", "box-1"}
+			args := []string{"recreate", "--nats", uri, "--bucket", bus.InterestBucket, "--kube-context", "prod", "--host", "box-1"}
 			if c.connz != "" {
 				monitor := census(c.connz)
 				t.Cleanup(monitor.Close)
@@ -757,7 +737,7 @@ func TestEveryRecreateAndCheckPrintsTheBestEffortWarning(t *testing.T) {
 			if code != c.code || !strings.HasPrefix(stderr, bestEffortWarning) {
 				t.Fatalf("%v = %d, want %d with the warning first on standard error:\n%s", c.args, code, c.code, stderr)
 			}
-			for _, way := range []string{"an omitted host, dev box or namespace", "--namespace, --host and --this-machine you name", "a renamed binary", "a pod deleted with --force", "a writer that starts between the final scan and the create", "an unheld restore", "confirm on each host that it has ended"} {
+			for _, way := range []string{"an omitted host or dev box", "a renamed binary", "a writer that starts between the final scan and the create", "an unheld restore", "confirm on each host that it has ended"} {
 				if !strings.Contains(stderr, way) {
 					t.Fatalf("the warning does not name %q:\n%s", way, stderr)
 				}

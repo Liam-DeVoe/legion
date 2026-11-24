@@ -26,14 +26,10 @@
 // operator's, every other connection is kicked, and every server's connz shows the operator alone.
 // Until then it reads:
 //
-//   - Kubernetes, for each --kube-context, in each --namespace, the deployment's namespaces (every
-//     namespace is read in every context): no pod the API lists there runs a container, an init
-//     container or an ephemeral container that has not terminated and may write one of the
-//     buckets, as the writer map reads it from the container's configuration
-//     (podContainer.writes). A namespace the API does not hold blocks. The pods are read through
-//     the API alone, which GKE Autopilot allows; no node's kubelet runtime list is read (Autopilot
-//     refuses nodes/proxy), so a pod deleted with --force whose containers still run is one way a
-//     writer gets past.
+//   - Kubernetes, for each --kube-context: no pod the API lists runs a writer container that has
+//     not terminated, and no node's kubelet runtime list (/api/v1/nodes/<node>/proxy/runningpods/)
+//     holds one either, since a pod deleted with --force leaves its containers running after the
+//     API forgets it. A node whose runtime list does not answer blocks.
 //   - Hosts, for each --host, through ssh (or --ssh, a program taking ssh's arguments): no process
 //     on the host is named envoy-listener (or envoy-dispatch). An unreachable host blocks, and so
 //     does a query that did not run to its end or enumerated no process at all.
@@ -73,11 +69,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
-	"path"
 	"reflect"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -156,10 +151,9 @@ func Grant() (publish, subscribe []string) {
 // change. Each way it names is a test that asserts today's outcome and must flip then
 // (buckets_test.go, TestBestEffort...). create takes no proof, and its run needs no writer stopped
 // (createBuckets), so the warning and its instruction are not its to print.
-const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effort. A writer gets past it five ways:
-  - an omitted host, dev box or namespace: only the --kube-context, --namespace, --host and --this-machine you name are checked;
+const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effort. A writer gets past it four ways:
+  - an omitted host or dev box: only the --kube-context, --host and --this-machine you name are checked;
   - a renamed binary: a host is checked by process name (envoy-listener, listener, dispatch, ...);
-  - a pod deleted with --force: a cluster is checked by the pods its API lists, not its nodes' runtimes;
   - a writer that starts between the final scan and the create: nothing holds writers out;
   - an unheld restore: check holds nothing through a later nats stream restore.
 Before a recreate or a check, stop every envoy-listener of the deployment (and every
@@ -183,11 +177,6 @@ The writers are every envoy-listener of the deployment, and every envoy-dispatch
 bucket is among the buckets. recreate and check require the proof before anything changes, and
 create refuses its flags, which would check nothing:
   --kube-context CTX   a Kubernetes context to check, repeatable ("" is kubectl's current one)
-  --namespace NS       a namespace where the deployment's writers run, an RFC 1123 label (lower-case
-                       letters, digits and '-'), repeatable and required with --kube-context. Every
-                       --namespace is read in every --kube-context, and one a context does not hold
-                       blocks: its pods are read through the API, and each container that may write
-                       a named bucket blocks
   --host TARGET        a machine to query through ssh, repeatable
   --ssh PROGRAM        the program run as ssh (default ssh), such as a wrapper over SSM
   --this-machine       the machine the command runs on, queried here with no ssh; in a container
@@ -243,7 +232,6 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 	var breakGlass bool
 	replicas := 0
 	flags.Var((*stringList)(&f.kubeContexts), "kube-context", "a Kubernetes context to check")
-	flags.Var((*stringList)(&f.namespaces), "namespace", "a namespace where the deployment's writers run, read in every --kube-context")
 	flags.Var((*stringList)(&f.hosts), "host", "a machine to query through ssh")
 	flags.BoolVar(&f.thisMachine, "this-machine", false, "the machine the command runs on, queried with no ssh")
 	flags.StringVar(&f.ssh, "ssh", "ssh", "the program run as ssh")
@@ -357,31 +345,7 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, run R
 		fmt.Fprintln(stderr, "envoy-infra buckets: name every place a writer of the deployment runs: --kube-context for each cluster, --host for each machine and --this-machine for the one the command runs on; --first-deployment proves no writer absent and needs them too")
 		return 2
 	}
-	// A cluster is read in the namespaces the operator names alone, so a container elsewhere
-	// that shares a writer's name, such as an Actions runner's, is never counted. Every
-	// --namespace is read in every --kube-context rather than paired with one: a namespace a
-	// context does not hold blocks, naming the context, so one list is never weaker than pairs,
-	// and the flags stay free of order, as every other flag of the command is.
-	if len(f.kubeContexts) > 0 && len(f.namespaces) == 0 {
-		fmt.Fprintln(stderr, "envoy-infra buckets: --kube-context needs each --namespace where the deployment's writers run (such as envoy and dispatch): the proof reads the pods of those namespaces alone")
-		return 2
-	}
-	if len(f.namespaces) > 0 && len(f.kubeContexts) == 0 {
-		fmt.Fprintln(stderr, "envoy-infra buckets: --namespace names a namespace of a --kube-context: name the context too")
-		return 2
-	}
-	// A namespace reaches kubectl's arguments, and the API names a namespace with an RFC 1123 label
-	// alone, so any other value is refused before anything runs: kubectl would read one starting
-	// with '-', such as --all-namespaces or -oname, as a flag of its own, and list no namespace's
-	// pods, or every one's.
-	for _, namespace := range f.namespaces {
-		if !namespaceName.MatchString(namespace) {
-			fmt.Fprintf(stderr, "envoy-infra buckets: --namespace %q is no namespace name: want an RFC 1123 label, at most 63 lower-case letters, digits and '-', starting and ending with a letter or a digit\n%s", namespace, usage)
-			return 2
-		}
-	}
 	f.run, f.http, f.pid = run, client, os.Getpid()
-	f.buckets = buckets
 	f.dispatch = slices.Contains(buckets, bus.CIStateBucket)
 
 	nc, err := bus.Connect([]string{natsURL}, append([]bus.ConnectOption{bus.WithName("envoy-infra-buckets"), bus.WithEnvironment(operatorEnvironment)}, inbox...)...)
@@ -469,7 +433,7 @@ func createUsage(flags *flag.FlagSet, action string, breakGlass bool, operator s
 	inboxSet := false
 	flags.Visit(func(set *flag.Flag) {
 		switch set.Name {
-		case "kube-context", "namespace", "host", "this-machine", "ssh", "connz", "first-deployment":
+		case "kube-context", "host", "this-machine", "ssh", "connz", "first-deployment":
 			proof = append(proof, "--"+set.Name)
 		case "inbox-prefix":
 			inboxSet = true
@@ -780,10 +744,7 @@ func republished(republish *nats.RePublish) string {
 // fence is the proof that no writer of the buckets runs.
 type fence struct {
 	kubeContexts []string
-	// namespaces are the namespaces of each Kubernetes context whose pods the proof reads: the
-	// deployment's, where its writers run (--namespace).
-	namespaces []string
-	hosts      []string
+	hosts        []string
 	// thisMachine queries the machine the command runs on, through sh rather than ssh; pid is the
 	// command's own process id, which proveThisMachine reads.
 	thisMachine     bool
@@ -791,112 +752,21 @@ type fence struct {
 	ssh             string
 	connz           []string
 	firstDeployment bool
-	// buckets are the buckets the run acts on, whose writers the proof looks for.
-	buckets []string
 	// dispatch says envoy-dispatch is a writer too: the CI state bucket is among the buckets.
 	dispatch bool
 	run      Runner
 	http     *http.Client
 }
 
-// listenerBuckets are the copied buckets every listener opens and writes, whatever routes it
-// mounts: bus.CopiedBuckets without the CI state bucket, as cmd/listener's listenerCopiedBuckets
-// builds them for a listener without the GitHub webhook route. A listener that mounts that route
-// opens bus.CIStateBucket too, which envoy-dispatch also writes.
-var listenerBuckets = slices.DeleteFunc(bus.CopiedBuckets(), func(bucket string) bool { return bucket == bus.CIStateBucket })
-
-// podContainer is the part of a pod's container - a container, an init container (a native
-// sidecar among them) or an ephemeral container - the proof reads to tell which buckets it may
-// write.
-type podContainer struct {
-	Name    string   `json:"name"`
-	Command []string `json:"command"`
-	Env     []envVar `json:"env"`
-	// EnvFrom are the Secrets and ConfigMaps each of whose keys becomes a variable of the
-	// container, named with the source's prefix before the key; the pod shows neither.
-	EnvFrom []struct {
-		Prefix string `json:"prefix"`
-	} `json:"envFrom"`
-}
-
-// envVar is one variable of a container's env: a value, or one taken from elsewhere (valueFrom),
-// which the pod does not show.
-type envVar struct {
-	Name      string          `json:"name"`
-	Value     string          `json:"value"`
-	ValueFrom json.RawMessage `json:"valueFrom"`
-}
-
-// writes is the copied buckets container c may write, read from its configuration by the writer
-// map:
-//
-//   - envoy-dispatch - named so, or running envoy-dispatch - writes the CI state bucket;
-//   - a listener - a container whose environment sets ENVOY_MACHINE_ID, which every listener
-//     requires, or that is named or runs as a listener (listener, envoy-listener, or a command
-//     running envoy-listener or the held-port wrapper envoy-listener-heldport) - writes
-//     listenerBuckets, and the CI state bucket too when its ENVOY_WEBHOOKS may mount the GitHub
-//     route (namesGitHub), or is set from a Secret, a ConfigMap or a field, whose value the pod
-//     does not show;
-//   - a container whose envFrom may set a variable the map reads (envFromMaySet) may be a writer
-//     the pod does not show, so it counts as one: one whose envFrom may set ENVOY_MACHINE_ID is a
-//     listener, and a listener whose envFrom may set ENVOY_WEBHOOKS writes the CI state bucket.
-//     A container nothing else names a writer, with an envFrom source of no prefix, so writes
-//     every copied bucket: the proof fails closed;
-//   - any other container writes none.
-//
-// The proof reads only the namespaces the operator names, so a container elsewhere that is named
-// listener, such as an Actions runner's, is never read.
-func (c podContainer) writes() []string {
-	command := ""
-	if len(c.Command) > 0 {
-		command = path.Base(c.Command[0])
+// writerContainers are the container names a writer runs as in this repository's Kubernetes
+// workloads: the clustered hub's listener (infra/gcp/clusteredhub_listener.go), Dispatch's
+// listener and Dispatch itself (infra/gcp/dispatch_kube.go).
+func (f fence) writerContainers() []string {
+	names := []string{"listener", "envoy-listener"}
+	if f.dispatch {
+		names = append(names, "envoy-dispatch")
 	}
-	if c.Name == "envoy-dispatch" || command == "envoy-dispatch" {
-		return []string{bus.CIStateBucket}
-	}
-	listener := c.Name == "listener" || c.Name == "envoy-listener" || command == "envoy-listener" || command == "envoy-listener-heldport"
-	github := false
-	// Kubernetes sets the last of two variables of one name, so the last one is read.
-	for _, env := range c.Env {
-		switch env.Name {
-		case "ENVOY_MACHINE_ID":
-			listener = true
-		case "ENVOY_WEBHOOKS":
-			github = len(env.ValueFrom) > 0 || namesGitHub(env.Value)
-		}
-	}
-	listener = listener || c.envFromMaySet("ENVOY_MACHINE_ID")
-	github = github || c.envFromMaySet("ENVOY_WEBHOOKS")
-	if !listener {
-		return nil
-	}
-	if github {
-		return append(slices.Clone(listenerBuckets), bus.CIStateBucket)
-	}
-	return slices.Clone(listenerBuckets)
-}
-
-// namesGitHub reports whether value, ENVOY_WEBHOOKS as a container's env sets it, may mount the
-// listener's GitHub route: one of its comma-separated entries is github once strings.TrimSpace
-// trims it, as the listener reads it (internal/webhook's LoadWebhookConfig), or it holds a $(VAR)
-// reference, which Kubernetes replaces with another variable's value before the listener reads it.
-func namesGitHub(value string) bool {
-	return strings.Contains(value, "$(") || slices.ContainsFunc(strings.Split(value, ","), func(entry string) bool { return strings.TrimSpace(entry) == "github" })
-}
-
-// envFromMaySet reports whether c's envFrom may set the variable name: a source's prefix ("" when
-// it has none) starts name, so one of the source's keys could become it, and c's env does not set
-// name, which Kubernetes lets take precedence over every envFrom source.
-func (c podContainer) envFromMaySet(name string) bool {
-	if slices.ContainsFunc(c.Env, func(env envVar) bool { return env.Name == name }) {
-		return false
-	}
-	for _, source := range c.EnvFrom {
-		if strings.HasPrefix(name, source.Prefix) {
-			return true
-		}
-	}
-	return false
+	return names
 }
 
 // writerProcesses are the names a writer's process runs as on a machine (its /proc/<pid>/comm, the
@@ -1010,15 +880,8 @@ func (f fence) kubectl(ctx context.Context, kube string, args ...string) ([]byte
 	return f.call(ctx, "kubectl", args...)
 }
 
-// namespaceName is the name the Kubernetes API gives a namespace: an RFC 1123 label, at most 63
-// lower-case letters, digits and '-', starting and ending with a letter or a digit. It is the
-// shape routes' dnsLabel and the gcp components' namespace rule check; theirs are unexported, and
-// gcp's lives in a package of Pulumi components this command does not link.
-var namespaceName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
-
-// podList is the part of a Kubernetes PodList the fence reads: each pod's init containers (native
-// sidecars, restartPolicy Always, run beside its containers), containers and ephemeral containers,
-// and their statuses. A pod's containers of every kind hold names no other of them holds.
+// podList is the part of a Kubernetes PodList the fence reads, from the API and from a kubelet's
+// runtime list alike.
 type podList struct {
 	Items []struct {
 		Metadata struct {
@@ -1027,106 +890,86 @@ type podList struct {
 			UID       string `json:"uid"`
 		} `json:"metadata"`
 		Spec struct {
-			NodeName            string         `json:"nodeName"`
-			InitContainers      []podContainer `json:"initContainers"`
-			Containers          []podContainer `json:"containers"`
-			EphemeralContainers []podContainer `json:"ephemeralContainers"`
+			NodeName   string `json:"nodeName"`
+			Containers []struct {
+				Name string `json:"name"`
+			} `json:"containers"`
 		} `json:"spec"`
 		Status struct {
-			InitContainerStatuses      []containerStatus `json:"initContainerStatuses"`
-			ContainerStatuses          []containerStatus `json:"containerStatuses"`
-			EphemeralContainerStatuses []containerStatus `json:"ephemeralContainerStatuses"`
+			ContainerStatuses []struct {
+				Name  string `json:"name"`
+				State struct {
+					Terminated *struct{} `json:"terminated"`
+				} `json:"state"`
+			} `json:"containerStatuses"`
 		} `json:"status"`
 	} `json:"items"`
 }
 
-// containerStatus is the part of a container's status the fence reads: whether it has terminated.
-type containerStatus struct {
-	Name  string `json:"name"`
-	State struct {
-		Terminated *struct{} `json:"terminated"`
-	} `json:"state"`
-}
-
-// among is each of written that is one of buckets.
-func among(written, buckets []string) []string {
-	return slices.DeleteFunc(written, func(bucket string) bool { return !slices.Contains(buckets, bucket) })
-}
-
-// envFromNote is what a blocker on c adds when c's envFrom is what makes it a writer of more of
-// buckets: the variables the writer map reads that the envFrom may set, which the pod does not
-// show. It is "" when c's env and command alone name what it writes of buckets.
-func (c podContainer) envFromNote(buckets []string) string {
-	shown := c
-	shown.EnvFrom = nil
-	if len(among(c.writes(), buckets)) == len(among(shown.writes(), buckets)) {
-		return ""
-	}
-	var maySet []string
-	for _, name := range []string{"ENVOY_MACHINE_ID", "ENVOY_WEBHOOKS"} {
-		if c.envFromMaySet(name) {
-			maySet = append(maySet, name)
-		}
-	}
-	return fmt.Sprintf(" (its envFrom may set %s, which the pod does not show)", strings.Join(maySet, " and "))
-}
-
-// provePods proves, for one Kubernetes context, that no writer of the buckets runs in the
-// deployment's namespaces: for each namespace, which must exist (a namespace the API does not
-// hold lists no pod, and a misspelt name would prove nothing), no pod the API lists runs a
-// container, an init container or an ephemeral container that has not terminated and may write
-// one of the buckets (podContainer.writes). Each namespace reaches kubectl as namespace/<ns> and
-// --namespace=<ns>, which kubectl never reads as a flag of its own. It reads the namespaces' pods
-// through the API alone, which GKE Autopilot allows; a node's kubelet runtime list (nodes/proxy),
-// which Autopilot refuses, is not read, so a pod deleted with --force whose containers still run
-// is not seen (bestEffortWarning). Each read that fails blocks.
+// provePods proves, for one Kubernetes context, that no writer container runs: none in a pod the
+// API lists that has not terminated, and none in any node's kubelet runtime list. Each read that
+// fails blocks.
 func (f fence) provePods(ctx context.Context, out io.Writer, kube string) []string {
 	label := kube
 	if label == "" {
 		label = "the current context"
 	}
+	writers := f.writerContainers()
 	var blockers []string
-	read := 0
-	for _, namespace := range f.namespaces {
-		if _, err := f.kubectl(ctx, kube, "get", "namespace/"+namespace, "-o", "name"); err != nil {
-			blockers = append(blockers, fmt.Sprintf("kubernetes %s: namespace %s: read it: %v", label, namespace, err))
-			continue
+	raw, err := f.kubectl(ctx, kube, "get", "pods", "--all-namespaces", "-o", "json")
+	var pods podList
+	if err == nil {
+		err = json.Unmarshal(raw, &pods)
+	}
+	if err != nil {
+		return []string{fmt.Sprintf("kubernetes %s: list pods: %v", label, err)}
+	}
+	for _, pod := range pods.Items {
+		for _, container := range pod.Spec.Containers {
+			if !slices.Contains(writers, container.Name) {
+				continue
+			}
+			terminated := false
+			for _, status := range pod.Status.ContainerStatuses {
+				if status.Name == container.Name && status.State.Terminated != nil {
+					terminated = true
+				}
+			}
+			if !terminated {
+				blockers = append(blockers, fmt.Sprintf("kubernetes %s: pod %s/%s (uid %s, node %s) runs container %s",
+					label, pod.Metadata.Namespace, pod.Metadata.Name, pod.Metadata.UID, pod.Spec.NodeName, container.Name))
+			}
 		}
-		raw, err := f.kubectl(ctx, kube, "get", "pods", "--namespace="+namespace, "-o", "json")
-		var pods podList
+	}
+	raw, err = f.kubectl(ctx, kube, "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
+	if err != nil {
+		return append(blockers, fmt.Sprintf("kubernetes %s: list nodes: %v", label, err))
+	}
+	nodes := strings.Fields(string(raw))
+	if len(nodes) == 0 {
+		return append(blockers, fmt.Sprintf("kubernetes %s: the node list is empty, so no runtime was read", label))
+	}
+	for _, node := range nodes {
+		raw, err := f.kubectl(ctx, kube, "get", "--raw", "/api/v1/nodes/"+url.PathEscape(node)+"/proxy/runningpods/")
+		var running podList
 		if err == nil {
-			err = json.Unmarshal(raw, &pods)
+			err = json.Unmarshal(raw, &running)
 		}
 		if err != nil {
-			blockers = append(blockers, fmt.Sprintf("kubernetes %s: list pods in namespace %s: %v", label, namespace, err))
+			blockers = append(blockers, fmt.Sprintf("kubernetes %s: node %s: read its runtime's running pods: %v", label, node, err))
 			continue
 		}
-		read += len(pods.Items)
-		for _, pod := range pods.Items {
-			statuses := slices.Concat(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses, pod.Status.EphemeralContainerStatuses)
-			for _, kind := range []struct {
-				name       string
-				containers []podContainer
-			}{
-				{"init container", pod.Spec.InitContainers},
-				{"container", pod.Spec.Containers},
-				{"ephemeral container", pod.Spec.EphemeralContainers},
-			} {
-				for _, container := range kind.containers {
-					written := among(container.writes(), f.buckets)
-					if len(written) == 0 || slices.ContainsFunc(statuses, func(status containerStatus) bool {
-						return status.Name == container.Name && status.State.Terminated != nil
-					}) {
-						continue
-					}
-					blockers = append(blockers, fmt.Sprintf("kubernetes %s: pod %s/%s (uid %s, node %s) runs %s %s, which writes %s%s",
-						label, namespace, pod.Metadata.Name, pod.Metadata.UID, pod.Spec.NodeName, kind.name, container.Name, strings.Join(written, ", "), container.envFromNote(f.buckets)))
+		for _, pod := range running.Items {
+			for _, container := range pod.Spec.Containers {
+				if slices.Contains(writers, container.Name) {
+					blockers = append(blockers, fmt.Sprintf("kubernetes %s: node %s's runtime still runs pod %s/%s (uid %s) container %s, whatever the API lists",
+						label, node, pod.Metadata.Namespace, pod.Metadata.Name, pod.Metadata.UID, container.Name))
 				}
 			}
 		}
 	}
 	if len(blockers) == 0 {
-		fmt.Fprintf(out, "proven: kubernetes %s: none of the %d pods in namespace %s runs a writer of %s\n", label, read, strings.Join(f.namespaces, ", "), strings.Join(f.buckets, ", "))
+		fmt.Fprintf(out, "proven: kubernetes %s: no pod the API lists and no running pod of %d nodes' runtimes runs %s\n", label, len(nodes), strings.Join(writers, " or "))
 	}
 	return blockers
 }
