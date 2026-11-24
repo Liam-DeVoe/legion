@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type RenderResult, render, waitFor } from "@testing-library/react";
 
+import { keyMinted } from "../../__tests__/kept-sends-harness";
 import { api } from "../../api/client";
 import { PendingWritesHost } from "./write-hosts";
 import { kindsRegistered, plainWrite, writesOf } from "./write-store";
@@ -14,6 +15,9 @@ import { kindsRegistered, plainWrite, writesOf } from "./write-store";
 // `kinds.ts` that its load brings ends every take-up still waiting (`kindsRegistered`), so the
 // write pressed meanwhile goes out with no second press to ask again. The write is one the
 // indicator does not show (`composer`): the host draws nothing, and the row reads the store alone.
+// The tab keeps a write of alice's from before the reload, one the indicator does not show either,
+// since a take-up with nothing kept for the person ends at once and waits for nothing: it goes
+// out first, and the press behind it.
 //
 // Each run holds nothing over into the next, which `bun test --rerun-each` runs in the same
 // process with the same modules (the repeated unit lane, dispatch-unit-repeat.yaml): `kinds.ts`
@@ -29,6 +33,24 @@ import { kindsRegistered, plainWrite, writesOf } from "./write-store";
 // and the send is restored only some turns after it, so that a write the take-up lets go meets
 // the stub rather than the network guard of a later row or run.
 async function takeUpEndsWithTheHost(): Promise<void> {
+  const kept = keyMinted(Date.now());
+  window.sessionStorage.setItem(
+    `dispatch.write:${kept}`,
+    JSON.stringify({
+      detail: null,
+      key: kept,
+      kind: "write",
+      label: "CORE-1 set to done",
+      login: "alice",
+      presentation: "composer",
+      pressedAt: Date.now(),
+      request: { body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" },
+      sent: true,
+      state: { status: "sending" },
+      target: null,
+      version: 1,
+    })
+  );
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const send = spyOn(api, "send").mockResolvedValue(null as never);
@@ -61,8 +83,11 @@ async function takeUpEndsWithTheHost(): Promise<void> {
         <PendingWritesHost />
       </QueryClientProvider>
     );
-    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
-    expect(send.mock.calls[0]?.[0]).toMatchObject({ path: "/api/v1/issues/CORE-1/comments" });
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+    expect(send.mock.calls.map(([request]) => request.path)).toEqual([
+      "/api/v1/issues/CORE-1",
+      "/api/v1/issues/CORE-1/comments",
+    ]);
     expect(await pressed).toBeNull();
     expect(asked, "the take-up's own load was not asked for again").toBe(1);
   } finally {

@@ -1471,10 +1471,13 @@ export function AuthGate(): ReactNode {
     const writes = writesOf(queryClient);
     writes.signedIn(login);
     // Signed in, the writes this person's reload interrupted go on under their keys, and their
-    // refusals show again. The take-up waits for the kinds of write, a chunk of their own
-    // (`loadWriteKinds`), and every write pressed meanwhile waits for the take-up; so the take-up
-    // begins here, a commit before the shell is drawn (`shellFor`, below), before any page exists
-    // to press a write (`Writes.resume`, `Writes.run`).
+    // refusals show again. Sending a kept write waits for the kinds of write, a chunk of their own
+    // (`loadWriteKinds`); with nothing kept for the person, the take-up ends here at once and
+    // loads no kinds. While it waits, a write pressed meanwhile waits behind it, so it never
+    // overtakes a kept write on its line, but a sign-out goes out at once, and a drop of the
+    // person forgets what was kept at once (`Writes.resume`, `Writes.run`). The take-up begins
+    // here, a commit before the shell is drawn (`shellFor`, below), before any page exists to
+    // press a write.
     if (login !== undefined) writes.resume(login, loadWriteKinds);
     draftStoresSignedIn(queryClient, login);
     signIns.signedIn(login ?? null);

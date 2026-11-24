@@ -1181,12 +1181,13 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
 // take-up of what the tab kept waits until that chunk is in (`web/src/features/writes/kinds.ts`,
 // `Writes.resume`), so neither write is dropped for want of its kind.
 //
-// A write pressed while that chunk is still coming down waits for the take-up, kept in the tab
-// from its press. Where the download then fails, the take-up's ask is one a reader waits on
+// The take-up waits for that chunk only while the tab keeps a write of the person's to take up,
+// and a write pressed while it waits joins its line only once the take-up is done, kept in the
+// tab from its press. Where the download then fails, the take-up's ask is one a reader waits on
 // (`loadWriteKinds`, under `renderChunk`), so the chunk-failure recovery reloads the page from the
 // tab's budget (`web/src/features/shell/DeploymentResilience.tsx`), although the writes host's
-// prefetch of the same chunk is out beside it; and the reloaded page takes the write up and sends
-// it.
+// prefetch of the same chunk is out beside it; and the reloaded page takes both writes up and
+// sends them.
 //
 // The pending-writes indicator is a chunk of its own, drawn through `chunkComponent`
 // (`web/src/features/writes/write-hosts.tsx`), and in the outage its download fails while the
@@ -1199,10 +1200,10 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
 // drawn: the failure reaches no error boundary, where the app's top one (`web/src/main.tsx`)
 // would take the whole page down with nothing to bring it back but a reload by hand. Chromium
 // downloads the chunk on that second ask, so no recovery reload is spent before the kinds' below.
-// SLOW(>=2s): the kept writes are only observable across real reloads, so the row pays four page
-// loads - the issue, Settings and its reload, the issue again and the recovery's reload of it -
-// the wait for the chunks the Conversation fetches once it has drawn before the browser goes
-// offline, and the resumed writes' round trips.
+// SLOW(>=2s): the kept writes are only observable across real reloads, so the row pays five page
+// loads - the issue, Settings and its reload, the issue again, its reload and the recovery's
+// reload of it - the wait for the chunks the Conversation fetches once it has drawn before the
+// browser goes offline, and the resumed writes' round trips.
 test("a pin on a turn and a priority pick pressed during an outage survive a reload on another page, and a write pressed while the kinds of write fail to download survives the reload that failure makes", async ({
   browser,
 }) => {
@@ -1288,21 +1289,30 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
     await expect(pendingWrites(page)).toHaveCount(0);
     await expect.poll(() => keptWrites(page)).toBe(0);
 
-    // The kinds' chunk is held on the wire for the next document, and failed once a write is
-    // pressed behind it, the writes host has asked for the same download as a prefetch - it asks
-    // in the effect that asks for what a lapsed session keeps, whose fetch is what shows it ran
-    // (`write-hosts.tsx`) - and the margin and the preview layer have rendered from their own
-    // chunks: the take-up's ask is then the one download out that a reader waits on. Every later
-    // document gets the chunk.
-    const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
-    const statuses = watchWrites(page, "PATCH", path);
+    // The next document's take-up waits for the kinds only while the tab keeps a write of alice's
+    // to take up (`Writes.resume`), so she picks a priority on the issue first while its changes
+    // fail at the connection, and the tab keeps the pick. The kinds' chunk is then held on the
+    // wire for the reloaded document, and failed once a write is pressed behind the take-up, the
+    // writes host has asked for the same download as a prefetch - it asks in the effect that asks
+    // for what a lapsed session keeps, whose fetch is what shows it ran (`write-hosts.tsx`) - and
+    // the margin and the preview layer have rendered from their own chunks: the take-up's ask is
+    // then the one download out that a reader waits on. Every later document gets the chunk.
     await page.goto(`/issues/${issue.key}`);
+    const changesNetwork = await outage(page, `**${path}`, "PATCH");
+    await page.getByRole("combobox", { name: `Priority of ${issue.key}` }).selectOption("2");
+    await expect.poll(() => keptWrites(page)).toBe(1);
+    // This document's own fetch of the kinds is in, so the hold below is the reloaded one's.
+    await fetchedChunk(page, WRITE_KINDS_CHUNK);
+    const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
+    await page.reload();
+    const statuses = watchWrites(page, "PATCH", path);
     const kinds = await kindsCode.held;
     await page.getByLabel("Status").selectOption("todo");
     await expect(pendingWrites(page)).toContainText("Waiting to send");
     expect(statuses, "a write pressed before the take-up is held").toEqual([]);
     await fetchedChunk(page, KEPT_WRITES_CHUNK);
     await load().settled();
+    changesNetwork.end();
     await kinds.abort();
     await expect
       .poll(() => tabReloads(page).catch(() => null), {
@@ -1315,9 +1325,17 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
         timeout: 30_000,
       })
       .toBe("todo");
+    await expect
+      .poll(async () => (await getIssue(issue.key)).priority, {
+        message: "the reloaded page takes up the pick the tab kept",
+      })
+      .toBe(2);
     // One press, one key, however many attempts the reloaded page made of it.
-    expect(new Set(statuses.map((status) => status.key)).size).toBe(1);
-    for (const status of statuses) expect(status.input).toEqual({ status: "todo" });
+    const statusChanges = statuses.filter(
+      (write) => typeof write.input === "object" && write.input !== null && "status" in write.input
+    );
+    expect(new Set(statusChanges.map((status) => status.key)).size).toBe(1);
+    for (const status of statusChanges) expect(status.input).toEqual({ status: "todo" });
     await expect(pendingWrites(page)).toHaveCount(0);
     await expect.poll(() => keptWrites(page)).toBe(0);
   } finally {
@@ -1458,6 +1476,62 @@ test("a pending-writes indicator whose chunk fails to download online with no re
     await expect(refused.getByRole("button", { exact: true, name: "Discard" })).toBeVisible();
     await expect(page.getByTestId("error-boundary")).toHaveCount(0);
     expect(await tabReloads(page), "asking again reloaded the page").toEqual(spent);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The same failure, and then the one write the indicator would show lands: no write is left for
+// it to show, so its boundary does not draw it afresh, and no request for its chunk goes out. A
+// boundary that drew the indicator afresh at every change of which writes it shows, its last
+// write going among them, asked for the chunk again for a list that draws nothing, and a download
+// that failed then could spend one of the tab's recovery reloads for it (`PendingWritesHost`,
+// `web/src/features/writes/write-hosts.tsx`). The next write the reader presses asks again (the
+// first of these rows).
+// SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
+test("a pending-writes indicator whose chunk failed to download online asks for nothing when its last write lands", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "The indicator's last write" });
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/");
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    const statusChanges = await holdStatusChanges(page, path);
+    const indicatorCode = await holdFirstRequest(page, PENDING_WRITES_CHUNK);
+    await page.goto(`/issues/${issue.key}`);
+    const indicator = await indicatorCode.held;
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    await page.getByLabel("Status").selectOption("backlog");
+    const statusChange = await statusChanges.first;
+
+    const caught = page.waitForEvent("console", (message) =>
+      message.text().includes("Failed to fetch dynamically imported module")
+    );
+    await indicator.abort();
+    await caught;
+    await expect(pendingWrites(page)).toHaveCount(0);
+    expect(await keptWrites(page)).toBe(1);
+    const asked: string[] = [];
+    page.on("request", (request) => {
+      if (PENDING_WRITES_CHUNK.test(new URL(request.url()).pathname)) asked.push(request.url());
+    });
+
+    await statusChange.continue();
+    await expect
+      .poll(() => keptWrites(page), { message: "the status change never landed" })
+      .toBe(0);
+    expect((await getIssue(issue.key, agent)).status).toBe("backlog");
+    // Two frames after the landing, the page has drawn what it changed, and run the effects of
+    // that commit, which is where a boundary drawn afresh asks for its chunk.
+    await nextFrames(page);
+    expect(asked, "the last write's landing asked for the indicator's chunk again").toEqual([]);
+    await expect(page.getByTestId("error-boundary")).toHaveCount(0);
+    expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
   } finally {
     await alice.close();
   }
@@ -1692,14 +1766,20 @@ test("a kept-writes list whose chunk failed to download online draws again with 
   }
 });
 
+/** What becomes of the kinds of write in `keptThroughALapse`: their download fails, and the
+ *  sign-in page's own ask for them goes through or fails too; or it is held on the wire for good,
+ *  so they never arrive. */
+type KindsThroughALapse = "fail" | "fail on the sign-in page too" | "never arrive";
+
 /**
  * A session that lapses while the store's take-up of what a reload kept still waits for the
- * kinds of write, whose download failed online with no reload to follow: the sign-in page asks
- * for the kinds again itself (`KeptWritesHost`) and lists the write the reload kept once the
- * take-up has it. With `signInPageKindsFail` that ask fails too, and the list comes only once the
- * window gets the focus back, which asks for the kinds once more.
+ * kinds of write: the sign-in page lists the write the reload kept by its label at once, read
+ * from its own record with no kind of write in (`KeptWritesHost`, `Writes.notTakenUp`), however
+ * the kinds fare (`kinds`). Where their download failed online with no reload to follow, the
+ * sign-in page asks for them again itself as it draws, for the take-up still waiting; where that
+ * ask fails too, the window getting the focus back asks once more.
  */
-async function keptThroughALapse(browser: Browser, signInPageKindsFail: boolean): Promise<void> {
+async function keptThroughALapse(browser: Browser, kinds: KindsThroughALapse): Promise<void> {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "Kept through a lapse" });
   const path = `/api/v1/issues/${issue.key}`;
@@ -1715,52 +1795,55 @@ async function keptThroughALapse(browser: Browser, signInPageKindsFail: boolean)
 
     const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
     await page.reload();
-    const kinds = await kindsCode.held;
+    const held = await kindsCode.held;
     await expect(page.getByText("Signed in as alice")).toBeVisible();
     // The writes host starts the three chunks of writes in one effect, so the list's fetch says
-    // its prefetch of the kinds has joined the held download, and fails with it.
+    // its prefetch of the kinds has joined the held download, and shares its end.
     await fetchedChunk(page, KEPT_WRITES_CHUNK);
     await expect(pendingWrites(page), "the take-up did not wait for the kinds").toHaveCount(0);
-    // The failure is read in this process, from the browser's report of the request, which a
-    // reload it began cannot take away with the document. The two frames after it leave the page
-    // the time to handle that failure and ask for any reload it would, and the tab's record of its
-    // reloads then says whether it did, as the row's last check reads it again.
-    const failed = page.waitForEvent("requestfailed", (request) =>
-      WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)
-    );
-    await kinds.abort();
-    await failed;
-    await nextFrames(page);
-    expect(await tabReloads(page), "the kinds' failed download reloaded the page").toEqual(spent);
+    if (kinds !== "never arrive") {
+      // The failure is read in this process, from the browser's report of the request, which a
+      // reload it began cannot take away with the document. The two frames after it leave the
+      // page the time to handle that failure and ask for any reload it would, and the tab's
+      // record of its reloads then says whether it did, as the row's last check reads it again.
+      const failed = page.waitForEvent("requestfailed", (request) =>
+        WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)
+      );
+      await held.abort();
+      await failed;
+      await nextFrames(page);
+      expect(await tabReloads(page), "the kinds' failed download reloaded the page").toEqual(spent);
+    }
     expect(await keptWrites(page)).toBe(1);
 
     // The next request for the kinds is the sign-in page's, as it draws: no press is left to ask
     // for them on this page, and the take-up asks only at a press. A later one goes through.
-    let signInPageKindsFailed: Promise<unknown> | undefined;
-    if (signInPageKindsFail) {
+    const isKinds = (request: { url: () => string }) =>
+      WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname);
+    let signInPageAsked: Promise<unknown> | undefined;
+    if (kinds === "fail") signInPageAsked = page.waitForRequest(isKinds);
+    if (kinds === "fail on the sign-in page too") {
       let failNext = true;
       await page.route(WRITE_KINDS_CHUNK, async (route) => {
         if (!failNext) return route.fallback();
         failNext = false;
         await route.abort();
       });
-      signInPageKindsFailed = page.waitForEvent("requestfailed", (request) =>
-        WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)
-      );
+      signInPageAsked = page.waitForEvent("requestfailed", isKinds);
     }
     await lapse(page);
     const kept = page.getByRole("region", { name: "Kept changes" });
-    if (signInPageKindsFailed !== undefined) {
-      // Two frames after the browser's report of the failure, the page has handled it: a take-up
-      // it ended would have put its write in the list by then.
-      await signInPageKindsFailed;
-      await nextFrames(page);
-      await expect(kept, "the take-up ended with no kinds in").toHaveCount(0);
-      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    }
     await expect(kept, "the sign-in page lists nothing the reload kept").toBeVisible();
     await expect(kept).toContainText("Kept until you sign in again as alice:");
     await expect(kept).toContainText(`${issue.key} set to `);
+    // The sign-in page asks for the kinds itself, for the take-up still waiting; where that ask
+    // fails, the reader's coming back to the page asks once more.
+    if (signInPageAsked !== undefined) await signInPageAsked;
+    if (kinds === "fail on the sign-in page too") {
+      const askedAgain = page.waitForRequest(isKinds);
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await askedAgain;
+    }
     expect(await tabReloads(page), "the failure reloaded the page").toEqual(spent);
   } finally {
     await alice.close();
@@ -1768,31 +1851,43 @@ async function keptThroughALapse(browser: Browser, signInPageKindsFail: boolean)
 }
 
 // A session can lapse while the store's take-up of what a reload kept still waits for the kinds
-// of write (`Writes.resume`): it takes them up all the same, for the sign-in that follows, and
-// the sign-in page lists them once it has. If the kinds' download failed online with no reload to
-// follow - the tab's three reloads are spent here - the shell that asked for them is gone, so the
-// sign-in page asks for them again itself (`KeptWritesHost`), and the write the reload kept is
-// listed there. Alice's status change is held at the network, so it stays out and kept; the page
-// reloads with the kinds' chunk held on the wire until the writes host has joined that download,
-// which then fails; her session then lapses.
+// of write (`Writes.resume`): it takes them up all the same, for the sign-in that follows, and the
+// sign-in page lists them at once from their own records. If the kinds' download failed online
+// with no reload to follow - the tab's three reloads are spent here - the shell that asked for
+// them is gone, so the sign-in page asks for them again itself (`KeptWritesHost`). Alice's status
+// change is held at the network, so it stays out and kept; the page reloads with the kinds' chunk
+// held on the wire until the writes host has joined that download, which then fails; her session
+// then lapses.
 // SLOW(>=2s): the kept write is only observable across a real reload, so the row pays two issue
 // page loads and the browser's own "leave this page?" prompt between them.
 test("a session that lapses while the take-up waits for kinds of write that failed to download lists the write the reload kept on the sign-in page", async ({
   browser,
 }) => {
-  await keptThroughALapse(browser, false);
+  await keptThroughALapse(browser, "fail");
 });
 
-// The same, with the sign-in page's own ask for the kinds failing too: until the kinds are in, the
-// take-up holds the write back from the store, so the list has no row to draw and no failure of
-// its own to draw again from. The reader's coming back to the page asks for the kinds once more
-// (`KeptWritesHost`), and the write the reload kept is listed then.
+// The same, with the sign-in page's own ask for the kinds failing too: the list draws the write
+// the reload kept from its record all the same, and the reader's coming back to the page asks for
+// the kinds once more (`KeptWritesHost`), for the take-up still waiting.
 // SLOW(>=2s): the kept write is only observable across a real reload, so the row pays two issue
 // page loads and the browser's own "leave this page?" prompt between them.
-test("a session that lapses while the kinds of write fail to download on the sign-in page too lists the write the reload kept once the window gets the focus back", async ({
+test("a session that lapses while the kinds of write fail to download on the sign-in page too lists the write the reload kept at once, and asks for the kinds again when the window gets the focus back", async ({
   browser,
 }) => {
-  await keptThroughALapse(browser, true);
+  await keptThroughALapse(browser, "fail on the sign-in page too");
+});
+
+// The sign-in page's list is the reader's one warning, before they sign in as someone else, of
+// the writes that sign-in drops, so it is drawn from what the tab keeps, with no kind of write in:
+// a slow download of the kinds - here one held on the wire for good - leaves it as full as a
+// failed one does. The store's rows exist only once its take-up has the kinds, and a list drawn
+// from them alone was empty for as long as they took.
+// SLOW(>=2s): the kept write is only observable across a real reload, so the row pays two issue
+// page loads and the browser's own "leave this page?" prompt between them.
+test("a session that lapses while the kinds of write never arrive lists the write the reload kept on the sign-in page by its label", async ({
+  browser,
+}) => {
+  await keptThroughALapse(browser, "never arrive");
 });
 
 /** Whether leaving `page` now asks the reader to confirm: a listener of its `beforeunload`
@@ -1879,6 +1974,65 @@ test("Sign out pressed while the take-up waits for the kinds of write names the 
       await asksBeforeLeaving(page),
       "leaving the page asks nothing for the write the reload kept"
     ).toBe(true);
+  } finally {
+    await alice.close();
+  }
+});
+
+// A sign-out needs no kind of write, so it goes out at once while the store's take-up of what a
+// reload kept still waits for the kinds (`Writes.run`): only sending a kept write waits for them.
+// Alice has two tabs, a status change of hers held at the network in each, out and kept. The
+// first reloads with the kinds' chunk held on the wire for good, so its take-up never ends. She
+// signs out there and confirms: the sign-out goes out, her session ends, and the second tab,
+// told over the sign-in channel, drops her write and keeps none of it (`Writes.dropLogin`), as the
+// first keeps none of the write its reload kept. A sign-out held for the take-up never went out.
+// SLOW(>=2s): the kept write is only observable across a real reload, so the row pays the second
+// tab's load, two issue page loads and the browser's own "leave this page?" prompt between them.
+test("Sign out pressed while the take-up waits for kinds of write that never arrive goes out at once, and no tab keeps the person's writes", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issues = [
+    await createIssue({ project: "KW", title: "Kept through the reload" }),
+    await createIssue({ project: "KW", title: "Held in the other tab" }),
+  ];
+  const alice = await asUser(browser, "alice");
+  try {
+    const tabs: Page[] = [];
+    for (const issue of issues) {
+      const page = await alice.newPage();
+      // Sign out's question, and the reload's own "leave this page?", are both accepted.
+      page.on("dialog", (dialog) => void dialog.accept());
+      await holdStatusChanges(page, `/api/v1/issues/${issue.key}`);
+      await page.goto(`/issues/${issue.key}`);
+      await page.getByLabel("Status").selectOption("todo");
+      await expect(pendingWrites(page).getByRole("status")).toHaveText("Saving 1 change…");
+      tabs.push(page);
+    }
+    const [reloading, other] = tabs;
+    if (reloading === undefined || other === undefined) throw new Error("no tab was opened");
+    await reloading.bringToFront();
+    const kindsCode = await holdFirstRequest(reloading, WRITE_KINDS_CHUNK);
+    await reloading.reload();
+    await kindsCode.held;
+    await expect(reloading.getByText("Signed in as alice")).toBeVisible();
+    // The take-up waits: the store holds no row of the write, which the tab keeps.
+    await expect(pendingWrites(reloading)).toHaveCount(0);
+    expect(await keptWrites(reloading)).toBe(1);
+    expect(await keptWrites(other)).toBe(1);
+
+    const signingOut = reloading.waitForRequest(
+      (request) =>
+        request.method() === "POST" && new URL(request.url()).pathname === "/auth/logout",
+      { timeout: 10_000 }
+    );
+    await reloading.getByRole("button", { name: "Sign out" }).click();
+    await signingOut;
+    for (const page of tabs) {
+      await expect(page.getByRole("link", { name: "Sign in with Google" })).toBeVisible();
+      await expect.poll(() => keptWrites(page)).toBe(0);
+      await expect(page.getByRole("region", { name: "Kept changes" })).toHaveCount(0);
+    }
   } finally {
     await alice.close();
   }

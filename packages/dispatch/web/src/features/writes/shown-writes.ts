@@ -1,3 +1,4 @@
+import type { KeptWrite } from "./write-storage";
 import type { Write } from "./write-store";
 
 // Which writes the shell's two lists show and how they read each one: the pending-writes
@@ -18,6 +19,14 @@ export function keptWrites(rows: readonly Write[]): readonly Write[] {
   return rows.filter(
     (row) => row.login !== undefined && row.presentation !== "quiet" && row.status !== "made"
   );
+}
+
+/** What a signed-out page lists of what the reload kept that the store has not taken up yet
+ *  (`Writes.notTakenUp`), read from each write's own record: every one but a read mark. A write
+ *  the store takes up leaves those records as it becomes a row of the store's, so none shows
+ *  twice. */
+export function keptRecords(kept: readonly KeptWrite[]): readonly KeptWrite[] {
+  return kept.filter((write) => write.presentation !== "quiet");
 }
 
 /** Whether `row` waits its turn behind an earlier write to its target and was never sent. */

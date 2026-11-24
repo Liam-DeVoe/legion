@@ -315,22 +315,21 @@ export class WriteStorage {
    *  (`Writes.resume`), and until it has taken a write up or let it go, the tab's storage is the
    *  only place that write is, which closing the tab would lose. */
   load(login: string): KeptWrite[] {
-    const loaded = this.#read(login, true);
+    const loaded = this.#read(login);
     for (const write of loaded) this.#confirm(write.key, WriteStorage.#settled(write));
     return loaded;
   }
 
-  /** Every write `login` kept, in press order, read as `load` reads them, dropping nothing and
-   *  changing nothing: for the store to read what a reload kept while the writes of another
-   *  person may be kept beside them - pressed in this page by someone signed in since, and still
-   *  the store's (`Writes.unsent`, `#dropKept`). */
-  peek(login: string): KeptWrite[] {
-    return this.#read(login, false);
+  /** Every write kept in the tab, of every person, in press order, read as `load` reads them,
+   *  dropping nothing and changing nothing: what the store reads as it is made, for what the
+   *  reload kept that it has not taken up yet (`Writes.notTakenUp`). */
+  peek(): KeptWrite[] {
+    return this.#read(undefined);
   }
 
-  /** `load` and `peek`: every write `login` kept, each entry that is not one of theirs dropped
-   *  where `drop` says so. */
-  #read(login: string, drop: boolean): KeptWrite[] {
+  /** `load` and `peek`: every write kept, or only every write `login` kept, each entry that is
+   *  not one of theirs dropped. Without `login` nothing is dropped. */
+  #read(login: string | undefined): KeptWrite[] {
     const storage = this.#storage;
     if (storage === undefined || this.#retired) return [];
     const loaded: KeptWrite[] = [];
@@ -339,9 +338,9 @@ export class WriteStorage {
       if (
         !keptEntryShape(entry) ||
         `${ENTRY_PREFIX}${entry.key}` !== name ||
-        entry.login !== login
+        (login !== undefined && entry.login !== login)
       ) {
-        if (drop) removeEntry(storage, name);
+        if (login !== undefined) removeEntry(storage, name);
         continue;
       }
       const { carried: keptCarried, keyed, version: _version, ...write } = entry;

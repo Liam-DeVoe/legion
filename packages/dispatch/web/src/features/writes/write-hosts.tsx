@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import { ChunkBoundary } from "../shell/ChunkBoundary";
 import { chunk, chunkComponent } from "../shell/chunk-component";
@@ -9,8 +9,8 @@ import {
   renderChunk,
 } from "../shell/chunk-loads";
 import { useContentDrawn } from "../shell/content-drawn";
-import { indicatorWrites, keptWrites } from "./shown-writes";
-import { kindsRegistered, useWriteSelection, type Write } from "./write-store";
+import { indicatorWrites, keptRecords, keptWrites } from "./shown-writes";
+import { kindsRegistered, useWriteSelection, useWrites, type Write } from "./write-store";
 
 /**
  * Where the shell places its two lists of writes, and where their code is fetched: the
@@ -23,7 +23,8 @@ import { kindsRegistered, useWriteSelection, type Write } from "./write-store";
  * before it drew anything. So each is a chunk of its own, and its host here reads the same
  * selection of the one write store the list reads (`shown-writes.ts`): no list before the first
  * row. The indicator stays mounted from then on and draws nothing once none is left
- * (`PendingWritesHost` says why); the kept list is drawn only while it holds a row.
+ * (`PendingWritesHost` says why); the kept list is drawn only while it holds a row, of the
+ * store's or of what the reload kept that the store has not taken up (`KeptWritesHost`).
  *
  * The lists are drawn through `chunkComponent` (`features/shell/chunk-component.tsx`), as the
  * issue page's tab panels, a document's decision cards and the reference-preview layer are; a
@@ -35,9 +36,10 @@ import { kindsRegistered, useWriteSelection, type Write } from "./write-store";
  * one that fails online draws nothing, as it would with no write to show, and the rest of the
  * page stays drawn and signed in. A change of which writes a list shows, or of where one stands -
  * a write pressed or gone, one refused or late - draws the list afresh (`reset`,
- * `shownWritesKey`), which asks for its chunk again. A boundary that never reset would leave the
- * reader on a page no recovery reload follows - the boundary says when none does - with no Retry,
- * Discard or Stop trying for the life of the page.
+ * `shownWritesKey`), which asks for its chunk again; the indicator's last write going is no such
+ * change, since the list it would draw is empty (`PendingWritesHost`). A boundary that never
+ * reset would leave the reader on a page no recovery reload follows - the boundary says when none
+ * does - with no Retry, Discard or Stop trying for the life of the page.
  * On the sign-in page the reader changes none of those writes, so the kept list asks again as
  * well when the reader comes back to it (`KeptWritesHost`). Both chunks are started once the page
  * has drawn, so a reader who presses a write, or whose session lapses, usually finds its list in
@@ -101,14 +103,21 @@ function shownWritesKey(rows: readonly Write[]): string {
 /** The pending-writes indicator, for the shell's status corner. */
 export function PendingWritesHost(): ReactNode {
   const rows = useWriteSelection("indicator", indicatorWrites);
-  // Mounted from the first row on, and never unmounted for want of one: the indicator draws
-  // nothing itself while nothing is pending, and the focus it hands on as its panel goes - after
-  // a Discard or a Stop trying that takes the last row away - is a layout effect of its own
-  // (`usePanelFocusReturn`), which runs only in a commit it is still mounted in. Unmounted in the
-  // commit its last row goes, it would leave the focus on the page's body. Set in the render that
-  // first sees a row, so that render draws it already.
-  const [shown, setShown] = useState(false);
-  if (rows.length > 0 && !shown) setShown(true);
+  const shown = useMemo(() => shownWritesKey(rows), [rows]);
+  // What the boundary draws afresh on (`ChunkBoundary`'s `reset`): the last list of writes the
+  // indicator showed. An empty list is no change of it, so the last write going leaves it as it
+  // was. A boundary that failed would otherwise draw the indicator afresh for a list that draws
+  // nothing, and the indicator asks for its chunk as it draws (`chunkComponent`), which can spend
+  // one of the tab's recovery reloads (`DeploymentResilience.tsx`) for that empty list; the next
+  // write the reader presses asks again. It is empty only until the first row, so it says too
+  // whether the indicator is mounted: from the first row on, and never unmounted for want of
+  // one. The indicator draws nothing itself while nothing is pending, and the focus it hands on
+  // as its panel goes - after a Discard or a Stop trying that takes the last row away - is a
+  // layout effect of its own (`usePanelFocusReturn`), which runs only in a commit it is still
+  // mounted in. Unmounted in the commit its last row goes, it would leave the focus on the
+  // page's body. Set in the render that sees the change, so that render draws it already.
+  const [reset, setReset] = useState("");
+  if (shown !== "" && shown !== reset) setReset(shown);
   // Both chunks are started here, after the page has drawn (`features/shell/content-drawn.ts`):
   // an effect runs after the commit it belongs to, so a landing asks for neither before its
   // first paint, and a landing that draws a live document asks only once its first block is
@@ -129,32 +138,38 @@ export function PendingWritesHost(): ReactNode {
     prefetchChunk(keptWritesChunk.load);
     prefetchWriteKinds();
   }, [drawn]);
-  const reset = useMemo(() => shownWritesKey(rows), [rows]);
-  return rows.length > 0 || shown ? (
+  return reset === "" ? null : (
     <ChunkBoundary reset={reset}>
       <PendingWritesIndicator />
     </ChunkBoundary>
-  ) : null;
+  );
 }
 
 /** What a lapsed session keeps, for the sign-in page. */
 export function KeptWritesHost(): ReactNode {
+  const writes = useWrites();
   const rows = useWriteSelection("kept-while-signed-out", keptWrites);
+  // What the reload kept that the store has not taken up, read from each write's own record with
+  // no kind of write in. This list is the reader's one warning, before they sign in as someone
+  // else, of the writes that sign-in drops, so it lists these at once, also while the kinds are
+  // still on their way; a write the store takes up later shows as the store's row instead.
+  const records = keptRecords(useSyncExternalStore(writes.subscribe, writes.notTakenUp));
   // The kinds of write, for a take-up of what a reload kept that still waits for them as the
   // session lapses (`Writes.resume`): it takes them up all the same, for the sign-in that follows,
-  // and only then are they rows of the store this list shows. The shell that asked for them is
-  // gone, so if its download failed with no reload to follow, nothing else on this page would ask
-  // again and the list would never show those writes. Nobody waits on them here, which is what
+  // and only the store's rows offer what the kinds know, such as a refused write's Discard. The
+  // shell that asked for them is gone, so if its download failed with no reload to follow,
+  // nothing else on this page would ask again. Nobody waits on them here, which is what
   // `prefetchChunk` tells the chunk-failure recovery. A load that fails here too is asked for
   // again as the reader comes back to the page (below).
   useEffect(prefetchWriteKinds, []);
-  // A list whose chunk failed draws again on a change of the writes it shows, and on the sign-in
-  // page none may come: the reader presses no write there, and one out may never be answered. So
-  // it draws again too as the reader comes back to the page - the window gets the focus back, or
-  // the browser comes back online - which is what a reader who finds the list missing does
-  // before they reload by hand. A list that has not failed draws nothing anew for either. The
-  // kinds are asked for again then as well: a take-up still waiting for them holds back every
-  // write it would put in this list, so a list waiting on them draws nothing whatever else asks.
+  // A list whose chunk failed draws again on a change of the store's writes it shows, which may
+  // offer a control - a write the reload kept that the store has not taken up shows by its name
+  // alone - and on the sign-in page none may come: the reader presses no write there, and one out
+  // may never be answered. So it draws again too as the reader comes back to the page - the
+  // window gets the focus back, or the browser comes back online - which is what a reader who
+  // finds the list missing does before they reload by hand. A list that has not failed draws
+  // nothing anew for either. The kinds are asked for again then as well, for a take-up still
+  // waiting for them.
   const [returns, setReturns] = useState(0);
   useEffect(() => {
     const returned = () => {
@@ -169,7 +184,7 @@ export function KeptWritesHost(): ReactNode {
     };
   }, []);
   const reset = useMemo(() => `${shownWritesKey(rows)};${returns}`, [rows, returns]);
-  return rows.length === 0 ? null : (
+  return rows.length === 0 && records.length === 0 ? null : (
     <ChunkBoundary reset={reset}>
       <KeptWrites />
     </ChunkBoundary>

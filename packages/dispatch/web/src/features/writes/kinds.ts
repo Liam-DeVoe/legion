@@ -8,8 +8,9 @@
  * one reader of the kinds a page has not imported itself, since a component that makes a write
  * imports its kind's module, which registers the kind as it is evaluated. The app asks for this
  * chunk as the person signs in, and the take-up waits until its kinds are registered, so it never
- * drops a kept write for want of its kind; every write pressed meanwhile waits for the take-up,
- * so it never goes out ahead of the writes the take-up puts in its line (`Writes.run`).
+ * drops a kept write for want of its kind; every write pressed meanwhile but a sign-out waits for
+ * the take-up, so it never goes out ahead of the writes the take-up puts in its line
+ * (`Writes.run`). Nothing else waits for this chunk (`Writes.resume`).
  */
 import "../agents/broadcast-queue";
 import "../conversation/held-sends";
