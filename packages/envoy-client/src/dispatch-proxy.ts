@@ -115,15 +115,20 @@ const NOT_COPIED = new Set([
 /** The one write the proxy sends (R2). */
 const COMMENT_PATH = /^\/api\/v1\/issues\/[^/]+\/comments$/;
 
-/** The dispatch command for each write a refusal names, by the route Dispatch serves it at; the
- *  first that matches is named. */
-const WRITE_COMMANDS: readonly (readonly [RegExp, string])[] = [
+/** The dispatch command for each write a refusal names, by the route Dispatch serves it at and,
+ *  for a route that serves one write for each of several methods, by the method too: a row that
+ *  names a method matches only a request of that method. The first row that matches is named. */
+const WRITE_COMMANDS: readonly (readonly [RegExp, string, string?])[] = [
   [/^\/api\/v1\/issues$/, "issue"],
   [/^\/api\/v1\/issues\/[^/]+$/, "issue-update"],
   [/^\/api\/v1\/issues\/[^/]+\/claim$/, "claim"],
   [/^\/api\/v1\/(?:issues|artifacts)\/[^/]+\/comments$/, "comment"],
   [/^\/api\/v1\/comments\/[^/]+\/resolve$/, "resolve-comment"],
+  [/^\/api\/v1\/comments\/[^/]+$/, "edit-comment", "PATCH"],
+  [/^\/api\/v1\/comments\/[^/]+$/, "delete-comment", "DELETE"],
   [/^\/api\/v1\/issues\/[^/]+\/messages$/, "message"],
+  [/^\/api\/v1\/messages\/[^/]+$/, "edit-message", "PATCH"],
+  [/^\/api\/v1\/messages\/[^/]+$/, "delete-message", "DELETE"],
   [/^\/api\/v1\/agents\/[^/]+\/messages$/, "send-to-agent"],
   [/^\/api\/v1\/(?:issues|artifacts)\/[^/]+\/asks$/, "ask"],
   [/^\/api\/v1\/asks\/[^/]+$/, "edit-ask"],
@@ -398,7 +403,9 @@ function methodRefusal(method: string, path: string, key: string | undefined): s
       : `${SENDS} This comment POST carries no Idempotency-Key header. Send it with one, so a resend posts the comment once, or post the comment with dispatch comment.`;
   }
   if (method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE") {
-    const named = WRITE_COMMANDS.find(([route]) => route.test(path))?.[1];
+    const named = WRITE_COMMANDS.find(
+      ([route, , only]) => route.test(path) && (only === undefined || only === method)
+    )?.[1];
     const use =
       named === undefined
         ? "dispatch --help lists one for each write, such as dispatch comment for a comment and dispatch issue-update for an issue's fields"

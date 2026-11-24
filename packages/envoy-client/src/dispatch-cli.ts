@@ -71,10 +71,12 @@ export interface DispatchCliIo {
   readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
 }
 
-/** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
- *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
- *  refusal); an argument this CLI refuses before any request is USAGE, whether the argv named a
- *  command or not. */
+/** Exit codes: written or read, a call that did not do what it asks, and a usage error. REFUSED
+ *  is every failure that is not a usage error, the call not done for a reason other than its
+ *  arguments: a refusal by Dispatch or AskGate (a near copy, an AskGate block, a server refusal),
+ *  a Dispatch the command cannot reach (DispatchUnreachableError), and Dispatch keeping no answer
+ *  for a call that writes nothing (DispatchAnswerNotKeptError). An argument this CLI refuses
+ *  before any request is USAGE, whether the argv named a command or not. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
@@ -779,7 +781,8 @@ export async function runDispatchCli(
       // schema, cross-field and picture checks. Those exit 2 from the dry run and from its call,
       // so the two stay one answer. A refusal the executor makes during the call, such as an id
       // of the wrong shape or an ask id prefix matching no ask, only the call reaches.
-      // Everything else here is Dispatch's own refusal or failure.
+      // Everything else here exits 1: Dispatch's own refusal or failure, a Dispatch the command
+      // cannot reach, and a call that writes nothing whose answer Dispatch kept no copy of.
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }

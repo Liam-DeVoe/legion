@@ -108,9 +108,11 @@ Bulk parent changes are ordinary independent keyed writes, at most eight in flig
 New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
 
 A command that a Dispatch spec defines, given several problems, is refused once with every problem
-listed, so the next run can fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or
-AskGate refused it. It exits 2 on a usage error, such as flags it refused before any request, and
-an unknown command exits 2 too. The commands that no spec defines exit by rules of their own,
+listed, so the next run can fix them all. It exits 0 when it wrote or read, and 1 when it did not
+do what it asks, for a reason other than its arguments: Dispatch or AskGate refused it, the command
+could not reach Dispatch, or Dispatch kept no answer for a call that writes nothing. It exits 2 on
+a usage error, such as flags it refused before any request, and an unknown command exits 2 too.
+The commands that no spec defines exit by rules of their own,
 which each one's help gives. `dispatch proxy` exits with the status of the command it runs. It
 exits 127 for a command that does not exist, 126 for a command that cannot run, 128 plus the
 signal's number for a command that a signal ended, and 2 on a usage error or when it cannot start
@@ -135,11 +137,12 @@ Only one flag of a call may read stdin. The command refuses `--body -`, and its 
 
 In an Oh My Pi session with the Envoy plugin, one model call reviews these writes of the main
 agent's `dispatch` commands before they post: `dispatch ask`, `message`, `edit-ask`, `comment`,
-`doc-edit`, `request-approval`, an `issue` with a spec, and an `artifact` that uploads a markdown
-document. Every other command posts unreviewed. The comment POST that `dispatch proxy` sends for a
-tool posts unreviewed too, in block mode as well ([The proxy](#the-proxy) says why). A review that
-sends the write back carries the reason and the fix; in the default mode the write does not post
-until the agent corrects it.
+`doc-edit`, `request-approval`, an `issue` with a spec, an `artifact` that uploads a markdown
+document, and the four corrections of a post AskGate reviewed: `edit-comment`, `delete-comment`,
+`edit-message` and `delete-message`. Every other command posts unreviewed. The comment POST that
+`dispatch proxy` sends for a tool posts unreviewed too, in block mode as well
+([The proxy](#the-proxy) says why). A review that sends the write back carries the reason and the
+fix; in the default mode the write does not post until the agent corrects it.
 
 AskGate reads one form of the call, so that the bytes it reviews are the bytes that post:
 

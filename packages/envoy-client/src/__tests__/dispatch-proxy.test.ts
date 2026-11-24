@@ -2044,6 +2044,26 @@ function refusedRequests(): readonly RefusedRequest[] {
       send: sent("PATCH", "/api/v1/issues/DSP-1", json, JSON.stringify({ title: "Renamed" })),
     },
     { what: "DELETE /api/v1/issues/DSP-1", send: sent("DELETE", "/api/v1/issues/DSP-1") },
+    {
+      what: "PATCH /api/v1/comments/c-1",
+      send: sent("PATCH", "/api/v1/comments/c-1", json, body),
+      names: "edit-comment",
+    },
+    {
+      what: "DELETE /api/v1/comments/c-1",
+      send: sent("DELETE", "/api/v1/comments/c-1"),
+      names: "delete-comment",
+    },
+    {
+      what: "PATCH /api/v1/messages/m-1",
+      send: sent("PATCH", "/api/v1/messages/m-1", json, body),
+      names: "edit-message",
+    },
+    {
+      what: "DELETE /api/v1/messages/m-1",
+      send: sent("DELETE", "/api/v1/messages/m-1"),
+      names: "delete-message",
+    },
     { what: "OPTIONS /api/v1/issues", send: sent("OPTIONS", "/api/v1/issues") },
     {
       what: "CONNECT dispatch:443",

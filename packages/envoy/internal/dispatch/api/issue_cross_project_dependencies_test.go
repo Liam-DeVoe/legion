@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -804,15 +803,20 @@ func TestAProjectScopedCallerNamesAParentOrABlockedByTargetOfAnotherProject(t *t
 			answer := liveNamedToken(caller.jkt)
 			answer.Projects = []string{"BETA"}
 			rig.broker.Says(token, answer)
-			// value is what a write sends in field, and want is what an issue that names approved
-			// there reads as in named: the key itself for a parent, a list of it for blocked_by.
+			// value is what a write sends in field, and named reads the field back as a list: the
+			// parent's key, or none, for a parent, and the list itself for blocked_by. An issue that
+			// names approved there reads as want.
 			var value any = approved
-			want := approved
-			named := func(issue model.Issue) string { return valueOrNone(issue.Parent) }
+			want := []string{approved}
+			named := func(issue model.Issue) []string {
+				if issue.Parent == nil {
+					return nil
+				}
+				return []string{*issue.Parent}
+			}
 			if field == "blocked_by" {
 				value = []string{approved}
-				want = "[" + approved + "]"
-				named = func(issue model.Issue) string { return fmt.Sprint(issue.BlockedBy) }
+				named = func(issue model.Issue) []string { return issue.BlockedBy }
 			}
 			nearCopyChecks := func() int {
 				t.Helper()
@@ -823,11 +827,11 @@ func TestAProjectScopedCallerNamesAParentOrABlockedByTargetOfAnotherProject(t *t
 				return count
 			}
 
-			filed := createdIssue(t, "a scoped create that names "+field+" "+want, rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+			filed := createdIssue(t, "a scoped create that names "+field+" "+approved, rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 				"project": "BETA", "title": "Filed against another project's issue", "spec": "# Spec", field: value, "force": true,
 			})))
-			if filed.Project != "BETA" || named(filed) != want {
-				t.Fatalf("the scoped create made %s of project %s with %s %s, want an issue of BETA with %s %s", filed.Key, filed.Project, field, named(filed), field, want)
+			if filed.Project != "BETA" || !slices.Equal(named(filed), want) {
+				t.Fatalf("the scoped create made %s of project %s with %s %v, want an issue of BETA with %s %v", filed.Key, filed.Project, field, named(filed), field, want)
 			}
 			// An unforced copy of an open BETA issue that names a parent or a blocked_by target of
 			// another project reaches the near-copy gate, which refuses it and records the refusal.
@@ -845,10 +849,10 @@ func TestAProjectScopedCallerNamesAParentOrABlockedByTargetOfAnotherProject(t *t
 
 			set := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{field: value}))
 			if set.Code != http.StatusOK {
-				t.Fatalf("a scoped PATCH that sets %s %s: status=%d body=%s, want 200", field, want, set.Code, set.Body.String())
+				t.Fatalf("a scoped PATCH that sets %s %v: status=%d body=%s, want 200", field, want, set.Code, set.Body.String())
 			}
-			if got := named(decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil))); got != want {
-				t.Fatalf("the scoped PATCH left %s with %s %s, want %s", own, field, got, want)
+			if got := named(decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil))); !slices.Equal(got, want) {
+				t.Fatalf("the scoped PATCH left %s with %s %v, want %v", own, field, got, want)
 			}
 			// A close that also sets the field settles the issue's documents first
 			// (settleIssueBeforeClose), which opens the spec's decision block's ask, and closes the
@@ -870,10 +874,10 @@ func TestAProjectScopedCallerNamesAParentOrABlockedByTargetOfAnotherProject(t *t
 				field: value, "status": "done",
 			}))
 			if closed.Code != http.StatusOK {
-				t.Fatalf("a scoped close that sets %s %s: status=%d body=%s, want 200", field, want, closed.Code, closed.Body.String())
+				t.Fatalf("a scoped close that sets %s %v: status=%d body=%s, want 200", field, want, closed.Code, closed.Body.String())
 			}
-			if issue := decodeBody[model.Issue](t, closed); issue.Status != "done" || named(issue) != want {
-				t.Fatalf("the close left %s %s with %s %s, want done with %s %s", closer.Key, issue.Status, field, named(issue), field, want)
+			if issue := decodeBody[model.Issue](t, closed); issue.Status != "done" || !slices.Equal(named(issue), want) {
+				t.Fatalf("the close left %s %s with %s %v, want done with %s %v", closer.Key, issue.Status, field, named(issue), field, want)
 			}
 			if after := asks(); after != asksBefore+1 {
 				t.Fatalf("the close left %s with %d asks, want the %d its settlement opens", closer.Key, after, asksBefore+1)
