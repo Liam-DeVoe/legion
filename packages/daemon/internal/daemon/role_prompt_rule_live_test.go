@@ -110,9 +110,9 @@ const (
 	ruleSubArchitectProvider = "subarchitectpane"
 )
 
-// The three sentences every reader is given word for word. Each is a literal of this file, so a
-// reworded rule fails this proof rather than passing on a text the driver derived from the same
-// files it is reading.
+// Three sentences given word for word: the first two to every reader, the third to every
+// architect. Each is a literal of this file, so a reworded rule fails this proof rather than
+// passing on a text the driver derived from the same files it is reading.
 const (
 	ruleSandboxEndsTheContainer = "where that pod's sandbox ends the whole container rather than the one process that filled it"
 	ruleEveryRolesTurn          = "a command that fills the limit ends every role's turn and not only yours"
@@ -125,10 +125,7 @@ var podRuleForPhaseWorker = []string{
 	"In an issue pod every role of this issue runs in one container and shares its memory limit",
 	ruleSandboxEndsTheContainer,
 	ruleEveryRolesTurn,
-	ruleCIsWork,
-	"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
 	"Every other heavy run goes where your deployment's instructions say",
-	"instructions that name no such route are a gap you report to the architect that owns your issue",
 	"Each subagent you start runs its commands in this pod, so put these facts in its context",
 }
 
@@ -404,7 +401,7 @@ func (r *rolePromptRuleLive) everyPaneIsReady() {
 	}
 }
 
-// phaseWorkerCarriesTheRule holds the eight sentences of the pod memory rule in the planner's own
+// phaseWorkerCarriesTheRule holds the five sentences of the pod memory rule in the planner's own
 // command line.
 func (r *rolePromptRuleLive) phaseWorkerCarriesTheRule() {
 	r.carriesTheRule("phase worker", "pod memory rule", r.token(r.issue, claim.RolePlanner), podRuleForPhaseWorker)

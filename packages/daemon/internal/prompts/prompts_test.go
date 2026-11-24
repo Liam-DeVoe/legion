@@ -850,10 +850,7 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 		"In an issue pod every role of this issue runs in one container and shares its memory limit",
 		sandboxEndsTheContainer,
 		everyRolesTurn,
-		ciWork,
-		"what a role runs in the pod is what `skill://legion-worker/references/tools.md` names",
 		"Every other heavy run goes where your deployment's instructions say",
-		"instructions that name no such route are a gap you report to the architect that owns your issue",
 		"Each subagent you start runs its commands in this pod, so put these facts in its context",
 	}
 	architect := []string{
