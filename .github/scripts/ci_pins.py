@@ -17,15 +17,15 @@ stop saying what the pin says:
   NO_RETRY_SCRIPT   rule 24: the script whose runs against a mutant take no retry, by
             `export GO_TEST_RETRY=off`; kind's runtime legs, the other exception, are the steps of
             LIVE_GROUPS' action whose -run selects one group.
-  EVENT_GATES   rule 28: the gates on the event or a label that R9 names, each where it is.
+  EVENT_GATES   rule 28: the gates on the event or a label that the layout allows, each where it is.
   ARM_JOBS   rule 26: a job whose runner is part of what it proves.
   MAIN_CHECK_RUN_NAMES   rule 30: the check-run names of ci.yaml at main 51d1a21ff7 and those later
-            commits of main add (the plan's Appendix A), each of which the layout still carries,
-            but ci-filters / ci-filters, whose job R9 deletes.
+            commits of main add, each of which the layout still carries, but ci-filters /
+            ci-filters, whose job the layout deleted.
   CARRIER_NAMES   rule 32: the carriers whose old name is not `<base> / <base>`, by base.
   TIMED_STEPS   rule 31: the steps that carried a step-level timeout-minutes at main 51d1a21ff7
-            and in the jobs this change added (the plan's Appendix B), each where it stands now
-            and how many of it there are.
+            and in the jobs the layout added after it, each where it stands now and how many of it
+            there are.
 """
 
 DAEMON_RACE_STEP = (".github/actions/go-daemon/action.yml", "Test the concurrent packages under the race detector")
@@ -63,8 +63,8 @@ LIVE_GROUPS = {
 
 NO_RETRY_SCRIPT = "packages/envoy/scripts/airlock-mutants.sh"
 
-# Each (file, job, step name or None for the job's own `if:`, the term): a gate R9 names, which
-# skips its job, leg or step on a pull_request or a merge_group run because of the event. The
+# Each (file, job, step name or None for the job's own `if:`, the term): a gate the layout allows,
+# which skips its job, leg or step on a pull_request or a merge_group run because of the event. The
 # full-ci hold and kind's and agent-harness's selection are outputs of the changes job, which a
 # job's own gate reads, and no `if:` of this list.
 EVENT_GATES = [
@@ -95,8 +95,8 @@ ARM_JOBS = {"airlock-arm": "ubuntu-24.04-arm"}
 
 # Rule 32: a carrier whose old check-run name is not `<base> / <base>` for the legs it reads,
 # by the base of those legs. main's #5077 named its race job `daemon-go / daemon-go-race`; the
-# race step passes 22 minutes in one leg, so it is split into `daemon-go-race (i/2)` legs
-# (departure 10) under a carrier that keeps main's name.
+# race step passes 22 minutes in one leg, so it is split into `daemon-go-race (i/2)` legs under a
+# carrier that keeps main's name.
 CARRIER_NAMES = {"daemon-go-race": "daemon-go / daemon-go-race"}
 
 MAIN_CHECK_RUN_NAMES = [
@@ -119,8 +119,8 @@ MAIN_CHECK_RUN_NAMES = [
     "envoy-e2e-local / envoy-e2e-local", "envoy-session-stall / envoy-session-stall",
     "proof-sdk-offline / proof-sdk-offline", "worker-image / build", "worker-image / attest",
     "browser-image / build", "browser-image / attest", "pr-title", "cancel-started", "ci-ok",
-    # The names main's commits after 7cb1f229367c add (the plan's Appendix A, t35): #5077's race job
-    # and #5175's pull-request halves.
+    # The names main's commits after 7cb1f229367c add: #5077's race job and #5175's pull-request
+    # halves.
     "daemon-go / daemon-go-race", "tooling-checks / tooling-checks", "pi-legion-build / pi-legion-build",
     "envoy-go-build / envoy-go-build", "envoy-infra-build / envoy-infra-build", "dispatch-browser-pr / binaries",
     "dispatch-browser-pr / shard", "dispatch-browser-pr / embedder", "dispatch-browser-pr / merge",
@@ -144,8 +144,10 @@ TIMED_STEPS = (
     + [
         (".github/actions/go-envoy-held/envoy-go/action.yml", None, {"name": "Test the database skip counter"}, 15, 1),
         # main's #5084 ran the unit step and the broker's skip count in one go test, the unit step,
-        # under its own 45 minutes.
-        (CI, "go-envoy-held", {"name": "Unit test envoy Go package"}, 45, 1),
+        # under its own 45 minutes. Each envoy-go leg runs a third of it under a job limit of 40, 55
+        # or 41 minutes, which would cut a 45-minute step off before its bound fired, so the step's
+        # bound is 30 (ci.yaml's line says the arithmetic).
+        (CI, "go-envoy-held", {"name": "Unit test envoy Go package"}, 30, 1),
         (".github/actions/go-envoy-held/envoy-go/action.yml", None,
          {"name": "Prove the hub behind the NATS auth service on the local stack (callout-check.sh)"}, 6, 1),
         # dispatch-two-builds and dispatch-two-builds-same share these four steps of ci.yaml; main's

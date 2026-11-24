@@ -526,7 +526,7 @@ jobs:
     services:
       nats:
         image: ${{ matrix.nats && 'ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f' || '' }}
-        ports: ["${{ matrix.nats || '4222' }}"]
+        ports: ["4222"]
     steps:
       - *checkout
       - uses: ./.github/actions/setup-bun
@@ -729,7 +729,7 @@ jobs:
       # why: .github/ci-notes/ci.md#the-envoy-go-unit-step-one-go-test-that-counts-the-brokers-skips
       - name: Unit test envoy Go package
         if: matrix.suite == 'envoy-go'
-        timeout-minutes: 45
+        timeout-minutes: 30 # a package that starts in the first 15 keeps --timeout 15m; legs 1 and 3 reach here at 4 and 9 of 40 and 41
         working-directory: packages/envoy
         env: {LEG: '${{ matrix.part }}'}
         run: scripts/database-skips.sh --timeout 15m --skip '^(TestEverySecretFormNamesTheSourceItUses|TestFindMarksMatchesFindMarkOnAnchorCorpus|TestIncrementalRenderCorpus|TestNoSecretFormAsksTheBrokerForACredential|TestReanchorReuseMatchesPerCallOnAnchorCorpus|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestStatementTimings|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestValidDocumentRenderWithLayoutIsTheValidatingRender|TestWalkMatchesTheReferenceWalkOnACorpus|TestWebDisplayFixture|TestYTextRangesMatchesFrozenOnAnchorCorpus)$' --module-except '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' --run "$(../../.github/scripts/go-test-split.sh "$LEG" 3 $UNIT_PACKAGES)" --jsonfile "go-envoy-held-envoy-go-$LEG-unit.json"
@@ -908,10 +908,7 @@ jobs:
       issues: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: .github
-          persist-credentials: false
+      - *checkout-github
 
       # why: .github/ci-notes/ci.md#why-pr-title-refuses-a-re-run-attempt-in-a-step-of-its-own
       - name: Refuse a re-run attempt of a merge-group run
@@ -937,10 +934,7 @@ jobs:
     permissions:
       actions: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: .github
-          persist-credentials: false
+      - *checkout-github
       - env:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.ref_name }}
@@ -954,18 +948,15 @@ jobs:
     needs: [changes,lint,scripts,scripts-held,ci-images,tool-fallback,tool-fallback-arm,go-daemon,daemon-go,daemon-go-race,plugin-pack,daemon-live,agent-harness,kind-image,kind,docs,ts,web-cold,pi,pi-held,claude-envoy-names,dispatch-browser,dispatch-browser-pr,go-envoy,envoy-held,go-envoy-held,envoy-go,envoy-go-race-api,envoy-go-race-docs,envoy-go-docs-finalizers,dispatch-memory,airlock-arm,text-checks,notices,worker-image,browser-image]
     if: ${{ always() }}
     runs-on: ubuntu-24.04-arm
-    # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
-    timeout-minutes: 188
+    # why: .github/ci-notes/ci.md#why-every-job-sets-job_timeout_minutes
+    timeout-minutes: 188 # verdict 10 + hold 175 + 3 for the checkout and two refusals
     env: {JOB_TIMEOUT_MINUTES: 188}
     permissions:
       actions: read
       checks: write
     steps:
       # why: .github/ci-notes/ci.md#what-ci-ok-checks-out
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: .github
-          persist-credentials: false
+      - *checkout-github
 
       # why: .github/ci-notes/ci.md#why-a-draft-pull-request-is-refused-in-a-step
       - name: Refuse a draft pull request
@@ -994,9 +985,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: .github/scripts/ci-ok.sh
 
+      # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
       - name: Hold a failing verdict until this group is the front of the queue
         if: ${{ !cancelled() && steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1' }}
-        timeout-minutes: 175
+        timeout-minutes: 175 # the age's 170 + the last pause and read's ladder, 2
         env:
           STEP_TIMEOUT_MINUTES: 175
           GH_TOKEN: ${{ github.token }}
@@ -1004,8 +996,8 @@ jobs:
           BASE_REF: ${{ github.event.merge_group.base_ref }}
           HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           HEAD_REF: ${{ github.event.merge_group.head_ref }}
-          CI_OK_HOLD_AGE_SECONDS: 10200
-          CI_OK_HOLD_RUN_SECONDS: 3330
+          CI_OK_HOLD_AGE_SECONDS: 10200 # 170 minutes, inside the queue's 180
+          CI_OK_HOLD_RUN_SECONDS: 3330 # 55.5 minutes
         run: .github/scripts/ci-ok-hold.sh
 
       # why: .github/ci-notes/ci.md#the-reconcile-step

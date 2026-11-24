@@ -10,14 +10,14 @@
 #       the job is skipped on every run.
 #    7. ci-ok's classes: a job its if: gates on an output of changes is selected by it (its own id,
 #       or the exception CI_OK_SELECTED_BY maps, an entry to the job's own id being refused);
-#       CI_OK_ALWAYS_RUN names a job no output gates (lint, which runs the R3 search, among them);
-#       CI_OK_EXEMPT the jobs outside ci-ok's accounting; each job in exactly one class, every job
-#       but changes and the exempt ones ending with the report step (a called workflow's job
-#       reporting for its caller), ci-ok needing every job but itself and the exempt ones,
+#       CI_OK_ALWAYS_RUN names a job no output gates (lint, which runs check-test-reach.sh, among
+#       them); CI_OK_EXEMPT the jobs outside ci-ok's accounting; each job in exactly one class,
+#       every job but changes and the exempt ones ending with the report step (a called workflow's
+#       job reporting for its caller), ci-ok needing every job but itself and the exempt ones,
 #       CI_OK_PULL_REQUEST_ONLY the jobs whose if: admits pull_request alone, the two checks main's
-#       ruleset requires keeping their names, pr-title needing no job, the ref_is_main output and
-#       the reconcile step's if: as they are, and ci-ok.jq reading the name of every job ci-ok
-#       judges, the legs' and the carriers' included.
+#       ruleset requires keeping their names, pr-title needing no job, the ref_is_main output, the
+#       hold step and the reconcile step held once each with their if:s as they are, and ci-ok.jq
+#       reading the name of every job ci-ok judges, the legs' and the carriers' included.
 #   10. an if: that tests a push event or compares github.ref with a branch ref, in ci.yaml, in a
 #       workflow only ci.yaml calls, or in a step of a composite action no other workflow runs
 #       (an action ci-caches.yaml also runs, as the architecture and spec checks, saves its cache
@@ -59,14 +59,14 @@
 #   27. a group of liveGroups that is not in exactly one kind leg's -run (ci_pins.LIVE_GROUPS).
 #   28. an if: of a job, a leg, a step or an inner job, or a matrix entry, that names the event or
 #       a label and is certainly false on a pull request (with or without full-ci) or a merge
-#       group, but those R9 names (ci_pins.EVENT_GATES); a step that uses another repository's
+#       group, but those ci_pins.EVENT_GATES names; a step that uses another repository's
 #       action runs no test and is passed over.
 #   29. a matrix without fail-fast: false.
 #   30. a check-run name of ci.yaml at main (ci_pins.MAIN_CHECK_RUN_NAMES) that no job, leg or
 #       called job of the layout carries.
-#   31. a timed step of main's ci-job files or of the jobs this change added (ci_pins.TIMED_STEPS)
-#       that lost its own bound: timeout-minutes on a uses: step of ci.yaml, a `timeout` command in
-#       a run: body moved into an action, as many of each as there were.
+#   31. a timed step of main's ci-job files or of the jobs the layout added after them
+#       (ci_pins.TIMED_STEPS) that lost its own bound: timeout-minutes on a uses: step of ci.yaml, a
+#       `timeout` command in a run: body moved into an action, as many of each as there were.
 #   32. a split job (legs named `<name> (<i>/<n>)`) with no carrier, one with two, or a carrier
 #       (a job that runs .github/scripts/leg-verdict.sh) that is not exactly a sparse checkout of
 #       .github, leg-verdict.sh over the split job's legs and the report, named `<name> /
@@ -75,16 +75,20 @@
 #       to a section that is not there, and a `## <name>: ` heading whose name is neither an
 #       output of changes nor a job of ci.yaml.
 #   34. the legs of a split job (`<name> (<i>/<n>)`) that name two counts of legs, or that leave an
-#       index from 1 to n out or name one twice, and a leg whose matrix `part` is not its own
-#       index: a leg reads its shard of a corpus by its index and count (CORPUS_SHARD=<i>/<n>),
-#       so the legs read each document once between them only when each index names one leg.
+#       index from 1 to n out, name one twice or name one outside 1 to n; a leg whose matrix `part`
+#       is not its own index; and a step that runs in a leg and hands it another count than n, as
+#       its `with: legs` (written out, or read off the leg's matrix) or in a go-test-split.sh call
+#       of its run:. A leg reads its shard of a corpus by its index and count
+#       (CORPUS_SHARD=<i>/<n>), and go-test-split.sh prints its share of a list by the same two, so
+#       the legs read each document and each test once between them only when each index names one
+#       leg and every step divides by the same n.
 #
 # Rule 20 runs go list over each vetted module with GOPROXY=off over an empty module cache and the
 # module's own toolchain, so nothing is fetched and a cold runner answers as a warm machine does.
 # Unset GOROOT, which would choose another go than the one PATH and go.work name.
 #
 # Run from anywhere: .github/scripts/check-ci-layout.sh
-# CI runs it in ci.yaml's lint job (.github/actions/lint/lint), and its test in the scripts job.
+# CI runs it in ci.yaml's lint job (.github/actions/lint/lint), and its test in the scripts-held job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

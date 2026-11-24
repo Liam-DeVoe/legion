@@ -8,8 +8,11 @@
 # mutants script taking the retry, the search job tested on an output, a step inside an action
 # gated on merge_group, a job without the run_attempt term, a liveGroups entry no kind leg runs,
 # a job gated on an output changes does not declare, a carrier with a fourth step, a carrier for a
-# job that is not split, a carrier with no report step, a split job's legs that leave an index out
-# and that name one twice, pr-title needing changes, a literal name
+# job that is not split, a carrier with no report step, a split job's legs that leave an index out,
+# that name one twice, that name two counts or an index outside them, a step that hands a leg
+# another count than its name's (a `with: legs`, written out or read off the matrix, or a
+# go-test-split.sh call), ci-ok's reconcile step renamed and its hold step's if: drifted from the
+# term the reconcile negates, pr-title needing changes, a literal name
 # on a job a run can skip (worker-image, an agent-harness part, dispatch-browser.yaml's visual),
 # a changes output reading another step, the airlock job on x64, the race step dropping a package
 # the fill names, a push-only if: in an action only ci.yaml runs, a cache key drifting inside an
@@ -26,7 +29,7 @@
 # checkout's modules. It needs python3 with PyYAML, jq and go.
 #
 # Run from anywhere: .github/scripts/check-ci-layout.test.sh
-# CI runs it in ci.yaml's scripts job (its test leg).
+# CI runs it in ci.yaml's scripts-held job.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -248,6 +251,53 @@ check "names the index two legs name (rule 34)" \
   "$(has "$out" "job go-envoy-held splits envoy-go-docs-finalizers into 3 legs, and 2 legs are \`envoy-go-docs-finalizers (2/3)\`")"
 check "names the leg whose part is not its index (rule 34)" \
   "$(has "$out" "leg \`envoy-go-docs-finalizers (2/3)\` of job go-envoy-held hands its steps part 3, not its own index 2")"
+
+echo "case: the counts the legs of a split job name, and the counts their steps divide by"
+root=$(fresh shard-counts)
+ci=$root/.github/workflows/ci.yaml
+# dispatch-memory's second leg named as one of three: its legs name two counts
+replace "$ci" 'name: dispatch-memory (2/2)' 'name: dispatch-memory (2/3)'
+# envoy-go-race-docs' second leg named as the third of two: an index outside 1 to 2
+replace "$ci" 'name: envoy-go-race-docs (2/2)' 'name: envoy-go-race-docs (3/2)'
+# the finalizers' step hands its three legs a fourth leg's count (CORPUS_SHARD=<i>/4)
+replace "$ci" "uses: ./.github/actions/go-envoy-held/envoy-go-docs-finalizers, with: {part: '\${{ matrix.part }}', legs: 3," \
+  "uses: ./.github/actions/go-envoy-held/envoy-go-docs-finalizers, with: {part: '\${{ matrix.part }}', legs: 4,"
+# go-daemon's third leg's matrix count, which its step reads as \${{ matrix.legs }}
+replace "$ci" '{name: daemon-go (3/3), leg: 3, legs: 3,' '{name: daemon-go (3/3), leg: 3, legs: 4,'
+# the unit step's share of the packages split two ways under three legs
+replace "$ci" 'go-test-split.sh "$LEG" 3 $UNIT_PACKAGES' 'go-test-split.sh "$LEG" 2 $UNIT_PACKAGES'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the legs that name two counts (rule 34)" \
+  "$(has "$out" "job go-envoy-held's legs of dispatch-memory name 2 counts of legs (2, 3), where every leg names the same count")"
+check "names the index outside 1 to n (rule 34)" \
+  "$(has "$out" "job go-envoy-held splits envoy-go-race-docs into 2 legs, and a leg is \`envoy-go-race-docs (3/2)\`, an index outside 1 to 2")"
+check "names a step's with: legs that is not the legs' count (rule 34)" \
+  "$(has "$out" "leg \`envoy-go-docs-finalizers (1/3)\` of job go-envoy-held runs step \"envoy-go-docs-finalizers\", which hands it legs 4, where its name counts 3")"
+check "names a matrix count a step reads that is not the leg's (rule 34)" \
+  "$(has "$out" "leg \`daemon-go (3/3)\` of job go-daemon runs step \"daemon-go\", which hands it legs 4, where its name counts 3")"
+check "and not the legs whose matrix count is right" \
+  "$(is "$(has "$out" "leg \`daemon-go (1/3)\` of job go-daemon runs step \"daemon-go\"")" false)"
+check "names a go-test-split.sh count that is not the legs' (rule 34)" \
+  "$(has "$out" "leg \`envoy-go (2/3)\` of job go-envoy-held runs step \"Unit test envoy Go package\", whose go-test-split.sh call splits into 2 legs, where its name counts 3")"
+check "and no step of a leg its if: keeps it out of" \
+  "$(is "$(has "$out" "leg \`envoy-go-race-api (1/2)\` of job go-envoy-held runs step")" false)"
+
+echo "case: ci-ok's reconcile step renamed, and its hold step's if: off the term the reconcile reads"
+# The reconcile step's if: is held by name, so a renamed step must be refused rather than passed
+# over; and the hold step's if: must be the one whose term the reconcile step's negates, or the two
+# could both run, or neither, on a failed verdict of a merge group's first attempt.
+root=$(fresh ci-ok-steps)
+ci=$root/.github/workflows/ci.yaml
+replace "$ci" "      - name: Set every other ci-ok on this head to this job's conclusion" \
+  "      - name: Set every other ci-ok on this head"
+replace "$ci" "!cancelled() && steps.verdict.outcome == 'failure'" "!cancelled() && steps.verdict.outcome != 'success'"
+run_check "$root"
+check "fails (rule 7)" "$(is "$status" 1)"
+check "names the reconcile step it no longer holds" \
+  "$(has "$out" "job ci-ok holds 0 step(s) named \"Set every other ci-ok on this head to this job's conclusion\", where it holds one, with \`if: \${{ always() &&")"
+check "names the hold step and the if: it must carry" \
+  "$(has "$out" "job ci-ok's step \"Hold a failing verdict until this group is the front of the queue\" must carry \`if: \${{ !cancelled() && steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1' }}\`")"
 
 echo "case: the actions' conditions, caches and timed steps, and the merge-group workflows"
 root=$(fresh actions)

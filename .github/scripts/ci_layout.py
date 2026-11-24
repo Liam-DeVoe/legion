@@ -1,7 +1,7 @@
 """The engine of check-ci-layout.sh, whose header numbers the rules and says why each holds.
 
 It reads ci.yaml, every workflow a job of it calls, and every local composite action those run
-(.github/actions/<job-or-leg>/action.yml), and refuses a layout that drifts from what R9 holds:
+(.github/actions/<job-or-leg>/action.yml), and refuses a layout that drifts from what it holds:
 the jobs ci-ok judges and how it judges them (rule 7), what a job's `if:` may test (rules 2, 12,
 23 and 28), the names a skipped job's record carries (rules 25 and 30), the carriers of a split
 job's old name (rule 32) and the indexes its legs name (rule 34), how a Go step runs its tests
@@ -602,14 +602,20 @@ DISPATCH_NAMES = {
     "ci-ok": f"${{{{ {DISPATCH_OFF_MAIN} && 'ci-ok (dispatch)' || 'ci-ok' }}}}",
     "pr-title": "${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}",
 }
-# The verdict job's step that sets every other ci-ok on the head to its conclusion, and the one
-# `if:` it carries: it runs after a failed verdict (always()), on no dispatch but one of exactly
-# refs/heads/main, since every other ci-ok on such a head is a pull request's or the queue's, and
-# not where the hold step runs (HOLD_TERM): a merge group's first attempt whose verdict failed,
-# where every ci-ok posted on the head is failure already and the hold must be the job's last
-# step (.github/scripts/ci-ok-hold.sh's header).
+# The verdict job's step that holds a failing verdict of a merge group's first attempt until the
+# group is the front of the queue, and the one `if:` it carries (HOLD_TERM, after the verdict step
+# failed, whatever a later step does); and its step that sets every other ci-ok on the head to its
+# conclusion, and the one `if:` that carries: it runs after a failed verdict (always()), on no
+# dispatch but one of exactly refs/heads/main, since every other ci-ok on such a head is a pull
+# request's or the queue's, and not where the hold step runs (HOLD_TERM): a merge group's first
+# attempt whose verdict failed, where every ci-ok posted on the head is failure already and the hold
+# must be the job's last step (.github/scripts/ci-ok-hold.sh's header). The job holds each step
+# once, so renaming or dropping either is refused rather than passed over, and the one HOLD_TERM
+# is what both read.
+HOLD_STEP = "Hold a failing verdict until this group is the front of the queue"
 RECONCILE_STEP = "Set every other ci-ok on this head to this job's conclusion"
 HOLD_TERM = "steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1'"
+HOLD_IF = f"${{{{ !cancelled() && {HOLD_TERM} }}}}"
 RECONCILE_IF = (f"${{{{ always() && (github.event_name != 'workflow_dispatch' || "
                 f"needs.changes.outputs.{REF_OUTPUT} == 'true') && !({HOLD_TERM}) }}}}")
 
@@ -715,10 +721,13 @@ def check_ci_ok(documents: dict, problems: list) -> None:
             problems.append(error(WORKFLOW, f"job {job_id} carries a name that can be {check}, a check main's ruleset "
                                             f"requires, and is not the {check} job"))
     verdict = jobs.get(VERDICT_JOB) or {}
-    for step in verdict.get("steps") or []:
-        if (step or {}).get("name") == RECONCILE_STEP and str(step.get("if", "")) != RECONCILE_IF:
-            problems.append(error(WORKFLOW, f"job {VERDICT_JOB}'s step \"{RECONCILE_STEP}\" must carry `if: "
-                                            f"{RECONCILE_IF}`"))
+    for name, condition in ((HOLD_STEP, HOLD_IF), (RECONCILE_STEP, RECONCILE_IF)):
+        held = [step for step in verdict.get("steps") or [] if (step or {}).get("name") == name]
+        if len(held) != 1:
+            problems.append(error(WORKFLOW, f"job {VERDICT_JOB} holds {len(held)} step(s) named \"{name}\", where it "
+                                            f"holds one, with `if: {condition}`"))
+        elif str(held[0].get("if", "")) != condition:
+            problems.append(error(WORKFLOW, f"job {VERDICT_JOB}'s step \"{name}\" must carry `if: {condition}`"))
     changes = jobs.get("changes") or {}
     if str((changes.get("outputs") or {}).get(REF_OUTPUT)) != REF_OUTPUT_VALUE:
         problems.append(error(WORKFLOW, f"the changes job must carry the output `{REF_OUTPUT}: {REF_OUTPUT_VALUE}`"))
@@ -1157,8 +1166,8 @@ def gate_places(documents: dict) -> list:
 
 def check_event_gates(documents: dict, pins, problems: list) -> None:
     """Rule 28: on a pull request and a merge group, no gate on the event or a label skips a job, a
-    leg, a step or an inner job that runs a test or a check, but those R9 names (ci_pins'
-    EVENT_GATES). A condition that names the event or a label and is certainly false on one of
+    leg, a step or an inner job that runs a test or a check, but those ci_pins' EVENT_GATES
+    allows. A condition that names the event or a label and is certainly false on one of
     those runs is such a gate; one that keeps a step to the events it serves, true on both, is
     not."""
     allowed = [(path, job, step, squash(term)) for path, job, step, term in pins.EVENT_GATES]
@@ -1178,8 +1187,8 @@ def check_event_gates(documents: dict, pins, problems: list) -> None:
         where = (f"job {job}" if job else path) + (f" {step}" if step and step.startswith("strategy.")
                                                    else f' step "{step}"' if step else "")
         problems.append(error(path, f"{where} has `{squash(text)}`, which skips it on {' and on '.join(skipped)} for "
-                                    f"the event or a label: R9 lets no such gate skip a test or a check but those it "
-                                    f"names (ci_pins.EVENT_GATES), so select the job by its changes output instead"))
+                                    f"the event or a label: the layout lets no such gate skip a test or a check but "
+                                    f"those ci_pins.EVENT_GATES names, so select the job by its changes output instead"))
 
 
 # ---------------------------------------------------------------- rule 25: expression names
@@ -1239,9 +1248,9 @@ def check_main_names(documents: dict, pins, problems: list) -> list:
 
 # ---------------------------------------------------------------- rule 31: timed steps
 def check_timed_steps(documents: dict, pins, problems: list) -> None:
-    """Rule 31: each timed step of main's ci-job files, and of the jobs this change added, keeps its
-    own bound: a uses: step of ci.yaml its own timeout-minutes, a run: body moved into an action a
-    `timeout <minutes>m` command in its body; and there are as many of each as there were."""
+    """Rule 31: each timed step of main's ci-job files, and of the jobs the layout added after them,
+    keeps its own bound: a uses: step of ci.yaml its own timeout-minutes, a run: body moved into an
+    action a `timeout <minutes>m` command in its body; and there are as many of each as there were."""
     for path, job_id, picks, minutes, count in pins.TIMED_STEPS:
         if job_id is not None:
             steps = (((documents.get(path) or {}).get("jobs") or {}).get(job_id) or {}).get("steps") or []
@@ -1268,25 +1277,32 @@ def is_carrier(job: dict) -> bool:
     return any(LEG_VERDICT in str((s or {}).get("run", "")) for s in (job or {}).get("steps") or [])
 
 
-def check_carriers(documents: dict, pins, problems: list) -> None:
-    """Rule 32: a job split into legs named `<name> (<i>/<n>)` has one carrier, a job named
-    `<name> / <name>` that needs the split job, runs under its gate and !cancelled(), and holds
-    exactly three steps: a sparse checkout of .github, leg-verdict.sh over exactly those legs, and
-    the report to ci-ok. A carrier for a job that is not split carries a name nothing splits."""
-    document = documents[WORKFLOW]
-    jobs = document.get("jobs") or {}
-    legs, _ = jq_names(document)
+def split_legs(legs: list) -> dict:
+    """The legs of each split job, by (job, base): each leg jq_names reads whose name is
+    `<base> (<i>/<n>)`, as (i, n, its jq_names entry)."""
     splits: dict = defaultdict(list)
     for entry in legs:
         found = SPLIT_LEG.match(str(entry["name"] or ""))
         if found:
-            splits[(entry["job"], found.group("base"))].append(entry["name"])
+            splits[(entry["job"], found.group("base"))].append(
+                (int(found.group("part")), int(found.group("legs")), entry))
+    return splits
+
+
+def check_carriers(document: dict, legs: list, splits: dict, pins, problems: list) -> None:
+    """Rule 32: a job split into legs named `<name> (<i>/<n>)` has one carrier, a job named
+    `<name> / <name>` that needs the split job, runs under its gate and !cancelled(), and holds
+    exactly three steps: a sparse checkout of .github, leg-verdict.sh over exactly those legs, and
+    the report to ci-ok. A carrier for a job that is not split carries a name nothing splits.
+    `legs` is what jq_names reads off the workflow, and `splits` its split_legs."""
+    jobs = document.get("jobs") or {}
+    leg_names_of = {key: [entry["name"] for _, _, entry in entries] for key, entries in splits.items()}
     carriers = {job_id: job for job_id, job in jobs.items() if is_carrier(job)}
     names = {job_id: next((e["name"] for e in legs if e["job"] == job_id), None) for job_id in carriers}
-    named = getattr(pins, "CARRIER_NAMES", {})
+    named = pins.CARRIER_NAMES
     def carried(base: str) -> str:
         return named.get(base, f"{base} / {base}")
-    for (split_job, base), leg_names in sorted(splits.items()):
+    for (split_job, base), leg_names in sorted(leg_names_of.items()):
         holders = [job_id for job_id, name in names.items() if name == carried(base)]
         if len(holders) != 1:
             problems.append(error(WORKFLOW, f"job {split_job} splits {base} into {len(leg_names)} legs, and "
@@ -1297,7 +1313,7 @@ def check_carriers(documents: dict, pins, problems: list) -> None:
         base = next((b for b, n in named.items() if n == name), name.split(" / ")[0])
         needs = job.get("needs") or []
         needs = [needs] if isinstance(needs, str) else needs
-        split = next(((sj, ln) for (sj, b), ln in splits.items() if b == base and sj in needs), None)
+        split = next(((sj, ln) for (sj, b), ln in leg_names_of.items() if b == base and sj in needs), None)
         if name != carried(base) or split is None:
             problems.append(error(WORKFLOW, f"job {job_id} runs {LEG_VERDICT}, a carrier, and carries `{name}`, which "
                                             f"is the old name of no job it needs that splits into legs: a carrier "
@@ -1325,18 +1341,43 @@ def check_carriers(documents: dict, pins, problems: list) -> None:
 
 
 # ---------------------------------------------------------------- rule 34: the shard legs
-def check_shard_legs(documents: dict, problems: list) -> None:
+# A count a step's run: body hands go-test-split.sh, which prints one leg's share of a list.
+SPLIT_CALL = re.compile(r"go-test-split\.sh\s+\S+\s+(\d+)\b")
+
+
+def whole(value):
+    """A count as a step's `with:` or a matrix gives it (3, 3.0 or '3'), or None for anything
+    else, an expression the reader cannot know among them."""
+    if isinstance(value, bool) or value is UNKNOWN or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value) if value == int(value) else None
+    return int(value) if str(value).strip().isdigit() else None
+
+
+def leg_value(text: str, leg: dict):
+    """What an `if:` or a `with:` value is in one leg of a matrix: the leg's own values known
+    (`matrix.<key>`, null where the leg sets none, as GitHub reads it) and every other context
+    not, so UNKNOWN where the answer rests on one, and UNKNOWN for a text the reader cannot read."""
+    def lookup(path: str):
+        return leg.get(path[len("matrix."):]) if path.startswith("matrix.") else UNKNOWN
+    try:
+        return Evaluator(expression(text), lookup).value()
+    except ValueError:
+        return UNKNOWN
+
+
+def check_shard_legs(document: dict, splits: dict, problems: list) -> None:
     """Rule 34: the legs of a split job, each named `<name> (<i>/<n>)`, name one count n and each
-    index from 1 to n once, and a leg that hands its steps a matrix `part` hands them its own
-    index. A leg reads its shard of a corpus by its index and the count (CORPUS_SHARD=<i>/<n>), so
-    the legs read each document once between them only when every index is one leg's."""
-    legs, _ = jq_names(documents[WORKFLOW])
-    splits: dict = defaultdict(list)
-    for entry in legs:
-        found = SPLIT_LEG.match(str(entry["name"] or ""))
-        if found:
-            splits[(entry["job"], found.group("base"))].append(
-                (int(found.group("part")), int(found.group("legs")), entry))
+    index from 1 to n once, a leg that hands its steps a matrix `part` hands them its own index,
+    and each step that runs in such a leg hands it n: a `with: legs`, written out (`legs: 3`) or
+    read off the leg's matrix (`${{ matrix.legs }}`), and the count of a go-test-split.sh call of
+    its run:. A leg reads its shard of a corpus by its index and the count (CORPUS_SHARD=<i>/<n>),
+    and go-test-split.sh prints its share of a list by the same two, so the legs read each
+    document and each test once between them only when every index is one leg's and every step
+    of every leg divides by the same n. `splits` is split_legs over what jq_names reads off the
+    workflow."""
+    jobs = document.get("jobs") or {}
     for (job, base), entries in sorted(splits.items(), key=lambda item: item[0]):
         counts = sorted({legs_count for _, legs_count, _ in entries})
         if len(counts) != 1:
@@ -1356,10 +1397,26 @@ def check_shard_legs(documents: dict, problems: list) -> None:
             problems.append(error(WORKFLOW, f"job {job} splits {base} into {count} legs, and a leg is "
                                             f"`{base} ({index}/{count})`, an index outside 1 to {count}"))
         for index, _, entry in entries:
-            part = (entry["leg"] or {}).get("part")
+            leg = entry["leg"] or {}
+            part = leg.get("part")
             if part is not None and str(part) != str(index):
                 problems.append(error(WORKFLOW, f"leg `{entry['name']}` of job {job} hands its steps part {part}, "
                                                 f"not its own index {index}"))
+            for step in (jobs.get(job) or {}).get("steps") or []:
+                step = step or {}
+                if "if" in step and truth(leg_value(str(step["if"]), leg)) is False:
+                    continue
+                given = (step.get("with") or {}).get("legs")
+                handed = whole(leg_value(given, leg) if isinstance(given, str) and "${{" in given else given)
+                if handed is not None and handed != count:
+                    problems.append(error(WORKFLOW, f"leg `{entry['name']}` of job {job} runs step "
+                                                    f"\"{step_label(step)}\", which hands it legs {handed}, where its "
+                                                    f"name counts {count}"))
+                for found in SPLIT_CALL.finditer(str(step.get("run", ""))):
+                    if int(found.group(1)) != count:
+                        problems.append(error(WORKFLOW, f"leg `{entry['name']}` of job {job} runs step "
+                                                        f"\"{step_label(step)}\", whose go-test-split.sh call splits "
+                                                        f"into {found.group(1)} legs, where its name counts {count}"))
 
 
 # ---------------------------------------------------------------- rule 20: darwin vets
@@ -1579,8 +1636,10 @@ def check() -> int:
     check_fail_fast(documents, problems)
     report += check_main_names(documents, pins, problems)
     check_timed_steps(documents, pins, problems)
-    check_carriers(documents, pins, problems)
-    check_shard_legs(documents, problems)
+    legs, _ = jq_names(document)
+    splits = split_legs(legs)
+    check_carriers(document, legs, splits, pins, problems)
+    check_shard_legs(document, splits, problems)
     report += check_notes(document, problems)
     report += check_vet_tags(pins, problems)
     report.append(f"go test commands read: {len(runs)}")
