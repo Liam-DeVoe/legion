@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -1180,7 +1178,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 			// shows the pod taken, or forgets it (finishReplacements).
 			s.log.Error("supervise: replace the pod of a finished update round; retrying at the next sweep, which finishes the replacement from its record where its suspension landed",
 				"issue", issue, "round", round, "pod", pod, "error", err)
-			s.tellLateRound(ctx, issue, live, round, pod, reasons, refusedReason(err), clock)
+			s.tellLateRound(ctx, issue, live, round, pod, reasons, failedReplacementReason(err), clock)
 		}
 		return
 	}
@@ -1343,7 +1341,7 @@ const boundPastReason = "The bound of the update round is past. "
 // ASD-STE100. No process in the round's pod holds a round past its bound only where the runtime
 // replaces no pod by issue (runtime.IssuePodReplacer, roundWithNoProcessInItsPod): where it does,
 // the walk replaces the pod once the bound has come, and only a refusal of that replacement is
-// told (replaceIssuePodForRound, refusedReason). A pod the runtime cannot read decides nothing, so
+// told (replaceIssuePodForRound, failedReplacementReason). A pod the runtime cannot read decides nothing, so
 // the round waits for a read of it that succeeds (tellUnreadPod).
 const (
 	noProcessReason = boundPastReason + "No claim of the issue records a process in the pod of the round. The daemon has no process to replace the pod through."
@@ -1358,17 +1356,18 @@ func operatorHoldReason(held []supervise.Claim) string {
 		roleStates(held))
 }
 
-// refusedReason is the reason the late-round notice gives for a round whose pod replacement the
-// runtime refused past the bound, through a process or by issue (replacePodForRound,
-// replaceIssuePodForRound), naming the runtime's error. The notice is stored, and the controller
-// reads its reason and publishes it, so the error is kept in it as any far side's error text is
-// (storetext.FarSideError, which applies storetext.FarSideText first) and goes in as data: one
-// quoted string (strconv.Quote), labelled as the runtime's, which no line or word of it can leave
-// (GPT-6.1 Sol's point 5 on #5285 at 0259f8af, as readError keeps a read's error). The caller's
-// error line logs it whole.
-func refusedReason(err error) string {
-	return boundPastReason + "The runtime refused the pod replacement. The error of the runtime, in quotes, is: " +
-		strconv.Quote(storetext.FarSideError(err.Error())) + "."
+// failedReplacementReason is the reason the late-round notice gives for a round whose pod
+// replacement failed past the bound, through a process or by issue (replacePodForRound,
+// replaceIssuePodForRound), naming the runtime's error. The call can fail after its suspension
+// landed (INFRA-341's reviewer's minor point 5 on fa9deb04), so the notice says the pod may be
+// gone, and that a later sweep ends the round as that replacement if it is (finishReplacements).
+// The notice is stored, and the controller reads its reason and publishes it, so the error goes in
+// as data, as readError keeps a read's error: bounded as a far side's text and one quoted string,
+// labelled as the runtime's, which no line or word of it can leave (GPT-6.1 Sol's point 5 on #5285
+// at 0259f8af; INFRA-341's reviewer's minor point 8). The caller's error line logs it whole.
+func failedReplacementReason(err error) string {
+	return boundPastReason + "The pod replacement failed. The runtime can fail after it suspended the pod. So the pod may be gone, " +
+		"and if it is, the daemon ends the round as that replacement at a later sweep. The error of the runtime, in quotes, is: " + readError(err) + "."
 }
 
 // roundWithNoProcessInItsPod decides a round, before or past its bound, whose live claims record
@@ -1733,7 +1732,7 @@ func (s *supervision) issuePodKept(group []supervise.Claim, round string, clock 
 // launch turn (issueReplacementDue), and a refusal there is the daemon's own and is logged only. A
 // replacement the runtime refused for any other reason is retried at the next sweep. Past the
 // bound it holds the round, so it is told to the operator's side once, as a refused ReplacePod is
-// (tellLateRound, refusedReason).
+// (tellLateRound, failedReplacementReason).
 //
 // A replacement made ends the round as a replacement the round made (endPodUpdates), and the
 // runtime's nil for a pod it found no longer there ends it the same way, as ReplacePod's does.
@@ -1805,7 +1804,7 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 		if ctx.Err() == nil {
 			s.log.Error("supervise: replace by issue the pod of an update round with no process in it; retrying at the next sweep",
 				"issue", issue, "round", round, "pod", pod, "error", err)
-			s.tellLateRound(ctx, issue, live, round, pod, reasons, refusedReason(err), clock)
+			s.tellLateRound(ctx, issue, live, round, pod, reasons, failedReplacementReason(err), clock)
 		}
 		return
 	}
