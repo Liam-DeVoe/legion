@@ -264,8 +264,8 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 // ring of 40,000 tasks, whose two reasons that list ids, the plan's tasks and the cycle through
 // them, are as long as the ids they name: its answer is within ringBound, so a change that copies
 // such a list into each reason fails it. The fault is an answer with a reason for each cause; the
-// control is plan's reasons with its bound taken out, under which the answers are tens of MB. It
-// holds the counts and the size, and no sentence.
+// control is plan's reasons with its bound taken out, under which the three versions are answered
+// in 34, 44 and 66 MB and the ring in 9.6 MB. It holds the counts and the size, and no sentence.
 func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	// perKind is plan.MostReasons reasons of one kind and its count, each written twice (in
 	// `error` and in `reasons`) at under 200 bytes with its JSON.

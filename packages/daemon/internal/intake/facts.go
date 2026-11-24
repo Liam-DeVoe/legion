@@ -1730,7 +1730,7 @@ type Result struct {
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
-// Reasons is set on a refused plan alone (PlanRefused): one reason for each cause, each naming
+// Reasons is set on a refused plan alone (PlanRefused): the reasons of its causes, each naming
 // its task where it has one, which the route writes beside the code; every other refusal is its
 // code and its sentence, and carries none.
 type Refusal struct {
