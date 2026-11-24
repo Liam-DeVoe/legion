@@ -734,8 +734,19 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	if served := currentBody["intakeGiveUps"]; !bytes.Equal(served, want) {
 		t.Errorf("a caller at %d is served `intakeGiveUps` %s, want the state's %s", intakeGiveUpsContract, served, want)
 	}
-	if len(narrowings) != 1 || narrowings[0].Dropped != "intakeGiveUps" || narrowings[0].PluginContract != intakeGiveUpsContract-1 {
-		t.Errorf("the daemon logged %+v for a caller at %d, want one line saying it dropped intakeGiveUps", narrowings, intakeGiveUpsContract-1)
+	// The caller stands below the admission cap's row too (admissionCapContract), so the log holds
+	// that row's line beside the give-ups' line, and no other.
+	giveUpLines := 0
+	for _, line := range narrowings {
+		if line.PluginContract != intakeGiveUpsContract-1 {
+			t.Errorf("the daemon logged %+v for a caller at %d, a line naming another contract", line, intakeGiveUpsContract-1)
+		}
+		if line.Dropped == "intakeGiveUps" {
+			giveUpLines++
+		}
+	}
+	if want := narrowingsExpected(populatedState(t), intakeGiveUpsContract-1); giveUpLines != 1 || len(narrowings) != len(want) {
+		t.Errorf("the daemon logged %+v for a caller at %d, want one line saying it dropped intakeGiveUps among the lines %v", narrowings, intakeGiveUpsContract-1, want)
 	}
 	for _, body := range []map[string]json.RawMessage{olderBody, currentBody} {
 		delete(body, "intakeGiveUps")
