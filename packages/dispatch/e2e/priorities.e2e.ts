@@ -3439,10 +3439,13 @@ test("a priority's page offers no versions and no delete, and carries no line ab
 //      on the stopped one's text; one made on the server's text, the field drawn again or
 //      another person's text taken in, carries none of it.
 //   3. When nobody else wrote, every edit of hers lands, with no 409 and no notice, whatever her
-//      earlier writes ended as - but for one limit: a write pressed while an earlier one is out,
-//      where the earlier one is then stopped or refused for its body and never lands, may be
-//      refused 409 and offered as another person's change, with nothing lost and Use my text
-//      landing it.
+//      earlier writes ended as - but for two limits. First, a write pressed while an earlier one
+//      is out, where the earlier one is then stopped or refused for its body and never lands, may
+//      be refused 409 and offered as another person's change, with nothing lost and Use my text
+//      landing it. Second, a stopped write of hers that a later edit of hers does not carry (one
+//      made on the server's text: the field drawn again) stays on the shell's line. When she
+//      presses its Retry, it is refused 409 and offered as another person's change, with nothing
+//      lost.
 //   4. One conflict gives one notice, and Use my text lands or meets a newer conflict.
 //   5. Nothing is written from a reading of the server's that is not exact.
 // A key that expired is no cell here: the page cannot make the server forget a write's key inside
@@ -3546,14 +3549,14 @@ async function tableCell(page: Page, field: TableField, title: string): Promise<
   return cell;
 }
 
-/** The field's own control: the description's editor, or the title's box, opened from its
- *  heading as a reader opens it. */
-async function openTableField(cell: TableCell): Promise<Locator> {
-  if (cell.field === "description") {
-    const editor = cell.page.getByRole("textbox", { exact: true, name: "Description" });
-    await editor.click();
+/** The field's own control: `editor` when given, else the description's editor, or the title's
+ *  box, opened from its heading as a reader opens it. */
+async function openTableField(cell: TableCell, editor?: Locator): Promise<Locator> {
+  if (editor !== undefined || cell.field === "description") {
+    const control = editor ?? cell.page.getByRole("textbox", { exact: true, name: "Description" });
+    await control.click();
     await cell.page.keyboard.press("ControlOrMeta+End");
-    return editor;
+    return control;
   }
   await titleHeading(cell.page).click();
   const box = cell.page.getByRole("textbox", { name: "Title" });
@@ -3562,9 +3565,9 @@ async function openTableField(cell: TableCell): Promise<Locator> {
   return box;
 }
 
-/** Her suffix typed at the end of the field, which she then leaves. */
-async function typeAndLeave(cell: TableCell, suffix: string): Promise<void> {
-  const field = await openTableField(cell);
+/** Her suffix typed at the end of the field, or of `editor` when given, which she then leaves. */
+async function typeAndLeave(cell: TableCell, suffix: string, editor?: Locator): Promise<void> {
+  const field = await openTableField(cell, editor);
   await cell.page.keyboard.type(suffix);
   await field.blur();
 }
@@ -3674,14 +3677,6 @@ async function checkLetGo(cell: TableCell, newer: string): Promise<void> {
 /** `text` with each character a regular expression reads as syntax escaped. */
 function escapedForRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Her suffix typed at the end of `editor`, which she then leaves. */
-async function typeInto(cell: TableCell, editor: Locator, suffix: string): Promise<void> {
-  await editor.click();
-  await cell.page.keyboard.press("ControlOrMeta+End");
-  await cell.page.keyboard.type(suffix);
-  await editor.blur();
 }
 
 /** Rules 1 and 2 for a stopped write her landed edit carries none of: unless the server holds her
@@ -4222,13 +4217,13 @@ const tableCells: {
       await named("Open").click();
       await expect(editor).toBeVisible();
       const busy = await refuseTableWrites(cell, false);
-      await typeInto(cell, editor, " ten-a");
+      await typeAndLeave(cell, " ten-a", editor);
       await busy.stop();
       await named("Close").click();
       await expect(editor).toHaveCount(0);
       await named("Open").click();
       await expect(editor).toBeVisible();
-      await typeInto(cell, editor, " ten-b");
+      await typeAndLeave(cell, " ten-b", editor);
       await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" ten-b");
       await checkStoppedKept(cell, " ten-a");
     },
