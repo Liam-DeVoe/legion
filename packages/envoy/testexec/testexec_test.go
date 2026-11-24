@@ -1,10 +1,8 @@
 package testexec
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -12,42 +10,6 @@ import (
 	"syscall"
 	"testing"
 )
-
-// An executable WriteFile writes runs at once, however many goroutines of the process fork beside
-// it, as tests running beside each other (t.Parallel) fork each time they start a command. Eight
-// goroutines start /bin/true without a pause while this test writes executables one at a time and
-// runs each as soon as it is written. A write by os.WriteFile there runs into ETXTBSY: on a dev box
-// with eight CPUs, 99 runs of 2,000; with a fork's copy of the write descriptor in some child at
-// the moment of the run, the kernel refuses the exec. With WriteFile no run may: a fork waits for
-// the write to close the file, so no child holds it open. The test is no proof that it cannot, but
-// the 400 runs it makes would meet ETXTBSY about 20 times without the lock.
-//
-// Not parallel: its forks are the condition it measures, and a run of its own keeps them its own.
-func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
-	dir := t.TempDir()
-	ForkBeside(t)
-	busy := 0
-	var other error
-	for i := range 400 {
-		path := filepath.Join(dir, fmt.Sprintf("fake-%d", i))
-		if err := WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-			other = err
-			break
-		}
-		if err := exec.Command(path).Run(); errors.Is(err, syscall.ETXTBSY) {
-			busy++
-		} else if err != nil {
-			other = err
-			break
-		}
-	}
-	if other != nil {
-		t.Fatalf("write or run a fake executable: %v", other)
-	}
-	if busy != 0 {
-		t.Errorf("%d of 400 executables written by WriteFile were refused as busy (ETXTBSY) while the process forked", busy)
-	}
-}
 
 // writeUnder writes body to path under root, at 0o644, making the directories it needs: the one
 // way the guard's tests write a fixture's files.
@@ -464,12 +426,9 @@ func TestUnguardedReadsTheModulePathAsGoDoes(t *testing.T) {
 	}
 }
 
-// ForkBeside runs its test only where the run of a busy program was refused with ETXTBSY. A kernel
-// that ran it (gVisor's answer, nil) skips the test, saying so, outside CI and fails it under
-// GITHUB_ACTIONS; any other answer fails it everywhere, naming the answer, rather than skipping
-// with the claim that the kernel ran the program: a TMPDIR mounted noexec answers EACCES, and a
-// machine without /bin/sh answers ENOENT.
-func TestForkBesideRunsOnlyWhereABusyRunIsRefused(t *testing.T) {
+// RunsBeside runs its test only where a run of a busy program was refused with ETXTBSY: each row
+// is an answer such a run can give, and the verdict busyRunVerdict's doc gives it.
+func TestRunsBesideRunsOnlyWhereABusyRunIsRefused(t *testing.T) {
 	t.Parallel()
 	refused := &os.PathError{Op: "fork/exec", Path: "/tmp/held-open", Err: syscall.ETXTBSY}
 	noexec := &os.PathError{Op: "fork/exec", Path: "/tmp/held-open", Err: syscall.EACCES}

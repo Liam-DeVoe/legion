@@ -1,17 +1,11 @@
-// Package testexec writes the files a test then runs: a fake command, a stand-in script, a stub on
-// PATH. A test that writes such a file with os.WriteFile can see the run fail with ETXTBSY ("text
-// file busy") whenever another goroutine of the test process forks while the file is open for
-// writing, as a test running beside it (t.Parallel) does each time it starts a command: the child
-// holds a copy of the write descriptor from the fork until its own exec closes it, and the kernel
-// refuses to exec a file some process holds open for writing. Once internal/daemon's tests ran
-// beside each other, a gate test failed so under load
-// (TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid/refuses, one run in 660). WriteFile writes
-// such a file with programfile.Write, the writer of every program file in the code a deployment
-// runs too, which keeps every fork of the process out of that span, so no process the test binary
-// starts can hold the file open when it runs. ForkBeside is the forking a test of such a write runs
-// beside it, on a kernel that refuses such a run at all. Unguarded is the check the modules' text
-// checks hold their code and their tests to, and its doc comment lists the forms it names and the
-// forms it does not see. docs/testing.md, "A file a test runs", states the rule.
+// Package testexec writes the files a test then runs (a fake command, a stand-in script, a stub on
+// PATH), tests a place that writes one, and holds a module to writing each one under the fork
+// lock. WriteFile writes such a file with programfile.Write, whose doc says what a write by
+// package os meets while another goroutine of the process forks. RunsBeside runs the writes and
+// runs of a test of such a place beside forks, and fails the test on each run refused as busy.
+// Unguarded names each write a module makes by package os that can meet the fault, and
+// RequireGuarded, which each module's internal/textcheck runs, fails the test on one.
+// docs/testing.md, "A file a test runs", states the rule.
 package testexec
 
 import (
@@ -35,18 +29,45 @@ func WriteFile(name string, data []byte, perm os.FileMode) error {
 	return programfile.Write(name, os.O_TRUNC, perm, bytes.NewReader(data))
 }
 
-// ForkBeside starts eight goroutines that each start true and start it again as soon as it exits,
-// until the test ends: the forks that the code a test calls meets in a process whose other
-// goroutines start commands, as a daemon's do and as tests running beside each other do. A test
-// that writes a file and then runs it beside them meets ETXTBSY whenever a child forked inside the
-// write still holds the file open at the run. A machine with no true command fails the test, since
-// such a test would then measure nothing. So would a machine where the run cannot meet ETXTBSY, so
-// ForkBeside first runs a program it holds open for writing itself (busyRunVerdict says what it
-// does with the answer): a kernel that runs it, as gVisor does, skips the test, naming that, except
-// under GITHUB_ACTIONS, where it fails, since CI's runners refuse such a run and one that does not
-// is a broken runner, never a green job with the proof gone from it; any other answer, such as a
-// TMPDIR mounted noexec, fails the test, naming the answer.
-func ForkBeside(t testing.TB) {
+// RunsBeside runs run(i) for i from 0 to runs-1 while eight goroutines start true and start it
+// again as soon as it exits, until the test ends: the forks that the code a test calls meets in a
+// process whose other goroutines start commands, as a daemon's do and as tests running beside
+// each other do. run writes a file as the code under test writes it, runs it at once, and answers
+// the run's error. A run refused as busy, whose error is ETXTBSY, is counted and the trials go on;
+// any other error fails the test at once, naming the run. At the end the test fails if any run was
+// refused, naming how many and the first refusal's error. Nothing is run again. A machine with no
+// true command fails the test, and one whose kernel runs a program held open for writing skips or
+// fails it as busyRunVerdict says, since no run there can meet the fault.
+func RunsBeside(t testing.TB, runs int, run func(i int) error) {
+	t.Helper()
+	forkBeside(t)
+	countBusyRuns(t, runs, run)
+}
+
+// countBusyRuns is RunsBeside's trials, which the forks forkBeside started run beside.
+func countBusyRuns(t testing.TB, runs int, run func(i int) error) {
+	t.Helper()
+	busy := 0
+	var first error
+	for i := range runs {
+		switch err := run(i); {
+		case errors.Is(err, syscall.ETXTBSY):
+			busy++
+			if first == nil {
+				first = err
+			}
+		case err != nil:
+			t.Fatalf("run %d of %d: %v", i+1, runs, err)
+		}
+	}
+	if busy != 0 {
+		t.Errorf("%d of %d runs were refused as busy (ETXTBSY) while the process forked; the first: %v", busy, runs, first)
+	}
+}
+
+// forkBeside starts RunsBeside's eight forking goroutines, which stop when the test ends, once
+// busyRunVerdict has said the test runs here.
+func forkBeside(t testing.TB) {
 	t.Helper()
 	forker, err := exec.LookPath("true")
 	if err != nil {
@@ -73,9 +94,14 @@ func ForkBeside(t testing.TB) {
 	})
 }
 
-// busyRunVerdict is what ForkBeside does with answer, the error of a run of a program the process
-// held open for writing, where ci says GITHUB_ACTIONS is set: run the test (both empty), skip it,
-// or fail it, each saying what the run answered.
+// busyRunVerdict says whether a test of RunsBeside runs, skips or fails, from answer, the error of
+// a run of a program the process held open for writing, where ci says GITHUB_ACTIONS is set. It
+// answers both empty to run the test, or the reason to skip or to fail it, saying what the run
+// answered. ETXTBSY runs the test: the kernel refuses such a run, as Linux does every time. A run
+// (nil) means no run of the test can meet the fault: the test skips, as under gVisor, except under
+// GITHUB_ACTIONS, where it fails, since CI's runners refuse such a run and one that does not is a
+// broken runner, never a green job with the proof gone from it. Any other answer, such as EACCES
+// from a TMPDIR mounted noexec or ENOENT from a machine with no /bin/sh, fails the test.
 func busyRunVerdict(answer error, ci bool) (skip, fail string) {
 	const (
 		ran   = "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, "
@@ -109,4 +135,20 @@ func runHeldOpen(t testing.TB) error {
 	}
 	defer held.Close()
 	return exec.Command(path).Run()
+}
+
+// RequireGuarded fails the test once if Unguarded names a write under root, a module's root,
+// saying how many it named, each as file:line, and the writer to write each with, or if Unguarded
+// refuses root, saying what it could not read.
+func RequireGuarded(t testing.TB, root string) {
+	t.Helper()
+	offences, err := Unguarded(root)
+	if err != nil {
+		t.Fatalf("read the module's Go files: %v", err)
+	}
+	if len(offences) > 0 {
+		t.Fatalf("%d writes of a file that runs can meet a fork beside it:\n\t%s\n"+
+			"write each with programfile.Write, or with testexec.WriteFile in a test (docs/testing.md at the repository's root, \"A file a test runs\")",
+			len(offences), strings.Join(offences, "\n\t"))
+	}
 }

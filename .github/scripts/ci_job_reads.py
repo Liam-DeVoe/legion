@@ -646,10 +646,11 @@ RULES = {
     f"{DAEMON}/internal/textcheck/file_copy_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
     f"{DAEMON}/internal/textcheck/test_executables_test.go": reads(
-        (f"{DAEMON}/**/*.go", calls(f"{DAEMON}/internal/textcheck/test_executables_test.go", 18, "testexec.Unguarded",
-                                    " on ../.., whose walk (packages/envoy/testexec/unguarded.go:83) passes over "
-                                    "node_modules, vendor, testdata and dot directories (:92), and :167 parses every "
-                                    ".go file under packages/daemon it finds, test files included"))),
+        (f"{DAEMON}/**/*.go", calls(f"{DAEMON}/internal/textcheck/test_executables_test.go", 13, "testexec.RequireGuarded",
+                                    " on ../.., whose Unguarded (packages/envoy/testexec/testexec.go:145) walks it "
+                                    "(unguarded.go:85), passes over node_modules, vendor, testdata and dot directories "
+                                    "(:94), and :169 parses every .go file under packages/daemon it finds, test files "
+                                    "included"))),
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
@@ -1034,10 +1035,10 @@ RULES = {
                                     " on ../../../daemon (refusalCodeRoots, :32), whose walk at :108 reads every .go "
                                     "file under packages/daemon"))),
     f"{ENVOY}/internal/textcheck/test_executables_test.go": [
-        Read(g, calls(f"{ENVOY}/internal/textcheck/test_executables_test.go", 19, "testexec.Unguarded",
-                      " on ../.., whose walk (testexec/unguarded.go:83) passes over node_modules, vendor, testdata "
-                      "and dot directories (:92) and infra, a directory holding a go.mod of its own (:95), and :167 "
-                      "parses every .go file it finds, test files included"))
+        Read(g, calls(f"{ENVOY}/internal/textcheck/test_executables_test.go", 13, "testexec.RequireGuarded",
+                      " on ../.., whose Unguarded (testexec/testexec.go:145) walks it (testexec/unguarded.go:85), "
+                      "passes over node_modules, vendor, testdata and dot directories (:94) and infra, a directory "
+                      "holding a go.mod of its own (:97), and :169 parses every .go file it finds, test files included"))
         for g in envoy_go_files_but_infra()],
     f"{ENVOY}/internal/textcheck/lock_wait_reads_test.go": [
         *[Read(g, calls(f"{ENVOY}/internal/textcheck/lock_wait_reads_test.go", 62, "lockWaitReads",
@@ -1086,10 +1087,11 @@ RULES = {
     f"{INFRA}/internal/textcheck/gcp_imports_test.go": [
         run(INFRA, ["./gcp"], "infra/internal/textcheck/gcp_imports_test.go:16 moduleDeps, whose go list -deps ./gcp runs in ../.. (core_imports_test.go:31-32)", mode="build")],
     f"{INFRA}/internal/textcheck/test_executables_test.go": reads(
-        (f"{INFRA}/**/*.go", calls(f"{INFRA}/internal/textcheck/test_executables_test.go", 19, "testexec.Unguarded",
-                                   " on ../.., whose walk (packages/envoy/testexec/unguarded.go:83) passes over "
-                                   "node_modules, vendor, testdata and dot directories (:92), and :167 parses every "
-                                   ".go file under packages/envoy/infra it finds, test files included"))),
+        (f"{INFRA}/**/*.go", calls(f"{INFRA}/internal/textcheck/test_executables_test.go", 13, "testexec.RequireGuarded",
+                                   " on ../.., whose Unguarded (packages/envoy/testexec/testexec.go:145) walks it "
+                                   "(unguarded.go:85), passes over node_modules, vendor, testdata and dot directories "
+                                   "(:94), and :169 parses every .go file under packages/envoy/infra it finds, test "
+                                   "files included"))),
 }
 
 

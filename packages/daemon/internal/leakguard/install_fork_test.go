@@ -1,56 +1,40 @@
 package leakguard
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"testing"
 
 	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
-// A served check runs at once however many goroutines of the process start commands beside its
-// install. The pod's launcher installs it beside the goroutines that start its roles, and the
-// install itself runs the check it unpacked (verifyServed). A child forked while the check was
-// open for writing holds it open until its own exec, and the kernel refuses to run a file some
-// process holds open for writing (ETXTBSY, "text file busy"), which would refuse the install.
-// Eight goroutines start true without a pause while this test installs the check again and again.
+// A served check runs at once while the process forks beside its install: the install itself runs
+// the check it unpacked (verifyServed), and the pod's launcher installs it beside the goroutines
+// that start its roles, so a refused run refuses the install. Each run installs the check into a
+// directory of its own and removes it.
 func TestAServedCheckInstalledWhileTheProcessForksRuns(t *testing.T) {
 	body := served(t, wholeCheck(t, answersItsHelp))
 	parent := t.TempDir()
 	ctx := bound(t)
-	testexec.ForkBeside(t)
-	const installs = 300
-	busy := 0
-	var first error
-	for index := range installs {
+	testexec.RunsBeside(t, 300, func(index int) error {
 		dir := filepath.Join(parent, fmt.Sprintf("leak-check-%d", index))
-		err := InstallServed(ctx, ServedInstall{Dir: dir, Tag: theTag, Body: body, Start: procgroup.NoReaper})
-		switch {
-		case errors.Is(err, syscall.ETXTBSY):
-			busy++
-			if first == nil {
-				first = err
-			}
-		case err != nil:
-			t.Fatalf("install %d: %v", index, err)
-		}
+		installed := InstallServed(ctx, ServedInstall{Dir: dir, Tag: theTag, Body: body, Start: procgroup.NoReaper})
 		if err := os.RemoveAll(dir); err != nil {
-			t.Fatal(err)
+			return fmt.Errorf("remove the install: %w", err)
 		}
-	}
-	if busy != 0 {
-		t.Errorf("%d of %d installs were refused because their check was busy while the process forked; the first: %v", busy, installs, first)
-	}
+		if installed != nil {
+			return fmt.Errorf("install: %w", installed)
+		}
+		return nil
+	})
 }
 
-// The private copy of the held check runs at once however many goroutines of the process start
-// commands beside the copy: a role's guard copies the check and runs the copy, beside the
-// goroutines of the shim or the tree command that start other commands.
+// The private copy of the held check runs at once while the process forks beside the copy: a
+// role's guard copies the check and runs the copy, beside the goroutines of the shim or the tree
+// command that start other commands. Each run makes a copy, runs it and removes it.
 func TestAPrivateCopyMadeWhileTheProcessForksRuns(t *testing.T) {
 	held := heldCheck{files: map[string][]byte{}}
 	for _, name := range ManifestFiles {
@@ -58,30 +42,18 @@ func TestAPrivateCopyMadeWhileTheProcessForksRuns(t *testing.T) {
 	}
 	held.files[checkName] = []byte("#!/bin/sh\nexit 0\n")
 	base := t.TempDir()
-	testexec.ForkBeside(t)
-	const copies = 400
-	busy := 0
-	var first error
-	for range copies {
+	testexec.RunsBeside(t, 400, func(int) error {
 		dir, err := held.privateCopy(base, base)
 		if err != nil {
-			t.Fatal(err)
+			return fmt.Errorf("make the private copy: %w", err)
 		}
-		err = exec.Command(filepath.Join(dir, checkName)).Run()
-		switch {
-		case errors.Is(err, syscall.ETXTBSY):
-			busy++
-			if first == nil {
-				first = err
-			}
-		case err != nil:
-			t.Fatalf("run the private copy: %v", err)
-		}
+		run := exec.Command(filepath.Join(dir, checkName)).Run()
 		if err := os.RemoveAll(dir); err != nil {
-			t.Fatal(err)
+			return fmt.Errorf("remove the private copy: %w", err)
 		}
-	}
-	if busy != 0 {
-		t.Errorf("%d of %d private copies were refused as busy while the process forked; the first: %v", busy, copies, first)
-	}
+		if run != nil {
+			return fmt.Errorf("run the private copy: %w", run)
+		}
+		return nil
+	})
 }

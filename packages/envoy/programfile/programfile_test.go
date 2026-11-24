@@ -15,39 +15,27 @@ import (
 	"github.com/sjawhar/envoy/testexec"
 )
 
-// A program Write writes runs at once however many goroutines of the process fork beside it.
-// Eight goroutines start true without a pause while this test writes programs one at a time and
-// runs each as soon as it is written. A write by os.WriteFile there runs into ETXTBSY ("text file
-// busy"): a child forked inside the write holds the file open until its own exec, and the kernel
-// refuses to run a file some process holds open for writing. With Write no run may, since a fork
-// waits for the write to close the file.
+// A program Write writes runs at once however many goroutines of the process fork beside it: this
+// test writes programs one at a time and runs each as soon as it is written, beside
+// testexec.RunsBeside's forks. A write by os.WriteFile there met ETXTBSY in 99 runs of 2,000 on a
+// dev box with eight CPUs, so the 400 runs here would meet it about 20 times without Write. Once
+// internal/daemon's tests ran beside each other, a gate test whose fake command os.WriteFile wrote
+// failed so under load (TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid/refuses, one run in
+// 660).
 //
 // Not parallel: its forks are the condition it measures.
 func TestAProgramWrittenWhileTheProcessForksRuns(t *testing.T) {
 	dir := t.TempDir()
-	testexec.ForkBeside(t)
-	const runs = 400
-	busy := 0
-	var first error
-	for i := range runs {
+	testexec.RunsBeside(t, 400, func(i int) error {
 		path := filepath.Join(dir, fmt.Sprintf("program-%d", i))
 		if err := programfile.Write(path, os.O_EXCL, 0o755, strings.NewReader("#!/bin/sh\nexit 0\n")); err != nil {
-			t.Fatal(err)
+			return fmt.Errorf("write the program: %w", err)
 		}
-		err := exec.Command(path).Run()
-		switch {
-		case errors.Is(err, syscall.ETXTBSY):
-			busy++
-			if first == nil {
-				first = err
-			}
-		case err != nil:
-			t.Fatalf("run the program: %v", err)
+		if err := exec.Command(path).Run(); err != nil {
+			return fmt.Errorf("run the program: %w", err)
 		}
-	}
-	if busy != 0 {
-		t.Errorf("%d of %d programs Write wrote were refused as busy while the process forked; the first: %v", busy, runs, first)
-	}
+		return nil
+	})
 }
 
 // Write gives the file the mode it names whatever the umask, writes what the reader holds, and

@@ -49,10 +49,12 @@ import (
 // go.mod of its own is another module, which that module's check reads, and node_modules, vendor,
 // testdata and dot directories are not Go source of the module.
 //
-// Unguarded fails, naming root, when root holds no go.mod, as the parent of a module's directory
-// or one of its subdirectories does, and when it read no test file under root: a root that holds
-// none, or whose every directory that holds one is another module. A check of such a root would
-// name no write and pass while it read nothing, or read only part of its module.
+// Unguarded fails, naming root, where a check of root would name no write and pass while it read
+// nothing, or read only part of its module: root holds no go.mod, as the parent of a module's
+// directory or one of its subdirectories does; its go.mod cannot be read; its go.mod declares no
+// module; or it read no test file under root, as under a root that holds none or whose every
+// directory that holds one is another module. It also fails with the error of a directory below
+// root it cannot read and of a Go file it cannot parse.
 //
 // The check reads each file's syntax alone, with no types, so it cannot see:
 //
