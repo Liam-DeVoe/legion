@@ -864,17 +864,22 @@ func TestARecoveryRecordsChildrenParentsFirst(t *testing.T) {
 
 // A GitHub that answers each installation read slowly, but within installReadAttempt, is answered
 // for when the refresher reads it again, however long the whole preparation takes: only a read
-// longer than installReadAttempt is a failed read. A read bounded as a whole by appMintAttempt cut
-// such a preparation off, so a repository whose read failed once was never served.
+// longer than installReadAttempt is a failed read. A read bounded as a whole by the App-call attempt
+// bound (callBounds) cut such a preparation off, so a repository whose read failed once was never
+// served.
 func TestASlowButAnsweringGitHubIsServedOnARefresh(t *testing.T) {
-	// Not parallel: it writes the package variable appMintAttempt; it writes the package variable installReadAttempt.
+	// Not parallel: it writes the package variable installReadAttempt.
 	quickInstallReads(t)
-	attempt, read := appMintAttempt, installReadAttempt
-	appMintAttempt, installReadAttempt = 500*time.Millisecond, 2*time.Second
-	t.Cleanup(func() { appMintAttempt, installReadAttempt = attempt, read })
+	read := installReadAttempt
+	installReadAttempt = 2 * time.Second
+	t.Cleanup(func() { installReadAttempt = read })
 	installs := &installations{delay: 600 * time.Millisecond}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
-	w, _, installs, _ := repositoryRigWith(t, installs)
+	w, _, installs, _ := repositoryRigWith(t, installs, func(w *workflowRuntime) {
+		calls := productionAppCalls()
+		calls.attempt = 500 * time.Millisecond
+		w.appCalls = &calls
+	})
 	if recordsOn(w, "zeta/tools") {
 		t.Fatal("zeta/tools served at boot while its read fails")
 	}
@@ -1514,7 +1519,7 @@ func TestARecoveryRecordsAnIssueOnTheNameAnotherReadsRedirectRecorded(t *testing
 	}
 }
 
-// A recovery pass whose own bound (attempt, appMintAttempt) ended before its first deferred issue
+// A recovery pass whose own bound (attempt, callBounds) ended before its first deferred issue
 // was read prepares none of the issues it defers, and logs them in one Warn for the pass that names
 // each issue and each repository it resolves to, with the bound. Each issue still takes the steps
 // made in memory: it is noted silent for the repository its listing showed (noteUnread), so the
@@ -1551,8 +1556,8 @@ func TestARecoveryPassItsBoundEndedLogsTheIssuesItDeferredInOneWarn(t *testing.T
 	if got, want := fmt.Sprint(line["repositories"]), "[orbit/gadgets zeta/tools]"; got != want {
 		t.Errorf("the Warn names the repositories %s, want %s, each once", got, want)
 	}
-	if line["deadline"] != appMintAttempt.String() {
-		t.Errorf("the Warn names the bound %v, want %s", line["deadline"], appMintAttempt)
+	if bound := w.callBounds().attempt; line["deadline"] != bound.String() {
+		t.Errorf("the Warn names the bound %v, want %s", line["deadline"], bound)
 	}
 
 	w.recoveringMu.Lock()
