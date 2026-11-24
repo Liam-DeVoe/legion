@@ -624,6 +624,17 @@ COMPUTED_BUILD_INPUTS: list[tuple[str, str, str, str]] = [
         ".github/scripts/check-ci-images.sh refuses, so the build this trigger starts is the "
         "only way the row can move onto an image that gate admits.",
     ),
+    (
+        ".github/workflows/worker-image.yaml",
+        "build",
+        "scripts/daemon-contract-order.sh",
+        "that job's contract_order step runs this file over the built commit's history and "
+        "hands what it prints to the build as LEGION_CONTRACT_ORDER, which the Dockerfile's go "
+        "stage links into `legion` as api.contractOrder, the order the daemon numbers its "
+        "contract entries in. So this file's bytes decide the binary the image ships as surely "
+        "as a COPY of it would, while the Docker build itself never reads it: .dockerignore "
+        "leaves out the .git it reads.",
+    ),
 ]
 computed_matches: dict[tuple[str, str, str, str], bool] = {}
 
@@ -1964,6 +1975,18 @@ BUILD_PLUMBING_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [
         ),
         "publishes what the push produced — the digest the build step output, as this job's "
         "outputs and as the run's summary: it reads earlier steps' outputs and no file at all",
+    ),
+    (
+        ".github/workflows/worker-image.yaml", "build", "contract_order",
+        (
+            'git fetch --filter=blob:none --unshallow origin "$BUILT_SHA" refs/heads/main:refs/remotes/origin/main',
+            'stamp=$(bash scripts/daemon-contract-order.sh --stamp "$BUILT_SHA")',
+            'echo "stamp=$stamp" >> "$GITHUB_OUTPUT"',
+        ),
+        "fetches the built commit's history and main's, with no blob, and reads from them the "
+        "stamp of the built commit's contract entries, which it writes to $GITHUB_OUTPUT for the "
+        "build's LEGION_CONTRACT_ORDER argument; scripts/daemon-contract-order.sh is the one file "
+        "of the tree it reads, which COMPUTED_BUILD_INPUTS holds the trigger to",
     ),
 ]
 

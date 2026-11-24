@@ -54,7 +54,15 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
         (DAEMON, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
         for under in DAEMON_RACE_IMPOSSIBLE_PACKAGES
     ]),
+    # The shape gate's second run, stamped with HEAD's merge order: the step's whole script is
+    # pinned (ci_job_reads.py's DAEMON_STAMPED_GATE_SCRIPT says why). What it compiles is
+    # internal/api's test build, which the plain step compiles too; the stamp changes the link
+    # alone.
+    pinned_step("daemon-go", DAEMON_STAMPED_GATE_STEP, DAEMON, DAEMON_STAMPED_GATE_SCRIPT, [
+        (DAEMON, ["./internal/api/"], "go test of internal/api's two shape tests, linked with HEAD's stamp", {}),
+    ]),
 ], reads=reads(
+    ("scripts/daemon-contract-order.sh", at("daemon-go", DAEMON_STAMPED_GATE_STEP)),
     ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
     ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:152 sources it"),
     ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),

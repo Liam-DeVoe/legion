@@ -1775,6 +1775,20 @@ DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_pack
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 
+# daemon-go's second run of internal/api's shape gate, stamped with HEAD's contract entries in
+# main's merge order (scripts/daemon-contract-order.sh): the fetch of the history that script
+# reads, the stamp, and go test of the gate's two tests linked with it. The fetch and the stamp
+# come before the go command, and -ldflags and -run are no form check-ci-filters.sh reduces, so
+# the step's whole script is pinned.
+DAEMON_STAMPED_GATE_STEP = "Test the shape gate in main's merge order"
+DAEMON_STAMPED_GATE_SCRIPT = """\
+head=$(git rev-parse HEAD)
+git fetch --filter=blob:none --unshallow origin "$head" refs/heads/main:refs/remotes/origin/main
+stamp=$(bash ../../scripts/daemon-contract-order.sh --stamp HEAD)
+echo "$stamp"
+time go test -count=1 -timeout 1m ./internal/api/ "-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=$stamp" -run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'"""
+
+
 # The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
 # nine static checks - its eight source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
