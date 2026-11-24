@@ -1065,11 +1065,6 @@ func TestASubOwnersPromptIsAnOwnersPart(t *testing.T) {
 			if !slices.Equal(parts.RolePromptPaths, tc.want) {
 				t.Fatalf("ComposeSubOwner(%q) = %q, want %s, then go/architect-common.md and go/sub-owner.md: %q", tc.role, parts.RolePromptPaths, tc.name, tc.want)
 			}
-			for _, path := range parts.RolePromptPaths {
-				if path == daemon("architect.md") || path == daemon("worker-common.md") {
-					t.Errorf("ComposeSubOwner(%q) joins %s", tc.role, path)
-				}
-			}
 		})
 	}
 	for _, role := range []string{"merger", "controller"} {
