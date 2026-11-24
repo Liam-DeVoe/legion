@@ -833,16 +833,16 @@ test(
     // The lie: a leg runs to its deadline for a file whose first run already showed its runs
     // cannot end by it, or the projection stops a leg that could still pass: it takes a run's
     // mean, where a slow first run and fast later ones end in time; it reads a projection that
-    // lands on the deadline as past it; it times a run from an earlier run's start; or it names a
-    // file with no run ended, or every run ended. The leg starts at 1,000 s on the progress file's
-    // clock, with a deadline of 7,800 s and 20 reruns; every time below is in seconds from that
-    // start.
+    // lands on the deadline as past it; it times a run from an earlier run's start; it times a
+    // `done` that follows no `run`, so a slow file reads as fast; or it names a file with no run
+    // ended, or every run ended. The leg starts at 1,000 s on the progress file's clock, with a
+    // deadline of 7,800 s and 20 reruns; every time below is in seconds from that start.
     const start = 1_000_000;
     const at = (seconds: number) => start + seconds * 1000;
     const lines: string[] = [];
     // A load of `<load>.test.ts` at `loadedAt`, and each of its runs as [began, ended], one row a
-    // run; a run whose end is null began and has not ended, as is one whose `done` a throwing
-    // afterAll skipped.
+    // run; a run whose end is null began and has not ended, as is one whose `done` an earlier
+    // preload's throwing afterAll skipped.
     const file = (
       load: string,
       loadedAt: number,
@@ -894,13 +894,31 @@ test(
       0,
       Array.from({ length: 20 }, (_, run) => [run * 400, (run + 1) * 400] as const)
     );
-    // Two runs of 300 s, the first of whose `done` a throwing afterAll skipped: both count as
-    // ended, the second timed from its own start, so 18 more end at 6,000 s. Timed from the first
-    // run's start, it would read 600 s, and 18 more would end at 11,400 s.
+    // Two runs of 300 s, the first of whose `done` an earlier preload's throwing afterAll skipped:
+    // both count as ended, the second timed from its own start, so 18 more end at 6,000 s. Timed
+    // from the first run's start, it would read 600 s, and 18 more would end at 11,400 s.
     file("skipped-done", 0, [
       [0, null],
       [300, 600],
     ]);
+    // A `done` at 1 s that follows no `run`, as when an earlier preload's throwing beforeAll skips
+    // the tool's, and then one run of 450 s that ended at 452 s: 19 more end at 9,002 s. Timed from
+    // the load, the first `done` would read 1 s, and 19 more would end at 471 s, inside the deadline.
+    lines.push(
+      progressLine({
+        event: "load",
+        load: "done-before-run",
+        at: at(0),
+        file: "done-before-run.test.ts",
+        pid: 1,
+        atOnce: false,
+      }),
+      progressLine({ event: "done", load: "done-before-run", at: at(1) }),
+      progressLine({ event: "run", load: "done-before-run", at: at(2) }),
+      progressLine({ event: "start", load: "done-before-run", at: at(2) }),
+      progressLine({ event: "end", load: "done-before-run", at: at(452) }),
+      progressLine({ event: "done", load: "done-before-run", at: at(452) })
+    );
     // One run of 390.001 s: 19 more end at 7,800.02 s, just past the deadline, which the report
     // rounds up, never to the deadline itself.
     lines.push(
@@ -920,6 +938,12 @@ test(
     expect(projectedFrom(text, start, 20, 7800)).toEqual([
       { file: "slower.test.ts", runsEnded: 1, fastestSeconds: 500, projectedSeconds: 10200 },
       { file: "slow.test.ts", runsEnded: 1, fastestSeconds: 450.5, projectedSeconds: 9110.5 },
+      {
+        file: "done-before-run.test.ts",
+        runsEnded: 1,
+        fastestSeconds: 450,
+        projectedSeconds: 9002,
+      },
       { file: "just-past.test.ts", runsEnded: 1, fastestSeconds: 390, projectedSeconds: 7800.1 },
     ]);
     // Each of them inside a deadline past its projection: none is named.
@@ -931,13 +955,13 @@ test(
 );
 
 test(
-  "a file whose afterAll skipped a done is at the same run in the stop's report and in the projection",
+  "a file whose done an earlier preload skipped is at the same run in the stop's report and in the projection",
   () => {
-    // The lie: a `done` that a throwing afterAll skipped is counted otherwise by the stop's
-    // report than by the projection, or neither counts the run it would have ended: one report
-    // then says the file had 1 of 3 runs ended while its running section says it was in run 2, or
-    // a file whose runs all ended in time is stopped. Here worker 7's file ran twice, its first
-    // `done` skipped and its second written, and the leg stopped after it.
+    // The lie: a `done` that an earlier preload's throwing afterAll skipped is counted otherwise by
+    // the stop's report than by the projection, or neither counts the run it would have ended: one
+    // report then says the file had 1 of 3 runs ended while its running section says it was in run
+    // 2, or a file whose runs all ended in time is stopped. Here worker 7's file ran twice, its
+    // first `done` skipped and its second written, and the leg stopped after it.
     const start = 1_000_000;
     const at = (seconds: number) => start + seconds * 1000;
     const lines = [

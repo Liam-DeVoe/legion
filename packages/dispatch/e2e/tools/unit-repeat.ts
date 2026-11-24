@@ -609,9 +609,11 @@ interface StopReading {
 
 /** A stop of the leg, and what stopped it. One that came while Bun ran is a signal or the tool's
  *  own projection. One that came after Bun had ended by itself, while the tool wrote its report,
- *  is a signal alone, since the projection reads only while Bun runs: then no file was running,
- *  every result Bun wrote stands, and the progress file is not read, so `progress` is empty, and
- *  `alive`, `names` and `namesRuns` are too. */
+ *  is a signal alone. A read of the projection can still land then, since `runLane` closes its
+ *  watch only in its `finally`, after Bun's process has exited, but `stopFor` drops a projection
+ *  once Bun has ended, as there is nothing left to stop. Then no file was running, every result
+ *  Bun wrote stands, and the progress file is not read, so `progress` is empty, and `alive`,
+ *  `names` and `namesRuns` are too. */
 export type Stop =
   | (StopReading & { readonly afterBun: false; readonly cause: StopCause })
   | (StopReading & { readonly afterBun: true; readonly cause: SignalCause });
@@ -736,9 +738,7 @@ export interface RunningFile {
 
 /** The tool's own stop as the report gives it: its cause, each overrun with the command that
  *  runs its file again. */
-export interface ProjectionReport {
-  readonly by: "projection";
-  readonly deadlineSeconds: number;
+export interface ProjectionReport extends ProjectionCause {
   readonly overruns: readonly OverrunReport[];
 }
 
@@ -951,9 +951,14 @@ function progressRead(): ProgressRead {
  *  its rows at once, a `start` shows nothing of the rows beside it, and only `end`s count.
  *
  *  Bun runs a load's runs one after another, so a `done` shows that every run begun so far has
- *  ended, and it times the run that began last, from its own `run`. A `done` that a throwing
- *  `afterAll` of the file skipped is so made up by the next one: both the stop's report and the
- *  projection count every run before it as ended, and the projection times only the latest. */
+ *  ended, and it times the run that began last, from its own `run`. An earlier preload's throwing
+ *  `afterAll` skips the tool's, and so its `done` (`web/src/__tests__/setup.ts:230-232`; the web
+ *  lanes load `register-dom.ts` and `setup.ts` before the tool's preload). That is made up by the
+ *  next `done`: both the stop's report and the projection count every run before it as ended, and
+ *  the projection times only the latest. An earlier preload's throwing `beforeAll` skips the
+ *  tool's, and so its `run`, while its `done` is still written: a `done` that follows no new `run`
+ *  ends no run, so it counts and times nothing, where a time from the run before, or from the
+ *  `load`, would be far too short and keep the file's projection inside any deadline. */
 function takeProgressLine(read: ProgressRead, line: ProgressLine): void {
   if (line.event === "load") {
     const state = {
@@ -984,7 +989,7 @@ function takeProgressLine(read: ProgressRead, line: ProgressLine): void {
     if (!state.atOnce) state.ended = state.begun;
     state.begun += 1;
   } else if (line.event === "end") state.ended = Math.min(state.begun, state.ended + 1);
-  else {
+  else if (state.runs > state.done) {
     state.done = state.runs;
     state.latestDoneAt = line.at;
     state.fastestRunMs = Math.min(state.fastestRunMs, line.at - state.latestRunAt);
@@ -1063,9 +1068,10 @@ export function projection(
   };
 }
 
-/** While Bun runs, reads the lines the progress file at `path` gains every `intervalMs`, projects
- *  each file's runs (`projection`), and calls `stop` once, with the tool's own cause, at the first
- *  read that finds a file whose runs it projects past the deadline. Answers what ends the watch. */
+/** Until it is closed, reads the lines the progress file at `path` gains every `intervalMs`,
+ *  projects each file's runs (`projection`), and calls `stop` once, with the tool's own cause, at
+ *  the first read that finds a file whose runs it projects past the deadline. Answers what ends the
+ *  watch; `stop` decides whether a projection that lands after Bun has ended stops anything. */
 function watchProjection(
   path: string,
   leg: { readonly startedAt: number; readonly reruns: number; readonly deadlineSeconds: number },
@@ -1101,12 +1107,9 @@ function overrunFacts(overrun: Overrun, reruns: number, deadlineSeconds: number)
   );
 }
 
-/** The tool's own stop, as the stop and the report hold it. */
-type Projected = Pick<ProjectionCause, "deadlineSeconds" | "overruns">;
-
 /** How many files the tool's own stop projected past the deadline:
  *  `1 test file's runs are projected past the leg's 7800 s deadline`. */
-function projectedPast({ deadlineSeconds, overruns }: Projected): string {
+function projectedPast({ deadlineSeconds, overruns }: ProjectionCause): string {
   return (
     `${counted(overruns.length, "test file's runs are", "test files' runs are")} projected past ` +
     `the leg's ${deadlineSeconds} s deadline`
@@ -1115,7 +1118,7 @@ function projectedPast({ deadlineSeconds, overruns }: Projected): string {
 
 /** Why the tool stopped the leg, file by file, with the leg's `reruns`:
  *  `1 test file's runs are projected past the leg's 7800 s deadline: <file>: <facts>`. */
-function projectionText(cause: Projected, reruns: number): string {
+function projectionText(cause: ProjectionCause, reruns: number): string {
   const files = cause.overruns.map(
     (overrun) => `${overrun.file}: ${overrunFacts(overrun, reruns, cause.deadlineSeconds)}`
   );
@@ -1123,8 +1126,8 @@ function projectionText(cause: Projected, reruns: number): string {
 }
 
 /** Who stopped the leg, as a sentence names it: the signal, or `the tool`. */
-function stopperText(cause: SignalCause | Projected): string {
-  return "signal" in cause ? cause.signal : "the tool";
+function stopperText(cause: StopCause): string {
+  return cause.by === "signal" ? cause.signal : "the tool";
 }
 
 type LaneOf = { readonly reruns: number; readonly seed: number; readonly script: string };
@@ -2111,14 +2114,16 @@ export async function runLane(
   // nothing left to stop, and the report is written again to name it.
   let bunEnded = false;
   // A stop by a signal the tool received, or the tool's own stop by its projection, for which it
-  // passes Bun a SIGTERM. A projection comes only while Bun runs (`watchProjection` is closed once
-  // Bun has ended), so a stop after Bun's end is a signal.
+  // passes Bun a SIGTERM. The watch of the projection is closed only in the `finally` below, after
+  // `await child.exited`, so a read of it can land between Bun's end and that close: the
+  // `bunEnded` check below drops such a projection, and keeps a signal, which the report names.
   const stopFor = (cause: StopCause) => {
     if (held.stop !== null) return;
     stoppedAt = performance.now();
     const afterMs = stoppedAt - started;
     const after = `${(afterMs / 1000).toFixed(1)} s`;
     if (bunEnded) {
+      // Bun has ended: a projection has nothing left to stop, so only a signal is a stop now.
       if (cause.by !== "signal") return;
       held.stop = {
         cause,
