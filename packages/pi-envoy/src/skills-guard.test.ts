@@ -220,6 +220,16 @@ test("no skill or daemon prompt names a list of open items", () => {
 // says (1). The research bullets lost "Ask only the part no search answered.", which their first
 // two bullets say together (7). The result bullet lost "is the same" (3). The spec-writing row
 // lost "or write an" (3). The three skills stay at 2,337 words, as on main.
+//
+// R11 of dispatch://INFRA-2947 later named the page as well: the priority line says that the
+// priorities page's `Active under no priority` tab, at its address, lists what advances no
+// priority beside `dispatch priorities`, which grew the line by 10 words. The bound did not move:
+// `dispatch` cut 9 words from its own lines, each words another of its sentences says. The ask
+// bullet's "a comment on the issue" became "an issue comment" (2). The move bullet's "that move"
+// became "it" (1), and it lost "on the issue", which its comment is (3). The artifact bullet lost
+// "never `.txt`", which "uploads as `.md` whatever its local name" says (2). The blocked-by
+// bullet's "the issue's whole list" became "the whole list", the issue being the one the command
+// names (1). The three skills stand at 2,338 words.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
