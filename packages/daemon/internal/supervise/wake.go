@@ -182,6 +182,14 @@ type wake struct {
 	// (launchReplacing, replaceNow), so a displacement the pacing parked keeps its out-of-memory
 	// note. It is nil for a wake no replacement parked, whose turn makes the take-back of its own.
 	takeBack func(context.Context) error
+	// replaceAgain is the replacement this wake's launch is, raised anew from the top, for a
+	// replacement of a live process whose report can reach the daemon (replaceNow, heldAtItsTurn):
+	// a repoint whose observation does not say the daemon's API moved, the stall backstop's, the
+	// relaunch of a hello no answer followed. A turn of such a wake that comes after the take's
+	// turn ended with its report still to come holds it for that report rather than let the
+	// process go (runWake, holdReplacement), as the held repoint is held. It is nil for every other
+	// wake, whose turn lets the process go as it stands.
+	replaceAgain func(context.Context) error
 	// pause is the project pause whose gate holds this launch (pauseGate), 0 for a wake the
 	// pacing holds. A held launch has no moment to run: it waits on the machine with no timer, is
 	// published as no waiting wake (publish), and leaves only by the claim's stop for the pause
@@ -618,6 +626,18 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 	if waiting.kind == WakePluginRefresh && m.reportHolds() {
 		m.watchAgain()
 		m.relaunchWaitsForReport("wake")
+		return nil
+	}
+	// The same holds for every other replacement of a live process the pacing parked whose report
+	// can reach the daemon (wake.replaceAgain): a repoint, a stall backstop, the relaunch of a hello
+	// no answer followed. Its wake is spent and the replacement waits for the report as the held
+	// repoint does (holdReplacement, replacementHolds): run at the task's finish, or at the wait's
+	// bound once the task is taken back with the note of a cut turn, raised anew from the top, so it
+	// is paced again there. A turn that comes while a turn runs holds nothing, and cuts that turn
+	// off below, as rule one of T3 says.
+	if waiting.replaceAgain != nil && m.replacementHolds() {
+		m.watchAgain()
+		m.holdReplacement("wake", waiting.replaceAgain, "kind", waiting.kind)
 		return nil
 	}
 	// Every kind a machine parks today starts a process (StartsProcess), so both steps are taken

@@ -301,7 +301,9 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 		return observe(runtime.Uncertain, "pod %s (uid %s) phase %s", name, pod.UID, pod.Status.Phase)
 	}
 	if moved := r.movedInPod(pod, role); len(moved) > 0 {
-		return observe(runtime.StaleAddress, "pod %s (uid %s) holds addresses a pod launched now is not handed: %s", name, pod.UID, describeMoved(moved))
+		stale := observe(runtime.StaleAddress, "pod %s (uid %s) holds addresses a pod launched now is not handed: %s", name, pod.UID, describeMoved(moved))
+		stale.DaemonAPIMoved = movesDaemonAPI(moved)
+		return stale
 	}
 	if pod.Status.Phase != corev1.PodRunning {
 		return observe(runtime.Alive, "pod %s (uid %s) %s", name, pod.UID, phaseOf(pod))
@@ -321,8 +323,10 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 				name, pod.UID, role, state.Child.Generation, err)
 		}
 		if len(moved) > 0 {
-			return observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, started with addresses a generation started now is not handed: %s",
+			stale := observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, started with addresses a generation started now is not handed: %s",
 				name, pod.UID, role, state.Child.Generation, describeMoved(moved))
+			stale.DaemonAPIMoved = movesDaemonAPI(moved)
+			return stale
 		}
 		return observe(runtime.Alive, "pod %s (uid %s) role %s runs generation %d", name, pod.UID, role, state.Child.Generation)
 	}

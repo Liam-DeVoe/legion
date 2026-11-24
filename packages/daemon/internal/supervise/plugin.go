@@ -394,7 +394,7 @@ func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger stri
 // go (launchNow, runWake, letGo).
 func (m *Machine) relaunchMarked(ctx context.Context, kind WakeKind, interruption string) error {
 	m.markPluginRelaunch(kind)
-	_, err := m.replaceProcess(ctx, interruption, ordinaryEnd, endStalePlugin)
+	_, err := m.replaceProcess(ctx, interruption, ordinaryEnd, endStalePlugin, letGoAtItsTurn)
 	return err
 }
 

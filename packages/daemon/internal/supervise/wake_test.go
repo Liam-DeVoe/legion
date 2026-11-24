@@ -2457,6 +2457,11 @@ func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheParkedLaunchNow(t *testi
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
 	h.mustTake()
 	h.must(StreamTurnStart{Claim: h.token})
+	// The repoint comes while the take's turn runs, so the pacing parks its launch over the
+	// process; one that came after the turn's end would wait for the turn's report instead (rule
+	// two of T3, holdReplacement) and park nothing.
+	h.observe(runtime.StaleAddress)
+	h.wantWaitingWake(WakeLaunch)
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	// The session reports at the turn's end that nothing of its own runs, as Oh My Pi's does, so
 	// the launch below ends no work and the operator's task goes as it was given (recordEnd).
@@ -2465,9 +2470,6 @@ func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheParkedLaunchNow(t *testi
 	if h.state() != StateIdle || !ran.startRecorded() {
 		t.Fatalf("the claim is %s holding %+v, want idle over a take whose turn ran: this test proves nothing", h.state(), ran)
 	}
-
-	h.observe(runtime.StaleAddress)
-	h.wantWaitingWake(WakeLaunch)
 
 	// The task arrives part of the way into the wait, as a person's does.
 	h.advance(wakePart)
@@ -2527,12 +2529,14 @@ func TestAnOperatorsDeliveryOverAParkedLaunchTheLifecycleRefusesChangesNothing(t
 				h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
 				h.mustTake()
 				h.must(StreamTurnStart{Claim: h.token})
+				// The repoint comes while the take's turn runs, so the pacing parks its launch;
+				// one after the turn's end would wait for its report (holdReplacement).
+				h.observe(runtime.StaleAddress)
 				h.mustQuiet(StreamTurnEnd{Claim: h.token})
 				h.reportActivity()
 				if ran := h.pending(); h.state() != StateIdle || !ran.startRecorded() {
 					t.Fatalf("the claim is %s holding %+v, want idle over a take whose turn ran: this case proves nothing", h.state(), ran)
 				}
-				h.observe(runtime.StaleAddress)
 				return h
 			},
 			gives: "supervise: the pending task's turn has run, so the operator's task takes its place",

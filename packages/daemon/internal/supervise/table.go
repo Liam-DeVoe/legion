@@ -2192,7 +2192,21 @@ func (m *Machine) backAtEnd(back ClaimState) (id string, ran bool) {
 // lane is held to, against the hours a lane with no gate costs every other wake of the daemon.
 // The mark is not re-armed for that: it waits for a turn or a report, and both are over. The
 // offer does not wait on the answer either: it runs whichever way the gate answered.
+//
+// A replacement held for the report of the take's turn (heldReplacement: the held repoint, or a
+// parked replacement whose wake's turn came) runs first: raised anew from the top, it goes through
+// the lifecycle recheck and the wake gate as every replacement does, and a suspension held
+// meanwhile ends the process instead (replaceNow). Its relaunch is onto the current plugin, so the
+// stale-plugin relaunch behind it finds the claim launching or its wake waiting and raises nothing
+// of its own (refreshPlugin). A replacement whose recheck refuses it leaves the process, as a
+// refused one does wherever it is raised, and the sweep raises a repoint again at its next pass.
 func (m *Machine) afterTurn(ctx context.Context) error {
+	if held := m.heldReplacement; held != nil {
+		m.heldReplacement = nil
+		if err := held(ctx); err != nil {
+			return err
+		}
+	}
 	if held := m.staleRelaunch; held != nil {
 		m.staleRelaunch = nil
 		if err := m.refreshPlugin(ctx, *held, nil, notAtReconnectDeadline); err != nil {

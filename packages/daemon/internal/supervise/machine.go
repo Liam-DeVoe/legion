@@ -1682,6 +1682,18 @@ type Machine struct {
 	// for it, and a later end that leaves it waiting as it was writes none. Each newly held
 	// relaunch sets it, so it says nothing while staleRelaunch is nil.
 	staleForEnd bool
+	// heldReplacement is the replacement of the claim's live process held for the report of its
+	// take's turn (holdReplacement, reportwait.go), nil for none: a stale-address relaunch that
+	// came after that turn ended (repoint), or a replacement the wake pacing parked — a repoint, a
+	// stall backstop, the relaunch of a hello no answer followed — whose wake's turn came after it
+	// (runWake). Let go of there, the process would take the report with it, and the take-back
+	// would mark as a cut turn a task whose turn ran whole, to run again in the next process. It
+	// runs where the wait ends (afterTurn), or at the reconnect deadline over a view not whole
+	// (replacementAtDeadline). It counts as held work (workHeld), so the report wait's bound arms
+	// over a take a daemon start restored, too (reportBounded). It is memory only, as staleRelaunch
+	// is: the sweep observes a stale address again at its next pass after a restart, and letGo
+	// drops it with the process it was made for.
+	heldReplacement func(context.Context) error
 	// turnsTask is the number of the task the turn now running is the turn of, as that turn's own
 	// start line named it, and 0 for a turn that is no task's. It is set where the machine learns a
 	// turn started (startTurn), read where that turn ends (endTurn), and cleared with the turn, so
@@ -3199,9 +3211,12 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bo
 // stays the take's, and the take-back keeps the sentence and the out-of-memory end of the
 // replacement that parked it — a displacement's among them — rather than the turn's own generic
 // one. One take-back is made either way. A retry of this launch — one the lifecycle check could
-// not answer — is a replacement too, and takes the task back the same way.
-func (m *Machine) launchReplacing(ctx context.Context, cause string, takeBack func(context.Context) error) error {
-	again := func(ctx context.Context) error { return m.launchReplacing(ctx, cause, takeBack) }
+// not answer — is a replacement too, and takes the task back the same way. replaceAgain is the
+// replacement raised anew from the top, for a replacement held at its turn (replaceNow, held), nil
+// otherwise: the wake carries it to that turn (wake.replaceAgain), which holds it for the report of
+// a take's turn that ended in the wait (runWake).
+func (m *Machine) launchReplacing(ctx context.Context, cause string, takeBack, replaceAgain func(context.Context) error) error {
+	again := func(ctx context.Context) error { return m.launchReplacing(ctx, cause, takeBack, replaceAgain) }
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
@@ -3218,7 +3233,7 @@ func (m *Machine) launchReplacing(ctx context.Context, cause string, takeBack fu
 	// makes, with this replacement's own.
 	now = false
 	if m.wake != nil && m.wake != parked {
-		m.wake.takeBack = takeBack
+		m.wake.takeBack, m.wake.replaceAgain = takeBack, replaceAgain
 	}
 	return err
 }
@@ -4471,8 +4486,9 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // the end of this decision, which is where a credit whose wake is gone goes back wherever that
 // wake went (endRefreshLane, dispatch://INFRA-2712 R1) — no take's turn is awaited from it, no
 // suspension is held for its turn,
-// no stale-plugin relaunch waits for that turn either (refreshPlugin) — the process it was to
-// replace is gone — no compaction runs against it (Machine.Compact, whose end then finds the
+// no stale-plugin relaunch waits for that turn either (refreshPlugin), nor any replacement for the
+// report of its take's turn (heldReplacement) — the process they were to replace is gone — no
+// compaction runs against it (Machine.Compact, whose end then finds the
 // claim records none and answers ErrCompactProcessGone, giving it back nothing and sending
 // nothing: ownsCompaction), and none that a gone verdict dropped with it is kept for this
 // record any more (lostCompaction) — and the process the claim records, when it records one,
@@ -4510,7 +4526,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.setView(viewWhole)
 	m.helloAsked = false
 	m.dropHeld()
-	m.staleRelaunch = nil
+	m.staleRelaunch, m.heldReplacement = nil, nil
 	m.turnsTask, m.reportedAhead, m.rewrite = 0, aheadReport{}, valueRewrite{}
 	m.cutTurnOf = ""
 	m.compacting, m.lostCompaction = nil, nil
