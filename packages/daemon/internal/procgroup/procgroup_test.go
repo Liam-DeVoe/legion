@@ -451,6 +451,31 @@ func pidOf(t *testing.T, path string) int {
 	return pid
 }
 
+// processEnded is whether the process pid is gone, or has exited and waits only to be reaped: its
+// state, the third field of /proc/<pid>/stat after the command in parentheses, reads Z. A process a
+// row's leader left behind is reaped by whatever it was reparented to, not by the run, and
+// kill(pid, 0) answers nil for it until then. A process kill still finds is never read as ended
+// from a /proc entry that cannot be read: the row fails there, naming /proc, since it has no other
+// way to ask. kill is asked again after such a read, because a process that went between the two
+// leaves no entry, and has ended. It calls t.Fatalf, so it must be called from the goroutine
+// running the test.
+func processEnded(t *testing.T, pid int) bool {
+	t.Helper()
+	if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		return true
+	}
+	stat := filepath.Join("/proc", strconv.Itoa(pid), "stat")
+	body, err := os.ReadFile(stat)
+	if err != nil {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return true
+		}
+		t.Fatalf("%s cannot be read (%v) for process %d, which kill still finds: this row reads from /proc whether a process that answers kill has exited", stat, err, pid)
+	}
+	_, after, ok := strings.Cut(string(body), ") ")
+	return ok && strings.HasPrefix(after, "Z")
+}
+
 // The end of a command's context stops its whole group with SIGTERM first and SIGKILL only after
 // the grace. The child here records its SIGTERM and keeps running, so it proves both halves at
 // once: the record is the SIGTERM, and the SIGKILL that finally ends it cannot have been sent
@@ -510,18 +535,22 @@ func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 	}
 }
 
-// A child that ignores SIGTERM is still gone when the run ends: the grace is a grace and not a
-// reprieve. The child ends by SIGKILL, and that SIGKILL comes only once the grace is over. The run
-// ends after the SIGKILL, so it ends at least StopGrace after the stop, a span the production
-// constant bounds from below and no load can shorten. procgroup keeps no record of when it sent
-// the SIGKILL, and the child, which ignores the SIGTERM, cannot see it coming, so the run's own end
-// is the fact the row reads. A stop that sent SIGKILL at once would end the run inside the grace.
-// A stop that never sent it is TestAForkedHelperOfAStoppedCommandIsStoppedToo's: os/exec's own
-// kill, once WaitDelay has passed, still ends this leader, but not a helper the leader forked.
+// A child that ignores SIGTERM is still gone when the run ends, and so is the grandchild it started
+// in its group: the grace is a grace and not a reprieve, and the stop's SIGKILL, which comes only
+// once the grace is over, goes to the whole group. The run ends after that SIGKILL, so it ends at
+// least StopGrace after the stop, a span the production constant bounds from below and no load can
+// shorten; procgroup keeps no record of when it sent the SIGKILL, and the child, which ignores the
+// SIGTERM, cannot see it coming, so the run's own end is the fact the row reads. A stop that sent
+// SIGKILL at once would end the run inside the grace. A stop that never sent it leaves os/exec's
+// own kill, once WaitDelay has passed, which ends the leader alone: the grandchild, which ignores
+// SIGTERM too (it is started after the leader's trap, and inherits its disposition) and holds no
+// pipe, would then run on, and the row reads that it has ended. Nothing but a SIGKILL ends it, the
+// stop's or startChild's cleanup's, never a timer of its own.
 func TestAChildThatIgnoresSIGTERMIsKilledAfterTheGrace(t *testing.T) {
 	dir := t.TempDir()
-	ready := filepath.Join(dir, "ready")
-	child := startChild(t, `trap '' TERM; : >"$1"; `+childLives, ready)
+	ready, pidFile := filepath.Join(dir, "ready"), filepath.Join(dir, "grandchild.pid")
+	child := startChild(t, `trap '' TERM; (`+childLives+`) </dev/null >/dev/null 2>&1 & echo $! >"$2"; : >"$1"; `+childLives, ready, pidFile)
+	grandchild := pidOf(t, pidFile)
 
 	stopped := time.Now()
 	child.stop()
@@ -536,6 +565,10 @@ func TestAChildThatIgnoresSIGTERMIsKilledAfterTheGrace(t *testing.T) {
 	}
 	if !child.killed() {
 		t.Errorf("killed() = false for a command the end of its context stopped (Run = %v)", err)
+	}
+	bound := testwait.Bounded(t, answerBudget, time.Second)
+	if !testwait.Holds(bound, testwait.Poll, func() bool { return processEnded(t, grandchild) }) {
+		t.Errorf("the grandchild the child started in its group (pid %d), which ignores SIGTERM too, still ran %s after the run ended: the stop's SIGKILL did not reach the group (Run = %v)", grandchild, bound, err)
 	}
 }
 
