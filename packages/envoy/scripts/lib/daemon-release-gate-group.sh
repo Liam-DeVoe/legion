@@ -20,7 +20,23 @@ group=$1
 tally=$2
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 scripts="${project_root}/packages/envoy/scripts"
-cases="${scripts}/lib/daemon-release-gate-cases-${group}.sh"
+# Each group's scenario file by its name, so a reader of what CI runs (check-test-reach.sh, which
+# reads a script as run where a text CI runs names it) finds each of them run here.
+case "$group" in
+  daemons) cases=daemon-release-gate-cases-daemons.sh ;;
+  listeners) cases=daemon-release-gate-cases-listeners.sh ;;
+  vm-hub) cases=daemon-release-gate-cases-vm-hub.sh ;;
+  image-clients) cases=daemon-release-gate-cases-image-clients.sh ;;
+  developer-box) cases=daemon-release-gate-cases-developer-box.sh ;;
+  versions) cases=daemon-release-gate-cases-versions.sh ;;
+  project-fields) cases=daemon-release-gate-cases-project-fields.sh ;;
+  short-reads) cases=daemon-release-gate-cases-short-reads.sh ;;
+  *)
+    echo "daemon-release-gate-group.sh: no scenario file for the group ${group}" >&2
+    exit 2
+    ;;
+esac
+cases="${scripts}/lib/${cases}"
 [ -f "$cases" ] || {
   echo "daemon-release-gate-group.sh: no scenario file for the group ${group}: ${cases}" >&2
   exit 2
