@@ -66,10 +66,73 @@
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
 #      claimed line in the simple form (below) whose packages, -tags, -race or mode (test, vet,
-#      or build) are not exactly its Run's. A job that calls a reusable workflow keeps its id,
-#      its needs: changes and the whole if: that tests its filter in ci.yaml and holds its steps
-#      in the called file, which runs them inside the caller's own run, so the steps of every one
-#      of those files are read here and each refusal names the file the step is in,
+#      or build) are not exactly its Run's; and a step that names a script a Run's go command is
+#      in (its `source`: forced-order.sh, pg-connection-ceiling.sh, ...), that a filter gates,
+#      for each filter that gates it with no Run of that script in a gate of that filter on the
+#      job that cites the step, with at() in its why, as one that starts it. That citation is the
+#      table's word for which steps start the script, and rule 5 holds each to a step that is
+#      there; this holds every such step to one, so a step added beside the declared ones (a
+#      forced-order run on another nats-server) fails until a Run cites it, naming the file, the
+#      job, the step, the script and the filter. Which filters gate the step is read off the
+#      workflow, never off the table, under each caller that runs it: the caller's if:, the
+#      called job's and the step's own, an input resolved through that caller's with:, an output
+#      tested as `== 'true'` or read out of the changes job's list of matched filters
+#      (`contains(...matched_filters, '"x"')`). Every filter they name counts, since each can skip
+#      the step, so a gated step no gate covers fails too, and so does one two filters gate that
+#      a Run of one gate alone cites. A citation counts only as at() wrote it (`ci.yaml app
+#      "Build"` is not read inside a citation of `long+ci.yaml app "Build"`), and only for a step
+#      no other step of its job answers to by the same name, id, uses: or run: text.
+#      What a step names is read off what it runs: its run: script; each value its with: hands an
+#      action; and the run: scripts of a composite action of this repository it uses, through
+#      the actions that one uses in turn, each with the environment of the step that uses it.
+#      Comment lines run nothing and are not read. Each word, its quotes dropped as the shell
+#      drops them, is read as every string it may be: each reference stands for each value it
+#      may hold, the product of them where one word joins several (`${{ matrix.dir }}/${{
+#      matrix.script }}`, `"${{ matrix.stem }}.sh"`). A reference may hold the workspace
+#      (`$GITHUB_WORKSPACE`, `${GITHUB_WORKSPACE}`, `${{ github.workspace }}`), the root; an env:
+#      of the workflow, the job, the step or the action's step; a called workflow's input (the
+#      caller's with: over its default, read in the caller's env: and matrix) or an action's (the
+#      with: of the step that uses it, read where it is passed, over its default); the action's
+#      own directory (`$GITHUB_ACTION_PATH`, `${{ github.action_path }}`); each value a matrix
+#      name takes, include rows among them; each of those in turn where it holds another; a value
+#      read by a literal index (`${{ env['X'] }}` as `env.X`); a quoted literal of an expression
+#      or a shell default (`${{ env.X || 'x.sh' }}`, `${X:-x.sh}`); and, for any other reference,
+#      a value this check cannot know, which may be any text. A command substitution
+#      (`$(...)`, backticks) and a brace expansion (`{a,b}`, `{1..3}`) stand in their word as
+#      such a value, and a command substitution's own text is read as a line of its own. A
+#      working-directory is resolved the same way. Then a word names a script when it is the
+#      script's path from the step's directory or the root, an unknown value in it standing for
+#      any text; when one of the two paths ends in the other at a `/`, its `..`s and leading `/`
+#      aside (after a cd a relative path can lead from any directory, an absolute one from any
+#      checkout); after the workspace, when it is the script's root path; and after an unknown
+#      value, by what follows that value. A glob is a shell's from the step's directory or the
+#      root, its bracket expressions read whole (`[!x]`, `[^x]`, `[[:alpha:]]`). A file name with
+#      a glob or an unknown value in it, whose start is in doubt (a cd, an unknown
+#      working-directory, or an unknown value it starts with), names every script whose file name
+#      it matches when it holds a literal before its first dot (`buil?.sh`), and otherwise (`*`,
+#      `*.sh`, `"$x.sh"`) fails the step, naming the word, when it matches a declared script's
+#      file name, whether or not another script it matches is cited. The text is not parsed, so
+#      a step that names the script only to chmod or lint it is held too: that errs wide.
+#      This check evaluates no expression function (`format`, `join`, `fromJSON`, ...), no
+#      computed index and no context it does not read. Such an expression fails the step, saying
+#      this check cannot evaluate it, when a pattern made of one of its literals or of a value it
+#      reads (each context value it names, every value of a context it reads whole or by a
+#      computed index), a `{N}` placeholder and each run of characters no path holds standing
+#      for any text, matches a declared script's path or file name: `format('buil{0}.sh', x)`, or
+#      `join(matrix.parts, '')` over a matrix value `[build, .sh]`. Write the script's path in
+#      the step, or hand the value in an env: entry and read that variable. A step fails too when
+#      one word takes more than 4096 forms. What is not read, and passes: a word that is wholly a
+#      value this check cannot know (`"$x"`, `"$dir/$x"`, a step's output, an expression none of
+#      whose literals or read values can make a script's name), since it may be any text and
+#      refusing it would refuse every step that writes to a path it is handed; a ${...}
+#      expansion with an operator (`${X%.sh}`, `${X/a/b}`), which is such a value whatever X holds;
+#      a name a script or a command builds at run time (a wrapper script, `printf`, a file it
+#      reads); and an action of another repository, beyond its with: values. A step no filter
+#      gates, or only EXCLUDED ones (lint's NATS-floor test, which runs on every change), is held
+#      to no filter here and needs no Run. A job that calls a reusable workflow keeps its id, its
+#      needs: changes and the whole if: that tests its filter in ci.yaml and holds
+#      its steps in the called file, which runs them inside the caller's own run, so the steps
+#      of every one of those files are read here and each refusal names the file the step is in,
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), or a

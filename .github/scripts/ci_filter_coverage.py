@@ -275,8 +275,27 @@ class TagRun:
 
 
 # Every workflow step a why cites through at(), checked to exist so a renamed step fails here.
-# Each entry is (the workflow file that holds the step, the job, the step).
+# Each entry is (the workflow file that holds the step, the job, the step). A why that cites a
+# step is also the table's word that the step starts the Run's script, which rule 4 reads back.
 CITED: list = []
+
+
+def citation(workflow: str, job: str, step: str) -> str:
+    """The text at() writes into a why for a step, and rule 4 looks for in a why again."""
+    return f'{os.path.basename(workflow)} {job} "{step}"'
+
+
+def cited_in(why: str, index: dict) -> set:
+    """The steps a why cites, given `index` ({citation() text: the CITED entries that make it}):
+    each entry whose text is in the why, unless that occurrence lies inside an occurrence of a
+    longer text of the index, which is the one at() wrote there. So `ci.yaml app "Build"` is not
+    read inside `long+ci.yaml app "Build"`: the longer citation was made by at() too, and only
+    at() makes one. The workflows are files of one directory, so a basename names one file."""
+    found = [(m.start(), m.start() + len(text), text) for text in index
+             for m in re.finditer(re.escape(text), why)]
+    kept = {text for start, end, text in found
+            if not any(s <= start and end <= e and e - s > end - start for s, e, _ in found)}
+    return set().union(*(index[text] for text in kept))
 
 
 def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
@@ -284,7 +303,7 @@ def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
     `workflow` is the file that holds the job. It is ci.yaml, or a workflow ci.yaml calls: a job
     that calls a reusable workflow keeps its gate here and its steps there."""
     CITED.append((workflow, job, step))
-    return f'{os.path.basename(workflow)} {job} "{step}"'
+    return citation(workflow, job, step)
 
 
 # ---------------------------------------------------------------- the workflow documents
@@ -1002,6 +1021,24 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
 
 GATE_REF = re.compile(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)")
 
+# A step gate can also read the one list output of the changes job, dorny/paths-filter's array of
+# the filters that matched, as `contains(needs.changes.outputs.matched_filters, '"<filter>"')`:
+# that names <filter>, and the list itself is no filter. LIST_OUTPUT, LIST_GATE_TEXT, LIST_GATE
+# and gated_filters are #5309's, copied as that pull request writes them.
+LIST_OUTPUT = "matched_filters"
+LIST_GATE_TEXT = (rf"(?i:contains)\s*\(\s*needs\.changes\.outputs\.{LIST_OUTPUT}\s*,\s*"
+                  r"'\"([A-Za-z0-9_-]+)\"'\s*\)")
+LIST_GATE = re.compile(LIST_GATE_TEXT)
+
+
+def gated_filters(condition: str) -> list:
+    """The filters a condition, resolved to ci.yaml's expressions, gates on: each output of the
+    changes job it tests, which carries the one filter of its name, and each filter a `contains`
+    reads out of LIST_OUTPUT. LIST_OUTPUT itself is no filter, and is not one of them. The one
+    reader of a gate's filter for every rule here: a rule that reads a step's or a job's gate
+    reads it through this, so the two shapes a gate takes are read the same everywhere."""
+    return [name for name in GATE_REF.findall(condition) if name != LIST_OUTPUT] + LIST_GATE.findall(condition)
+
 
 def step_label(step: dict) -> str:
     return str(step.get("name") or step.get("id") or step.get("uses") or str(step.get("run", "")).strip())
@@ -1118,6 +1155,442 @@ def script_lines(text: str) -> list:
     comments and blank lines aside."""
     stripped = (line.strip(" \t") for line in text.split("\n"))
     return [line for line in stripped if line and not line.startswith("#")]
+
+
+# A shell glob's bracket expression, read whole: `[abc]`, `[!x]`, `[^x]`, `[[:alpha:]]`.
+BRACKET = r"\[[!^]?\]?(?:\[:[a-z]+:\]|[^\]\s/'\"])*\]"
+BRACKET_RE = re.compile(BRACKET)
+POSIX_CLASS = re.compile(r"\[:([a-z]+):\]")
+POSIX_CLASSES = {"alpha": "a-zA-Z", "digit": "0-9", "alnum": "a-zA-Z0-9", "upper": "A-Z", "lower": "a-z",
+                 "xdigit": "0-9a-fA-F", "space": r"\s", "blank": r" \t", "punct": r"!-/:-@\[-`{-~",
+                 "word": r"\w", "print": r" -~", "graph": r"!-~"}
+# A shell word as this check reads it: references, bracket expressions and the characters a path
+# or a glob can hold. Quotes are dropped first (dequote), since the shell joins `"$X"/y` into one
+# word.
+WORD = re.compile(rf"(?:\$\{{\{{.*?\}}\}}|\$\{{[^}}]*\}}|\$[A-Za-z_]\w*|{BRACKET}|[\w.@+/*?\[\]~\x02-])+")
+EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
+# The references a word can make: ${{ <expression> }}, ${X}, ${X<op><word>} and $X.
+REF = re.compile(r"\$\{\{.*?\}\}|\$\{[^}]*\}|\$[A-Za-z_]\w*")
+SHELL_REF = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?::?[-=+?](.*))?\}|([A-Za-z_]\w*))", re.S)
+WORKSPACE_REF = re.compile(r"\$\{\{\s*github\.workspace\s*\}\}|\$\{GITHUB_WORKSPACE\}|\$GITHUB_WORKSPACE")
+# A context value an expression reads, the same value read by index (`env['X']`, which
+# normalize_expression writes as `env.X`), a context read whole or by a computed index, and a
+# quoted literal an expression holds.
+EXPR_NAME = re.compile(r"\b(env|inputs|matrix|github)\.([A-Za-z_][\w-]*)")
+EXPR_INDEX = re.compile(r"\b(env|inputs|matrix|github)\[\s*'([A-Za-z_][\w-]*)'\s*\]")
+EXPR_CONTEXT = re.compile(r"\b(env|inputs|matrix)\b(?!\.)")
+EXPR_QUOTED = re.compile(r"'((?:[^']|'')*)'")
+# Two shell constructs this check does not evaluate: a command substitution, which stands in its
+# word as a value this check cannot know and whose own text is read as a line of its own, and a
+# brace expansion, which stands in its word as such a value. A format() placeholder is such a
+# value inside its literal.
+COMMAND_SUBSTITUTION = re.compile(r"\$\((?!\()([^()]*)\)|`([^`]*)`")
+BRACE_EXPANSION = re.compile(r"(?<!\$)\{[^{}\s$]*(?:,|\.\.)[^{}\s$]*\}")
+FORMAT_PLACEHOLDER = re.compile(r"\{\d+\}")
+# A run of characters that is no part of a path, which reads as any text where a construct's
+# value is built from the text around it.
+NOT_PATH = re.compile(r"[^\w.@+/-]+")
+# What a reference leaves in a form of its word: the repository's root, or a value this check
+# cannot know, which may hold any characters, a `/` among them.
+ROOT_MARK, WILD = "\x01", "\x02"
+# The pieces of a form that can be a path: the word's characters, its bracket expressions and the
+# two marks.
+FORM_PIECE = re.compile(rf"(?:{BRACKET}|[\w.@+/*?\[\]~\x01\x02-])+")
+GLOB_CHARS = re.compile(r"[*?\[\x02]")
+# A file name holding a literal character, outside a bracket expression, before its first dot:
+# `buil?.sh`, `b*.sh`, `[!x]uild.sh`, not `*`, `*.sh`, `?`, `[0-9]*`, or an unknown value followed
+# by `.sh`.
+GLOB_BRACKET = BRACKET_RE
+GLOB_STEM = re.compile(r"^[^.]*?[^*?.\x00\x02]")
+# A step that changes its directory, after which a relative path can lead from anywhere.
+CHANGES_DIRECTORY = re.compile(r"(?:^|[;&|(\s])(?:cd|pushd)(?:\s|$)")
+# How many forms one word may take, and how deep values may hold values, before the step is refused.
+MAX_FORMS = 4096
+MAX_DEPTH = 8
+
+
+class TooManyForms(Exception):
+    """A word whose references take more than MAX_FORMS forms."""
+
+
+def dequote(line: str) -> str:
+    """A run: line with its quotes dropped outside ${{ }} expressions, where a quote is a literal."""
+    out, last = [], 0
+    for m in EXPRESSION.finditer(line):
+        out += [re.sub("[\"']", "", line[last:m.start()]), m.group()]
+        last = m.end()
+    return "".join(out + [re.sub("[\"']", "", line[last:])])
+
+
+def text_forms(text: str, values: dict, depth: int = 0) -> list:
+    """Every string `text` may be once its references are put in, each reference standing for each
+    of its forms (ref_forms) in turn: the product, since one word can join several (`${{ matrix.dir
+    }}/${{ matrix.script }}`, `"$stem.sh"`). `values` maps ("env" | "inputs" | "matrix" | "github",
+    name) to the texts that name may hold. Raises TooManyForms past MAX_FORMS."""
+    forms, last = [""], 0
+    for m in REF.finditer(text):
+        literal = text[last:m.start()]
+        forms = [f + literal + a for f in forms for a in dict.fromkeys(ref_forms(m.group(), values, depth))]
+        if len(forms) > MAX_FORMS:
+            raise TooManyForms
+        last = m.end()
+    return list(dict.fromkeys(f + text[last:] for f in forms))
+
+
+def ref_forms(ref: str, values: dict, depth: int) -> list:
+    """What one reference may stand for: ROOT_MARK for the workspace; each form of each value an
+    env:, an input, a matrix name or the action's directory holds, read in the same context (so a
+    value that names another is followed); each quoted literal an expression holds, and a shell
+    reference's default (`${X:-x.sh}`); and WILD for a value this check cannot know.
+    `${{ env.X || 'y' }}` stands for X's values and `y`, and `env['X']` reads as `env.X`. An
+    expression this check cannot work out (unevaluated: a function such as format() or join(), a
+    computed index, or a context it does not read) stands for WILD too; unevaluable_constructs
+    says when the step is refused for it."""
+    if WORKSPACE_REF.fullmatch(ref):
+        return [ROOT_MARK]
+    if depth >= MAX_DEPTH:
+        return [WILD]
+
+    def held(key):
+        if key == ("github", "workspace"):
+            return [ROOT_MARK]
+        if key not in values:
+            return [WILD]
+        return [form for value in values[key] for form in text_forms(value, values, depth + 1)]
+
+    if ref.startswith("${{"):
+        ref = normalize_expression(ref)
+        body = ref[3:-2]
+        unquoted = EXPR_QUOTED.sub(" ", body)
+        literals = [q.replace("''", "'") for q in EXPR_QUOTED.findall(body)]
+        forms = [form for key in EXPR_NAME.findall(unquoted) for form in held(key)] + literals
+        if unevaluated(ref) or not forms:
+            forms.append(WILD)
+        return forms
+    m = SHELL_REF.fullmatch(ref)
+    if m is None:
+        return [WILD]
+    forms = held(("env", m.group(1) or m.group(3)))
+    if m.group(2) is not None:
+        forms += text_forms(m.group(2), values, depth + 1)
+    return forms
+
+
+def normalize_expression(expression: str) -> str:
+    """A ${{ }} expression with each context value read by a literal index written as the dotted
+    name it reads: `env['X']` as `env.X`."""
+    return EXPR_INDEX.sub(r"\1.\2", expression)
+
+
+def unevaluated(expression: str) -> bool:
+    """Whether a ${{ }} expression holds more than context values, quoted literals and the
+    operators between them: a function (`format`, `join`, `fromJSON`), a computed index, or a
+    context this check does not read, whose value it cannot work out."""
+    unquoted = EXPR_QUOTED.sub(" ", normalize_expression(expression)[3:-2])
+    return bool(re.search(r"[A-Za-z_\[]", EXPR_NAME.sub(" ", unquoted)))
+
+
+def unevaluable_constructs(line: str, values: dict) -> list:
+    """The expressions of a run: line this check cannot work out (unevaluated: a function such as
+    format() or join(), a computed index, a context it does not read), each with the texts it may
+    build its value from: its literals, a format() placeholder in one read as any text, and the
+    values it reads - each context value it names, and every value of a context it reads whole or
+    by a computed index. A shell construct this check does not evaluate is no part of this: a
+    command substitution or a brace expansion stands in its word as a value this check cannot
+    know (named_scripts), and a ${...} expansion with an operator SHELL_REF does not read
+    (`${X%.sh}`, `${X/a/b}`) is such a value too (ref_forms)."""
+    found = []
+    for m in EXPRESSION.finditer(line):
+        ref = normalize_expression(m.group())
+        if not unevaluated(ref):
+            continue
+        body = ref[3:-2]
+        unquoted = EXPR_QUOTED.sub(" ", body)
+        texts = [FORMAT_PLACEHOLDER.sub(WILD, q.replace("''", "'")) for q in EXPR_QUOTED.findall(body)]
+        texts += [v for key in EXPR_NAME.findall(unquoted) for v in values.get(key, [])]
+        texts += [v for (kind, _), held in values.items() if kind in EXPR_CONTEXT.findall(unquoted) for v in held]
+        found.append((m.group(), texts))
+    return found
+
+
+def overlapping_script(texts, scripts):
+    """The first declared script whose path, from the root or after a `/`, or whose file name, one
+    of a construct's texts may build: the text read as a pattern in which each run of characters no
+    path holds (a quote, a comma, a bracket of a list), and each WILD, may be any text. So
+    `buil{0}.sh` may build build.sh, and a matrix value `[build, .sh]` may too; `go-daemon-{0}-`
+    builds no script. None when no text could."""
+    for text in texts:
+        pieces = [re.escape(p) for p in NOT_PATH.split(str(text).replace(WILD, " "))]
+        if not "".join(pieces):
+            continue
+        pattern = re.compile(".*".join(pieces))
+        for script in sorted(scripts):
+            if pattern.fullmatch(script.rsplit("/", 1)[-1]) or re.fullmatch("(?:.*/)?" + pattern.pattern, script):
+                return script
+    return None
+
+
+def bracket_regex(text: str) -> str:
+    """A bracket expression as a regular expression of one character other than `/`: its
+    characters, ranges and POSIX classes, or all but them after `!` or `^`. A class this check does
+    not know reads as any character, which errs wide. One the shell would not read as a set (`[]`,
+    a range out of order) is its literal text, as the shell leaves it."""
+    inner = text[1:-1]
+    negate = inner[:1] in ("!", "^")
+    inner = inner[1:] if negate else inner
+    parts, i = [], 0
+    while i < len(inner):
+        m = POSIX_CLASS.match(inner, i)
+        if m:
+            if m.group(1) not in POSIX_CLASSES:
+                return "[^/]"
+            parts.append(POSIX_CLASSES[m.group(1)])
+            i = m.end()
+            continue
+        c = inner[i]
+        parts.append("-" if c == "-" and 0 < i < len(inner) - 1 else re.escape(c))
+        i += 1
+    body = "".join(parts)
+    regex = f"[^/{body}]" if negate else f"(?!/)[{body}]"
+    try:
+        re.compile(regex)
+    except re.error:
+        return re.escape(text)
+    return regex if body else re.escape(text)
+
+
+def pattern_regex(pattern: str) -> str:
+    """A form of a word as a regular expression: WILD any characters; `*`, `?` and a bracket
+    expression a shell glob's, within one directory (bracket_regex)."""
+    out, i = [], 0
+    while i < len(pattern):
+        c = pattern[i]
+        bracket = BRACKET_RE.match(pattern, i) if c == "[" else None
+        if c == WILD:
+            out.append(".*")
+        elif c == "*":
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif bracket:
+            out.append(bracket_regex(bracket.group()))
+            i = bracket.end()
+            continue
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return "".join(out)
+
+
+def has_stem(name: str) -> bool:
+    """Whether a file name holds a literal character before its first dot (GLOB_STEM)."""
+    return bool(GLOB_STEM.match(GLOB_BRACKET.sub("\x00", name)))
+
+
+def path_tail(word: str) -> str:
+    """A word as a path: normalized, its leading `/` and `..`s and option dashes dropped."""
+    return re.sub(r"^(?:\.\./)+", "", os.path.normpath(word.lstrip("-")).lstrip("/"))
+
+
+def tail_names(path: str, scripts) -> set:
+    """The scripts a path names when the directory it is read from is not known: a literal one
+    when either path ends in the other at a `/`; a glob when its last components match the
+    script's whole path, or, when its file name holds a stem (has_stem), when the script ends in
+    what it matches."""
+    tail = path_tail(path)
+    if not GLOB_CHARS.search(tail):
+        return {s for s in scripts if s == tail or s.endswith("/" + tail) or tail.endswith("/" + s)}
+    parts = tail.split("/")
+    named = {s for s in scripts if len(parts) > s.count("/")
+             and re.fullmatch(pattern_regex("/".join(parts[-(s.count("/") + 1):])), s)}
+    if has_stem(parts[-1]):
+        named |= {s for s in scripts if re.fullmatch("(?:.*/)?" + pattern_regex(tail), s)}
+    return named
+
+
+def piece_names(piece: str, workdir, scripts, uncertain: bool) -> tuple:
+    """The scripts one piece of a word's form names, and whether it is a file name this check
+    cannot read. After ROOT_MARK a piece is read from the root alone. Otherwise it is read from
+    the root and from the step's directory (`workdir`, None when unknown), as the shell expands
+    it there - unless it starts with a WILD, which leaves it no known start - and then as
+    tail_names reads a path from an unknown directory: the whole piece, or, when it holds a WILD,
+    the part after its last WILD when that holds a `/`.
+
+    A piece whose file name is open - a glob, or a value this check cannot know in it - and whose
+    start is in doubt - a cd or an unknown working-directory (`uncertain`), or a WILD it starts
+    with - may be any file whose name its file name matches, anywhere. (A piece with a known
+    start is matched whole above, a WILD in it standing for any text, which reads every file it
+    may be.) When that file name holds a literal stem before its first dot (`buil?.sh`,
+    `pre${x}.sh`), every script whose file name it matches is named. When it holds none (`*`,
+    `*.sh`, `${x}.sh`), naming every such script would refuse every step that globs a directory,
+    so the piece is one this check cannot read when it matches a script's file name. A file name
+    that is a WILD alone (`"$x"`, `"$dir/$x"`) is not read: it may be any text, and refusing it
+    would refuse every step that writes to a file whose path it is handed."""
+    if ROOT_MARK in piece:
+        piece = piece.rsplit(ROOT_MARK, 1)[1].lstrip("/")
+        if not piece.startswith(WILD):
+            # The root is a known start, which a cd does not move.
+            path = piece if WILD in piece else os.path.normpath(piece)
+            return {s for s in scripts if re.fullmatch(pattern_regex(path), s)}, False
+    # A piece that starts with a value this check cannot know has no known start, so it is read
+    # from no directory, only by its end.
+    anchors = [] if piece.startswith(WILD) else [piece] + ([os.path.join(workdir, piece)] if workdir is not None else [])
+    named = {s for s in scripts for a in anchors
+             if re.fullmatch(pattern_regex(a if WILD in a else os.path.normpath(a).lstrip("/")), s)}
+    if WILD not in piece:
+        named |= tail_names(piece, scripts)
+    else:
+        ending = piece.rsplit(WILD, 1)[1]
+        if "/" in ending:
+            named |= tail_names(ending[ending.index("/") + 1:], scripts)
+    if not (uncertain or piece.startswith(WILD)):
+        return named, False
+    found, unread = open_names(piece.rsplit("/", 1)[-1], scripts)
+    return named | found, unread
+
+
+def open_names(name: str, scripts) -> tuple:
+    """What piece_names reads off an open file name whose start is in doubt: the scripts it names,
+    and whether it is a file name this check cannot read."""
+    if not GLOB_CHARS.search(name) or not name.replace(WILD, ""):
+        return set(), False
+    matching = {s for s in scripts if re.fullmatch(pattern_regex(name), s.rsplit("/", 1)[-1])}
+    if has_stem(name):
+        return matching, False
+    return set(), bool(matching)
+
+
+def named_scripts(text: str, workdir, scripts, values=None) -> tuple:
+    """The scripts of `scripts` (repository paths) a run: script names, comments aside; the words
+    of it that name a file this check cannot read; and the constructs of it this check cannot
+    evaluate that may build a declared script's name, each with that script. Each word is read as
+    every form it may take (text_forms), and each form's pieces as piece_names reads them: a word
+    names a script when it is the script's path from the step's directory or the root, when either
+    path ends in the other at a `/` (after a cd a relative path can lead from any directory, an
+    absolute one from any checkout), and after a workspace reference when it is the script's root
+    path; a glob as the shell would expand it, and more widely as piece_names says. A command
+    substitution and a brace expansion stand in their word as a value this check cannot know, and
+    a command substitution's own text is read as a line of its own. An expression
+    unevaluable_constructs finds counts when a text it may build its value from could build a
+    declared script's name (overlapping_script). The text is never parsed: a word that names the
+    script counts as a start of it, whatever command it is a word of, which errs wide. Raises
+    TooManyForms."""
+    named, unread, unevaluable = set(), [], []
+    uncertain = workdir is None or bool(CHANGES_DIRECTORY.search(text))
+    lines = list(script_lines(text))
+    while lines:
+        line = lines.pop()
+        for construct, texts in unevaluable_constructs(line, values or {}):
+            script = overlapping_script(texts, scripts)
+            if script and (construct, script) not in unevaluable:
+                unevaluable.append((construct, script))
+        shell = dequote(line)
+        while COMMAND_SUBSTITUTION.search(shell):
+            lines += [m.group(1) or m.group(2) or "" for m in COMMAND_SUBSTITUTION.finditer(shell)]
+            shell = COMMAND_SUBSTITUTION.sub(WILD, shell)
+        shell = BRACE_EXPANSION.sub(WILD, shell)
+        for m in WORD.finditer(shell):
+            for form in text_forms(m.group(), values or {}):
+                for piece in FORM_PIECE.findall(form):
+                    found, cannot = piece_names(piece, workdir, scripts, uncertain)
+                    named |= found
+                    if cannot and m.group() not in unread:
+                        unread.append(m.group().replace(WILD, "…"))
+    return named, unread, unevaluable
+
+
+def resolved_workdir(given: str, values: dict):
+    """A step's working directory with its references put in: the one directory its one form
+    names, a workspace reference standing for the root; None where it takes another form or holds
+    a value this check cannot know."""
+    try:
+        forms = text_forms(given, values)
+    except TooManyForms:
+        return None
+    if len(forms) != 1 or WILD in forms[0]:
+        return None
+    return clean_dir(forms[0].rsplit(ROOT_MARK, 1)[-1].lstrip("/"))
+
+
+def env_values(*holders) -> dict:
+    """The env: of each holder (a workflow, a job, a step), later ones over earlier ones, keyed as
+    text_forms reads them."""
+    return {("env", str(k)): [str(v)] for holder in holders for k, v in ((holder or {}).get("env") or {}).items()}
+
+
+def passed_forms(value, values: dict) -> list:
+    """The forms a value passed in a with: takes in the context that passes it, so the context it
+    is read in next cannot take its references for its own."""
+    try:
+        return text_forms(str(value), values)
+    except TooManyForms:
+        return [WILD]
+
+
+def step_texts(step: dict, workdir, values: dict, seen=()) -> list:
+    """What a step runs, as (a text, its directory, its values, the local action it is in or ""):
+    a run: step's script; for a step that uses an action, each value its with: passes, since a
+    command an action runs can be one of them (a retry action's `command:`); and for a step that
+    uses a composite action of this repository (`uses: ./<dir>`), the run: script of each step of
+    that action, read the same way through the actions it uses in turn. An action's step gets the
+    environment of the step that uses the action (the env: of the workflow, the job and that step,
+    which the action's shells inherit) and every other value of its context, the action's inputs
+    in place of the caller's (their defaults, and what the step's with: passes, read where it is
+    passed), its own env: over those, its own directory as GITHUB_ACTION_PATH, and the workspace as
+    its directory unless it says another. A local action that is not there is read as running
+    nothing, since GitHub refuses the workflow itself; one whose file is not valid YAML stops the
+    check naming it."""
+    if "run" in step:
+        return [(str(step["run"]), workdir, values, "")]
+    uses = str(step.get("uses", ""))
+    texts = [(str(v), workdir, values, "") for v in (step.get("with") or {}).values()]
+    if not uses.startswith("./") or uses in seen:
+        return texts
+    folder = clean_dir(uses)
+    action = next(((REPO / folder / name) for name in ("action.yml", "action.yaml") if (REPO / folder / name).is_file()), None)
+    if action is None:
+        return texts
+    document = load_repository_yaml(action) or {}
+    inputs = {("inputs", str(k)): [str((v or {}).get("default", ""))] for k, v in (document.get("inputs") or {}).items()}
+    inputs.update({("inputs", str(k)): passed_forms(v, values) for k, v in (step.get("with") or {}).items()})
+    base = {**{key: v for key, v in values.items() if key[0] != "inputs"}, **inputs,
+            ("env", "GITHUB_ACTION_PATH"): [folder], ("github", "action_path"): [folder]}
+    for inner in (document.get("runs") or {}).get("steps") or []:
+        inner_values = {**base, **env_values(inner)}
+        inner_dir = resolved_workdir(str(inner.get("working-directory") or "."), inner_values)
+        texts += [(text, d, v, folder) for text, d, v, _ in step_texts(inner, inner_dir, inner_values, seen + (uses,))]
+    return texts
+
+
+def caller_input_values(called: dict, caller: dict, context: dict) -> dict:
+    """The inputs of a called workflow as a job of ci.yaml runs it, keyed as text_forms reads
+    them: each workflow_call input's default, then each value the caller's with: passes, read in
+    the caller's `context` (its workflow's env: and its own, and its matrix values)."""
+    trigger = called.get("on", called.get(True)) or {}
+    call = trigger.get("workflow_call") if isinstance(trigger, dict) else None
+    declared = (call or {}).get("inputs") or {}
+    values = {("inputs", str(k)): [str(v["default"])] for k, v in declared.items() if isinstance(v, dict) and "default" in v}
+    values.update({("inputs", str(k)): passed_forms(v, context) for k, v in (caller.get("with") or {}).items()})
+    return values
+
+
+def matrix_values(job: dict) -> dict:
+    """Each name a job's matrix gives, keyed as text_forms reads it and mapped to every value it
+    takes: its own list and each include entry's value for it, a value that is itself a list or a
+    mapping read as its text. A matrix written as one expression (a fromJSON() of another job's
+    output) gives no name, so a reference to it is a value this check cannot know."""
+    matrix = (job.get("strategy") or {}).get("matrix")
+    if not isinstance(matrix, dict):
+        return {}
+    values = defaultdict(list)
+    for name, own in matrix.items():
+        if name not in ("include", "exclude") and isinstance(own, list):
+            values[("matrix", str(name))] += [str(v) for v in own]
+    for entry in matrix.get("include") or []:
+        if isinstance(entry, dict):
+            for name, value in entry.items():
+                values[("matrix", str(name))].append(str(value))
+    return dict(values)
 
 
 def odd_character(text: str) -> str | None:
@@ -1751,6 +2224,115 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
             if not steps or squash(r.text) not in text:
                 problems.append(error(GATES_DIR, f"job {job_id} step \"{ref}\" no longer runs `{r.text}`; update or "
                                                  f"remove the Run"))
+    # Rule 4's half for scripts. A Run whose go command is in a script (its `source`) names the
+    # steps that start the script by citing them in its why with at(), and those citations are the
+    # table's declaration (the loop over CITED below holds each to a step that is there). The
+    # other way round, a step that a filter gates and that names such a script must be one a Run
+    # of that script cites, in a gate of every filter that gates the step, on the job that runs
+    # it. Otherwise the step runs go commands whose closure a filter that can skip it is not held
+    # to, and adding a step that starts the script (a forced-order run on another nats-server)
+    # would pass with nothing declared.
+    #
+    # Which filters gate a step is read off the workflows, never off the table, and under the one
+    # caller that runs it: that caller's if:, then the called job's and the step's own, each input
+    # resolved through that caller's with:, an output tested as `== 'true'` or read out of the
+    # changes job's list (gated_filters). Every filter any of them names counts, since each can
+    # skip the step, which errs wide where one condition ORs two. A step no filter gates (a job
+    # that runs on every change), or only EXCLUDED ones, is held to no filter here.
+    #
+    # What a step names is read by named_scripts over what the step runs (step_texts: its run:
+    # script, each with: value it hands an action, and the steps of the composite action of this
+    # repository it uses): the text as written, with the values it reaches put in, and every
+    # value it reaches (the env: of the workflow, the job, the step and the action step, the
+    # caller's with: over the inputs' defaults, the action's inputs and its own directory, the
+    # job's matrix values), so putting a value in never takes a word away. A step whose references
+    # reach more values than named_scripts reads is refused. A citation counts for a step only
+    # when no other step of its job answers to the same name, id, uses: or run: text.
+    scripts = defaultdict(list)  # a script's path -> [(the gate, its Run of that script)]
+    for g in data.GATES:
+        for r in gate_runs(g):
+            if r.source:
+                scripts[r.source].append((g, r))
+    index = defaultdict(set)  # a citation() text -> the CITED entries that make it
+    for entry in CITED:
+        index[citation(*entry)].add(entry)
+    cited = {}  # a why -> the steps it cites
+    for own, path, name_there, holder, job in units:
+        caller = caller_jobs.get(own) or {}
+        passed = inputs_of.get((path, own), {})
+        around = set(gated_filters(str(caller.get("if", ""))))
+        values = {**env_values(holder, job), **matrix_values(job)}
+        if path != WORKFLOW:
+            around |= set(gated_filters(resolve_condition(str(job.get("if", "")), passed)))
+            context = {**env_values(documents[WORKFLOW], caller), **matrix_values(caller)}
+            values = {**caller_input_values(holder, caller, context), **values}
+        steps = job.get("steps") or []
+        for step in steps:
+            own_if = set(gated_filters(resolve_condition(str(step.get("if", "")), passed)))
+            gating = (around | own_if) - {REF_OUTPUT} - set(excluded)
+            if not gating:
+                continue
+            step_values = {**values, **env_values(step)}
+            given = (step.get("working-directory") or run_default(job, "working-directory")
+                     or run_default(holder, "working-directory") or ".")
+            named, unread, unevaluable, many = set(), [], [], False
+            for text, workdir, text_values, _ in step_texts(step, resolved_workdir(str(given), step_values), step_values):
+                try:
+                    found, cannot, opaque = named_scripts(text, workdir, scripts, text_values)
+                except TooManyForms:
+                    many = True
+                    continue
+                named |= found
+                unread += [word for word in cannot if word not in unread]
+                unevaluable += [pair for pair in opaque if pair not in unevaluable]
+            where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\""
+            if many:
+                problems.append(error(path, f"{where} has a word whose references take more than {MAX_FORMS} "
+                                            f"forms, so which scripts a Run of {GATES_DIR} lists go commands of it names "
+                                            f"is unknown; name its script with fewer"))
+            if unread:
+                problems.append(error(path, f"{where} names a file this check cannot read, `{unread[0]}`: its "
+                                            f"name ends as a script a Run of {GATES_DIR} lists go commands of ends, after "
+                                            f"a value this check cannot know or as a glob in a directory it cannot "
+                                            f"know, so whether the step starts that script is unknown; write the "
+                                            f"script's path in the step, or a value this check can read"))
+            for construct, script in unevaluable:
+                problems.append(error(path, f"{where} holds `{construct}`, which this check cannot evaluate, and a "
+                                            f"value or literal it builds from could make the name of {script}, a "
+                                            f"script a Run of {GATES_DIR} lists go commands of, so whether the step "
+                                            f"starts it is unknown; write the script's path in the step, or hand "
+                                            f"the value to the step in an env: entry and read that variable "
+                                            f"(check-ci-filters.sh's header lists what this check reads)"))
+            if not named:
+                continue
+            refs = {ref for p, j, ref in CITED if (p, j) == (path, name_there) and step_matches(step, ref)}
+            shared = {ref for ref in refs if sum(1 for s in steps if step_matches(s, ref)) > 1}
+            alone = {(path, name_there, ref) for ref in refs - shared}
+            for script in sorted(named):
+                for f in sorted(gating):
+                    runs = [r for g, r in scripts[script] if g.filter == f and g.job == own]
+                    for r in runs:
+                        if r.why not in cited:
+                            cited[r.why] = cited_in(r.why, index)
+                    if any(alone & cited[r.why] for r in runs):
+                        continue
+                    if not any(g.filter == f and g.job == own for g in data.GATES):
+                        problems.append(error(path, f"{where} runs {script}, a script a Run of {GATES_DIR} lists go "
+                                                    f"commands of, and filter {f} gates the step, but no gate of {GATES_DIR} "
+                                                    f"covers it (a gate of {f} on job {own}), so that filter is held to "
+                                                    f"nothing the script compiles there; add a gate of {f} on job {own} "
+                                                    f"with a Run of the script whose why cites the step with at()"))
+                    elif any({(path, name_there, ref) for ref in shared} & cited[r.why] for r in runs):
+                        problems.append(error(path, f"{where} runs {script}, and a Run of it in gate {f} on job {own} "
+                                                    f"cites the step only as \"{sorted(shared)[0]}\", which more than one "
+                                                    f"step of the job answers to, so it declares none of them; cite each "
+                                                    f"step by its own id: or run: text"))
+                    else:
+                        problems.append(error(path, f"{where} runs {script}, a script a Run of {GATES_DIR} lists go commands "
+                                                    f"of, but no Run of it in gate {f} on job {own}, which gates this "
+                                                    f"step, cites the step, so filter {f}, which can skip the step, is "
+                                                    f"held to nothing the script compiles there; add a Run of the script "
+                                                    f"to that gate whose why cites the step with at()"))
     # A script's go command is held exact rather than reduced: the line holding the pinned text is
     # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
     # job or its steps, no container: and no environment write of the job can move it - over every

@@ -2344,6 +2344,19 @@ and restores no cache. It also holds every workflow file to 64,000 bytes and to 
 parser reads (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml
 runs a second time, in a file small enough to start when this one is too large to.
 
+It also holds every step a filter gates that names a script a gate's Run lists go commands of
+(forced-order.sh, pg-connection-ceiling.sh, ...) to a Run of that script, in a gate of each filter
+that gates the step, that cites the step. It reads the step's run: text, the with: values it
+hands an action and a local composite action's steps, with the values it can know put in: the
+workspace, env:, a called workflow's and an action's inputs, an action's directory, matrix values
+(include rows too), `env['X']`, literals of an expression and shell defaults; a command
+substitution or a brace expansion stands for any text in its word, and globs are read as the shell
+reads them. It evaluates no expression function and no computed index: such an expression fails
+the step, saying the check cannot evaluate it, when one of its literals or the values it reads
+could make a declared script's name (`format('buil{0}.sh', x)`). It does not read a word that is
+wholly a value it cannot know, a `${X%...}` or `${X/a/b}` expansion, or a name a command builds
+at run time; those pass. The script's header lists each form.
+
 ## What the proof editor's offline proof shows
 
 The proof that no install of this repository fetches the proof editor's upstream sources over
