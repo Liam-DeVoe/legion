@@ -157,10 +157,10 @@ func readHookEvery(value *yaml.Node, field string) (int, error) {
 // readHookRoles is a hook's `roles`: the roles its words are put in front of, at least one, each
 // a role of an issue: a Legion role, or a name of the role grammar (claim.IsRole), which
 // checkDeploymentRoleKeys holds to a role of `roles` once every key is read. The architect is
-// refused as a hook's own role: the daemon's own wake to an architect is a notice it writes
-// itself. A Legion role of a step that the hook names can still be the owner's work: where the
-// task's step that does that role's work has the key owner (`tester:owner`, say), the hook's
-// prompt for that role reaches the owner's architect claim (the workflow's workAgent).
+// refused as a hook's own role (hookRoleRefusal): the daemon's own wake to an architect is a notice
+// it writes itself. A Legion role of a step that the hook names can still be the owner's work:
+// where the task's step that does that role's work has the key owner (`tester:owner`, say), the
+// hook's prompt for that role reaches the owner's architect claim (the workflow's workAgent).
 func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 	key := field + ".roles"
 	if value == nil {
@@ -180,11 +180,23 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, name, runtime.JoinRoles(claim.Roles))
 		}
 		if role == claim.RoleArchitect {
-			return nil, fmt.Errorf("%s names the architect, which is no hook's own role: the daemon's own wake to an architect is a notice it writes itself", key)
+			return nil, &hookRoleRefusal{field: key, role: role}
 		}
 		roles = append(roles, role)
 	}
 	return roles, nil
+}
+
+// hookRoleRefusal is the refusal of a role a hook's `roles` may not name (readHookRoles): field is
+// the key that names it, `hooks[<i>].roles`, and role the role it names, the architect. A reader
+// that needs either takes it from these fields (errors.As), not from the sentence.
+type hookRoleRefusal struct {
+	field string
+	role  claim.Role
+}
+
+func (r *hookRoleRefusal) Error() string {
+	return fmt.Sprintf("%s names the %s, which is no hook's own role: the daemon's own wake to an architect is a notice it writes itself", r.field, r.role)
 }
 
 // readHookMoves is a hook's `moves`: the moves back it selects, each written "<from>-<to>" as the
