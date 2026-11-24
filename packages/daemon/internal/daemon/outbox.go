@@ -3325,12 +3325,21 @@ func (r *outbox) retireUnstartedOfLeftIssue(ctx context.Context, row record.Outb
 // that made it and failed before it was brought back leaves it so, and the retry finds it made,
 // recording no agent. A claim that has run a process holds a session whose agent the steps do not
 // show, so the start's own agent goes to it (supervise.Machine.TakeSessionFor), as that release
-// gave it the session. The row itself is not written, so it reads as that release wrote it.
+// gave it the session. The row itself is not written, so it reads as that release wrote it. The
+// read opens a read-only transaction of its own (store.TransactWith), as every statement of the
+// store runs in one: it is the only read of the start that stands outside the transaction the
+// start's acts are made in, and it writes nothing.
 func (r *outbox) startAgent(ctx context.Context, issue string, token claim.Token, named stepplan.AgentID, held supervise.Claim) (stepplan.AgentID, error) {
 	if named != "" || held.SessionAgent != "" || held.Launched() {
 		return named, nil
 	}
-	return store.ClaimAgentFromSteps(ctx, r.pool, issue, token)
+	var agent stepplan.AgentID
+	err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		agent, err = store.ClaimAgentFromSteps(ctx, tx, issue, token)
+		return err
+	})
+	return agent, err
 }
 
 // childArchitectFirstStart says whether payload is the plain start of issue's own architect that a

@@ -177,7 +177,10 @@ Then accept with `sign_off`, which moves the task to its next step, or to retro 
 acceptance is its last step, or send it back with
 `request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`).
 `request_backward_move` to `step` works where one earlier step of the task runs as `step`. Where
-two do, name `return_to`.
+two do, name `return_to`. A move back to another phase that two earlier steps run as goes to the
+later of them, as a move from `accepting` to `reviewing` goes to step 4 of
+`implementer reviewer tester:c reviewer:c acceptance:owner`; name `return_to` to reach the earlier
+one.
 A news task can name this child while you hold it in `accepting`: its news starts
 `The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
 changed in the root's approved design. Read each named section and check at the new version.

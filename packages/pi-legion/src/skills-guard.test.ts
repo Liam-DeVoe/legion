@@ -688,7 +688,6 @@ test("an implementer and owner task is accepted on the evidence its steps give",
       /Until the task's last step has run, the daemon asks the implementer to merge the base forward/,
       /Once every step has run, in `retro` or in `accepting` with no step after yours, the conflict waits/,
       /once the issue enters `merging` the daemon asks the merger to merge the base forward/,
-      /Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge/,
       /A reviewer step after yours reviews the new head when it runs/,
       // Each sentence a reader of the acceptance showed false is gone: the last step can come after
       // the acceptance, and a reviewer step after it leaves `accepting` short of any review.

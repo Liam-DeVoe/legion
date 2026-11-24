@@ -1063,30 +1063,19 @@ func returnToOf(issue record.Issue, w Walk, fact intake.HandoffComplete, reporte
 // read onto the role's phases row (record.PhaseRow.ReviewedHead), so the task of the step's next
 // run names it (namingTheReviewRound), as the reviewer's next round names the commit its own
 // review read. The row is the row of the step the completion is of (phaseRow), and the commit is
-// written onto each other row of that role on the task that the step's agent ran too
-// (shareReviewedHead), so the agent's next run at any of its steps names its newest, and a first
-// run of a later step of that agent takes it (stepRunRow), as the reviewer's steps do; the
-// clear of a generation empties it with the reviewer's (record.Store.ClearGeneration). It
-// writes only for a completion of the entry that stands, by equality of an entry number and no
-// time compared: row, the role's phases row the completion read and wrote in its own transaction
-// before the move raises any entry, holds the task of an entry (EntryTask, which the clear of a
-// generation empties and only a raise writes again) and stands on the entry the completion carries
-// (fact.Entry, the one value the entry rule reads). A completion the route read before a reset of
-// the tree's generation and the engine applies after it so writes no commit of the generation
-// before into the new one, whether or not the promotion raised the entry since. A row a start ran
-// stands on 1 or above, so a completion of entry 0 writes none. Otherwise it writes nothing: the
-// commit stays where it stood, and the next run reads more. A step of another type writes none,
-// and nor does a completion naming no commit or one not spelled as a head is (reviewround.IsHead),
-// as a review footer's head of that spelling names no commit (intake.PullRequestReview.LegionHead):
-// the route asks a step's commit only to be non-empty, and the commit is named in tasks, another
-// agent's among them (record.AnotherAgentsReview). w is the walk of the issue's run, as handoff
-// read it.
+// written onto the agent's other rows too (shareReviewedHead), as the reviewer's review is; the
+// clear of a generation empties it with the reviewer's (record.Store.ClearGeneration). It writes
+// only where stepCommitStays gives no reason, and otherwise logs that reason: the commit stays
+// where it stood, and the next run reads more. A step of another type writes none. w is the walk
+// of the issue's run, as handoff read it.
 func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, w Walk, row record.PhaseRow, fact intake.HandoffComplete) error {
-	if !reviewround.IsHead(fact.Commit) || row.EntryTask == "" || fact.Entry != row.Entry {
-		return nil
-	}
 	step, ok := w.planStepAt(w.Place)
 	if !w.Stored || !ok || claim.Role(step.Role) != fact.Role || step.Type != plan.TypeReview {
+		return nil
+	}
+	if why := stepCommitStays(fact, row); why != "" {
+		e.logOnCommit(ctx, stepCommitStaysLog+why, "issue", fact.Issue, "role", fact.Role, "task", w.Task,
+			"step", w.Place.Position, "commit", fact.Commit, "completion_entry", fact.Entry, "entry", row.Entry)
 		return nil
 	}
 	row.ReviewedHead = fact.Commit
@@ -1094,6 +1083,36 @@ func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, w Walk, row re
 		return err
 	}
 	return e.shareReviewedHead(ctx, tx, row)
+}
+
+// stepCommitStaysLog begins the line recordStepReview logs for a completion of a review step that
+// moves no reviewed commit, followed by its reason (stepCommitStays).
+const stepCommitStaysLog = "workflow: a review step's completion moves no reviewed commit: "
+
+// stepCommitStays is why fact, a completion of a step of the type review, leaves the commit row,
+// the step's phases row, holds where it stands (recordStepReview), and "" where fact moves it to
+// the commit it names. The completion must name its commit as a head is spelled
+// (reviewround.IsHead), as a review footer's head of another spelling names no commit
+// (intake.PullRequestReview.LegionHead): the route asks a step's commit only to be non-empty, and
+// the commit is named in tasks, another agent's among them (record.AnotherAgentsReview). And it
+// must be of the entry that stands, by equality of an entry number and no time compared: row, the
+// role's phases row the completion read and wrote in its own transaction before the move raises
+// any entry, holds the task of an entry (EntryTask, which the clear of a generation empties and
+// only a raise writes again) and stands on the entry the completion carries (fact.Entry, the one
+// value the entry rule reads). A completion the route read before a reset of the tree's generation
+// and the engine applies after it so writes no commit of the generation before into the new one,
+// whether or not the promotion raised the entry since. A row a start ran stands on 1 or above, so
+// a completion of entry 0 moves none.
+func stepCommitStays(fact intake.HandoffComplete, row record.PhaseRow) string {
+	switch {
+	case !reviewround.IsHead(fact.Commit):
+		return "its commit is not spelled as a head is"
+	case row.EntryTask == "":
+		return "the step's row holds no entry's task"
+	case fact.Entry != row.Entry:
+		return fmt.Sprintf("it completes entry %d and the step's row stands at entry %d", fact.Entry, row.Entry)
+	}
+	return ""
 }
 
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {
@@ -1188,7 +1207,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// works the issue's phase (api's answerCompletion), since the fence's HANDOFF_STALE_ENTRY
 	// would promise it the task of an entry its claim never served.
 	served := record.ServedClaim(rows, fact.Role, fact.Entry)
-	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, row.Claim, served, row.StepTask); refusal != nil {
+	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, served, row); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// The route judged the entry this completion is of on its own read of the role's row, before
@@ -1206,7 +1225,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		record.OtherStepsEntry(rows, row), fact.Commit, pr, nil); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
-	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, row.Claim, "", row.StepTask); refusal != nil {
+	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, "", row); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// A completion of the phase the issue stands in that is at the head a merge forward replaced
@@ -2773,9 +2792,10 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	// A phase worker's move is its step's worker's decision: two claims of one issue can hold one
 	// role (record.WorkerClaim), and the move names the claim that asked it (By). A claim the
 	// role's row does not name on its step works nothing the move would send back, so its move is
-	// refused, unspent. A row that runs no step of the plan names no worker, and a move that names
-	// no claim, from a route before the claim was carried, is judged by its role as before.
-	if fact.Requester != claim.RoleArchitect && fact.By != "" && row.StepTask != "" && row.Claim != "" && fact.By != row.Claim {
+	// refused, unspent. A row that names no agent of its own (record.NamesItsAgent) names no worker
+	// here, and a move that names no claim, from a route before the claim was carried, is judged by
+	// its role as before.
+	if fact.Requester != claim.RoleArchitect && fact.By != "" && record.NamesItsAgent(row) && fact.By != row.Claim {
 		return intake.Result{Refusal: refused("BACKWARD_REFUSED", fmt.Sprintf(
 			"%s is a claim of the %s of %s, and %s works its step: only that claim's move sends the step back; this move changed nothing",
 			fact.By, fact.Requester, issue.Key, row.Claim)).Refusal, Unspent: true}, nil

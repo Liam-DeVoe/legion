@@ -170,24 +170,39 @@ func stopsAndGivesVersionTwo(t *testing.T, pool *pgxpool.Pool, engine *Engine, r
 // first task names no commit of its own, `Last reviewed commit: none.`, and key r's commit of step
 // 2 as another agent's before it, and its row holds no commit. Before, step 4's row kept key s's
 // commit when its entry wrote agent a's claim on it, so agent a read only the change past
-// stepFourRead.
+// stepFourRead. The second row's step 4 names no claim, as the release before writes a step's row,
+// whose agent is the role's own (record.RowWorker): its commit is not agent a's either. Before, a
+// row with no claim kept its commit for any agent.
 func TestAReviewerStepALaterVersionGivesToAnotherAgentIsNamedThatAgentsOwnCommit(t *testing.T) {
-	pool := migratedPool(t)
-	engine := textEngine()
-	root := stepRoot(t, pool, phase.Admitted)
-	givesVersion(t, pool, engine, root, 1, "implementer:a", "reviewer:r", "tester:s", "reviewer:s")
-	keyS := agentToken(t, "tester")
-	if four := reviewerStepFour(t, pool, engine, keyS, 1); four.Claim != keyS {
-		t.Fatalf("step 4 of version 1 runs under %s, want key s's claim %s", four.Claim, keyS)
-	}
-	recordReviewRead(t, pool, root.Key, 4, stepFourRead)
-	stopsAndGivesVersionTwo(t, pool, engine, root, "implementer:a", "reviewer:r", "tester:s", "reviewer:a")
+	for _, tc := range []struct {
+		name    string
+		noClaim bool
+	}{
+		{name: "step 4's row names key s's claim"},
+		{name: "step 4's row names no claim, as the release before writes it", noClaim: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := textEngine()
+			root := stepRoot(t, pool, phase.Admitted)
+			givesVersion(t, pool, engine, root, 1, "implementer:a", "reviewer:r", "tester:s", "reviewer:s")
+			keyS := agentToken(t, "tester")
+			if four := reviewerStepFour(t, pool, engine, keyS, 1); four.Claim != keyS {
+				t.Fatalf("step 4 of version 1 runs under %s, want key s's claim %s", four.Claim, keyS)
+			}
+			recordReviewRead(t, pool, root.Key, 4, stepFourRead)
+			if tc.noClaim {
+				execSQL(t, pool, `update phases set claim = '' where issue = $1 and role = 'reviewer' and step_place = 4`, root.Key)
+			}
+			stopsAndGivesVersionTwo(t, pool, engine, root, "implementer:a", "reviewer:r", "tester:s", "reviewer:a")
 
-	four := reviewerStepFour(t, pool, engine, keyS, 2)
-	want := reviewround.AnotherAgentsSentence(stepTwoRead) + reviewround.Sentences("", four.Entry)
-	if four.Claim != agentToken(t, "implementer") || four.ReviewedHead != "" || !strings.HasSuffix(four.EntryTask, want) {
-		t.Fatalf("step 4 of version 2 = claim %s, commit %q, task %q; want agent a's, no commit of its own, and a task ending %q",
-			four.Claim, four.ReviewedHead, four.EntryTask, want)
+			four := reviewerStepFour(t, pool, engine, keyS, 2)
+			want := reviewround.AnotherAgentsSentence(stepTwoRead) + reviewround.Sentences("", four.Entry)
+			if four.Claim != agentToken(t, "implementer") || four.ReviewedHead != "" || !strings.HasSuffix(four.EntryTask, want) {
+				t.Fatalf("step 4 of version 2 = claim %s, commit %q, task %q; want agent a's, no commit of its own, and a task ending %q",
+					four.Claim, four.ReviewedHead, four.EntryTask, want)
+			}
+		})
 	}
 }
 
@@ -197,8 +212,8 @@ func TestAReviewerStepALaterVersionGivesToAnotherAgentIsNamedThatAgentsOwnCommit
 // stepFourRead. The owner stops task a and gives version 2, `implementer:a reviewer:a tester:s
 // reviewer:s`, and step 2, whose row key s's runs wrote, passes to agent a: its task names
 // stepFourRead as agent a's own and no other agent's commit, and its row holds it. Before, the
-// commit was read from agent a's rows at earlier places alone, so step 2 named `none` and key s's
-// commit, though agent a's own review on the task had read stepFourRead.
+// commit was read from agent a's rows at earlier places alone, so step 2 named `none` and no other
+// agent's commit, though agent a's own review on the task had read stepFourRead.
 func TestAReviewerStepALaterVersionGivesToAnAgentIsNamedItsCommitOfALaterStep(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()

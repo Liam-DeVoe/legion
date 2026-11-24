@@ -916,9 +916,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// decides the round and leaves the commit where it stands, since the reviewer never read the
 	// commit the person did; while the reviewer's claim records no session, no review-App review
 	// gets here, since it waits (RefusedWhileNoSession). And the review must be of the entry that
-	// stands (reviewedCommitStays). The commit is its agent's, not the step's: it is written onto
-	// every row of that agent's role on the task too (shareReviewedHead), so the agent's next round
-	// at any of its steps names the newest of its own reviews.
+	// stands (reviewedCommitStays). The commit is its agent's, not the step's (shareReviewedHead).
 	moved := false
 	if e.byReviewer(fact, reviewerSession) {
 		if why := reviewedCommitStays(fact, reviewer); why != "" {
@@ -974,11 +972,11 @@ func reviewedCommitStays(review intake.PullRequestReview, reviewer record.PhaseR
 
 // shareReviewedHead writes the commit row's agent's deciding review has just written on row
 // (record.PhaseRow.ReviewedHead) onto each other row of row's role on row's task that its agent ran
-// (record.AgentsOtherRow). A role keeps a row for each step it runs, while the commit a review step
-// is named is its agent's newest on the task, at whichever of its steps that review was made, and
-// no row records when its commit was read, so no read could pick the newest among them: each row
-// of one agent holds that one commit alike instead. The reviewer's own review (review) and a
-// deployment review step's report (recordStepReview) both write through it, after writing row.
+// (record.AgentsOtherRow), from which record.AgentsReviewedHead reads it. A role keeps a row for
+// each step it runs, and no row records when its commit was read, so no read could pick the newest
+// among one agent's rows: each holds that one commit alike instead. The reviewer's own review
+// (review) and a deployment review step's report (recordStepReview) both write through it, after
+// writing row.
 func (e *Engine) shareReviewedHead(ctx context.Context, tx pgx.Tx, row record.PhaseRow) error {
 	rows, err := e.store.Phases(ctx, tx, row.Issue)
 	if err != nil {

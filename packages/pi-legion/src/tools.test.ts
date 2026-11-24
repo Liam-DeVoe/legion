@@ -297,6 +297,7 @@ test("the legion tool's description carries the daemon's rules for ending a chil
   expect(description).toContain(rule);
   expect(description).toContain(notTakenYet);
 });
+
 /** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole but for
  * the words of its `description`s: every property and every `op` value in the order the tool
  * declares them. */

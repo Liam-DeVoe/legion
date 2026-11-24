@@ -353,12 +353,12 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// its completion, the report of a run the task has left, in its own order (pastCompletion).
 	run := position.run(grant.Role, entry, works)
 	if works {
-		if refusal := intake.StepsWorkerFence(grant.Issue, grant.Role, grant.Claim, run.holder, run.served, run.stepTask); refusal != nil {
+		if refusal := intake.StepsWorkerFence(grant.Issue, grant.Role, grant.Claim, run.served, run.row); refusal != nil {
 			s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 			return
 		}
 	}
-	if refusal := intake.EntryFence(*issue, grant.Role, run.served, run.holder, entry, run.entry, run.entryMovedBack, run.otherStepsEntry, req.Commit,
+	if refusal := intake.EntryFence(*issue, grant.Role, run.served, run.row.Claim, entry, run.entry, run.entryMovedBack, run.otherStepsEntry, req.Commit,
 		position.pullRequest, c.Pending); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return

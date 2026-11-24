@@ -541,8 +541,7 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 		{
 			"reviewer.md",
 			append(slices.Clone(planRead),
-				"After your approval, a later step of your task can send the work back, and the new head then comes to your review again",
-				"A merge forward of the base that lands once your step ran makes a new head too, and the daemon asks you to approve it."),
+				"After your approval, a later step of your task can send the work back, and the new head then comes to your review again"),
 			append(slices.Clone(planRetired),
 				"After approval, no implementation or further review change may happen",
 				"the head changes only when a later step of your task sends the work back",
@@ -975,7 +974,6 @@ func TestTheMergeForwardPartsReadTheTasksOwnSteps(t *testing.T) {
 				"The implementer is asked before `merging`, and the merger in `merging`, whose merge it is.",
 				"`merge-next`: the issue stands in `merging`.",
 				"Where every step of the task has run, in `retro` or in `accepting` with no step of its task after yours, the conflict waits for the merger whatever the base requires",
-				"Where the task's reviewer step already ran, the daemon also asks the reviewer to read the merge.",
 				"The reviewer tells you what it decided, and tells the phase's worker too where a worker holds the phase.",
 				"A reviewer step after yours reviews the new head when it runs.",
 				// The round that waits on GitHub's merge state, read at a conflicting head.
@@ -998,7 +996,6 @@ func TestTheMergeForwardPartsReadTheTasksOwnSteps(t *testing.T) {
 			[]string{
 				"It acts only when the next step needs a mergeable head, which is so in four cases. The issue stands in `merging`.",
 				"Where every step of the task has run, in `retro` or in `accepting` with no step of the task after it, the merge comes next, so the conflict waits for the merger whatever the base requires.",
-				"Where the task's reviewer step already ran, the reviewer is asked as well to read the merge and approve the new head or request changes.",
 				"A reviewer step still to come reviews the new head when it runs.",
 			},
 			[]string{

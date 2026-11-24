@@ -1554,7 +1554,10 @@ These arrive as messages on the Dispatch issue:
   phases row of each reviewer step of the task that agent works, and the first round of a reviewer
   step starts from the commit of that agent's own reviewer row of the task, at any of its steps, or
   `none` where there is none. So in `implementer reviewer:r tester reviewer:r`, after step 4
-  requests changes at X, step 2's next round names X. While the row holds no commit, each task of
+  requests changes at X, step 2's next round names X. A row is the agent's only while it names that
+  agent: where a later version of the plan gave every reviewer step the agent worked on the task to
+  another agent, the agent's next reviewer step names `none` and reads the whole change, though a
+  review of its own read a commit before. While the row holds no commit, each task of
   that step's round, a wake or a resume included, names
   `Commit another agent's review read: <sha>.` before its last two sentences where another agent's
   reviewer step before it read one: the commit of the nearest such
@@ -1576,10 +1579,10 @@ These arrive as messages on the Dispatch issue:
   deciding review on the task shows which case holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the merger merges the base forward itself
-  while the issue stays in `merging`. Where the task's reviewer step ran, the daemon asks the
-  reviewer to read that merge, the agent of the reviewer step that started last where the task
-  has more than one, and the merger merges the new head once the reviewer's approval of it is on
-  the pull request; where the task has no reviewer step, the merger goes on at the new
+  while the issue stays in `merging`. Where a reviewer step of the task already ran, the daemon
+  asks the agent of the reviewer step that started last to read that merge, and the merger merges
+  the new head once the reviewer's approval of it is on the pull request; where the task has no
+  reviewer step, the merger goes on at the new
   head. And it enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
@@ -1686,9 +1689,9 @@ A completion of `testing`, `reviewing`, `step` or `retro`, the phase the issue s
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Where the task's reviewer step already ran, the reviewer is asked to read the merge and
-approve the new head; where the task has more than one reviewer step, that is the agent of the one
-that started last, once the first has run. A red check sends nothing back from anywhere.
+before. Where a reviewer step of the task already ran, the agent of the reviewer step that started
+last is asked to read the merge and approve the new head. A red check sends nothing back from
+anywhere.
 
 That refusal compares heads by name, so one completion at `step` escapes it. A role the deployment
 defines reports the commit its workspace stands on, `@-`. When that role made a commit of its own on
