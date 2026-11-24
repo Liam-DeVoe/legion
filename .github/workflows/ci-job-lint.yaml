@@ -223,8 +223,9 @@ jobs:
 
       # After the restore above: it runs `go list -deps ./cmd/legion` in packages/daemon for each
       # target .github/go-release-targets.json lists for legion, and holds release.yaml's
-      # LEGION_VERSION_ARGS to every package of this repository those listings print, so a
-      # package the legion binary comes to link is one a change to which releases a legion. A run
+      # LEGION_VERSION_ARGS to every package of this repository those listings print and to the
+      # go.work the build reads, so a package the legion binary comes to link, or the workspace it
+      # builds in, is one a change to which releases a legion. A run
       # of it before the restore filled the module cache, and tar refused to unpack the entry over
       # each module file it had downloaded (Go makes them read-only), so the restore failed. Here,
       # in a job that holds no credential, never in the release workflow.

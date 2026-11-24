@@ -115,7 +115,7 @@ env:
     packages/envoy/listenfd/
     packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/programfile/ packages/envoy/roleholder/
     packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
-    packages/envoy/go.mod packages/envoy/go.sum
+    packages/envoy/go.mod packages/envoy/go.sum go.work go.work.sum
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh .github/go-release-targets.json
 
   # why: .github/ci-notes/release.md#why-goproxy-falls-through-to-direct

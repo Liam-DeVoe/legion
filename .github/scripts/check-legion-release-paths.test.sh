@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Tests for `check-legion-release-paths.sh`: every package of this repository the `legion` binary
-# links, for each target .github/go-release-targets.json lists for it, and the go.mod and go.sum
-# of its module, is covered by a path of release.yaml's LEGION_VERSION_ARGS. The case that matters
-# is the one the check exists for: a package the binary links that the list does not name, on the
-# runner's own target or on another one.
+# links, for each target .github/go-release-targets.json lists for it, the go.mod and go.sum of
+# its module, and the go.work its build reads with its go.work.sum, is covered by a path of
+# release.yaml's LEGION_VERSION_ARGS. The case that matters is the one the check exists for: a
+# package the binary links that the list does not name, on the runner's own target or on another
+# one.
 #
 # Each case builds a miniature repository under a temporary directory, with a daemon module whose
 # `replace` reaches an envoy module as the real one does, and symlinks the real script into it, so
@@ -71,6 +72,13 @@ release() {
     "$2" > "$1/.github/workflows/release.yaml"
 }
 
+# gowork <root>: a go.work at the root that binds the two modules, as the real one does, and an
+# empty go.work.sum beside it.
+gowork() {
+  printf 'go 1.22\n\nuse (\n\t./packages/daemon\n\t./packages/envoy\n)\n' > "$1/go.work"
+  : > "$1/go.work.sum"
+}
+
 run_check() {
   local root=$1
   set +e
@@ -120,6 +128,42 @@ release "$root" 'packages/daemon/ packages/envoy/used/ packages/envoy/deep/ pack
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the go.sum" "$(contains "$out" 'would release no legion: packages/envoy/go.sum\.')"
+
+echo "case: a go.work binds the modules, and the list does not name it"
+# The release builds in workspace mode when a go.work is above packages/daemon, as the real one
+# is, and the go.work's own lines (a go or godebug line, a use, a replace) set what the binary
+# builds with, so a change to it alone must release one, as a change to a module's go.mod does.
+root=$(fixture gowork-unnamed)
+gowork "$root"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the go.work and its sum" "$(contains "$out" 'would release no legion: go.work, go.work.sum\.')"
+
+echo "case: a go.work and its sum the list names"
+root=$(fixture gowork-named)
+gowork "$root"
+release "$root" "$covering go.work go.work.sum"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "says it compared the go.work" "$(contains "$out" 'and go.work and go.work.sum, which bind them')"
+
+echo "case: a go.work the list names, beside a go.work.sum it does not"
+root=$(fixture gowork-sum-unnamed)
+gowork "$root"
+release "$root" "$covering go.work"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the go.work.sum alone" "$(contains "$out" 'covers 1 of what the legion binary links .*: go.work.sum\.')"
+
+echo "case: a go.work outside the repository"
+# GOWORK may name one anywhere; a change to a file outside the repository is no commit the list
+# can name, so the check cannot hold it to the list and refuses it.
+root=$(fixture gowork-outside)
+mkdir -p "$work/gowork-outside-parent"
+printf 'go 1.22\n\nuse (\n\t%s/packages/daemon\n\t%s/packages/envoy\n)\n' "$root" "$root" > "$work/gowork-outside-parent/go.work"
+GOWORK="$work/gowork-outside-parent/go.work" run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says it is outside the repository" "$(contains "$out" 'is outside the repository')"
 
 echo "case: a directory covers every package below it"
 root=$(fixture directory)

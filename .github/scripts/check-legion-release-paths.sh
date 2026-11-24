@@ -11,16 +11,18 @@
 # each target .github/go-release-targets.json lists for legion, with the release build's
 # CGO_ENABLED=0, GOOS and GOARCH (release-build-legion.sh): a file a build constraint keeps to one
 # target brings in its imports in that target's binary alone. It fails naming each package of
-# this repository those listings print whose directory no path of the list covers, and each
-# module of this repository they reach whose go.mod or go.sum no path covers. A path covers what
-# git's pathspec would: itself, and everything below it when it names a directory.
+# this repository those listings print whose directory no path of the list covers, each module of
+# this repository they reach whose go.mod or go.sum no path covers, and the go.work the build
+# reads (`go env GOWORK` in packages/daemon), with its go.work.sum, when no path covers it: in
+# workspace mode its go, godebug, use and replace lines set what the binary builds with. A path
+# covers what git's pathspec would: itself, and everything below it when it names a directory.
 # `:(exclude)<path>` takes that path back out; any other pathspec magic is refused, since the
 # check would not read it as release-push.sh's git does.
 #
 # It fails, too, when `go list` fails for a target, when the target list names no legion target,
-# when release.yaml has no LEGION_VERSION_ARGS or no `--` in it, and when `go list` printed no
-# package of this repository: a check that compared nothing would read the same as one that found
-# nothing missing.
+# when the go.work the build reads is outside the repository, when release.yaml has no
+# LEGION_VERSION_ARGS or no `--` in it, and when `go list` printed no package of this repository:
+# a check that compared nothing would read the same as one that found nothing missing.
 #
 # Run from anywhere: .github/scripts/check-legion-release-paths.sh
 # CI runs it in ci.yaml's lint job (after setup-go and the go-notices restore, which it must not
@@ -59,8 +61,15 @@ while read -r target; do
   fi
 done <"$work/targets"
 
-# The listing, and how many targets it covers.
-python3 - "$work/listed" "$(wc -l <"$work/targets")" <<'PY'
+# The go.work the build reads: a path, or empty (none found) or off (GOWORK=off) for none.
+if ! gowork=$(cd packages/daemon && go env GOWORK 2>"$work/errors"); then
+  echo "::error file=packages/daemon/go.mod::go env GOWORK failed in packages/daemon, so the go.work the legion build reads is unknown:" >&2
+  cat "$work/errors" >&2
+  exit 1
+fi
+
+# The listing, how many targets it covers, and the go.work.
+python3 - "$work/listed" "$(wc -l <"$work/targets")" "$gowork" <<'PY'
 import sys
 from pathlib import Path
 
@@ -69,6 +78,7 @@ import yaml
 RELEASE = Path(".github/workflows/release.yaml")
 ROOT = Path.cwd().resolve()
 TARGETS = int(sys.argv[2])
+GOWORK = "" if sys.argv[3] in ("", "off") else sys.argv[3]
 
 
 def fatal(message: str) -> None:
@@ -133,6 +143,15 @@ for module in sorted(modules):
         path = f"{module}/{name}"
         if (ROOT / path).exists() and not covered(path):
             missing.append(path)
+# The go.work the build reads binds the modules: in workspace mode its go, godebug, use and
+# replace lines set what the binary builds with, and its go.work.sum holds the sums.
+workspace = []
+if GOWORK:
+    if (gowork := ours(GOWORK)) is None:
+        fatal(f"the go.work the legion build reads, {GOWORK}, is outside the repository, so no path of LEGION_VERSION_ARGS "
+              "can name it and a change to it alone would release no legion")
+    workspace = [gowork] + ([f"{gowork}.sum"] if (ROOT / f"{gowork}.sum").exists() else [])
+    missing += [path for path in workspace if not covered(path)]
 if missing:
     fatal(
         f"{RELEASE}'s LEGION_VERSION_ARGS names no path that covers {len(missing)} of what the legion binary links "
@@ -141,9 +160,10 @@ if missing:
         + ". Add each after the `--` (.github/ci-notes/release.md, \"The Go legion's version arguments and the command "
         "that prints its envoy packages\")."
     )
+bound = f", and {' and '.join(workspace)}, which {'bind' if len(workspace) > 1 else 'binds'} them" if workspace else ""
 print(
     f"{RELEASE}'s LEGION_VERSION_ARGS covers all {len(packages)} packages of this repository that "
     f"go list -deps ./cmd/legion prints for the {TARGETS} legion targets of .github/go-release-targets.json, "
-    f"and the go.mod and go.sum of their {len(modules)} modules"
+    f"and the go.mod and go.sum of their {len(modules)} modules{bound}"
 )
 PY
