@@ -1,6 +1,7 @@
 import { type DispatchToolLabel, dispatchToolSpecs } from "@legion/contracts/dispatch-tools";
 
 import type {
+  Actor,
   GoingPlanAnswer,
   GoingPlanRow,
   GoingPlanTick,
@@ -16,6 +17,7 @@ import { sessionOfAddress } from "../refs/routes";
 import { clockWords } from "../search/blocks/block-cells";
 import { objectOf, textOf } from "./fields";
 import type { PlanDraft } from "./going-store";
+import { postToolOf } from "./post-tools";
 
 /**
  * What one plan's rows say to the person, and the person's answer to them: the card's title, made
@@ -302,9 +304,10 @@ function editOf(field: string, value: unknown): FieldEdit {
  *  shows a new issue of the plan by its title in `newIssues`), an update's labels where it adds
  *  labels (`labels_add`) the labels now with those it adds (`withLabelsAdded`), a claim's holder
  *  now and after; a new issue's title, project, parent, priority and labels, none of which has a
- *  value now. A row that names no field shows its item alone. The person's edit of the labels a
- *  row adds is the whole set they chose, which the approval writes as labels in place of
- *  labels_add (going_plan.go `goingEditReplaces`). */
+ *  value now; an edit of a comment or an issue message its body, whose value now is the body the
+ *  plan read (`postRead`), and a delete of one nothing. A row that names no field shows its item
+ *  alone. The person's edit of the labels a row adds is the whole set they chose, which the
+ *  approval writes as labels in place of labels_add (going_plan.go `goingEditReplaces`). */
 export function rowChanges(
   row: GoingPlanRow,
   edits: Arguments | undefined,
@@ -322,6 +325,22 @@ export function rowChanges(
       next: args[field],
       now: undefined,
     }));
+  }
+  if (postToolOf(row.tool) !== undefined) {
+    // A post's read is its author and its body, not a value of each field it names: the one
+    // field an edit writes is the body, and a delete writes none.
+    return args.body === undefined
+      ? []
+      : [
+          {
+            edit: editOf("body", args.body),
+            edited: editedField("body"),
+            field: "body",
+            namesNewIssue: false,
+            next: args.body,
+            now: postRead(row).body,
+          },
+        ];
   }
   const fields = row.fields ?? [];
   const now = objectOf(row.now);
@@ -441,13 +460,15 @@ const MESSAGE_TOOLS: Readonly<Record<string, true>> = {
 };
 
 /** The kinds of row a plan card draws, each in its own way (design v3, state 6). */
-export type RowKind = "new_issue" | "change" | "claim" | "document" | "message" | "other";
+export type RowKind = "new_issue" | "change" | "claim" | "document" | "message" | "post" | "other";
 
 /** What kind of row `row` is: a new issue, a change of an issue's fields, a claim, a change of a
- *  document's text, a message, or any other change. */
+ *  document's text, a message, an edit or a delete of a comment or an issue message (a post), or
+ *  any other change. */
 export function rowKind(row: GoingPlanRow): RowKind {
   if (makesIssue(row)) return "new_issue";
   if (MESSAGE_TOOLS[row.tool] === true) return "message";
+  if (postToolOf(row.tool) !== undefined) return "post";
   if (documentChange(row, "") !== undefined) return "document";
   if (row.tool === "dispatch_issue_update") return "change";
   return row.tool === "dispatch_claim" ? "claim" : "other";
@@ -525,6 +546,47 @@ const TOOL_LABELS: ReadonlyMap<string, DispatchToolLabel> = new Map(
   dispatchToolSpecs.map((spec): [string, DispatchToolLabel] => [spec.name, spec.label])
 );
 
+/** A comment or an issue message as the row of a tool that edits or deletes it read it
+ *  (going_observe.go `goingPostNow`): its author, and its body while it stands. A post deleted
+ *  since the plan read it (`postGone`) has no body, as no read of a deleted post gives one; a row
+ *  whose plan gives no value now, a withdrawn run's, has neither. */
+export interface PostRead {
+  readonly author: Actor | undefined;
+  readonly body: string | undefined;
+}
+
+/** The post a row that edits or deletes one read (`PostRead`). */
+export function postRead(row: GoingPlanRow): PostRead {
+  const now = objectOf(row.now);
+  const author = objectOf(now.author);
+  const id = textOf(author.id);
+  return {
+    author: id === "" ? undefined : { id, kind: textOf(author.kind) },
+    body: postGone(row) || typeof now.body !== "string" ? undefined : now.body,
+  };
+}
+
+/** Whether the comment or the issue message a row edits or deletes is deleted (`deleted`): the
+ *  row's value now is the delete's mark and no body. Nothing edits or deletes a deleted post, so
+ *  nobody may tick such a row (`409 POST_DELETED`). A delete the row itself ran leaves it so. */
+export function postGone(row: GoingPlanRow): boolean {
+  return row.deleted === true;
+}
+
+/** Whether a row's post was deleted after the plan read it by a write other than the row's own:
+ *  it is gone (`postGone`), and the row is no delete that ran. */
+export function deletedSince(row: GoingPlanRow): boolean {
+  return postGone(row) && !(postToolOf(row.tool)?.deletes === true && row.state === "done");
+}
+
+/** What a row that edits or deletes a post does, in its tool's verb, as an order: "Edit the
+ *  comment", "Delete the message"; "" for a row of any other tool. */
+export function postAction(row: GoingPlanRow): string {
+  const post = postToolOf(row.tool);
+  if (post === undefined) return "";
+  return `${capitalized(TOOL_LABELS.get(row.tool)?.verb ?? "change")} the ${post.kind}`;
+}
+
 /** The label the plan names a row by in place of its tool's, given the row's arguments: a new
  *  issue is filed, as the card's title says; a project's default repository is set to the
  *  repository the row names, or cleared where it names none (repo null), as Settings' Clear says
@@ -598,12 +660,16 @@ function documentName(args: Arguments): string {
 
 /** How a row names its change wherever it is drawn - its tick, the line of a change of a document
  *  or of another kind - with the person's `edits` of it: its change and its item, a new issue by
- *  its title, a document by its name; so each row of a plan is named apart. */
+ *  its title, a document by its name, a comment or an issue message by what the row does and the
+ *  issue it is on (`postAction`), as its arguments name it by an id, which says nothing to the
+ *  person; so each row of a plan is named apart. */
 export function rowLabel(
   row: GoingPlanRow,
   edits?: Arguments,
   newIssues: ReadonlyMap<number, string> = NO_NEW_ISSUES
 ): string {
+  const action = postAction(row);
+  if (action !== "") return row.issue === "" ? action : `${action} on ${row.issue}`;
   const args = { ...argumentsOf(row), ...edits };
   const document = documentName(args);
   return changeLabel(
@@ -710,18 +776,28 @@ function clauseCount(clause: TitleClause): number {
  * rows first name it: new issues are filed; changes of an issue's fields change, move or close
  * their issues, an issue named by its key where the part names one; messages are sent; a
  * suggested change to a document is suggested, as its row says ("Suggest a change to spec on
- * DEMO-15"), and any other change of a document edits it; and the rest made. A part that counts
+ * DEMO-15"), and any other change of a document edits it; a comment or an issue message is
+ * edited or deleted, in its tool's verb ("Edit 1 comment"); and the rest made. A part that counts
  * the same thing as the one before it leaves out its noun. Past two kinds the sentence no longer
  * fits one line, so it counts instead: "Change 4 items and send 1 message", every change of an
  * item in one count and the messages, which change no item, in their own.
  */
 export function planTitle(rows: readonly GoingPlanRow[]): string {
+  // One part for each verb and the noun it counts: an edit of a document and one of a comment
+  // are two parts.
   const clauses = new Map<string, TitleClause>();
   const add = (verb: string, one: string, many: string, keyed: boolean, item: string) => {
-    const clause = clauses.get(verb) ?? { count: 0, items: new Set(), keyed, many, one, verb };
+    const clause = clauses.get(`${verb} ${one}`) ?? {
+      count: 0,
+      items: new Set(),
+      keyed,
+      many,
+      one,
+      verb,
+    };
     clause.count += 1;
     if (item !== "") clause.items.add(item);
-    clauses.set(verb, clause);
+    clauses.set(`${verb} ${one}`, clause);
   };
   for (const row of rows) {
     const item = row.item || row.issue;
@@ -745,12 +821,17 @@ export function planTitle(rows: readonly GoingPlanRow[]): string {
       case "message":
         add("send", "message", "messages", false, "");
         break;
+      case "post": {
+        const kind = postToolOf(row.tool)?.kind ?? "post";
+        add(TOOL_LABELS.get(row.tool)?.verb ?? "change", kind, `${kind}s`, false, "");
+        break;
+      }
       default:
         add("make", "change", "changes", false, "");
     }
   }
   if (clauses.size > 2) {
-    const sent = clauses.get("send");
+    const sent = clauses.get("send message");
     const changed = [...clauses.values()]
       .filter((clause) => clause !== sent)
       .reduce((sum, clause) => sum + clauseCount(clause), 0);
@@ -799,7 +880,7 @@ const FINISHED_STATES: Readonly<Partial<Record<GoingPlanRow["state"], true>>> = 
 
 /** What an Undo did, in its card's title (design v2, state 7): "Undone · 3 changes reverted", or
  *  how many of the changes it could revert where another writer's value stayed or a revert was
- *  refused. A message is never reverted, and counts in neither. */
+ *  refused. A message and a delete of a post are never reverted, and count in neither. */
 export function undoneTitle(lines: readonly GoingUndoLine[]): string {
   const reversible = lines.filter((line) => line.undo !== "not_undone");
   const reverted = reversible.filter((line) => line.outcome.ok).length;
@@ -963,16 +1044,24 @@ export interface RowOutcome {
   readonly failed: boolean;
 }
 
+/** What a delete of a comment or an issue message says once it ran, and once its run's Undo
+ *  answered (R6): nothing restores a deleted post (going_undo.go `goingDeletedNotUndone`). */
+const DELETED_NOT_UNDONE = "Deleted, not undone";
+
 /**
- * What a row that no longer waits says (design v2, state 7; R4, R7): a message row its result,
- * "Sent", "Queued: …" or "Refused: ‹the reason›"; a failed row its reason in words; a row skipped
- * because a change it needs did not run, "Not run: it needs the change above"; an unticked row,
- * "Not run: you left it unticked". A row that waits its turn, runs or ran says nothing past its
- * mark. Undefined where it says nothing.
+ * What a row that no longer waits says (design v2, state 7; R4, R6, R7): a message row its
+ * result, "Sent", "Queued: …" or "Refused: ‹the reason›"; a delete of a post that ran, "Deleted,
+ * not undone"; a failed row its reason in words; a row skipped because a change it needs did not
+ * run, "Not run: it needs the change above"; an unticked row, "Not run: you left it unticked". Any
+ * other row that waits its turn, runs or ran says nothing past its mark. Undefined where it says
+ * nothing.
  */
 export function rowOutcome(row: GoingPlanRow): RowOutcome | undefined {
   const delivery = rowKind(row) === "message" ? deliveryResult(row) : undefined;
   if (delivery !== undefined) return { failed: row.state === "failed", text: delivery };
+  if (row.state === "done" && postToolOf(row.tool)?.deletes === true) {
+    return { failed: false, text: DELETED_NOT_UNDONE };
+  }
   switch (row.state) {
     case "failed": {
       const reason = rowResultMessage(row);
@@ -1003,10 +1092,12 @@ export function keptValue(
 }
 
 /** What became of a row's change once its run was undone (design v2, state 7; R6), where no field
- *  of it was kept as another writer left it: "Reverted", "Sent, not undone" for a message, or why
- *  it could not be reverted. */
+ *  of it was kept as another writer left it: "Reverted", "Sent, not undone" for a message,
+ *  "Deleted, not undone" for a delete of a post, or why it could not be reverted. */
 export function undoWords(line: GoingUndoLine): string {
-  if (line.undo === "not_undone") return "Sent, not undone";
+  if (line.undo === "not_undone") {
+    return postToolOf(line.tool)?.deletes === true ? DELETED_NOT_UNDONE : "Sent, not undone";
+  }
   return line.outcome.ok ? "Reverted" : `Not reverted: ${line.outcome.message}`;
 }
 
@@ -1298,9 +1389,26 @@ export function toggledDraft(
   return { ...draft, unticked };
 }
 
-/** Whether `row` is unticked because a row it needs is: what it says, "Needs the change above". */
-export function needsUnticked(draft: PlanDraft, row: GoingPlanRow): boolean {
-  return draft.unticked.has(row.row) && (row.needs ?? []).some((need) => draft.unticked.has(need));
+/** Whether `row` is unticked because a row it needs is, among the rows `unticked` names
+ *  (`untickedRows`): what it says, "Needs the change above". */
+export function needsUnticked(unticked: ReadonlySet<number>, row: GoingPlanRow): boolean {
+  return unticked.has(row.row) && (row.needs ?? []).some((need) => unticked.has(need));
+}
+
+/** The rows of `plan` the draft leaves out: each the person unticked, each waiting row whose post
+ *  is deleted (`postGone`), which nobody may tick, and each row that needs one of those, as the
+ *  approval leaves out a row whose need it leaves out (going_plan.go `approveGoingPlan`). The
+ *  draft's own set where no waiting row's post is deleted. */
+export function untickedRows(plan: GoingPlanAnswer, draft: PlanDraft): ReadonlySet<number> {
+  const rows = plan.rows ?? [];
+  const gone = rows.filter((row) => rowWaits(row) && postGone(row));
+  if (gone.length === 0) return draft.unticked;
+  const unticked = new Set(draft.unticked);
+  for (const row of gone) {
+    unticked.add(row.row);
+    for (const needing of rowsNeeding(rows, row.row)) unticked.add(needing);
+  }
+  return unticked;
 }
 
 /** The draft as the plan card holds it: the person's answer, and the change of each row's item
@@ -1351,9 +1459,11 @@ export function rowWaits(row: GoingPlanRow): boolean {
   return row.state === "waiting";
 }
 
-/** How many changes the draft approves of `plan`: its waiting rows the person left ticked. */
+/** How many changes the draft approves of `plan`: its waiting rows it leaves ticked
+ *  (`untickedRows`). */
 export function tickedCount(plan: GoingPlanAnswer, draft: PlanDraft): number {
-  return (plan.rows ?? []).filter((row) => rowWaits(row) && !draft.unticked.has(row.row)).length;
+  const unticked = untickedRows(plan, draft);
+  return (plan.rows ?? []).filter((row) => rowWaits(row) && !unticked.has(row.row)).length;
 }
 
 /** Whether `plan` waits for its person's answer: it waits, and its run is not withdrawn - a run
@@ -1373,16 +1483,18 @@ export function approvable(plan: GoingPlanAnswer, draft: PlanDraft, pending: boo
 
 /** The approval the draft makes of `plan` (`POST /api/v1/going/runs/{id}/plan/approve`): the
  *  version of the plan the person was shown, which Dispatch refuses the approval over once the
- *  plan has changed since, each waiting row's tick, and the values the person edited. */
+ *  plan has changed since, each waiting row's tick (`untickedRows`), a row whose post is deleted
+ *  unticked, and the values the person edited. */
 export function approvalOf(
   plan: GoingPlanAnswer,
   draft: PlanDraft
 ): { plan: number; rows: GoingPlanTick[]; version: GoingPlanAnswer["version"] } {
+  const unticked = untickedRows(plan, draft);
   const rows: GoingPlanTick[] = (plan.rows ?? []).filter(rowWaits).map((row) => {
     const values = draft.edits.get(row.row);
     return {
       row: row.row,
-      tick: !draft.unticked.has(row.row),
+      tick: !unticked.has(row.row),
       ...(values === undefined ? {} : { values: { ...values } }),
     };
   });

@@ -10,6 +10,7 @@ import {
   type RunState,
   reasonCode,
   runNext,
+  withdrawalOf,
 } from "./run-states";
 
 // The state table of one run of the command bar (plan.md t15): each state - idle, working,
@@ -348,4 +349,28 @@ test("a run that has not stopped or failed has no end words, and a reason's code
   expect(reasonCode("NO_MODEL")).toBe("NO_MODEL");
   expect(reasonCode("the run failed: why")).toBe("");
   expect(reasonCode("")).toBe("");
+});
+
+// A run another writer's delete withdrew and one only its own plan's deletes withdrew end with two
+// codes, one the start of the other: each is read by its whole code, never as the other, and each
+// says its own sentence with no next step.
+test("a withdrawal by another writer's delete and one by the run's own delete are told apart by their whole code", () => {
+  const byRun = "ANSWER_WITHDRAWN_BY_RUN: every post this run read that is gone it deleted itself";
+  const byOther = "ANSWER_WITHDRAWN: a comment or an issue message this run read was deleted";
+  expect(withdrawalOf(byRun)).toBe("run_deleted");
+  expect(withdrawalOf("ANSWER_WITHDRAWN_BY_RUN")).toBe("run_deleted");
+  expect(withdrawalOf(byOther)).toBe("read_deleted");
+  expect(withdrawalOf("ANSWER_WITHDRAWN")).toBe("read_deleted");
+  for (const other of ["ANSWER_WITHDRAWN_BY_RUNS: x", "ANSWER_WITHDRAWNS: x", "STOPPED: x", ""]) {
+    expect(withdrawalOf(other)).toBeUndefined();
+  }
+  expect(endWords("stopped_person", byRun, "standard", "read 2 items")).toEqual({
+    action: undefined,
+    continueInDeep: false,
+    noModel: false,
+    text: "Dispatch withdrew this answer because this run deleted a comment or message it read.",
+  });
+  expect(endWords("stopped_person", byOther, "standard", "read 2 items")?.text).toBe(
+    "Dispatch withdrew this answer because a comment or message it read was deleted."
+  );
 });

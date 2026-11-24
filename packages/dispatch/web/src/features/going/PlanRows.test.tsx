@@ -719,6 +719,144 @@ test("message rows say whom they reach and how, show the whole text, and say the
   }
 });
 
+/** An edit or a delete of a comment on `issue`, whose author is `author`, as the plan read it:
+ *  its body while it stands, the delete's mark and no body once it is deleted (`deleted`). */
+function postRow(
+  number: number,
+  tool: "dispatch_edit_comment" | "dispatch_delete_comment",
+  issue: string,
+  author: string,
+  read: { readonly body: string } | { readonly deleted: true },
+  args: Record<string, unknown> = {}
+): GoingPlanRow {
+  const comment = `c-${number}`;
+  const deleted = "deleted" in read;
+  return row(number, {
+    arguments: { comment, ...args },
+    class: "text",
+    fields: ["body"],
+    issue,
+    item: comment,
+    now: deleted
+      ? {
+          author: { id: author, kind: "user" },
+          deleted_at: "2026-11-24T15:00:00Z",
+          deleted_by: { id: author, kind: "user" },
+        }
+      : { author: { id: author, kind: "user" }, body: read.body },
+    tool,
+    ...(deleted ? { deleted: true } : {}),
+  });
+}
+
+// An edit and a delete of a comment (R4, R6): the row names what it does to whose post on which
+// issue, by the issue's chip; an edit's body is a field, "Body: old → new", with Edit, as every
+// change of a field is; a delete's body shows whole, struck through, and the row says that a
+// delete cannot be undone. A comment deleted after the plan read it shows no word of it - nor the
+// words the edit would put there - says it was deleted, and has no tick: Approve leaves it out.
+test("post rows name the author and the issue, show an edit's body as a field and a delete's struck through, and a post deleted since shows no body and no tick", async () => {
+  const user = userEvent.setup();
+  const restore = await openPlan(
+    planOf([
+      postRow(
+        0,
+        "dispatch_edit_comment",
+        "DEMO-15",
+        "alice",
+        { body: "The window is 24 hours." },
+        { body: "The window is 72 hours." }
+      ),
+      postRow(1, "dispatch_delete_comment", "DEMO-16", "bob", { body: "Ship it Friday." }),
+      postRow(
+        2,
+        "dispatch_edit_comment",
+        "DEMO-17",
+        "carol",
+        { deleted: true },
+        { body: "Ship it Monday, not Friday." }
+      ),
+    ])
+  );
+  const approve = answerRoute<
+    (run: string, body: unknown, bounds: WriteBounds) => Promise<GoingPlanAnswer>
+  >("POST", "/api/v1/going/runs/*/plan/approve");
+  approve.mockImplementation(async () => planOf([], { state: "running" }));
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    expect(screen.getByTestId("going-plan-title")).toHaveTextContent(
+      "Edit 2 comments and delete 1"
+    );
+
+    const edit = drawnRow(0);
+    expect(edit).toHaveAttribute("data-kind", "post");
+    const editLine = within(edit).getByTestId("going-plan-post");
+    await waitFor(() =>
+      expect(editLine).toHaveTextContent(
+        /^Edit the comment by alice on DEMO-15In progressThe issue DEMO-15$/u
+      )
+    );
+    expect(within(editLine).getByTestId("item-chip")).toHaveTextContent("DEMO-15");
+    const body = fieldOf(edit, "body");
+    expect(body).toHaveTextContent(/^Body: The window is 24 hours\. → The window is 72 hours\./u);
+    expect(within(body).getByRole("button", { name: "Edit body" })).toBeInTheDocument();
+    expect(
+      within(edit).getByRole("checkbox", { name: "Edit the comment on DEMO-15" })
+    ).toBeChecked();
+    expect(within(edit).queryByTestId("going-plan-final")).toBeNull();
+
+    const remove = drawnRow(1);
+    await waitFor(() =>
+      expect(within(remove).getByTestId("going-plan-post")).toHaveTextContent(
+        /^Delete the comment by bob on DEMO-16In progressThe issue DEMO-16$/u
+      )
+    );
+    const struck = within(remove).getByTestId("going-plan-quote").querySelector("del");
+    expect(struck?.textContent).toBe("Ship it Friday.");
+    expect(within(remove).getByTestId("going-plan-final")).toHaveTextContent(
+      /^Cannot be undone once deleted$/u
+    );
+    expect(remove).toHaveAttribute("data-removes", "true");
+    expect(within(remove).queryByTestId("going-plan-field")).toBeNull();
+
+    const gone = drawnRow(2);
+    await waitFor(() =>
+      expect(within(gone).getByTestId("going-plan-post")).toHaveTextContent(
+        /^Edit the comment by carol on DEMO-17In progressThe issue DEMO-17$/u
+      )
+    );
+    expect(within(gone).getByTestId("going-plan-post-deleted")).toHaveTextContent(
+      /^This comment was deleted\.$/u
+    );
+    expect(within(gone).queryByRole("checkbox")).toBeNull();
+    expect(within(gone).queryByTestId("going-plan-field")).toBeNull();
+    expect(within(gone).queryByTestId("going-plan-quote")).toBeNull();
+    expect(within(gone).queryByTestId("going-plan-removes")).toBeNull();
+    expect(gone.textContent ?? "").not.toMatch(/Monday|Friday|Body/u);
+
+    const approveButton = screen.getByTestId("going-plan-approve");
+    expect(approveButton).toHaveTextContent("Approve 2 changes");
+    await user.click(approveButton);
+    await waitFor(() =>
+      expect(approve).toHaveBeenCalledWith(
+        "run-1",
+        {
+          plan: 1,
+          rows: [
+            { row: 0, tick: true },
+            { row: 1, tick: true },
+            { row: 2, tick: false },
+          ],
+          version: "v1",
+        },
+        keyedAttempt
+      )
+    );
+  } finally {
+    restore();
+  }
+});
+
 test("in Auto-review a row that passed review says it ran, and a row that waits says why in words", async () => {
   const restore = await openPlan(
     planOf(

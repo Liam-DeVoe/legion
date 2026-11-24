@@ -63,6 +63,7 @@ import {
   type ChangePiece,
   cardTitle,
   type DocumentChange,
+  deletedSince,
   deliveryWords,
   documentChange,
   editedDraft,
@@ -75,6 +76,9 @@ import {
   needsUnticked,
   newIssueTitles,
   planWaits,
+  postAction,
+  postGone,
+  postRead,
   ROW_MARKS,
   type RowChange,
   type RowMark,
@@ -93,11 +97,13 @@ import {
   toggledDraft,
   undoButtonWords,
   undoRecord,
+  untickedRows,
   valuesNowWords,
   valueWords,
   wasReverted,
   withChangesUnticked,
 } from "./plan-rows";
+import { postToolOf } from "./post-tools";
 import { focusConversationBox } from "./RunControls";
 import { UndoResult, useRunUndo } from "./RunUndo";
 import type { PlanAnswering } from "./usePlan";
@@ -657,14 +663,21 @@ function FieldChange({
   );
 }
 
-/** The words a row posts or sends, whole, as a quote. */
-function Quote({ text }: { readonly text: string }): ReactNode {
+/** The words a row posts or sends, whole, as a quote; struck through where the row deletes
+ *  them. */
+function Quote({
+  struck = false,
+  text,
+}: {
+  readonly struck?: boolean;
+  readonly text: string;
+}): ReactNode {
   return (
     <blockquote
       className={`border-l-2 pl-2 text-sm whitespace-pre-wrap break-words ${quoteAccentBorder} ${quoteBodyText}`}
       data-testid="going-plan-quote"
     >
-      {text}
+      {struck ? <del>{text}</del> : text}
     </blockquote>
   );
 }
@@ -832,6 +845,71 @@ function MessageBody({
   );
 }
 
+/**
+ * A row that edits or deletes a comment or an issue message: what it does to whose post on which
+ * issue, "Edit the comment by alice on DEMO-15", the issue by its chip; then an edit's body as a
+ * field, "Body: old → new", with Edit while the row waits, as every change of a field has; or a
+ * delete's body, whole and struck through, and while it waits, that it cannot be undone once
+ * deleted (R6), as a message cannot once sent. A post deleted after the plan read it
+ * (`deletedSince`) shows no word of it, nor the words an edit would put in its place, which can
+ * repeat it: "This comment was deleted." A delete that ran says so in its outcome.
+ */
+function PostBody({
+  changes,
+  field,
+  row,
+  waiting,
+}: {
+  readonly changes: readonly RowChange[];
+  readonly field: (change: RowChange) => ReactNode;
+  readonly row: GoingPlanRow;
+  readonly waiting: boolean;
+}): ReactNode {
+  const read = postRead(row);
+  const post = postToolOf(row.tool);
+  let below: ReactNode;
+  if (deletedSince(row)) {
+    below = (
+      <p className={`text-xs ${textSecondaryOnSurface}`} data-testid="going-plan-post-deleted">
+        This {post?.kind ?? "post"} was deleted.
+      </p>
+    );
+  } else if (post?.deletes === true) {
+    below = (
+      <>
+        {read.body === undefined ? null : <Quote struck text={read.body} />}
+        {waiting ? (
+          <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-plan-final">
+            Cannot be undone once deleted
+          </p>
+        ) : null}
+      </>
+    );
+  } else {
+    below = changes.map(field);
+  }
+  return (
+    <div className="space-y-1">
+      <p className={textPrimaryOnSurface} data-testid="going-plan-post">
+        {postAction(row)}
+        {read.author === undefined ? null : (
+          <>
+            {" by "}
+            <AgentName actor={read.author} kind="static" />
+          </>
+        )}
+        {row.issue === "" ? null : (
+          <>
+            {" on "}
+            <ItemSlot item={row.issue} />
+          </>
+        )}
+      </p>
+      {below}
+    </div>
+  );
+}
+
 /** An issue key in a row's words, as a word of its own (`going/agent/labels.go` writes keys so),
  *  captured so that splitting the words keeps it. */
 const KEY_IN_WORDS = /(?<![\w-])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![\w-])/u;
@@ -944,16 +1022,19 @@ function NewIssueBody({
  * change as its kind shows it - a change of an issue's fields as the item and each field in the
  * issue page's words with the value now and the new value, a new issue as its title and fields, a
  * message as whom it reaches with its text, a change of a document's text as its sentences and
- * its diff, and any other change as what it does. A row that closes, deletes or removes something
- * is marked in red; a row whose item changed after the person saw it is marked in amber, says its
- * value now, and waits to be ticked again; a row unticked because a row it needs is says so. In
- * Auto-review it says it passed review, or why it waits. Once its plan no longer waits (design
- * v2, state 7) it ticks in place - a ring while it waits its turn, a spinner while it runs, a
- * check once it ran - and says how it stands (`rowOutcome`): a message's result, a failure's
- * reason with "Say what to do instead" (`onFix`, where given), "Not run: it needs the change
- * above". Once its run was undone, it says what became of its change (`undo`): a change Undo took
- * back whole reads reverted - grey, the value it wrote struck out beside the old value it put
- * back, and no check - while a change that stayed keeps its check and says why.
+ * its diff, an edit or a delete of a comment or an issue message as the post's author and issue
+ * with its body (`PostBody`), and any other change as what it does. A row that closes, deletes or
+ * removes something is marked in red; a row whose item changed after the person saw it is marked
+ * in amber, says its value now, and waits to be ticked again; a row unticked because a row it
+ * needs is says so. A row whose post was deleted after the plan read it has no tick, as nothing
+ * edits or deletes a deleted post, and the rows that need it are left unticked
+ * (`untickedRows`). In Auto-review it says it passed review, or why it waits. Once its plan no
+ * longer waits (design v2, state 7) it ticks in place - a ring while it waits its turn, a spinner
+ * while it runs, a check once it ran - and says how it stands (`rowOutcome`): a message's result,
+ * a failure's reason with "Say what to do instead" (`onFix`, where given), "Not run: it needs the
+ * change above". Once its run was undone, it says what became of its change (`undo`): a change
+ * Undo took back whole reads reverted - grey, the value it wrote struck out beside the old value
+ * it put back, and no check - while a change that stayed keeps its check and says why.
  */
 export function PlanRowView({
   draft,
@@ -970,14 +1051,17 @@ export function PlanRowView({
 }): ReactNode {
   const agents = useAgentText();
   const waiting = rowWaits(row) && planWaits(plan);
-  const ticked = !draft.unticked.has(row.row);
+  const unticked = untickedRows(plan, draft);
+  const ticked = !unticked.has(row.row);
+  // A row whose post is deleted waits with no tick: nothing edits or deletes a deleted post.
+  const tickable = waiting && !postGone(row);
   const edits = draft.edits.get(row.row);
   const newIssues = newIssueTitles(plan.rows ?? [], draft);
   const args = argumentsOf(row);
   const kind = rowKind(row);
   const changes = rowChanges(row, edits, newIssues);
   const removes = rowRemoves(row, changes);
-  const changed = row.changed && waiting;
+  const changed = row.changed && tickable;
   const session = textOf(args.session);
   const label = rowLabel(
     row,
@@ -1007,7 +1091,7 @@ export function PlanRowView({
   const field = (change: RowChange, shape: "line" | "title" | "part") => (
     <FieldChange
       change={change}
-      editable={waiting}
+      editable={tickable}
       issueKey={kind === "new_issue" ? (newIssues.get(row.row) ?? "") : item}
       key={`${plan.run}:${plan.plan}:${change.field}`}
       newIssues={newIssues}
@@ -1023,6 +1107,15 @@ export function PlanRowView({
     body = <NewIssueBody changes={changes} field={field} spec={textOf(args.spec)} />;
   } else if (kind === "message") {
     body = <MessageBody row={row} waiting={waiting} />;
+  } else if (kind === "post") {
+    body = (
+      <PostBody
+        changes={changes}
+        field={(change) => field(change, "line")}
+        row={row}
+        waiting={tickable}
+      />
+    );
   } else if (kind === "document" && document !== undefined) {
     body = (
       <DocumentBody document={document} issue={row.issue || textOf(args.issue)} label={label} />
@@ -1046,9 +1139,10 @@ export function PlanRowView({
       </div>
     );
   }
-  // What a row takes out is marked in red until Undo puts it back. The mark is a bar in a gutter
-  // every row keeps, so a marked row's tick stands in the same column as every other row's.
-  const removing = removes && !reverted;
+  // What a row takes out is marked in red until Undo puts it back, and while it can still run: a
+  // row whose post was deleted since takes nothing out. The mark is a bar in a gutter every row
+  // keeps, so a marked row's tick stands in the same column as every other row's.
+  const removing = removes && !reverted && !deletedSince(row);
   const gutter = removing
     ? calloutDangerBorder
     : changed
@@ -1072,7 +1166,7 @@ export function PlanRowView({
           className={`-ml-1 w-0 self-stretch border-l-4 ${gutter}`}
           data-testid="going-plan-row-gutter"
         />
-        {waiting ? (
+        {tickable ? (
           <input
             aria-label={label}
             checked={ticked}
@@ -1080,6 +1174,9 @@ export function PlanRowView({
             onChange={() => setDraft(toggledDraft(draft, plan.rows ?? [], row.row))}
             type="checkbox"
           />
+        ) : waiting ? (
+          // The tick's room, so the row's words start where every ticked row's do.
+          <span aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
         ) : mark === "waits" ? null : (
           <span
             className="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center text-sm"
@@ -1102,7 +1199,7 @@ export function PlanRowView({
               Changed since the plan: now {valuesNowWords(changes)}
             </p>
           ) : null}
-          {waiting && needsUnticked(draft, row) ? (
+          {tickable && needsUnticked(unticked, row) ? (
             <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-plan-needs">
               Needs the change above
             </p>

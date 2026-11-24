@@ -13,7 +13,14 @@ import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from ".
 import { dangerText, linkText, pageQuietText, textMutedOnSurface } from "../../theme/classes";
 import { clockWords } from "../search/blocks/block-cells";
 import { ConversationView } from "./ConversationView";
-import { goingState, openConversation, openRun, resetGoingStore, startRun } from "./going-store";
+import {
+  goingState,
+  openConversation,
+  openRun,
+  rereadEveryRun,
+  resetGoingStore,
+  startRun,
+} from "./going-store";
 import { useAsk } from "./useAsk";
 import { useOpenPlan } from "./usePlan";
 
@@ -1871,5 +1878,141 @@ test("a run whose record reads withdrawn draws one line though its frames ended 
     expect(goingState().runs.get("r-1")?.frames.replies).toHaveLength(1);
   } finally {
     restore();
+  }
+});
+
+/** The stop reason of a run only its own plan's deletes withdrew, as Dispatch writes it. */
+const WITHDRAWN_BY_RUN_REASON =
+  "ANSWER_WITHDRAWN_BY_RUN: every comment or issue message this run read that is gone, this run deleted";
+
+/** The plan of a run that deleted the comment it read, and changed DEMO-10's priority, once both
+ *  ran: the deleted comment's row shows its author and the delete's mark, and no word of it. */
+const deletingPlan: GoingPlanAnswer = {
+  mode: "ask",
+  plan: 1,
+  rows: [
+    {
+      arguments: { comment: "c-1" },
+      changed: false,
+      claim: null,
+      class: "text",
+      deleted: true,
+      fields: ["body"],
+      issue: "DEMO-15",
+      item: "c-1",
+      needs: [],
+      now: {
+        author: { id: "alice", kind: "user" },
+        deleted_at: "2026-11-24T15:00:00Z",
+        deleted_by: { id: "alice", kind: "user" },
+      },
+      result: { code: "", delivery: null, message: "", status: 204 },
+      row: 0,
+      state: "done",
+      tool: "dispatch_delete_comment",
+      waits: [],
+    },
+    {
+      arguments: { issue: "DEMO-10", priority: 2 },
+      changed: false,
+      claim: null,
+      class: "field",
+      fields: ["priority"],
+      issue: "DEMO-10",
+      item: "DEMO-10",
+      needs: [],
+      now: { priority: null },
+      result: { code: "", delivery: null, message: "", status: 200 },
+      row: 1,
+      state: "done",
+      tool: "dispatch_issue_update",
+      waits: [],
+    },
+  ],
+  run: "r-1",
+  state: "done",
+  summary: "",
+  version: "v1",
+};
+
+/** The frames of a run that read a comment, quoted it, and ran a plan that deleted it, then ended
+ *  in `state` with `reason`. */
+function deletingFrames(
+  reason: string,
+  state: "done" | "stopped" = "stopped"
+): readonly (readonly [string, unknown])[] {
+  const [read, reply] = QUOTING_FRAMES;
+  if (read === undefined || reply === undefined) throw new Error("a quoting run reads and replies");
+  return [
+    read,
+    ["plan", { plan: 1, state: "waiting" }],
+    ["plan", { plan: 1, state: "done" }],
+    reply,
+    ["end", { offers: [], reason, state }],
+  ];
+}
+
+// The architect's ruling of 15:53Z: a run withdrawn only by a delete its own approved plan made
+// keeps its plan's card, its rows and their results - the deleted comment by its author and the
+// delete's mark, "Deleted, not undone" - and gives way to the withdrawal's line only in its answer
+// and its steps, which may quote the comment; the line says that this run deleted it.
+test("a run its own plan's delete withdrew keeps its plan's rows, and says so in one line in place of its answer and steps", async () => {
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => deletingPlan);
+  const restore = await showRun("stopped", deletingFrames(WITHDRAWN_BY_RUN_REASON), {
+    run: { stop_reason: WITHDRAWN_BY_RUN_REASON },
+  });
+  try {
+    const card = await screen.findByTestId("going-plan");
+    const run = screen.getByTestId("going-run");
+    const line = within(run).getByTestId("going-run-withdrawn");
+    expect(line.textContent).toBe(
+      "Dispatch withdrew this answer because this run deleted a comment or message it read."
+    );
+    expect(line.compareDocumentPosition(card)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    const rows = within(card).getAllByTestId("going-plan-row");
+    expect(rows).toHaveLength(2);
+    const [deleted] = rows;
+    await waitFor(() =>
+      expect(within(deleted as HTMLElement).getByTestId("going-plan-post")).toHaveTextContent(
+        /^Delete the comment by alice on DEMO-15/u
+      )
+    );
+    expect(within(deleted as HTMLElement).getByTestId("going-plan-row-state")).toHaveTextContent(
+      /^Deleted, not undone$/u
+    );
+    expect(within(deleted as HTMLElement).queryByTestId("going-plan-quote")).toBeNull();
+    expect(within(run).queryByTestId("going-run-answer")).toBeNull();
+    expect(within(run).queryByTestId("going-step-words")).toBeNull();
+    expect(within(run).queryByTestId("going-steps-fold")).toBeNull();
+    expect(within(run).queryByTestId("going-run-end")).toBeNull();
+    expect(run.textContent ?? "").not.toMatch(/harbour comet|ANSWER_WITHDRAWN|Read the comment/u);
+  } finally {
+    restore();
+    read.mockRestore();
+  }
+});
+
+// A run another writer's delete withdrew draws the one line alone, though its plan's card was
+// drawn before the delete: the plan, made from the post's words, may quote it.
+test("a run another writer's delete withdrew takes its plan's card away with its answer", async () => {
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => deletingPlan);
+  const restore = await showRun("done", deletingFrames("", "done"));
+  let withdrawn: { mockRestore: () => void } | undefined;
+  try {
+    await screen.findByTestId("going-plan");
+    expect(screen.getByTestId("going-run-answer")).toHaveTextContent("harbour comet");
+    // Another writer deletes the comment the run read: the page reads every run's record again,
+    // which now reads the run withdrawn.
+    withdrawn = spyOn(api, "goingRun").mockImplementation(async () =>
+      record("stopped", 1000, { stop_reason: WITHDRAWN_REASON })
+    );
+    act(() => rereadEveryRun());
+    await waitFor(() => expect(screen.getByTestId("going-run-withdrawn")).toBeTruthy());
+    drawsTheWithdrawalAlone();
+    expect(screen.queryByTestId("going-plan")).toBeNull();
+  } finally {
+    withdrawn?.mockRestore();
+    restore();
+    read.mockRestore();
   }
 });

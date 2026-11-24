@@ -335,6 +335,55 @@ test("a row whose run read a post deleted since says the answer is withdrawn, un
   }
 });
 
+// The architect's ruling of 15:53Z: a run only its own plan's deletes withdrew
+// (ANSWER_WITHDRAWN_BY_RUN) says that this run deleted the post, and one another writer's delete
+// withdrew says the post was deleted: one code is the start of the other, and neither row reads as
+// the other's or names a code.
+test("a row whose run its own delete withdrew says this run deleted the post, apart from another writer's delete", async () => {
+  const read = listConversations([
+    {
+      id: "c-13",
+      newest_at: new Date(now).toISOString(),
+      runs: [
+        run("r-13", "delete my harbour comment", now, {
+          conversation: "c-13",
+          state: "stopped",
+          stop_reason:
+            "ANSWER_WITHDRAWN_BY_RUN: every comment or issue message this run read that is gone, this run deleted",
+        }),
+      ],
+    },
+    {
+      id: "c-14",
+      newest_at: new Date(now - 60_000).toISOString(),
+      runs: [
+        run("r-14", "what does the harbour comment say", now - 60_000, {
+          conversation: "c-14",
+          state: "stopped",
+          stop_reason:
+            "ANSWER_WITHDRAWN: a comment or an issue message this run read was deleted, so nothing the run wrote is shown",
+        }),
+      ],
+    },
+  ]);
+  try {
+    renderHistory();
+    await waitFor(() =>
+      expect(screen.getAllByTestId("going-history-conversation")).toHaveLength(2)
+    );
+    const [byRun, byOther] = screen.getAllByTestId("going-history-conversation");
+    expect(within(byRun as HTMLElement).getByTestId("going-history-withdrawn").textContent).toBe(
+      "Dispatch withdrew this answer because this run deleted a comment or message it read."
+    );
+    expect(within(byOther as HTMLElement).getByTestId("going-history-withdrawn").textContent).toBe(
+      "Dispatch withdrew this answer because a comment or message it read was deleted."
+    );
+    expect(screen.getByTestId("going-history").textContent ?? "").not.toMatch(/ANSWER_WITHDRAWN/u);
+  } finally {
+    read.mockRestore();
+  }
+});
+
 test("Undo in History undoes that run and names a value another person changed, and a message sent, not undone", async () => {
   const user = userEvent.setup();
   const read = listConversations();

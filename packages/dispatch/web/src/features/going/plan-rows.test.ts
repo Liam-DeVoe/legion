@@ -5,6 +5,7 @@ import { clockWords } from "../search/blocks/block-cells";
 import type { PlanDraft } from "./going-store";
 import {
   appliedWords,
+  approvalOf,
   cardTitle,
   changeLabel,
   fieldWords,
@@ -20,6 +21,7 @@ import {
   rowOutcome,
   rowRemoves,
   specSentences,
+  tickedCount,
   undoButtonWords,
   undoLineLabel,
   undoLineRow,
@@ -80,6 +82,20 @@ function message(number: number): GoingPlanRow {
     issue: "DEMO-15",
     item: "DEMO-15",
     tool: "dispatch_message",
+  });
+}
+
+/** A row of `tool`, an edit or a delete of a comment or an issue message, on DEMO-15: its post
+ *  read as the plan reads it, alice's with its body. */
+function post(number: number, tool: string, args: Record<string, unknown> = {}): GoingPlanRow {
+  return row(number, {
+    arguments: { ...(tool.endsWith("message") ? { message: "m-1" } : { comment: "c-1" }), ...args },
+    class: "text",
+    fields: ["body"],
+    issue: "DEMO-15",
+    item: tool.endsWith("message") ? "m-1" : "c-1",
+    now: { author: { id: "alice", kind: "user" }, body: "The window is 24 hours." },
+    tool,
   });
 }
 
@@ -502,6 +518,70 @@ test("each kind of row is told apart", () => {
   expect(rowKind(row(0, { tool: "dispatch_resolve_ask" }))).toBe("other");
 });
 
+// An edit and a delete of a comment or an issue message are one kind of row, the post's, named by
+// what the row does and the issue the post is on, as its arguments name the post by an id alone;
+// the card's title takes its verb from the tool's label. An edit changes the one field body, from
+// the body the plan read; a delete changes no field.
+test("a row that edits or deletes a comment or an issue message is a post row, named by its verb and its issue", () => {
+  const edit = post(0, "dispatch_edit_comment", { body: "The window is 72 hours." });
+  const remove = post(1, "dispatch_delete_message");
+  expect(rowKind(edit)).toBe("post");
+  expect(rowKind(remove)).toBe("post");
+  expect(rowLabel(edit)).toBe("Edit the comment on DEMO-15");
+  expect(rowLabel(remove)).toBe("Delete the message on DEMO-15");
+  // A comment on a project's document is on no issue.
+  expect(rowLabel({ ...edit, issue: "" })).toBe("Edit the comment");
+  expect(planTitle([edit, remove])).toBe("Edit 1 comment and delete 1 message");
+  expect(
+    planTitle([edit, post(1, "dispatch_edit_comment"), post(2, "dispatch_delete_comment")])
+  ).toBe("Edit 2 comments and delete 1");
+  // An edit of a document and an edit of a comment are two parts of the title, each its noun.
+  expect(
+    planTitle([row(0, { arguments: { ops: [], ref: "spec" }, tool: "dispatch_doc_edit" }), edit])
+  ).toBe("Edit 1 document and edit 1 comment");
+  expect(rowChanges(edit, undefined, new Map())).toEqual([
+    {
+      edit: "text",
+      edited: false,
+      field: "body",
+      namesNewIssue: false,
+      next: "The window is 72 hours.",
+      now: "The window is 24 hours.",
+    },
+  ]);
+  expect(rowChanges(remove, undefined, new Map())).toEqual([]);
+  // A post deleted since the plan read it has no body now, whatever its read held.
+  expect(
+    rowChanges({ ...edit, deleted: true }, undefined, new Map()).map((change) => change.now)
+  ).toEqual([undefined]);
+});
+
+// Dispatch refuses an approval that ticks a row whose post was deleted since the plan read it
+// (409 POST_DELETED): nothing edits or deletes a deleted post. So the draft never ticks it, nor a
+// row that needs it, and Approve counts neither.
+test("a row whose post was deleted since is never ticked, nor a row that needs it", () => {
+  const gone = {
+    ...post(0, "dispatch_edit_comment", { body: "The window is 72 hours." }),
+    deleted: true,
+  };
+  const needing = { ...update(1, "DEMO-15", { priority: 1 }), needs: [0] };
+  const other = update(2, "DEMO-16", { priority: 2 });
+  const shown: GoingPlanAnswer = { ...plan, rows: [gone, needing, other] };
+  const draft: PlanDraft = { edits: new Map(), plan: 1, run: "run-1", unticked: new Set() };
+  expect(tickedCount(shown, draft)).toBe(1);
+  expect(approvalOf(shown, draft).rows).toEqual([
+    { row: 0, tick: false },
+    { row: 1, tick: false },
+    { row: 2, tick: true },
+  ]);
+  // The same rows with the post standing are all ticked.
+  const standing: GoingPlanAnswer = {
+    ...shown,
+    rows: [{ ...gone, deleted: false }, needing, other],
+  };
+  expect(tickedCount(standing, draft)).toBe(3);
+});
+
 test("a new issue's spec shows as its first two or three sentences, in plain words", () => {
   expect(
     specSentences(
@@ -742,6 +822,33 @@ test("a row that no longer waits says how it stands: a message's result, a failu
   for (const state of ["approved", "running", "done", "waiting"] as const) {
     expect(rowOutcome({ ...update(4, "DEMO-4", { priority: 1 }), state })).toBeUndefined();
   }
+});
+
+// R6 and the architect's ruling: nothing restores a deleted post, so a delete that ran reads
+// "Deleted, not undone", and so does its line once its run's Undo answered; a message stays "Sent,
+// not undone".
+test("a delete of a post that ran, and its Undo line, read Deleted, not undone", () => {
+  const deleted = { ...post(0, "dispatch_delete_comment"), state: "done" as const };
+  expect(rowOutcome(deleted)).toEqual({ failed: false, text: "Deleted, not undone" });
+  expect(rowOutcome({ ...post(1, "dispatch_delete_message"), state: "done" })?.text).toBe(
+    "Deleted, not undone"
+  );
+  // An edit that ran says nothing past its check, as any change of a field does.
+  expect(rowOutcome({ ...post(2, "dispatch_edit_comment"), state: "done" })).toBeUndefined();
+  expect(rowOutcome({ ...deleted, state: "unticked" })?.text).toBe("Not run: you left it unticked");
+  for (const tool of ["dispatch_delete_comment", "dispatch_delete_message"]) {
+    expect(undoWords(undoLine({ tool, undo: "not_undone" }))).toBe("Deleted, not undone");
+  }
+  expect(undoWords(undoLine({ tool: "dispatch_message", undo: "not_undone" }))).toBe(
+    "Sent, not undone"
+  );
+  // A delete is never reverted, so the Undo's title counts it in neither.
+  expect(
+    undoneTitle([
+      undoLine({ row: 0, tool: "dispatch_delete_comment", undo: "not_undone" }),
+      undoLine({ row: 1 }),
+    ])
+  ).toBe("Undone · 1 change reverted");
 });
 
 test("Undo's answer names a kept value as data, and a message sent, not undone", () => {

@@ -16,7 +16,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import {
   openConversation,
-  runWithdrawn,
+  runWithdrawal,
   shownState,
   titleWords,
   useGoingValue,
@@ -24,12 +24,13 @@ import {
 import { RunUndo } from "./RunUndo";
 import { stateOfRecord } from "./run-frames";
 import {
-  answerWithdrawn,
   providerRefused,
   providerRefusedWords,
   type RunState,
   runEnded,
   WITHDRAWN_WORDS,
+  type Withdrawal,
+  withdrawalOf,
 } from "./run-states";
 
 /** How a conversation stands, as History names it by its newest run (design v3, state 11). */
@@ -63,14 +64,14 @@ function groupOf(at: number, now: Date): HistoryGroup {
 
 /** One conversation as History lists it: its title (its first question), how its newest run
  *  stands, what the model's provider refused that run to read where it did (undefined where it
- *  did not), whether that run is withdrawn, its group, and that run where it ended holding a write
- *  Undo can take back, or where this page undid it, whose Undo the row holds. */
+ *  did not), how that run is withdrawn where it is, its group, and that run where it ended holding
+ *  a write Undo can take back, or where this page undid it, whose Undo the row holds. */
 interface Listed {
   readonly conversation: GoingConversation;
   readonly title: string;
   readonly state: RunState;
   readonly refused: string | undefined;
-  readonly withdrawn: boolean;
+  readonly withdrawal: Withdrawal | undefined;
   readonly group: HistoryGroup;
   readonly undo: string | undefined;
 }
@@ -87,7 +88,7 @@ interface Listed {
  * offers it. A row whose newest run ended holding a write Undo can still take back (`undoable`),
  * as a filing from the line on top does (R9), holds that run's Undo (R6). A row whose newest run
  * is withdrawn - it read a comment or an issue message deleted since - says so under it in one
- * line.
+ * line, which says whether the run's own delete withdrew it.
  *
  * The box at its top takes the focus as it opens, and typing filters the rows by the words of
  * every question of a conversation. While the focus is in it, the first row is drawn selected,
@@ -130,8 +131,8 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
         ? stateOfRecord(newest.state, newest.stop_reason)
         : shownState(followed);
     const reason = followed?.frames.end?.reason ?? newest.stop_reason ?? "";
-    const withdrawn =
-      followed === undefined ? answerWithdrawn(newest.stop_reason ?? "") : runWithdrawn(followed);
+    const withdrawal =
+      followed === undefined ? withdrawalOf(newest.stop_reason ?? "") : runWithdrawal(followed);
     return [
       {
         conversation,
@@ -141,7 +142,7 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
             ? providerRefusedWords(reason)
             : undefined,
         state,
-        withdrawn,
+        withdrawal,
         title: titleWords(held.at(-1)?.words ?? ""),
         // Undo is offered only while the run holds a write Undo can still take back, as
         // Dispatch keeps it: not once it was undone, on this page or another, and not for a
@@ -262,14 +263,14 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
                       {row.refused}
                     </p>
                   )}
-                  {row.withdrawn ? (
+                  {row.withdrawal === undefined ? null : (
                     <p
                       className={`px-2 pb-1 text-xs ${textSecondaryOnSurface}`}
                       data-testid="going-history-withdrawn"
                     >
-                      {WITHDRAWN_WORDS}
+                      {WITHDRAWN_WORDS[row.withdrawal]}
                     </p>
-                  ) : null}
+                  )}
                   {row.undo === undefined ? null : (
                     <div className="px-2 pb-1">
                       {/* One run's Undo: the row names its conversation's newest run, and a newer

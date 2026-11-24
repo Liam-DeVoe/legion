@@ -76,6 +76,7 @@ export type {
   Comment,
   CommentDelivery,
   CommentDeliveryEventPayload,
+  CommentEdited,
   CommentEventPayload,
   CommentMention,
   CommentRead,

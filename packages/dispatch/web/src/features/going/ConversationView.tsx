@@ -37,7 +37,7 @@ import {
   newestRun,
   type QueuedWords,
   type RunEntry,
-  runWithdrawn,
+  runWithdrawal,
   type StartingRun,
   shownState,
   useGoing,
@@ -328,10 +328,14 @@ interface WholeBlock {
  *  can still take that change back, which the card then offers, or tried and could not. A message
  *  is sent, not undone, and counts as no change that stays: its row says so. A run that stopped
  *  or failed keeps its steps folded, as an answered run does, and shows any answer it wrote above
- *  how it ended (rule 3: fold the work, never the result). The newest run's turn, while its plan
- *  waits, is where the conversation's scroll stops (`FOLLOW_ANCHOR`). `asks` is whether its
- *  answer asks the person a question and waits for their answer; `onShowAll` opens one of its
- *  tables whole over the bar or the panel. */
+ *  how it ended (rule 3: fold the work, never the result). A withdrawn run (`runWithdrawal`)
+ *  draws its withdrawal's one line in place of its steps, its answer and its blocks, which may
+ *  quote the deleted post: one another writer's delete withdrew, that line alone; one its own
+ *  plan's delete withdrew, its plan's card too, whose rows and results show no word of a deleted
+ *  post, so the person still reads what the run changed and that its delete is deleted, not
+ *  undone. The newest run's turn, while its plan waits, is where the conversation's scroll stops
+ *  (`FOLLOW_ANCHOR`). `asks` is whether its answer asks the person a question and waits for their
+ *  answer; `onShowAll` opens one of its tables whole over the bar or the panel. */
 function RunTurn({
   answering,
   asks,
@@ -363,10 +367,14 @@ function RunTurn({
   // What this page's Undo of the run answered, where it was pressed here.
   const lines = useGoingValue((of) => of.undone.get(run.id));
   const pressed = lines !== undefined;
-  if (runWithdrawn(run)) {
-    // A run that read a post deleted since draws its words and one line in place of its steps,
-    // its answer, its blocks and its plan, all of which may quote the post; its Undo stays, as
-    // Undo reads and shows none of what the run wrote.
+  const withdrawal = runWithdrawal(run);
+  if (withdrawal !== undefined) {
+    // A withdrawn run draws its words and one line in place of its steps, its answer and its
+    // blocks, all of which may quote the deleted post. A run its own plan's delete withdrew keeps
+    // its plan's card, whose rows show the delete's mark in place of each deleted post's words; a
+    // run another writer's delete withdrew draws no plan, which may quote the post. Its Undo stays,
+    // as Undo reads and shows none of what the run wrote: the card's, else its own.
+    const card = withdrawal === "run_deleted";
     return (
       <li className="space-y-2" data-run={run.id} data-state={state} data-testid="going-run">
         <Words testId="going-run-words" words={run.record.words} />
@@ -375,9 +383,18 @@ function RunTurn({
           data-testid="going-run-withdrawn"
           role="status"
         >
-          {WITHDRAWN_WORDS}
+          {WITHDRAWN_WORDS[withdrawal]}
         </p>
-        {run.record.undoable || pressed ? <RunUndo run={run.id} /> : null}
+        {card ? (
+          <PlanCard
+            answering={plan}
+            appliedAt={earliest(run.endedAt, run.record)}
+            folded={!newest}
+          />
+        ) : null}
+        {(!card || run.frames.plan === undefined) && (run.record.undoable || pressed) ? (
+          <RunUndo run={run.id} />
+        ) : null}
       </li>
     );
   }

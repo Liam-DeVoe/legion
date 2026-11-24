@@ -5,7 +5,10 @@
  * press sends, if any. Nothing here sends anything.
  */
 
-import { GOING_ERROR_ANSWER_WITHDRAWN } from "@legion/contracts";
+import {
+  GOING_ERROR_ANSWER_WITHDRAWN,
+  GOING_ERROR_ANSWER_WITHDRAWN_BY_RUN,
+} from "@legion/contracts";
 
 /** Where a run stands: none started yet (idle), working, waiting for the person's approval of its
  *  plan, done, stopped at a pause the server offers Continue on (`stopped_bound`: at a bound of
@@ -210,16 +213,34 @@ const FAILURE_WORDS: Readonly<
 /** The sentence of a Dispatch with no answering model (design v2, state 13). */
 export const NO_MODEL_WORDS = "Answers are off on this Dispatch: it has no answering model.";
 
-/** The sentence of a withdrawn answer: a run, or a short answer, that read a comment or an issue
- *  message deleted since, whose words Dispatch then gives none of (dispatch://INFRA-1523, R3). It
- *  stands in place of the answer, its steps and its blocks, and offers no next step. */
-export const WITHDRAWN_WORDS =
-  "Dispatch withdrew this answer because a comment or message it read was deleted.";
+/** How an answer was withdrawn (dispatch://INFRA-1523, R3): a comment or an issue message it read
+ *  was deleted by another writer (`read_deleted`), or only by deletes the run's own approved plan
+ *  made (`run_deleted`). */
+export type Withdrawal = "read_deleted" | "run_deleted";
 
-/** Whether `reason`, a run's stop reason or a short answer's error code, is a withdrawal: its code
- *  is `GOING_ERROR_ANSWER_WITHDRAWN`. */
-export function answerWithdrawn(reason: string): boolean {
-  return reasonCode(reason) === GOING_ERROR_ANSWER_WITHDRAWN;
+/** The sentence of a withdrawn answer, by how it was withdrawn (`Withdrawal`): a run, or a short
+ *  answer, whose words Dispatch then gives none of. It stands in place of the answer, its steps and
+ *  its blocks, and offers no next step. A run its own delete withdrew keeps its plan's card beside
+ *  it, which shows no word of the post it deleted. */
+export const WITHDRAWN_WORDS: Readonly<Record<Withdrawal, string>> = {
+  read_deleted: "Dispatch withdrew this answer because a comment or message it read was deleted.",
+  run_deleted:
+    "Dispatch withdrew this answer because this run deleted a comment or message it read.",
+};
+
+/** How `reason`, a run's stop reason or a short answer's error code, withdraws its answer: by its
+ *  whole code (`reasonCode`), `GOING_ERROR_ANSWER_WITHDRAWN` or
+ *  `GOING_ERROR_ANSWER_WITHDRAWN_BY_RUN`, so neither is ever read as the other; undefined for a
+ *  reason that withdraws nothing. */
+export function withdrawalOf(reason: string): Withdrawal | undefined {
+  switch (reasonCode(reason)) {
+    case GOING_ERROR_ANSWER_WITHDRAWN:
+      return "read_deleted";
+    case GOING_ERROR_ANSWER_WITHDRAWN_BY_RUN:
+      return "run_deleted";
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -234,8 +255,9 @@ export function answerWithdrawn(reason: string): boolean {
  * ask in other words. A Stop is the person's own pause, so it says what the run did before it,
  * "Stopped · read 1 item", and offers Continue; one its grant ended says why, and offers nothing
  * a lapsed grant would refuse again. A failure is one sentence and Try again, or the sentence of
- * state 13 for a Dispatch with no answering model. A withdrawn run, stopped or failed, says
- * `WITHDRAWN_WORDS` and offers nothing. Undefined for a run that has not stopped or failed.
+ * state 13 for a Dispatch with no answering model. A withdrawn run, stopped or failed, says its
+ * withdrawal's sentence (`WITHDRAWN_WORDS`) and offers nothing. Undefined for a run that has not
+ * stopped or failed.
  */
 export function endWords(
   state: RunState,
@@ -245,8 +267,14 @@ export function endWords(
 ): EndWords | undefined {
   const code = reasonCode(reason);
   const ended = state === "stopped_bound" || state === "stopped_person" || state === "failed";
-  if (ended && answerWithdrawn(reason)) {
-    return { action: undefined, continueInDeep: false, noModel: false, text: WITHDRAWN_WORDS };
+  const withdrawal = ended ? withdrawalOf(reason) : undefined;
+  if (withdrawal !== undefined) {
+    return {
+      action: undefined,
+      continueInDeep: false,
+      noModel: false,
+      text: WITHDRAWN_WORDS[withdrawal],
+    };
   }
   switch (state) {
     case "stopped_bound": {

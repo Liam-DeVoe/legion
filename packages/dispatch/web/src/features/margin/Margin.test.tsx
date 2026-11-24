@@ -12,7 +12,14 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
-import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api/types";
+import type {
+  Ask,
+  AskRead,
+  Comment,
+  CommentEdited,
+  IssueAskRow,
+  IssueDetails,
+} from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { SendMovedError } from "../conversation/send-request";
 import type { RetypeOutcome } from "../doc/editor";
@@ -2414,7 +2421,9 @@ test("Margin keeps sibling edit controls hidden while an owner save is pending",
   const user = userEvent.setup();
   const saving = documentComment("saving-comment", "Saving comment");
   const sibling = documentComment("sibling-comment", "Sibling comment");
-  const save = Promise.withResolvers<Comment>();
+  // The edit's answer: the comment, with the body the edit replaced.
+  const saved: CommentEdited = { ...saving, previous: { body: saving.body } };
+  const save = Promise.withResolvers<CommentEdited>();
   const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
   const { commentBlocks, getInbox, listArtifactAsks, listArtifactComments, view } =
     renderDocumentMargin([saving, sibling]);
@@ -2440,14 +2449,14 @@ test("Margin keeps sibling edit controls hidden while an owner save is pending",
     );
 
     await act(async () => {
-      save.resolve(saving);
+      save.resolve(saved);
       await save.promise;
     });
     await waitFor(() =>
       expect(within(siblingCard).getAllByRole("button", { name: "Edit" })).toHaveLength(1)
     );
   } finally {
-    save.resolve(saving);
+    save.resolve(saved);
     view.unmount();
     editComment.mockRestore();
     listArtifactComments.mockRestore();
@@ -2461,7 +2470,7 @@ test("Margin restores edit controls and the draft when an owner save rejects", a
   const user = userEvent.setup();
   const root = documentComment("root-comment", "Root comment");
   const reply = documentComment("reply-comment", "Reply comment", root.id);
-  const save = Promise.withResolvers<Comment>();
+  const save = Promise.withResolvers<CommentEdited>();
   const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
   const { commentBlocks, getInbox, listArtifactAsks, listArtifactComments, view } =
     renderDocumentMargin([root, reply]);
@@ -2496,7 +2505,7 @@ test("Margin restores edit controls and the draft when an owner save rejects", a
       "Draft survives"
     );
   } finally {
-    save.resolve(root);
+    save.resolve({ ...root, previous: { body: root.body } });
     view.unmount();
     editComment.mockRestore();
     listArtifactComments.mockRestore();
