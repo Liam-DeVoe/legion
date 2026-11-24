@@ -726,7 +726,7 @@ func TestAMarkerDeleteIsGuardedOnTheWholeItemItRemoves(t *testing.T) {
 // own guard read before that change is stale, and its first paragraph's guard alone does not name
 // the block the delete names. A marker delete of the item holding a typed block under the item's
 // paragraph and the typed block read before the change is stale, and under the item's paragraph
-// alone it is refused naming the typed block it would remove, at the token the edit read, the
+// alone it is refused naming the typed block it would remove, with the token it carries now, the
 // changed one. Each refusal writes nothing (INFRA-341).
 func TestADeleteThatRemovesATypedBlockIsRefusedUnlessItsGuardNamesItAsItStands(t *testing.T) {
 	handler, _, _ := preconditionTestHandler(t)

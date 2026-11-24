@@ -1,12 +1,8 @@
 // The hold a row puts on its editor's build between two of its batches (`holdTheBuild`), and
-// what the page says through it. The build awaits `betweenBatches` between two batches
-// (`packages/proof-editor/src/progressive-build.ts`), and `web/src/features/doc/ProofDocument.tsx`
-// hands it `window.__dispatchHoldBuild` where a page script set one: that is the one seam a row
-// reaches the build through, and this file is the one place that sets it. A row of this family
-// or of `build-typing.e2e.ts` that holds its build, or paces it a frame at a time, does it
-// through `holdTheBuild`. It stands beside `large-documents-page.ts` rather than in it, because
-// it would have taken that file past 1,000 lines. The two selectors its init script finds the
-// editor being built and the finished editor by are `large-documents-rows.ts`'s.
+// what the page says through it. docs/testing.md says what the hook this file sets is, which rows
+// set it, and that nothing else may. It stands beside `large-documents-page.ts` rather than in it,
+// because it would have taken that file past 1,000 lines. The two selectors its init script finds
+// the editor being built and the finished editor by are `large-documents-rows.ts`'s.
 //
 // The other files of this family, and what each holds, are listed once, at the head of
 // `large-documents-rows.ts`.
@@ -44,9 +40,8 @@ export interface TheBuildHeld {
 /**
  * Holds `page`'s editor build at a boundary between two of its batches until the row releases
  * it, and has the page say through a binding where the build is held (`TheBuildHeldAt`). The
- * hold is `window.__dispatchHoldBuild`, which `web/src/features/doc/ProofDocument.tsx` reads as
- * the editor is constructed and hands the build as `betweenBatches`, so install before the
- * navigation.
+ * hold is `window.__dispatchHoldBuild` (docs/testing.md), which the page reads as its editor is
+ * constructed, so install before the navigation.
  *
  * `at` says which boundary: the first where the live editor's text holds every one of
  * `texts`. The build asks at a boundary in the task its batch landed in, before a frame of the
