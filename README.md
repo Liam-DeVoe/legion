@@ -147,7 +147,7 @@ root `package.json`.
 
 ```sh
 bun install                                                  # every workspace
-bunx biome check .                                           # what CI's required lint job runs; `<package>/` for one package
+bunx biome check --diagnostic-level=warn --max-diagnostics=none .  # what CI's required lint job runs, every warning and error printed; `<package>/` for one package
 (cd packages/<package> && bun run typecheck && bun run test) # the root has no tsconfig.json and no test script
 (cd packages/<package> && bun test <file> -t '<test name>')  # one test
 bun test scripts/<file or directory>                         # scripts/ is no workspace

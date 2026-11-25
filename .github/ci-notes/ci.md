@@ -1607,6 +1607,23 @@ about to refuse a change it reads every open pull request of the repository, wit
 each changes, to name a number no other one has taken. The pull request's text is the
 `pr-title` job's, which declares the scopes its own routes read.
 
+## Why every Biome step prints every warning and error
+
+Every step that runs Biome over a tree carries `--diagnostic-level=warn --max-diagnostics=none`,
+and links here. Biome prints 20 diagnostics by default, and infos count among the 20, so the
+error that fails a step can be one it does not print. #5195's lint run
+(https://github.com/cybermonklabs/legion/actions/runs/45179104499/job/137708378563) printed 20
+infos, then `Diagnostics not shown: 17.` and `Found 1 error.`: the error, a formatting error in
+packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json, was among the 17, and the
+log did not name it.
+
+`--max-diagnostics=none` removes the limit. `--diagnostic-level=warn` leaves out the infos, and
+an info fails no step: of Biome's flags, only `--error-on-warnings` makes a diagnostic below an
+error fail, and it makes warnings fail, not infos. The level must not go above `warn`. Biome
+counts only the diagnostics the level keeps, so with `--diagnostic-level=error
+--error-on-warnings` a tree whose one fault is a warning exits 0, where the step without the
+level exits 1.
+
 ## What the ci-images job copies, and why the order is the point
 
 Copies every row .github/ci-images.yaml names into ghcr.io/cybermonklabs/legion/ci, then reads the
