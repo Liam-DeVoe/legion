@@ -26,7 +26,8 @@
 # cache family must carry
 # the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
 # or that key followed by the commit, its own restores being lookups but those of a family it
-# saves under the commit, which download the newest entry,
+# saves under the commit, which download the newest entry, every restore of any workflow must
+# name a family some workflow saves,
 # ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
@@ -3783,6 +3784,110 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the family nothing restores" \
   "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
+
+# A restore of a family no workflow saves misses on every run and fails nothing. A misspelled
+# family name (go-envoy-tests- for go-envoy-test) is such a family: the paired-key rules above
+# read it as a family of its own, and they hold it to nothing.
+echo "case: a restore of a family no workflow of the repository saves"
+root=$(fixture cache-restore-unsaved)
+cache_workflow "$root"
+replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+  $'      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-apps-${{ runner.os }}\n      - name: Test the app'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the job, the family and the families a save writes" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app restores cache family go-apps, which no actions/cache/save of any workflow or local action of this repository writes: .* name a family a save writes (go-app)')"
+
+# docs_restore <root>: cache_workflow's fixture with a second restore in ci.yaml, of the family
+# go-docs, which ci-caches.yaml does not save; the cases below give a save of it to another file.
+docs_restore() {
+  cache_workflow "$1"
+  replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
+    $'      - id: go-docs\n        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-docs-${{ runner.os }}\n      - name: Test the app'
+}
+
+# docs_save <root> <key>: a workflow of its own, docs.yaml, whose build job restores go-docs as
+# the step go-cache and saves it under <key>, as docs-site.yaml saves go-docs here.
+docs_save() {
+  cat > "$1/.github/workflows/docs.yaml" <<YAML
+name: Docs
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-docs-\${{ runner.os }}
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: $2
+YAML
+}
+
+echo "case: a restore of a family another workflow saves under its restore's computed key"
+root=$(fixture cache-restore-saved-elsewhere)
+docs_restore "$root"
+docs_save "$root" '${{ steps.go-cache.outputs.cache-primary-key }}'
+run_check "$root"
+check "exits 0 ($status)" "$(is "$status" 0)"
+check "names no unsaved family" "$(is "$(contains "$out" 'restores cache family go-docs')" false)"
+
+echo "case: a restore of a family another workflow saves under a key with a hashFiles()"
+root=$(fixture cache-restore-saved-hashfiles)
+docs_restore "$root"
+docs_save "$root" "go-docs-\${{ runner.os }}-\${{ hashFiles('mod/go.mod') }}"
+run_check "$root"
+check "exits 0 ($status)" "$(is "$status" 0)"
+check "names no unsaved family" "$(is "$(contains "$out" 'restores cache family go-docs')" false)"
+
+echo "case: a restore of a family only a save whose family cannot be read might write"
+root=$(fixture cache-restore-saved-unread)
+docs_restore "$root"
+docs_save "$root" '${{ steps.other.outputs.cache-primary-key }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says no save it can read writes the family, never that no save does" \
+  "$(contains "$out" 'job app restores cache family go-docs, which no actions/cache/save this check can read writes\.')"
+check "names the save it cannot read, and why" \
+  "$(contains "$out" 'It cannot read the family of the save of job build of .github/workflows/docs.yaml under `${{ steps.other.outputs.cache-primary-key }}`, which names no actions/cache/restore of its steps, so one of those may write it')"
+
+echo "case: a restore of a family a composite action of the repository saves"
+root=$(fixture cache-restore-saved-action)
+docs_restore "$root"
+mkdir -p "$root/.github/actions/docs-cache"
+cat > "$root/.github/actions/docs-cache/action.yml" <<'YAML'
+name: Docs cache
+description: Restores and saves go-docs.
+runs:
+  using: composite
+  steps:
+    - id: go-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-docs-${{ runner.os }}
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: ${{ steps.go-cache.outputs.cache-primary-key }}
+YAML
+run_check "$root"
+check "exits 0 ($status)" "$(is "$status" 0)"
+check "names no unsaved family" "$(is "$(contains "$out" 'restores cache family go-docs')" false)"
 
 # release_restore <root> <key>: a workflow ci.yaml does not call - a release build, as
 # release.yaml and release-envoy-infra.yaml are here - restoring the go-app entry ci-caches.yaml
