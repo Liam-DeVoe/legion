@@ -1357,6 +1357,10 @@ ENV_ALLOWED = frozenset({
     # land in a directory of their own, which the go-envoy-darwin-vet cache family holds.
     "GOCACHE",
     "GOPROXY",
+    # The job's state, success, failure or cancelled, which the step "Wait for the script
+    # harnesses and judge them" of the test job and envoy-go-checks hands .github/scripts/
+    # harness-pool.sh to choose --allow-none and --now. go reads it nowhere.
+    "JOB_STATUS",
     # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
     # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
     # run go commands among them, and around_job reads a job's env. go reads it nowhere.
