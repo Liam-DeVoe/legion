@@ -120,7 +120,7 @@ Each item below names a script, then what it proves.
   `git log --first-parent -- <file>`, `git status`, a push of a new commit to a `git daemon` outside every measured process tree, and a fetch from GitHub of the default branch's newer commits (100 MiB or more) into a clone lacking them, each with the role's settings and with git's defaults forced;
   on the workspace and on a copy of the provisioning root, the same edits, then `jj diff`, `jj diff --name-only`, a commit made and pushed with git, `handoff-record.ts`'s `STANDING` read, unmeasured, `git fetch` of the feed's heads as refs the clone lacks (`refs/remotes/feed/*`) and `git commit` at fixed dates, then `describedArgs`, importing both, another commit, and `adoptionArgs`, with the image's jj on the workspace and with jj `0.45.1-sami.20260910-043938` on the copy;
   and R10's rows: the seven role commands R10 names, with the same fetch and commits, and provisioning's jj commands replayed on a fresh clone, each on a copy of its own, with jj `0.46.0-sami.20261008-234600`, the control, and the image's jj at `JJ_PACK_MAPPED_LIMIT` `64m`, `256m`, `512m` and `1g`.
-  Copies hardlink the clone's packs and copy the rest with `cp -a`; a disk too small stops the run.
+  Copies hardlink the clone's packs and `cp -a` the rest, alternates too; a disk too small stops it.
   Each measured command runs under GNU time and `lib/pack-memory-peak.py`, which every 0.1 s stops its tree (lest jj's chunk churn be read twice) to read `smaps`, and prints its largest total, that sample's pack `Rss` and anonymous memory, each part's peak, each process's split, the time stopped and the pod's cgroup charge;
   with the settings, a git row holds when the pod's charge, or the push's own tree, is under 2 GiB, and an image jj row when both figures are; a control under 2 GiB (git) or the pack (jj) is void.
   An R10 row holds when its stdout equals the control row's, its pack figure (largest pack `Rss`) is within its budget plus 8 MiB per object store plus 32 MiB, and its derived figure (GNU time's peak less its largest anonymous and other-file memory) within that plus 128 MiB; a control under 90% of the pack fails.
@@ -236,6 +236,12 @@ Each item below names a script, then what it proves.
   on a throwaway kind cluster with Agent Sandbox v1.0.3 and gVisor, an issue pod Legion's own loader, `sandboxOptions` and Sandbox runtime build from a `legion.yaml` whose `runtime.kubernetes.pod` mounts an existing NFS share twice
   — through a PersistentVolumeClaim (read-only by default) and as an `nfs` export with `read_only: false` — reads the server's seed file through the claim, is refused a write there, and writes a file through the export that the server then holds;
   `legion config check` refuses a volume naming two sources, and `legion probe-boot` mounts both shares and refuses a missing claim, a missing export and a server that never answers, each naming the volume and its share, and an image digest the registry does not have, naming the image
+
+- `shared-clone-kind.sh`
+
+  on a throwaway kind cluster with Agent Sandbox v1.0.3 and gVisor, run as a GitHub-hosted proof on a dispatch at a branch's head alone (a GKE Autopilot cluster refuses the privileged pods kind needs, and the pods run the worker image published for that head), an issue pod Legion's own loader, `sandboxOptions` and Sandbox runtime build provisions its clone of a public repository of some tens of megabytes with `git clone --shared` from its read-only feed:
+  both init containers end 0, the clone's `.git/objects/info/alternates` names the feed's objects at `/legion/feed/<owner>/<repo>.git/objects` and its own `objects/pack` holds no pack, `du -s` of its `.git/objects` is under a tenth of the feed's objects while a plain `git clone --no-checkout` of the same feed, the release before's clone, copies them, the feed is read-only in `roles`, `git fsck --connectivity-only` passes, and `git log` and `jj log` of the default branch agree as the launched architect's agent runs them;
+  a second issue pod, launched once the repository cache the first launch made is Ready, fills its feed from the cache's tar with under 1 MiB from GitHub, and its clone borrows that feed's objects and passes `git fsck` (`cache-second-pod`)
 
 - `dispatch-claimant-delivery.sh`
 
@@ -2073,7 +2079,7 @@ Each item below names a check, then what it does and what it requires.
 - `cache-second-pod`
 
   another issue pod of the run's repository (`cache-b`, on an issue key of its run's own, `S4A-<n>` with `<n>` the FNV-1a hash of the run's project), launched while the cache is Ready, logs the same stream from the cache, `<m>` under 1 MiB;
-  its clone has no `.git/objects/info/alternates` and `git fsck --connectivity-only` passes using the clone's own objects
+  its clone's `.git/objects/info/alternates` names the feed's objects at `/legion/feed/<owner>/<repo>.git/objects`, so it reads them in place, and `git fsck --connectivity-only` passes through them with the feed mounted read-only
 
 - `cache-lost-volume`
 
@@ -4058,6 +4064,43 @@ the agents are sleep stubs, the store answers for an issue's first launch, the r
 The loader, the runtime, the image probe, Agent Sandbox's pod, gVisor, the node's NFS client and the NFS server are the real ones.
 `share_volumes_kind_test.go`, untagged, builds all four files through the loader and each runtime through `sandboxOptions` and `sandbox.New` on every `go test`.
 `SHARE_VOLUMES_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the four `legion.yaml` files and the missing-image copy of the `shares` one, the issue pod's manifest and each `probe-boot`'s output.
+
+## shared-clone-kind.sh
+
+```sh
+bash scripts/e2e/shared-clone-kind.sh     # → "shared clone kind e2e: PASS in <n>s", exit 0
+gh workflow run e2e.yaml --ref <branch> -f script=shared-clone-kind     # the same, on a GitHub-hosted runner, at the branch's head
+```
+
+Runs on an amd64 (x86_64) Linux host only, with `docker`, `go`, `kubectl`, `curl`, `jq`, `zstd` and a tar that supports `--zstd`;
+it installs kind v0.33.0 by sha256 and makes the cluster on that release's node image as `.github/ci-images.yaml` copies it by digest ([`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s `kind_sandbox_install_kind`), unless `LEGION_E2E_KIND` names a kind, whose own default node image it then takes.
+Its cluster is the lib's, `legion-shared-clone-<pid>`, deleted on any exit.
+A GKE Autopilot cluster cannot run it in a Job, since its policy refuses a privileged container (`autogke-disallow-privilege`), so `.github/e2e-scripts.json` lists it as a hosted proof, `dispatch_only`:
+e2e.yaml runs it on a `workflow_dispatch` at a branch, whose checkout is the branch's head, and never on the `e2e` label's merge commit or the nightly's main.
+The pods run the worker image of the checkout's own commit, since the image's `legion` runs each pod's `workspace-fetch` and `workspace-init`:
+`LEGION_E2E_IMAGE`, by digest, or, where it is unset, the digest the registry gives `ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of HEAD>`, which `worker-image.yaml` publishes for a pull request's head;
+the run fails naming the tag when the registry has none.
+The driver's `legion.yaml` reserves little for the pods (`sharedCloneLiveResources`, `internal/daemon/shared_clone_kind_test.go`), so two issue pods and the repository cache fit on one node of a hosted runner.
+
+|check|what it holds|
+|:---|:---|
+|`binaries`|a static test binary of `TestASharedCloneReadsTheFeedInAnIssuePodLive` (`internal/daemon/shared_clone_live_test.go`, `-tags e2e`)|
+|`cluster`, `agent-sandbox`, `gvisor`|as `burstable-kind.sh`'s, through the lib|
+|`images`|the worker image, pulled into the node's containerd|
+|`launch`|the driver, in a busybox container on the kind network, writes the `legion.yaml` and launches two issues' roots on `tmux/tmux` through the runtime's `Spawn`, under `runtimeClassName: gvisor`, as `share-volumes-kind.sh`'s driver launches its pod: the first, whose launch makes the repository's cache and whose `workspace-fetch` line the `provision` check prints, then, once that cache is Ready, the second|
+|`provision`|the first pod's `workspace-fetch` and `workspace-init` each ended 0, and its fetch's last line, which names where its feed came from, is printed|
+|`gvisor-kernel`|the `roles` container's kernel is gVisor's|
+|`alternates`|the clone's `.git/objects/info/alternates` is the feed's objects and nothing else, and its own `objects/pack` holds no pack|
+|`disk`|`du -sk` of the clone's `.git/objects` is under a tenth of the feed's `objects`; the control, a plain `git clone --no-checkout` of the same feed made in the container, takes about the feed's size|
+|`feed-read-only`|a write to the feed from `roles` is refused `Read-only file system`|
+|`fsck`|`git fsck --connectivity-only --no-dangling` of the clone passes through its alternates|
+|`logs`|`git log -1 refs/remotes/origin/master` and `jj log -r master@origin`, run as the launched architect's agent, succeed and name the same commit|
+|`cache-second-pod`|the second pod, launched while the cache is Ready: both init containers ended 0, its `workspace-fetch` streamed the feed from the repository cache and fetched under 1 MiB from GitHub for the delta, its clone's alternates name the feed's objects, and `git fsck --connectivity-only` of its clone passes (the e2e check of `internal/runtime/sandbox`'s `checkCacheSecondPod`, on kind)|
+
+What the proof stands in for lies outside the clone, as `burstable-kind.sh`'s does:
+the agent is a sleep stub, the store answers for an issue's first launch, the repository is public, and the roles' gh files hold a placeholder token.
+The loader, the runtime, Agent Sandbox's pod, the repository cache, the init containers, git, jj and gVisor are the real ones.
+`SHARED_CLONE_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the `legion.yaml` and both issue pods' manifests.
 
 ## dispatch-claimant-delivery.sh
 
@@ -6835,7 +6878,7 @@ a file it can open takes both, which still reach the reader, and a file whose di
 A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints PASS.
 Sourced by each of them, never run.
 Every other `EXIT` trap here that prints a verdict prints FAIL only, from a mark of its own, and its script does not source the lib.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` source it themselves.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `shared-clone-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh` and `envoy-session-states.sh` source it themselves.
 
 ```sh
 . "$root/scripts/e2e/lib/run-verdict.sh"     # sourced, never run
@@ -7810,7 +7853,7 @@ The watchdog runs under the caller's `errexit`, so every command on that path th
 ## lib/kind-sandbox.sh
 
 A throwaway kind cluster running Agent Sandbox's controller under gVisor, for a live proof of the Sandbox runtime on an amd64 Linux host.
-`burstable-kind.sh`, `controller-sweep-kind.sh` and `share-volumes-kind.sh` source it.
+`burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh` and `shared-clone-kind.sh` source it.
 
 ```sh
 . "$root/scripts/e2e/lib/kind-sandbox.sh"     # sourced, never run
@@ -7820,6 +7863,11 @@ The caller defines `note` and `fail`, which exits, and calls `kind_sandbox_teard
 `LEGION_E2E_KIND` names the kind binary when it is not on `PATH`.
 
 Each item below names a function, then what it does.
+
+- `kind_sandbox_install_kind WORK`
+
+  downloads kind v0.33.0 into `WORK`, checks it against its sha256 and makes it the kind the lib runs (`kind_bin`), with that release's default node image, `kindest/node:v1.37.0`, as `.github/ci-images.yaml` copies it by digest (`kind_node_image`), which `kind_sandbox_create` then names;
+  `shared-clone-kind.sh`, which e2e.yaml runs on a GitHub-hosted runner, calls it, and the other kind proofs use the kind on `PATH` and its default node image
 
 - `kind_sandbox_create NAME WORK`
 
