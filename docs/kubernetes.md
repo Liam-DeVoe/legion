@@ -2538,8 +2538,8 @@ A later decision of that claim, such as a second stop, makes that write again on
 Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
 **Who can write the set.**
-The route takes a write that names the actor `legion-daemon:<project>`.
-Before the airlock, Dispatch takes the session that a bearer caller names, so any caller whose Dispatch credential proves no session of its own can name that actor: the deployment's shared token, and a person's own agent token whatever its scopes.
+The route takes a write that names the actor `legion-daemon:<project>`, and with Dispatch's `DISPATCH_LEGION_STATUS_SCOPE` on only one from the daemon's own broker token.
+Before the airlock, Dispatch takes the session that a bearer caller names, so with that setting off any caller whose Dispatch credential proves no session of its own can name that actor: the deployment's shared token, and a person's own agent token whatever its scopes.
 The airlock closes that case.
 
 **A row of the new kind can stay through a rollback.**
@@ -2557,6 +2557,7 @@ delete from outbox where kind = 'role_holders_publish';
 While no Dispatch release reads `issue_role_holders` to record a result, the rollback costs nothing.
 After such a release is live, an earlier daemon publishes nothing, and each new or relaunched session records its results with no role.
 So roll Dispatch back first, to the release before that one, and then roll back the daemon.
+With `DISPATCH_LEGION_STATUS_SCOPE` on, Dispatch also reads the set to let an architect's status write through (R26), and an earlier daemon leaves each stored set as it stands, so turn that setting off before such a rollback.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
@@ -9845,8 +9846,9 @@ An issued token carries these claims and no others:
   No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
   Every other token carries none.
 
-- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and for a token whose trade asked for `read`, and `read person` for such a token that carries `read-person` and names a person.
-  Every other token carries none.
+- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and for a token whose trade asked for `read`, `read person` for such a token that carries `read-person` and names a person, and `legion-status` for the token of a `BROKER_EXCHANGE_ACCOUNTS` entry whose fixed session is `legion-daemon:<its own project>`, a Legion daemon's own entry, whose trade did not ask for `read`.
+  Dispatch reads `legion-status` (`DISPATCH_LEGION_STATUS_SCOPE`).
+  Every other token carries none, whatever session it carries.
 
 - `as_of` — the cut a token whose trade asked for `read` reads at, the trade's `as_of` form parameter, in UTC to the microsecond.
   Every other token, and such a token whose trade named no cut, carries none.
@@ -9862,8 +9864,10 @@ The token it mints for a trade that asks for no scope holds the scope `read` and
 That token reads every read of Dispatch's read class that needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its documents, comments and asks.
 No setting holds a read entry to some projects.
 The broker refuses to start on an account that both settings list, because one account mints one kind of token.
-The entry decides the scope of a trade that asks for none.
-A trade under any entry, and every other trade, may ask for `read` (`scope=read`, alone or beside `machine`): its token keeps the session, person, service, machine and projects the same trade would have carried, carries the narrowed word of its project scope and holds `read`, with `person` beside it for a `read-person` token that names a person, and nothing that writes.
+A `BROKER_EXCHANGE_ACCOUNTS` entry whose fixed session is `legion-daemon:<its own project>` mints a token that holds the scope `legion-status` as well (`isLegionDaemon`, `oauthwire.LegionDaemonSessionPrefix`), and no read entry does, whatever session it fixes.
+The broker reads the session the entry fixes, case included, and never a session the request names, so a pod of an entry that fixes no session gets no `legion-status` whatever session it names.
+The entry decides the scope of a trade that asks for none, and a request that names `legion-status` is refused `invalid_scope`, under every entry.
+A trade under any entry, and every other trade, may ask for `read` (`scope=read`, alone or beside `machine`): its token keeps the session, person, service, machine and projects the same trade would have carried, carries the narrowed word of its project scope and holds `read`, with `person` beside it for a `read-person` token that names a person, and nothing that writes, so a Legion daemon's trade that asks for `read` holds no `legion-status`.
 Such a trade may also name a cut (`as_of`, an RFC 3339 time with at most six fractional digits, no later than the trade); a cut on a trade that does not ask for `read`, a later one, one at the zero time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and one in any other form are refused `invalid_request`.
 A token that holds `read` is never the subject of a trade.
 It is never bound to a key a live launcher credential is bound to: a trade whose proof key holds one binds its token to a key made for the token's holder, which it proves in a second DPoP proof in the `DPoP-Holder` header, and a person's sign-in always does.

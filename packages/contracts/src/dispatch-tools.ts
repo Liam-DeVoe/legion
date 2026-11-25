@@ -1222,7 +1222,13 @@ export const dispatchToolSpecs = [
       `${ISSUE_STATUSES.join(", ")}; outside Legion, move it yourself as the work advances; inside ` +
       "Legion the daemon moves it. labels_add adds labels and keeps every label the issue holds; " +
       "labels replaces the whole set, so a label it does not name is removed, and the two never " +
-      "go together. A non-empty external_links is " +
+      "go together. On a Legion issue, where Dispatch runs with " +
+      "DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status write, the removal of the legion label, " +
+      "and a move out from under every labelled issue (403 LEGION_STATUS_SCOPE_REQUIRED) unless the " +
+      "credential holds the person or legion-status scope. The one exception is an architect of an " +
+      "issue above, once its claim is ready: its own broker token writes the status done, backlog, " +
+      "icebox or triage (not done with include_children, and with neither unlink_children nor " +
+      "include_parent). A non-empty external_links is " +
       "merged into the issue's existing links by URL, so linking the pull request you just opened " +
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
@@ -1403,8 +1409,13 @@ export const dispatchToolSpecs = [
       "the issue and decide again. A claim whose session is no longer running may be " +
       "taken: the takeover is recorded on the issue and the session that lost it is told. A claim is not the " +
       "issue's status — claiming moves nothing, and the result names who moves the status: you, with " +
-      "dispatch issue-update, or Legion's daemon on an issue it runs, where a status written by anyone " +
-      "else is undone. A claim is released by its holder or any human, and by " +
+      "dispatch issue-update, or Legion's daemon on an issue it runs. On such an issue, where " +
+      "Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status write from a " +
+      "credential that holds neither the person nor the legion-status scope " +
+      "(403 LEGION_STATUS_SCOPE_REQUIRED), but an architect of an issue above writes done, backlog, " +
+      "icebox or triage with its own broker token once its claim is ready. Otherwise the daemon " +
+      "undoes a status that anyone else " +
+      "writes. A claim is released by its holder or any human, and by " +
       "any agent once the holder's session is no longer running. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
