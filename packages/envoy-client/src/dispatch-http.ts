@@ -72,6 +72,7 @@ import type {
   RelatedCheckInput,
   ResolveAskInput,
   SearchResponse,
+  SearchResultKind,
   SessionAnswersResponse,
   StatusChangeAnswer,
   StatusChangeInput,
@@ -483,6 +484,9 @@ export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
   readonly offset?: number;
+  /** The kinds to rank, count and page (`SEARCH_KINDS`): `#url` writes one `kind=` per entry,
+   *  which is how the route reads it. With none named the search reads every kind it indexes. */
+  readonly kind?: readonly SearchResultKind[];
 }
 
 /** One node's edges: `to` reads what points at it, `from` what it points to; exactly one. */
