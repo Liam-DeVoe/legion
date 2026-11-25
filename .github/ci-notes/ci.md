@@ -406,11 +406,6 @@ Before these the job's filter carried one pattern, '.github/scripts/*', for all 
 them: a change to any one script ran every harness, and 28 of the 66 commits that
 touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
 
-## priorities_seed_check_test: The one harness of the job outside .github/scripts
-
-The one harness of the job outside .github/scripts: it carries its own helpers
-and sources no test-lib.sh.
-
 ## test: The test job: the script harnesses and the Bun suites of scripts/
 
 The test job: the script harnesses of the `release_push_test` to `go_test_step_expansion_test`
