@@ -1164,11 +1164,13 @@ build the same listener and natsd, listener-server-change and envoy-go-build, wh
 listener, envoy-go-checks, whose script tests run under the setup they had in envoy-go-build's
 job, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
-the API's of that set, and the binaries, multiprocess
+the API's of that set, the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-broker's commands out of that same set), go-envoy-darwin-vet (envoy-go-build's darwin vet,
-whose step's env gives it a build cache directory of its own, so the standard library and the
-envoy module's dependencies compiled for darwin ride in neither the go-envoy nor the
+broker's commands out of that same set, and the two jobs of ci-job-dispatch-two-builds.yaml,
+whose sizing step and twobuild test step build out of it too), go-envoy-darwin-vet
+(envoy-go-build's darwin vet, whose step's env gives it a build cache directory of its own,
+so the standard library and the envoy module's dependencies compiled for darwin ride in
+neither the go-envoy nor the
 go-envoy-test entry, which the other envoy jobs download), go-envoy-infra (envoy-infra-build
 and envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
@@ -2303,6 +2305,29 @@ build's server. Playwright installs as it does for dispatch-browser-multiprocess
 get a database of their own, since they truncate it. In a merge-group run the called file's
 dispatch-two-builds-same job also runs the Go suite with this tree's own build as the previous
 build, beside this job and not after it (that job's comment says why).
+
+## Why the two-builds jobs restore go-envoy-test
+
+Both jobs of ci-job-dispatch-two-builds.yaml restore go-envoy-test and save nothing, as
+envoy-go-claim-model and dispatch-browser.yaml's binaries job do. setup-go's own cache is off,
+so without a restore their Go steps start on an empty module cache and an empty build cache.
+When the two earlier builds come out of their own cache entries, the sizing step's
+`go run ./internal/dispatch/store/cmd/connections` and the twobuild test step are the first
+go commands of the job, and they download and compile the set from nothing. In the 10 green
+merge groups after 2026-11-24T08:40Z, the sizing step took 27 s, against 2 s before, when
+the previous build's compile had filled the caches first. In the dispatch-two-builds job of run
+45360231949, the two steps printed 16 and 67 `go: downloading` lines. Each push to main fills
+go-envoy-test with `go test -c -o /dev/null ./...` over the envoy module, so it holds what both
+steps build. Measured with
+`go list -deps -test -tags twobuild ./cmd/dispatch ./internal/dispatch/store/cmd/connections`
+at main 1b636f3193e, the steps need 626 packages of 80 modules, and `go list -deps -test ./...`
+holds every one. go-envoy's build of the listener and natsd lacks 485 of the packages and 53
+of the modules, so a restore of go-envoy would still download and compile most of the set. The
+restore is a read of an entry that already exists: it adds no bytes to the repository's cache.
+dispatch-two-builds-same's "Build this tree as the previous build" reads the same caches: the
+modules and the compiled dependencies match, while the tree's own packages, built from the
+script's `git archive` directory, compile again, since without -trimpath Go keys a package
+outside the module cache on its directory.
 
 ## The server-change soak
 
