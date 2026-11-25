@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
+import { PageHeader, SectionHeader } from "../../components/Layout";
 import { GrantsSection } from "../credentials/GrantsSection";
 import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
@@ -10,7 +10,7 @@ import { IssuePagePreference } from "../issue-page/IssuePagePreference";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { AgentTokensSection } from "./AgentTokensSection";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
-import { settingsSectionGap } from "./classes";
+import { settingsSectionCard, settingsSectionGap } from "./classes";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
 import { ProjectsSection } from "./ProjectsSection";
 
@@ -21,37 +21,44 @@ export function SettingsPage(): ReactNode {
 
   return (
     <section className="max-w-4xl">
-      <header className="mb-6">
-        <h1 className={`text-2xl font-semibold ${textPrimaryOnCanvas}`}>Settings</h1>
-        <p className={`mt-1 ${textSecondaryOnCanvas}`}>
-          Manage the projects, the agent tokens and the settings of this Dispatch.
-        </p>
-      </header>
+      <PageHeader
+        description="Manage the projects, the agent tokens and the settings of this Dispatch."
+        title="Settings"
+      />
       <div className={settingsSectionGap}>
-        <ProjectsSection />
-        <AgentTokensSection />
+        <div className={settingsSectionCard}>
+          <ProjectsSection />
+        </div>
+        <div className={settingsSectionCard}>
+          <AgentTokensSection />
+        </div>
         {credentialsAvailable.isPending || credentialsAvailable.data === null ? null : (
           <>
-            <GrantsSection />
-            <SignInsSection />
+            <div className={settingsSectionCard}>
+              <GrantsSection />
+            </div>
+            <div className={settingsSectionCard}>
+              <SignInsSection />
+            </div>
           </>
         )}
-        <ArchitectureSourcesSection />
-        <section aria-labelledby="delivery-timeline-heading">
-          <h2
-            className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
+        <div className={settingsSectionCard}>
+          <ArchitectureSourcesSection />
+        </div>
+        <section aria-labelledby="delivery-timeline-heading" className={settingsSectionCard}>
+          <SectionHeader
+            description="Which repository deploys, and whose merged pull requests the Delivery page counts. Saving verifies the Dispatch GitHub App can read the deploy repository."
             id="delivery-timeline-heading"
-          >
-            Delivery timeline
-          </h2>
-          <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-            Which repository deploys, and whose merged pull requests the Delivery page counts.
-            Saving verifies the Dispatch GitHub App can read the deploy repository.
-          </p>
+            title="Delivery timeline"
+          />
           <DeliverySettingsForm />
         </section>
-        <IssuePagePreference />
-        <LegionDaemonsSection />
+        <div className={settingsSectionCard}>
+          <IssuePagePreference />
+        </div>
+        <div className={settingsSectionCard}>
+          <LegionDaemonsSection />
+        </div>
       </div>
     </section>
   );

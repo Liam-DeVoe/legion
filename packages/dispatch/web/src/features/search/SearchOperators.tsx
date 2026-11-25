@@ -4,9 +4,9 @@ import {
   SEARCH_OPERATOR_PHRASE,
 } from "@legion/contracts";
 import type { ReactNode } from "react";
-
 import type { SearchOperator } from "../../api/types";
-import { badgeLow, surfaceMutedBg, textMutedOnSurface } from "../../theme/classes";
+import { badgeClassName } from "../../components/Badge";
+import { surfaceMutedBg, textMutedOnSurface } from "../../theme/classes";
 
 /** The three operator forms the search reads, each as a person writes it and what it does to
  *  the list. They are offered while the query is typed, so nobody has to know them already. */
@@ -42,7 +42,7 @@ export function SearchOperators({ inUse }: { inUse: readonly SearchOperator[] })
             <span>{what}</span>
             {used ? (
               <span
-                className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}
+                className={badgeClassName("info")}
                 data-testid={`search-operator-in-use-${name}`}
               >
                 in use

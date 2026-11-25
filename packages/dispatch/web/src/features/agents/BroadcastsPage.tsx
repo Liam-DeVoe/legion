@@ -1,19 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-
 import { api } from "../../api/client";
 import { EmptyState } from "../../components/EmptyState";
+import { PageHeader } from "../../components/Layout";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
 import {
   borderDefault,
   card,
   dangerText,
-  linkHoverText,
-  linkText,
+  linkChrome,
+  rowHoverBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
+  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { capabilityLabel } from "../conversation/delivery";
 import { AgentName } from "../refs/AgentName";
@@ -43,59 +44,65 @@ export function BroadcastsPage(): ReactNode {
 
   return (
     <section aria-label="Broadcasts">
-      <header className={`mb-5 border-b pb-4 ${borderDefault}`}>
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to="/agents">
-          ← Agents
-        </Link>
-        <h1 className={`mt-1 text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}>
-          Broadcasts
-        </h1>
-        <p className={`mt-1 text-sm ${textMutedOnCanvas}`}>
-          One message sent to many agents, and how each of them answered.
-        </p>
-      </header>
+      <PageHeader
+        description="One message sent to many agents, and how each of them answered."
+        eyebrow={
+          <Link className={linkChrome} to="/agents">
+            ← Agents
+          </Link>
+        }
+        title="Broadcasts"
+      />
       {broadcasts.data.length === 0 ? (
         <EmptyState
           label="Broadcasts empty state"
           message="No broadcast has been sent from Dispatch yet."
         />
       ) : (
-        <ul className="space-y-3">
+        <ul className="space-y-2">
           {broadcasts.data.map((sent) => (
-            <li className={`rounded-xl border ${card} ${borderDefault}`} key={sent.id}>
+            <li
+              className={`rounded-lg border ${card} ${borderDefault} ${rowHoverBg}`}
+              key={sent.id}
+            >
               {/* The sender is drawn by `AgentName`, whose name links to its live conversation,
                   so it sits above the row's link rather than inside it: one link never holds
                   another. A long name wraps rather than widening the row. */}
-              <p className={`min-w-0 break-words px-3 pt-3 text-xs ${textMutedOnCanvas}`}>
+              <p
+                className={`min-w-0 break-words px-4 pt-3 text-sm font-medium ${textSecondaryOnSurface}`}
+              >
                 <AgentName actor={sent.author} />
               </p>
               {/* Below `xl` every link is `inline-flex` with centred items (styles.css's touch
                   rule, unlayered, so it beats `block` and `items-*`): the row stacks its two lines
                   explicitly and each stretches to the row's width. */}
+              {/* Who, what, then how it went: the message is the row's own words, and the mode,
+                  the age and the tally are the muted line under it. */}
               <ReferenceHostIs host="control">
                 <Link
-                  className="flex w-full flex-col px-3 pt-1 pb-3"
+                  className="flex w-full flex-col rounded-b-lg px-4 pt-0.5 pb-3"
                   to={`/agents/broadcasts/${sent.id}`}
                 >
-                  <p
-                    className={`flex flex-wrap items-center gap-2 self-stretch text-xs ${textMutedOnCanvas}`}
-                  >
-                    <LabelPill>{capabilityLabel(sent.delivery)}</LabelPill>
-                    <Timestamp at={sent.created_at} />
-                    <span>
-                      {sent.replies} of {sent.recipients} answered
-                    </span>
-                  </p>
                   {/* No `source`: why a broadcast is no record is the reading list's
                       `broadcasts-list-body` (`DISPATCH_READING_SURFACES`). */}
                   <MarkdownPreview
-                    className={`mt-1 self-stretch text-sm ${textPrimaryOnCanvas}`}
+                    className={`self-stretch text-sm ${textPrimaryOnCanvas}`}
                     fullTitle
                     lines={1}
                     markdown={sent.body}
                     surface="broadcasts-list-body"
                     tree={sent.body_tree}
                   />
+                  <p
+                    className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 self-stretch text-xs ${textMutedOnCanvas}`}
+                  >
+                    <LabelPill>{capabilityLabel(sent.delivery)}</LabelPill>
+                    <Timestamp at={sent.created_at} />
+                    <span aria-hidden>·</span>
+                    <span>
+                      {sent.replies} of {sent.recipients} answered
+                    </span>
+                  </p>
                 </Link>
               </ReferenceHostIs>
             </li>

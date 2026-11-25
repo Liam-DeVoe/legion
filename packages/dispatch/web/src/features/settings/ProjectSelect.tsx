@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import type { Project } from "../../api/types";
-import { inputClasses, textPrimaryOnSurface } from "../../theme/classes";
+import { Select } from "../../components/Field";
 
 /** The "Choose a project" picker of the Settings page's architecture sources form and its Legion
  *  daemons form; `disabled` is omitted from the DOM when not given. */
@@ -19,8 +19,7 @@ export function ProjectSelect({
   value: string;
 }): ReactNode {
   return (
-    <select
-      className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+    <Select
       disabled={disabled}
       id={id}
       onChange={(event) => onChange(event.target.value)}
@@ -35,6 +34,6 @@ export function ProjectSelect({
           {candidate.key} · {candidate.name}
         </option>
       ))}
-    </select>
+    </Select>
   );
 }

@@ -1,7 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-
 import { api } from "../../api/client";
 import type {
   Agent,
@@ -9,6 +8,7 @@ import type {
   BroadcastRecipient,
   MessageDeliveryMode,
 } from "../../api/types";
+import { Button } from "../../components/Button";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
@@ -16,10 +16,8 @@ import {
   borderDefault,
   card,
   dangerText,
-  linkHoverText,
-  linkText,
-  secondaryButtonBorder,
-  secondaryButtonText,
+  linkChrome,
+  quoteAccentBorder,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
@@ -107,7 +105,7 @@ function BroadcastRecipientRow({
     latest?.state === "pending" && Date.now() - Date.parse(latest.createdAt) > CLAIM_LEASE_MS;
   const capabilities = capabilitiesForTarget(recipient.message.target, liveAgents);
   return (
-    <article aria-label={label} className={`rounded-xl border p-3 ${card} ${borderDefault}`}>
+    <article aria-label={label} className={`rounded-lg border px-4 py-3 ${card} ${borderDefault}`}>
       <h3 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>
         <AgentName
           className="break-words"
@@ -146,21 +144,19 @@ function BroadcastRecipientRow({
         // frame may already have reached the agent, and a repeat of the same mode is recognised
         // by its dedupe key while a different mode is a new key - that would be a second delivery.
         <div className="mt-3">
-          <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
+          <Button
             disabled={retry.isPending}
             onClick={() => retry.mutate(latest?.delivery ?? delivery)}
-            type="button"
           >
             Retry
-          </button>
+          </Button>
           <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>
             {strandedRetryGuidance(latest?.delivery ?? delivery, latest?.createdAt)}
           </p>
         </div>
       ) : null}
       {replies.map((reply) => (
-        <div className={`mt-2 border-t pt-2 ${borderDefault}`} key={reply.id}>
+        <div className={`mt-3 border-t pt-3 ${borderDefault}`} key={reply.id}>
           <p className={`flex items-baseline gap-2 text-xs ${textSecondaryOnCanvas}`}>
             <AgentName actor={reply.author} className="font-semibold" inline />
             <Timestamp at={reply.created_at} />
@@ -210,28 +206,37 @@ export function BroadcastPage(): ReactNode {
   const broadcastMode = deliveryMode(sent.delivery) ?? "steer";
   return (
     <section aria-label="Broadcast">
-      <header className={`mb-5 border-b pb-4 ${borderDefault}`}>
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to="/agents/broadcasts">
-          ← All broadcasts
-        </Link>
-        <h1 className={`mt-1 text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}>
+      <header className="mb-6">
+        <div className="mb-1 text-sm">
+          <Link className={linkChrome} to="/agents/broadcasts">
+            ← All broadcasts
+          </Link>
+        </div>
+        <h1
+          className={`min-w-0 break-words text-[22px] leading-8 font-semibold tracking-tight ${textPrimaryOnCanvas}`}
+        >
           Broadcast to {recipients.length} {recipients.length === 1 ? "agent" : "agents"}
         </h1>
-        <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
+        <p
+          className={`mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm ${textMutedOnCanvas}`}
+        >
           <LabelPill>{capabilityLabel(sent.delivery)}</LabelPill>
           <AgentName actor={sent.author} inline />
+          <span aria-hidden>·</span>
           <Timestamp at={sent.created_at} />
+          <span aria-hidden>·</span>
           <span>
             {answeredCount(recipients)} of {recipients.length} answered
           </span>
         </p>
-        {/* No `source`: why a broadcast's own body is no record is the reading list's
+        {/* What was sent, set off as the quote it is: the cards under it are its answers. No
+            `source`: why a broadcast's own body is no record is the reading list's
             `broadcast-sent-body` (`DISPATCH_READING_SURFACES`). */}
-        <div className={`mt-2 ${textPrimaryOnCanvas}`}>
+        <div className={`mt-4 border-l-2 pl-3 ${quoteAccentBorder} ${textPrimaryOnCanvas}`}>
           <MarkdownBody markdown={sent.body} surface="broadcast-sent-body" tree={sent.body_tree} />
         </div>
         {excluded.length === 0 ? null : (
-          <p className={`mt-2 text-sm ${dangerText}`}>
+          <p className={`mt-3 text-sm ${dangerText}`}>
             <AgentParts
               parts={excludedParts(
                 excluded.map((item) => ({
@@ -248,7 +253,7 @@ export function BroadcastPage(): ReactNode {
       {recipients.length === 0 ? (
         <EmptyState label="Broadcast empty state" message="This broadcast reached no agent." />
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2">
           {recipients.map((recipient) => (
             <BroadcastRecipientRow
               delivery={broadcastMode}

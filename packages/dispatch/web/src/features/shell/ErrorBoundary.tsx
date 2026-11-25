@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
+import { Button } from "../../components/Button";
 import {
   calloutDangerBorder,
   dangerText,
@@ -48,25 +49,21 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     }
     return (
       <section
-        className={`rounded-xl border p-4 ${calloutDangerBorder}`}
+        className={`rounded-lg border p-4 ${calloutDangerBorder}`}
         data-testid="error-boundary"
         role="alert"
       >
-        <h2 className={`text-base font-semibold ${textPrimaryOnCanvas}`}>
+        <h2 className={`text-[15px] font-semibold ${textPrimaryOnCanvas}`}>
           Something went wrong in {this.props.region}.
         </h2>
-        <p className={`mt-2 text-sm ${textSecondaryOnCanvas}`}>
+        <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
           The rest of Dispatch still works. Reloading usually clears it; if it comes back, the
           message below names the failure.
         </p>
         <p className={`mt-2 font-mono text-xs break-words ${dangerText}`}>{message}</p>
-        <button
-          className={`mt-3 text-sm font-medium underline ${dangerText}`}
-          onClick={() => window.location.reload()}
-          type="button"
-        >
+        <Button className="mt-3" onClick={() => window.location.reload()}>
           Reload Dispatch
-        </button>
+        </Button>
       </section>
     );
   }

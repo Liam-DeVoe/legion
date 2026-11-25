@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery } from "../../api/queries";
 import type { IssueComponents, IssueDetails } from "../../api/types";
+import { badgeClassName, badgeShapeClassName } from "../../components/Badge";
 import {
   type PageWords,
   usePageWords,
@@ -12,7 +13,6 @@ import {
   withoutEllipsis,
 } from "../../components/tooltips";
 import {
-  badgeHigh,
   badgePrimary,
   dangerText,
   linkHoverText,
@@ -135,7 +135,7 @@ export function IssueComponentsLine({
   const write = useIssueComponents(issue);
   const inheritedFrom =
     components.inherited_from === null ? null : (
-      <span className={`${part} text-xs ${quiet}`} {...page?.pageChrome}>
+      <span className={`${part} text-[13px] ${quiet}`} {...page?.pageChrome}>
         {page?.CONTROL_LABELS.components_inherited_from ?? "inherited from"}{" "}
         <Link
           className={`dispatch-inline-link underline ${page === null ? `${linkText} ${linkHoverText}` : `${pageInkText} ${value}`}`}
@@ -191,7 +191,11 @@ export function IssueComponentsLine({
         <>
           {(components.ids ?? []).map((id) => (
             <span
-              className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgePrimary.bg} ${badgePrimary.text}` : pageLabelChip}`}
+              className={
+                page === null
+                  ? `${badgeShapeClassName} ${badgePrimary.bg} ${badgePrimary.text}`
+                  : `inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${pageLabelChip}`
+              }
               key={id}
               {...page?.authorText}
             >
@@ -200,7 +204,11 @@ export function IssueComponentsLine({
           ))}
           {(components.unknown ?? []).map((id) => (
             <span
-              className={`inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${page === null ? `${badgeHigh.bg} ${badgeHigh.text}` : pageWaitingChip}`}
+              className={
+                page === null
+                  ? badgeClassName("warning")
+                  : `inline-flex ${part} items-center rounded-full px-2 py-0.5 text-xs font-medium ${pageWaitingChip}`
+              }
               key={id}
               title={
                 tooltips ? `${id} is no longer in the project's architecture model` : undefined

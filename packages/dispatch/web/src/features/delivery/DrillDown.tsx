@@ -10,12 +10,12 @@ import type {
   DeliveryRunJobDetail,
   DeliverySessionGroup,
 } from "../../api/types";
+import { Button } from "../../components/Button";
 import {
-  borderStrong,
+  borderDefault,
   dangerText,
-  dismissButtonText,
   inlineWarningText,
-  linkText,
+  linkChrome,
   surfaceBg,
   textMutedOnSurface,
   textPrimaryOnSurface,
@@ -30,7 +30,8 @@ import { leadTimeMinutes } from "./lib/prList";
 import { storedSessionTitle } from "./lib/sessionTitles";
 import type { TimelineSelection } from "./Timeline";
 
-const sectionLabel = `mt-2 text-xs uppercase ${textMutedOnSurface}`;
+const sectionLabel = `mb-1.5 text-xs font-medium ${textMutedOnSurface}`;
+const chromeLink = `self-start text-sm ${linkChrome}`;
 
 function fmt(iso: string | null): string {
   return iso === null ? "\u2014" : new Date(iso).toLocaleString();
@@ -61,18 +62,22 @@ function PRDetail({
         : (pr.components ?? []).map((id) => components[id]?.title ?? id).join(", ");
   }
   return (
-    <div className="flex flex-col gap-2">
-      <h3 className={`pr-6 text-lg font-semibold ${textPrimaryOnSurface}`}>
+    <div className="flex flex-col gap-3">
+      <h3
+        className={`pr-10 text-[15px] leading-6 font-semibold break-words ${textPrimaryOnSurface}`}
+      >
         {pr.id}{" "}
         {pr.rework ? (
           <span className={`ml-2 align-middle text-xs ${inlineWarningText}`}>rework</span>
         ) : null}
       </h3>
-      <p className={textSecondaryOnSurface}>{pr.title}</p>
-      <a className={`${linkText} underline`} href={pr.url} rel="noreferrer" target="_blank">
+      <p className={`-mt-2 text-sm ${textSecondaryOnSurface}`}>{pr.title}</p>
+      <a className={chromeLink} href={pr.url} rel="noreferrer" target="_blank">
         Open on GitHub
       </a>
-      <dl className={`grid grid-cols-2 gap-x-4 gap-y-1 text-sm ${textPrimaryOnSurface}`}>
+      <dl
+        className={`grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 border-t pt-3 text-sm ${borderDefault} ${textPrimaryOnSurface}`}
+      >
         <dt className={textMutedOnSurface}>Author</dt>
         <dd>{pr.author}</dd>
         <dt className={textMutedOnSurface}>Dispatch issue</dt>
@@ -80,10 +85,7 @@ function PRDetail({
           {pr.issue === null ? (
             "\u2014"
           ) : (
-            <Link
-              className={`${linkText} underline`}
-              to={buildIssuePath({ key: pr.issue, kind: "issue" })}
-            >
+            <Link className={linkChrome} to={buildIssuePath({ key: pr.issue, kind: "issue" })}>
               {pr.issue}
               {pr.issue_title === null ? "" : ` \u2014 ${pr.issue_title}`}
             </Link>
@@ -149,9 +151,14 @@ function RunJobs({ runId, durations }: { runId: number; durations: boolean }): R
   return (detail.data.jobs ?? []).map((job) => {
     const durationMs = jobDurationMs(job);
     return (
-      <div className="flex justify-between gap-2 text-sm" key={job.name}>
-        <span className={textPrimaryOnSurface}>{job.name}</span>
-        <span className={job.conclusion === "failure" ? dangerText : textSecondaryOnSurface}>
+      <div
+        className={`flex justify-between gap-3 border-t py-1.5 text-sm first:border-t-0 ${borderDefault}`}
+        key={job.name}
+      >
+        <span className={`min-w-0 break-words ${textPrimaryOnSurface}`}>{job.name}</span>
+        <span
+          className={`shrink-0 tabular-nums ${job.conclusion === "failure" ? dangerText : textSecondaryOnSurface}`}
+        >
           {job.conclusion}
           {durations && durationMs !== null ? ` (${Math.round(durationMs / 1000)}s)` : ""}
         </span>
@@ -162,17 +169,17 @@ function RunJobs({ runId, durations }: { runId: number; durations: boolean }): R
 
 function DeployDetail({ run }: { run: DeliveryRun }): ReactNode {
   return (
-    <div className="flex flex-col gap-2">
-      <h3 className={`pr-6 text-lg font-semibold ${textPrimaryOnSurface}`}>
+    <div className="flex flex-col gap-3">
+      <h3 className={`pr-10 text-[15px] leading-6 font-semibold ${textPrimaryOnSurface}`}>
         Deploy: run #{run.id}
       </h3>
-      <a className={`${linkText} underline`} href={run.url} rel="noreferrer" target="_blank">
+      <a className={`-mt-2 ${chromeLink}`} href={run.url} rel="noreferrer" target="_blank">
         Open run
       </a>
       <div>
         <div className={sectionLabel}>PRs shipped ({(run.prs ?? []).length})</div>
         {(run.prs ?? []).map((pr) => (
-          <div className={`text-sm ${textPrimaryOnSurface}`} key={pr.id}>
+          <div className={`py-0.5 text-sm break-words ${textPrimaryOnSurface}`} key={pr.id}>
             {pr.id} {`\u2014 ${pr.title}`}
           </div>
         ))}
@@ -187,17 +194,17 @@ function DeployDetail({ run }: { run: DeliveryRun }): ReactNode {
 
 function FailureDetail({ run }: { run: DeliveryRun }): ReactNode {
   return (
-    <div className="flex flex-col gap-2">
-      <h3 className={`pr-6 text-lg font-semibold ${dangerText}`}>
+    <div className="flex flex-col gap-3">
+      <h3 className={`pr-10 text-[15px] leading-6 font-semibold ${dangerText}`}>
         Pipeline failure: run #{run.id}
       </h3>
-      <a className={`${linkText} underline`} href={run.url} rel="noreferrer" target="_blank">
+      <a className={`-mt-2 ${chromeLink}`} href={run.url} rel="noreferrer" target="_blank">
         Open run
       </a>
       <div>
         <div className={sectionLabel}>Failed jobs</div>
         {(run.failed_jobs ?? []).map((job) => (
-          <div className={`text-sm ${dangerText}`} key={job.name}>
+          <div className={`py-0.5 text-sm ${dangerText}`} key={job.name}>
             {job.name} at {fmt(job.completed_at)}
           </div>
         ))}
@@ -270,19 +277,27 @@ export function DrillDown({
     <aside
       aria-label="Details"
       aria-modal="true"
-      className={`fixed top-0 right-0 z-30 h-full w-96 max-w-full overflow-y-auto border-l p-4 shadow-xl ${borderStrong} ${surfaceBg}`}
+      className={`fixed top-0 right-0 z-30 h-full w-96 max-w-full overflow-y-auto border-l p-5 shadow-xl ${borderDefault} ${surfaceBg}`}
       ref={dialog.containerRef}
       role="dialog"
     >
-      <button
+      <Button
         aria-label="Close details"
-        className={`float-right ${dismissButtonText}`}
+        className="absolute top-3 right-3"
+        iconOnly
         onClick={onClose}
         ref={closeButtonRef}
-        type="button"
+        variant="ghost-muted"
       >
-        ✕
-      </button>
+        <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 16 16">
+          <path
+            d="m4 4 8 8m0-8-8 8"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeWidth="1.5"
+          />
+        </svg>
+      </Button>
       {body}
     </aside>
   );

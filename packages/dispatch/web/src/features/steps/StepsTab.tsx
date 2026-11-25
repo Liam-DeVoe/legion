@@ -12,9 +12,9 @@ import {
   card,
   dangerText,
   successText,
-  surfaceMutedBg,
   textMutedOnCanvas,
   textMutedOnSurface,
+  textPrimaryOnCanvas,
   textPrimaryOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
@@ -39,7 +39,7 @@ const COLUMNS = [
 const NONE = "—";
 
 function Cell({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <td className={`px-1.5 py-1.5 align-top ${className}`}>{children}</td>;
+  return <td className={`px-2 py-2 align-top first:pl-4 last:pr-4 ${className}`}>{children}</td>;
 }
 
 /** A run's start and end are read against each other, down the table, so each is the instant
@@ -153,24 +153,22 @@ function Result({ row }: { row: StepRow }): ReactNode {
 function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): ReactNode {
   const tableFade = useScrollFadeTrailing();
   return (
-    <section className="min-w-0 space-y-2">
-      <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>Task {task}</h2>
+    <section className="min-w-0 space-y-3">
+      <h2 className={`text-[15px] font-semibold ${textPrimaryOnCanvas}`}>Task {task}</h2>
       {/* The table scrolls sideways inside the card where the page is narrower than its columns
           (a phone), and while columns lie past the card's edge it wears the trailing fade the
           tablist and the details rail wear, so the cut column reads as more to scroll rather than
           as clipped text. The scroll box sits inside the card so the fade masks the table and not
           the card's border; `overflow-hidden` keeps the scrolled rows inside the card's rounded
           corners. */}
-      <div className={`overflow-hidden rounded-xl border ${card}`}>
+      <div className={`overflow-hidden rounded-lg border ${card}`}>
         <div className={`overflow-x-auto ${tableFade.fade}`} ref={tableFade.ref}>
           <table aria-label={`Steps of task ${task}`} className="w-full text-left text-xs">
-            <thead
-              className={`border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`}
-            >
+            <thead className={`border-b ${borderDefault} ${textMutedOnSurface}`}>
               <tr>
                 {COLUMNS.map((column) => (
                   <th
-                    className="px-1.5 py-1.5 font-semibold whitespace-nowrap"
+                    className="px-2 py-2 font-medium whitespace-nowrap first:pl-4 last:pr-4"
                     key={column}
                     scope="col"
                   >

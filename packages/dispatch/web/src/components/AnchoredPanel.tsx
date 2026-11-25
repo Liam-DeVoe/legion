@@ -13,7 +13,7 @@ const PANEL_WIDTH = 256;
 
 /**
  * The one panel that hangs off a control: portalled to the body so no ancestor can clip it,
- * placed under its anchor and kept there while the page resizes or scrolls, and dismissed by
+ * placed under its anchor (above it where the window has no room below) and kept there while the page resizes or scrolls, and dismissed by
  * the same rules everywhere — a pointer press outside it or its anchor, or Escape, which also
  * returns focus to the anchor. Opening moves focus into the panel.
  *
@@ -70,10 +70,16 @@ export function AnchoredPanel({
         8,
         Math.min(align === "right" ? box.right - width : box.left, window.innerWidth - width - 8)
       );
-      const top = Math.max(
-        8,
-        Math.min(box.bottom + 4, window.innerHeight - (panelRef.current?.offsetHeight ?? 200) - 8)
-      );
+      // Under the anchor where it fits. Where it does not, above the anchor if it fits there, so
+      // the panel never covers the control it hangs off; with room on neither side it is held
+      // inside the window, as before.
+      const height = panelRef.current?.offsetHeight ?? 200;
+      const below = box.bottom + 4;
+      const above = box.top - 4 - height;
+      const top =
+        below + height + 8 <= window.innerHeight || above < 8
+          ? Math.max(8, Math.min(below, window.innerHeight - height - 8))
+          : above;
       setPosition((current) =>
         current.left === left && current.top === top ? current : { left, top }
       );

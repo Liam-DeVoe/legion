@@ -200,10 +200,10 @@ test("the decisions' region follows its card's height when the card resizes, wit
     if (!(wrapper instanceof HTMLElement)) throw new Error("the card has no wrapper");
     Object.defineProperty(wrapper, "offsetHeight", { configurable: true, get: () => height });
     resize.resize(wrapper);
-    expect(region.style.minHeight).toBe(`${120 + 300 + 8}px`);
+    expect(region.style.minHeight).toBe(`${120 + 300}px`);
     height = 250;
     resize.resize(wrapper);
-    expect(region.style.minHeight).toBe(`${120 + 250 + 8}px`);
+    expect(region.style.minHeight).toBe(`${120 + 250}px`);
   } finally {
     view.unmount();
     resize.restore();

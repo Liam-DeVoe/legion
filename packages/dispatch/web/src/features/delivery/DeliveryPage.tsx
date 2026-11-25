@@ -1,29 +1,36 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { isDeliveryNotConfigured } from "../../api/client";
 import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries";
 import type { DeliverySessionGroup } from "../../api/types";
+import { Button, segmentedClassName } from "../../components/Button";
+import { Select } from "../../components/Field";
+import { PageHeader, SectionHeader } from "../../components/Layout";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { useSettled } from "../../hooks/useSettled";
 import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
 import {
-  borderStrong,
-  dragHandleBg,
-  linkText,
-  surfaceBg,
-  surfaceMutedBg,
+  linkInline,
   switchOffBg,
   switchOnBg,
   switchThumbBg,
   textMutedOnCanvas,
-  textPrimaryOnCanvas,
-  textPrimaryOnSurface,
-  textPrimaryOnSurfaceMuted,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
 import { DrillDown } from "./DrillDown";
@@ -32,6 +39,8 @@ import {
   buildColorScale,
   COLOR_COUNT_KEYS,
   COLOR_FACET_OPTIONS,
+  COLOR_PALETTE,
+  COLOR_PALETTE_LIGHT,
   type ColorFacet,
 } from "./lib/colorScale";
 import {
@@ -190,21 +199,13 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
 /** The Timeline | List segmented toggle. */
 function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => void }): ReactNode {
   const item = (value: Mode, label: string) => (
-    <button
-      aria-pressed={mode === value}
-      className={`h-8 px-3 text-sm font-medium first:rounded-l-md last:rounded-r-md ${
-        mode === value ? `${surfaceMutedBg} ${textPrimaryOnSurfaceMuted}` : textSecondaryOnCanvas
-      }`}
-      onClick={() => onChange(value)}
-      type="button"
-    >
+    <Button aria-pressed={mode === value} onClick={() => onChange(value)} size="sm" variant="ghost">
       {label}
-    </button>
+    </Button>
   );
   return (
-    <fieldset aria-label="View" className={`mr-4 flex rounded-md border ${borderStrong}`}>
+    <fieldset aria-label="View" className={segmentedClassName}>
       {item("timeline", "Timeline")}
-      <span aria-hidden="true" className={`w-px ${dragHandleBg}`} />
       {item("list", "List")}
     </fieldset>
   );
@@ -219,19 +220,25 @@ function LanesSwitch({
   onChange: (checked: boolean) => void;
 }): ReactNode {
   return (
-    <label className="ml-4 flex cursor-pointer items-center gap-2">
+    <label className="flex cursor-pointer items-center gap-2">
+      {/* The button is the touch target (44px below `xl`, by the app's floor); the track inside
+          it keeps the switch's own size, so the floor never swells the track into a disc. */}
       <button
         aria-checked={checked}
-        className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${checked ? switchOnBg : switchOffBg}`}
+        className="inline-flex shrink-0 items-center justify-center rounded-full"
         onClick={() => onChange(!checked)}
         role="switch"
         type="button"
       >
         <span
-          className={`block h-4 w-4 rounded-full shadow-lg transition-transform ${switchThumbBg} ${checked ? "translate-x-4.5" : "translate-x-0.5"}`}
-        />
+          className={`inline-flex h-5 w-9 items-center rounded-full transition-colors ${checked ? switchOnBg : switchOffBg}`}
+        >
+          <span
+            className={`block h-4 w-4 rounded-full shadow-sm transition-transform ${switchThumbBg} ${checked ? "translate-x-4.5" : "translate-x-0.5"}`}
+          />
+        </span>
       </button>
-      <span className={textPrimaryOnCanvas}>Swimlanes</span>
+      <span className={textSecondaryOnCanvas}>Swimlanes</span>
     </label>
   );
 }
@@ -269,7 +276,6 @@ function OwnColourPicker({
       searchLabel="Search parent agents…"
       selected={selected}
       triggerAriaLabel={`Own colour and lane: ${state}`}
-      triggerClassName={`flex h-8 items-center rounded border px-2 text-sm ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`}
     >
       <span className="truncate">Own colour: {state}</span>
     </MultiSelect>
@@ -285,6 +291,7 @@ function OwnColourPicker({
 export function DeliveryPage(): ReactNode {
   useDocumentTitle("Delivery · Dispatch");
   const [state, setState] = useDeliveryUrlState();
+  const [sectionRef, gutterStyle] = useMainGutter();
   const [selection, setSelection] = useState<TimelineSelection | null>(null);
   const search = useSettled(state.filters.search.trim(), SEARCH_DEBOUNCE_MS);
 
@@ -353,15 +360,18 @@ export function DeliveryPage(): ReactNode {
     ],
     [data]
   );
+  // The merge colours are stepped for the surface they are drawn on.
+  const dark = useMediaQuery("(prefers-color-scheme: dark)");
   // Coloured by Parent agent, the chosen values take the palette and the rest share Other.
   const chosenAgents = state.view.colorBy === "parentAgent" ? state.view.agents : NO_AGENTS;
   const colorScale = useMemo(
     () =>
       buildColorScale(
         data?.color_counts?.[COLOR_COUNT_KEYS[state.view.colorBy]] ?? {},
-        chosenAgents
+        chosenAgents,
+        dark ? COLOR_PALETTE : COLOR_PALETTE_LIGHT
       ),
-    [data, state.view.colorBy, chosenAgents]
+    [data, state.view.colorBy, chosenAgents, dark]
   );
   const allRepos = useMemo(() => Object.keys(data?.color_counts?.repo ?? {}), [data]);
 
@@ -389,170 +399,208 @@ export function DeliveryPage(): ReactNode {
     // less than its own `min-h-[28rem]`. Where the window is too short for both - 1280x800 and
     // 1280x720 - the page scrolls inside this box, rather than spill past the shell, which made
     // the document scroll on past it and took the shell's Navigation off the top of the screen.
-    <section className="flex flex-col gap-3 xl:h-[calc(100dvh-3rem)] xl:overflow-y-auto">
-      <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h1 className={`text-xl font-bold ${textPrimaryOnCanvas}`}>Delivery timeline</h1>
-        {notConfigured ? null : (
-          <WindowControl
-            key={
-              state.window.kind === "custom"
-                ? `${state.window.from}|${state.window.to}`
-                : state.window.preset
-            }
-            onChange={(window) => setState({ ...state, window, brush: null })}
-            value={state.window}
-          />
-        )}
-        {data === undefined ? null : (
-          <div className={`text-xs ${textMutedOnCanvas}`}>
-            Generated {new Date(answeredAt).toLocaleString()} · window{" "}
-            {new Date(data.window.from).toLocaleDateString()}–
-            {new Date(data.window.to).toLocaleDateString()}
-            {state.brush === null ? null : (
-              <button
-                className={`ml-3 underline ${linkText}`}
-                onClick={() => setState({ ...state, brush: null })}
-                type="button"
-              >
-                clear brush window
-              </button>
+    // The height is the window's less `<main>`'s own top and bottom gutter, read from `<main>`
+    // (`useMainGutter`) so the page follows the shell's padding instead of repeating it.
+    <section
+      className="flex flex-col xl:h-[calc(100dvh-var(--main-gutter,3rem))] xl:overflow-y-auto"
+      ref={sectionRef}
+      style={gutterStyle}
+    >
+      <PageHeader
+        actions={
+          notConfigured ? undefined : (
+            <WindowControl
+              key={
+                state.window.kind === "custom"
+                  ? `${state.window.from}|${state.window.to}`
+                  : state.window.preset
+              }
+              onChange={(window) => setState({ ...state, window, brush: null })}
+              value={state.window}
+            />
+          )
+        }
+        description={
+          // When this answer was read and the window it covers stay inside the page's `header`,
+          // where the visual review masks them (e2e/visual.e2e.ts): they differ from run to run.
+          notConfigured || data === undefined ? undefined : (
+            <span className="text-xs">
+              Generated {new Date(answeredAt).toLocaleString()} · window{" "}
+              {new Date(data.window.from).toLocaleDateString()}–
+              {new Date(data.window.to).toLocaleDateString()}
+              {state.brush === null ? null : (
+                <button
+                  className={`ml-3 ${linkInline}`}
+                  onClick={() => setState({ ...state, brush: null })}
+                  type="button"
+                >
+                  clear brush window
+                </button>
+              )}
+            </span>
+          )
+        }
+        title="Delivery timeline"
+      />
+      <div className="flex min-h-0 flex-1 flex-col gap-4">
+        {notConfigured ? (
+          <section aria-labelledby="delivery-setup-heading">
+            <SectionHeader
+              description="Once set, this page shows the merged pull requests of the authors you name, the production deploys that shipped them, and the pipeline failures in between."
+              id="delivery-setup-heading"
+              title="Set up the delivery timeline"
+            />
+            <DeliverySettingsForm initial={null} />
+          </section>
+        ) : (
+          <>
+            {data === undefined ? null : (
+              // The sources, on one quiet line under the title.
+              <div className="-mt-4">
+                <SourceFreshness freshness={data.freshness} readAtMs={answeredAt} />
+              </div>
             )}
-          </div>
-        )}
-      </header>
 
-      {notConfigured ? (
-        <section aria-labelledby="delivery-setup-heading" className="max-w-4xl">
-          <h2
-            className={`text-base font-semibold ${textPrimaryOnCanvas}`}
-            id="delivery-setup-heading"
-          >
-            Set up the delivery timeline
-          </h2>
-          <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-            Once set, this page shows the merged pull requests of the authors you name, the
-            production deploys that shipped them, and the pipeline failures in between.
-          </p>
-          <DeliverySettingsForm initial={null} />
-        </section>
-      ) : (
-        <>
-          {data === undefined ? null : (
-            <SourceFreshness freshness={data.freshness} readAtMs={answeredAt} />
-          )}
+            {query.isPending ? (
+              <p className={textMutedOnCanvas}>Loading delivery timeline…</p>
+            ) : null}
+            {query.isError ? (
+              <QueryError
+                message="Couldn't load the delivery timeline."
+                onRetry={() => void query.refetch()}
+              />
+            ) : null}
 
-          {query.isPending ? <p className={textMutedOnCanvas}>Loading delivery timeline…</p> : null}
-          {query.isError ? (
-            <QueryError
-              message="Couldn't load the delivery timeline."
-              onRetry={() => void query.refetch()}
-            />
-          ) : null}
+            {data === undefined ? null : state.brush !== null && brushed.isError ? (
+              <QueryError
+                message="Couldn't load the delivery measures."
+                onRetry={() => void brushed.refetch()}
+              />
+            ) : (
+              <MeasuresPanel data={measures} />
+            )}
 
-          {data === undefined ? null : state.brush !== null && brushed.isError ? (
-            <QueryError
-              message="Couldn't load the delivery measures."
-              onRetry={() => void brushed.refetch()}
-            />
-          ) : (
-            <MeasuresPanel data={measures} />
-          )}
-
-          {data === undefined || activeWindow === null ? null : (
-            <>
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <ModeToggle
-                  mode={state.view.mode}
-                  onChange={(mode) => setView({ ...state.view, mode })}
-                />
-                <label className={`flex items-center gap-2 ${textMutedOnCanvas}`}>
-                  Color merges by
-                  <select
-                    className={`rounded border px-2 py-1 ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`}
-                    onChange={(event) => {
-                      const colorBy = COLOR_FACETS.find((facet) => facet === event.target.value);
-                      if (colorBy !== undefined) setView({ ...state.view, colorBy });
-                    }}
-                    value={state.view.colorBy}
-                  >
-                    {COLOR_FACET_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {state.view.colorBy === "parentAgent" ? (
-                  <OwnColourPicker
-                    counts={data.color_counts?.parent_agent ?? {}}
-                    groups={data.session_groups ?? []}
-                    onChange={(agents) => setView({ ...state.view, agents })}
-                    selected={state.view.agents}
+            {data === undefined || activeWindow === null ? null : (
+              <>
+                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+                  <ModeToggle
+                    mode={state.view.mode}
+                    onChange={(mode) => setView({ ...state.view, mode })}
                   />
-                ) : null}
-                {state.view.mode === "timeline" ? (
-                  <LanesSwitch
-                    checked={state.view.lanes}
-                    onChange={(lanes) => setView({ ...state.view, lanes })}
-                  />
-                ) : null}
-                <span className={`ml-4 ${textMutedOnCanvas}`}>
-                  {shownPRs.length} PRs in current filter/window
-                </span>
-              </div>
-
-              <div className="flex min-h-0 flex-1 flex-col gap-4 xl:flex-row">
-                <div className="shrink-0 xl:w-56 xl:overflow-y-auto">
-                  <FacetPanel
-                    data={data}
-                    filters={state.filters}
-                    onChange={(filters) => setState({ ...state, filters })}
-                  />
-                </div>
-                <div className="flex h-[75dvh] min-h-[28rem] min-w-0 flex-col xl:h-auto xl:flex-1">
+                  <span className={`flex items-center gap-2 ${textSecondaryOnCanvas}`}>
+                    <label htmlFor="delivery-color-by">Color merges by</label>
+                    <Select
+                      className="w-40"
+                      id="delivery-color-by"
+                      onChange={(event) => {
+                        const colorBy = COLOR_FACETS.find((facet) => facet === event.target.value);
+                        if (colorBy !== undefined) setView({ ...state.view, colorBy });
+                      }}
+                      value={state.view.colorBy}
+                    >
+                      {COLOR_FACET_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </span>
+                  {state.view.colorBy === "parentAgent" ? (
+                    <OwnColourPicker
+                      counts={data.color_counts?.parent_agent ?? {}}
+                      groups={data.session_groups ?? []}
+                      onChange={(agents) => setView({ ...state.view, agents })}
+                      selected={state.view.agents}
+                    />
+                  ) : null}
                   {state.view.mode === "timeline" ? (
-                    <Timeline
-                      chosen={chosenAgents}
-                      colorBy={state.view.colorBy}
-                      colorScale={colorScale}
-                      components={data.components ?? {}}
-                      filters={state.filters}
-                      lanes={state.view.lanes}
-                      onBrush={(brush) => setState({ ...state, brush })}
-                      onSelect={setSelection}
-                      prs={shownPRs}
-                      runs={data.runs ?? []}
-                      sessionGroups={data.session_groups ?? []}
-                      waiting={waitingMerges}
-                      window={activeWindow}
+                    <LanesSwitch
+                      checked={state.view.lanes}
+                      onChange={(lanes) => setView({ ...state.view, lanes })}
                     />
-                  ) : (
-                    <PRList
-                      allRepos={allRepos}
-                      colorBy={state.view.colorBy}
-                      colorScale={colorScale}
-                      onSelect={(id) => setSelection({ kind: "pr", id })}
-                      onSelectRun={(id) => setSelection({ kind: "deploy", id })}
-                      prs={shownPRs}
-                      selectedId={selection?.kind === "pr" ? selection.id : undefined}
-                      sessionGroups={data.session_groups ?? []}
-                    />
-                  )}
+                  ) : null}
+                  <span className={`text-xs xl:ml-auto ${textMutedOnCanvas}`}>
+                    {shownPRs.length} PRs in current filter/window
+                  </span>
                 </div>
-                <DrillDown
-                  components={data.components ?? {}}
-                  onClose={() => setSelection(null)}
-                  prs={data.prs ?? []}
-                  runs={data.runs ?? []}
-                  selection={drillDownSelection}
-                  sessionGroups={data.session_groups ?? []}
-                  sessionTitles={data.session_titles ?? {}}
-                />
-              </div>
-            </>
-          )}
-        </>
-      )}
+
+                <div className="flex min-h-0 flex-1 flex-col gap-4 xl:flex-row">
+                  <div className="shrink-0 xl:w-60 xl:overflow-y-auto">
+                    <FacetPanel
+                      data={data}
+                      filters={state.filters}
+                      onChange={(filters) => setState({ ...state, filters })}
+                    />
+                  </div>
+                  <div className="flex h-[75dvh] min-h-[28rem] min-w-0 flex-col xl:h-auto xl:flex-1">
+                    {state.view.mode === "timeline" ? (
+                      <Timeline
+                        chosen={chosenAgents}
+                        colorBy={state.view.colorBy}
+                        colorScale={colorScale}
+                        components={data.components ?? {}}
+                        filters={state.filters}
+                        lanes={state.view.lanes}
+                        onBrush={(brush) => setState({ ...state, brush })}
+                        onSelect={setSelection}
+                        prs={shownPRs}
+                        runs={data.runs ?? []}
+                        sessionGroups={data.session_groups ?? []}
+                        waiting={waitingMerges}
+                        window={activeWindow}
+                      />
+                    ) : (
+                      <PRList
+                        allRepos={allRepos}
+                        colorBy={state.view.colorBy}
+                        colorScale={colorScale}
+                        onSelect={(id) => setSelection({ kind: "pr", id })}
+                        onSelectRun={(id) => setSelection({ kind: "deploy", id })}
+                        prs={shownPRs}
+                        selectedId={selection?.kind === "pr" ? selection.id : undefined}
+                        sessionGroups={data.session_groups ?? []}
+                      />
+                    )}
+                  </div>
+                  <DrillDown
+                    components={data.components ?? {}}
+                    onClose={() => setSelection(null)}
+                    prs={data.prs ?? []}
+                    runs={data.runs ?? []}
+                    selection={drillDownSelection}
+                    sessionGroups={data.session_groups ?? []}
+                    sessionTitles={data.session_titles ?? {}}
+                  />
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </div>
     </section>
   );
+}
+
+/** `<main>`'s own top and bottom padding as a `--main-gutter` length on the page, kept current
+ *  as the window crosses a breakpoint that changes it. Until it is read the page's CSS falls
+ *  back to the desktop gutter. */
+function useMainGutter(): [RefObject<HTMLElement | null>, CSSProperties | undefined] {
+  const ref = useRef<HTMLElement | null>(null);
+  const [gutter, setGutter] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const main = ref.current?.closest("main");
+    if (main === null || main === undefined) return;
+    const read = () => {
+      const style = getComputedStyle(main);
+      const total = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      if (Number.isFinite(total)) setGutter(total);
+    };
+    read();
+    window.addEventListener("resize", read);
+    return () => window.removeEventListener("resize", read);
+  }, []);
+  return [
+    ref,
+    gutter === undefined ? undefined : ({ "--main-gutter": `${gutter}px` } as CSSProperties),
+  ];
 }

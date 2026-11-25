@@ -10,7 +10,6 @@ import {
   useRef,
   useState,
 } from "react";
-
 import {
   ApiError,
   type ArtifactOwner,
@@ -21,6 +20,8 @@ import {
   type WriteMethod,
 } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
+import { Button } from "../../components/Button";
+import { Input } from "../../components/Field";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -28,12 +29,6 @@ import {
   calloutInfoBg,
   calloutInfoBorder,
   dangerText,
-  inputClasses,
-  linkHoverText,
-  linkText,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
@@ -674,7 +669,6 @@ export function ArtifactUploadRow({
       {upload.pendingFile === null ? (
         <>
           <RefusableButton
-            className="min-h-11 shrink-0"
             look="secondary-compact"
             onPress={upload.openPicker}
             refusal={upload.refusal}
@@ -693,30 +687,21 @@ export function ArtifactUploadRow({
           <span className={`min-w-0 truncate text-sm ${textMutedOnSurface}`}>
             {upload.pendingFile.name}
           </span>
-          <input
+          <Input
             aria-label="Summary (optional)"
-            className={`min-h-11 min-w-40 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+            className="w-auto min-w-40 flex-1"
+            size="sm"
             disabled={upload.summaryHeld}
             onChange={(event) => upload.setSummary(event.target.value)}
             placeholder="Summary (optional)"
             value={upload.summary}
           />
-          <button
-            className={`min-h-11 shrink-0 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={upload.isPending}
-            onClick={upload.confirm}
-            type="button"
-          >
+          <Button disabled={upload.isPending} onClick={upload.confirm} size="sm">
             Upload
-          </button>
-          <button
-            className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            disabled={upload.isPending}
-            onClick={upload.cancel}
-            type="button"
-          >
+          </Button>
+          <Button disabled={upload.isPending} onClick={upload.cancel} size="sm" variant="ghost">
             Cancel
-          </button>
+          </Button>
         </>
       )}
       <ArtifactUploadStatus upload={upload} />

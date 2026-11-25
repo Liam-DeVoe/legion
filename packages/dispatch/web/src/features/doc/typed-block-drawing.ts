@@ -3,9 +3,9 @@ import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 
 import type { AskOption, AskUrgency, BlockTypeSchema } from "../../api/types";
 import {
-  askBlockTint,
   askUrgencyAccent,
   borderDefault,
+  surfaceBg,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
 } from "../../theme/classes";
@@ -285,7 +285,7 @@ function askBlockShell(facts: AskBlockFacts): AskBlockShell {
   return {
     contentClass: malformed ? textMutedOnSurfaceMuted : textPrimaryOnSurface,
     foldsOptions: !malformed,
-    frameClass: `proof-typed-block proof-typed-block-ask my-5 rounded-xl border border-l-4 px-4 pt-3 pb-4 shadow-sm ${borderDefault} ${askUrgencyAccent[facts.urgency]} ${askBlockTint[facts.urgency]}`,
+    frameClass: `proof-typed-block proof-typed-block-ask my-4 rounded-lg border border-l-[3px] px-4 pt-3 pb-4 ${borderDefault} ${askUrgencyAccent[facts.urgency]} ${surfaceBg}`,
     stamps: {
       "data-dispatch-ask-urgency": facts.urgency,
       "data-dispatch-ask-state": facts.state,

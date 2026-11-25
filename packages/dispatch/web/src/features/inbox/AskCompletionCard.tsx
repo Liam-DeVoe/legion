@@ -1,7 +1,6 @@
 import { actorActText } from "@legion/contracts";
 import { Fragment, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-
 import type {
   Ask,
   AskAnswerWithTrees,
@@ -9,8 +8,9 @@ import type {
   AskResolution,
   AskWithTrees,
 } from "../../api/types";
+import { badgeClassName } from "../../components/Badge";
+import { Button } from "../../components/Button";
 import {
-  badgeLow,
   calloutSuccessBg,
   calloutSuccessBorder,
   calloutSuccessText,
@@ -212,7 +212,7 @@ function AnsweredAsk({
       : null;
   return (
     <article
-      className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${calloutSuccessBorder} ${calloutSuccessBg} ${calloutSuccessText}`}
+      className={`rounded-lg p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${calloutSuccessBorder} ${calloutSuccessBg} ${calloutSuccessText}`}
       data-testid={`ask-${ask.id}`}
       ref={markRef}
     >
@@ -277,13 +277,9 @@ function AnsweredAsk({
       )}
       <AskAnswerHistory answers={answers} askId={ask.id} issue={ask.issue_key} />
       {onChangeAnswer === undefined ? null : (
-        <button
-          className={`mt-2 min-h-11 text-sm font-semibold underline ${textPrimaryOnSuccessCallout}`}
-          onClick={onChangeAnswer}
-          type="button"
-        >
+        <Button className="mt-3" onClick={onChangeAnswer} size="sm">
           Change answer
-        </button>
+        </Button>
       )}
     </article>
   );
@@ -304,7 +300,7 @@ function ResolvedAsk({
   const reason = askResolutionReason(resolution);
   return (
     <article
-      className={`rounded-xl p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${card}`}
+      className={`rounded-lg p-4 text-sm ${frame === "block" ? "mt-3" : ""} ${card}`}
       data-testid={`ask-${ask.id}`}
     >
       <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="surface" />
@@ -318,10 +314,7 @@ function ResolvedAsk({
           />
         </div>
       )}
-      <span
-        className={`mt-2 inline-block rounded-full px-2.5 py-1 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
-        data-testid="ask-resolution-badge"
-      >
+      <span className={`mt-2 ${badgeClassName()}`} data-testid="ask-resolution-badge">
         {askResolutionBadge(resolution)}
       </span>
       <p className={`mt-1 text-xs ${textMutedOnSurface}`}>

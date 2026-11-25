@@ -21,23 +21,21 @@ import {
 import { artifactBlocksQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
+import { badgeClassName } from "../../components/Badge";
+import { buttonClassName } from "../../components/Button";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
 import {
   badgeMed,
   dangerText,
-  linkHoverText,
-  linkText,
+  linkChrome,
   pageFailedText,
   pageInkText,
   pageLabelChip,
   pageLineBorder,
   pageMutedText,
   pagePaperBg,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { versionsNewestFirst } from "../artifacts/ArtifactHeader";
@@ -1142,7 +1140,11 @@ export function ProofDocument({
             // `aria-disabled` then, in place of `disabled`, and a press does nothing. Outside it
             // is `disabled` while it rebuilds, as on `main`.
             aria-disabled={(!tooltips && rebuild.isPending) || undefined}
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : controlOnPage}`}
+            className={
+              tooltips
+                ? buttonClassName()
+                : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${controlOnPage}`
+            }
             disabled={tooltips && rebuild.isPending}
             onClick={() => {
               if (rebuild.isPending) return;
@@ -1188,8 +1190,14 @@ export function ProofDocument({
           aria-label="Open decisions"
           className={`flex min-h-11 items-center gap-2 ${tooltips ? "md:h-7 md:min-h-0" : "md:min-h-7"}`}
         >
+          {/* The badge family's shape; inside `NoTooltips` the chip keeps the new issue page's
+              own colours (`countChip`). */}
           <span
-            className={`inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-semibold ${countChip}`}
+            className={
+              tooltips
+                ? `shrink-0 ${badgeClassName("info")}`
+                : `inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs font-medium ${countChip}`
+            }
           >
             {openBlockAsks.length === 1
               ? "1 open decision"
@@ -1207,7 +1215,7 @@ export function ProofDocument({
           >
             {(question) => (
               <a
-                className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
+                className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium ${tooltips ? linkChrome : `hover:underline ${pageInkText}`}`}
                 href={blockFragment(openDecision.block_id ?? "")}
                 onClick={(event) => {
                   event.preventDefault();
@@ -1235,7 +1243,11 @@ export function ProofDocument({
           {openBlockAsks.length > 1 ? (
             <button
               aria-label="Next open decision"
-              className={`ml-auto flex min-h-11 min-w-11 items-center justify-center rounded-full md:min-h-7 md:min-w-7 ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonText}` : controlOnPage}`}
+              className={
+                tooltips
+                  ? `ml-auto ${buttonClassName({ iconOnly: true, size: "sm", variant: "ghost" })}`
+                  : `ml-auto flex min-h-11 min-w-11 items-center justify-center rounded-full md:min-h-7 md:min-w-7 ${controlOnPage}`
+              }
               onClick={() =>
                 setOpenDecisionIndex((current) => (current + 1) % openBlockAsks.length)
               }
@@ -1310,7 +1322,7 @@ export function ProofDocument({
                 return (
                   <button
                     aria-label={`${count} references on block`}
-                    className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
+                    className={`pointer-events-auto absolute right-0 inline-flex h-6 min-w-6 items-center justify-center rounded px-1.5 text-xs font-medium tabular-nums ${countChip}`}
                     data-block-references={block.id}
                     key={block.id}
                     onClick={() => {

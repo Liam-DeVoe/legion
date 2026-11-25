@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { kbdHint, railHoverBg, railHoverText, railSecondaryText } from "../../theme/classes";
+import { railHoverBg, railHoverText, railKbd, railSecondaryText } from "../../theme/classes";
 
 /** A rail control that stands for a keyboard binding: its label, then the keys that also run it,
  *  so a person who has not learned the binding can still reach what it opens. `className` carries
@@ -21,12 +21,16 @@ export function RailButton({
   return (
     <button
       aria-keyshortcuts={ariaKeyshortcuts}
-      className={`${className} flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
+      className={`${className} flex h-9 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-sm ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
       onClick={onOpen}
       type="button"
     >
       <span>{label}</span>
-      <kbd className={`rounded px-1.5 py-0.5 text-xs font-medium ${kbdHint}`}>{shortcut}</kbd>
+      <kbd
+        className={`inline-flex h-5 min-w-5 items-center justify-center rounded border px-1 font-sans text-xs ${railKbd}`}
+      >
+        {shortcut}
+      </kbd>
     </button>
   );
 }

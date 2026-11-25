@@ -1,12 +1,10 @@
 import { type ReactNode, useRef } from "react";
 
+import { Button } from "../../components/Button";
 import { usePanelDismiss } from "../../components/usePanelDismiss";
 import {
-  card,
   linkText,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
+  popoverPanel,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -40,29 +38,31 @@ export function MessageBoxHelp({ onOpenChange, open }: MessageBoxHelpProps): Rea
 
   return (
     <span className="relative shrink-0">
-      <button
+      <Button
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-label="What the message box does"
-        className={`flex min-h-8 min-w-8 shrink-0 items-center justify-center rounded-lg border text-xs font-semibold ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+        aria-pressed={open}
+        iconOnly
+        size="sm"
+        variant="ghost-muted"
         data-testid="agent-help"
         onClick={() => onOpenChange(!open)}
         ref={triggerRef}
         title="What the message box does"
-        type="button"
       >
         ?
-      </button>
+      </Button>
       {open ? (
         <div
           aria-label="What the message box does"
-          className={`absolute right-0 bottom-full z-10 mb-2 w-80 max-w-[calc(100vw-1rem)] rounded-lg border p-3 shadow-lg ${card}`}
+          className={`absolute right-0 bottom-full z-10 mb-2 w-80 max-w-[calc(100vw-1rem)] p-3 ${popoverPanel}`}
           data-testid="agent-help-popover"
           ref={panelRef}
           role="dialog"
         >
           <p className={`text-sm font-semibold ${textPrimaryOnSurface}`}>The message box</p>
-          <ul className={`mt-1 space-y-1 text-xs ${textSecondaryOnSurface}`}>
+          <ul className={`mt-2 space-y-2 text-xs leading-5 ${textSecondaryOnSurface}`}>
             <li>
               <Prefix>!</Prefix> at the start of a message runs the rest as a shell command in this
               session, and its output lands in the conversation. The command runs in the session's

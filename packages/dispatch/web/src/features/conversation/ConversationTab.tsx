@@ -2,7 +2,6 @@ import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
@@ -15,6 +14,8 @@ import type {
   MessageWithTrees,
   UserState,
 } from "../../api/types";
+import { Badge } from "../../components/Badge";
+import { Button, segmentedClassName } from "../../components/Button";
 import { PinButton } from "../../components/PinButton";
 import { FOOT_COMPOSER_FRAME_BOUND, useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
@@ -27,15 +28,12 @@ import {
   linkText,
   primaryButtonBg,
   primaryButtonHoverBg,
-  secondaryButtonBorder,
   surfaceMutedBg,
   surfaceMutedHoverBg,
   textMutedOnCanvas,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
-  textPrimaryOnSurfaceMuted,
-  textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { deliveryAttempts } from "../agents/attempts";
@@ -150,13 +148,7 @@ function recipientOf(deliveries: readonly MessageDelivery[], target: string | nu
 /** The mark an unread conversation carries: its newest activity is at or after the reader's
  *  watermark (`user_issue_state.last_read_seq`). */
 function UnreadMark(): ReactNode {
-  return (
-    <span
-      className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${surfaceMutedBg} ${linkText}`}
-    >
-      New
-    </span>
-  );
+  return <Badge tone="info">New</Badge>;
 }
 
 /** The delivery a reply into this thread inherits: the root's target, in the mode of the
@@ -870,17 +862,17 @@ function CommentTurn({
           View in document
         </Link>
       )}
-      <div className="flex justify-end gap-1">
+      <div className="mt-1 flex items-center justify-end gap-1">
         {forceExpanded ? null : (
-          <button
+          <Button
             aria-expanded={currentExpanded}
-            className={`min-h-8 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText}`}
             disabled={currentExpanded && replySending}
             onClick={toggleThread}
-            type="button"
+            size="sm"
+            variant="ghost"
           >
             {currentExpanded ? "Collapse thread" : "Expand thread"}
-          </button>
+          </Button>
         )}
         <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "comment" }} />
         {postDeletion(item.root) === null ? (
@@ -1370,7 +1362,7 @@ export function ConversationTab({
   return (
     <ViewportAnchor
       as="section"
-      className="flex min-h-[60dvh] flex-col gap-3 pb-56 sm:pb-16 xl:pb-0"
+      className="flex min-h-[60dvh] flex-col gap-3 pt-3 pb-56 sm:pt-0 sm:pb-16 xl:pb-0"
       enabled={() => !follow.pinnedToTop()}
       item="data-turn"
       label="Conversation"
@@ -1403,24 +1395,17 @@ export function ConversationTab({
       {/* All / Open / Closed, the one control over the list. It starts on All every visit: a
           reader who filtered yesterday still meets the whole conversation today. */}
       <div className="flex items-center justify-end">
-        <fieldset
-          aria-label="Conversations"
-          className={`flex rounded-md border ${secondaryButtonBorder}`}
-        >
+        <fieldset aria-label="Conversations" className={segmentedClassName}>
           {FILTERS.map(({ label, value }) => (
-            <button
+            <Button
               aria-pressed={filter === value}
-              className={`min-h-11 px-3 text-sm font-medium first:rounded-l-md last:rounded-r-md ${
-                filter === value
-                  ? `${surfaceMutedBg} ${textPrimaryOnSurfaceMuted}`
-                  : textSecondaryOnCanvas
-              }`}
               key={value}
               onClick={() => setFilter(value)}
-              type="button"
+              size="sm"
+              variant="ghost"
             >
               {label}
-            </button>
+            </Button>
           ))}
         </fieldset>
       </div>
@@ -1547,7 +1532,7 @@ export function ConversationTab({
           return (
             <li
               aria-current={current ? "true" : undefined}
-              className="my-2 flex gap-3"
+              className="my-2 flex items-start"
               data-turn={item.id}
               key={item.id}
               ref={register}
@@ -1570,11 +1555,11 @@ export function ConversationTab({
                   initialThread={{ ask: item.ask, ...item.ask.thread }}
                   initialThreadUpdatedAt={asks.dataUpdatedAt}
                   markRead
+                  metaActions={<TurnPin onPin={() => pinConversation(item.id)} pinned={pinned} />}
                   thread="collapsed"
                   variant="compact"
                 />
               </div>
-              <TurnPin onPin={() => pinConversation(item.id)} pinned={pinned} />
             </li>
           );
         })}

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 
 import type { InboxRow, MyReplyRow, OpenAskOwner } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
-import { linkHoverText, linkText, textMutedOnCanvas } from "../../theme/classes";
+import { linkChrome, textMutedOnCanvas } from "../../theme/classes";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
 import { askIssueKey } from "./ask-name";
@@ -18,6 +18,7 @@ export function AskOwnerLink({
   askId,
   className = "",
   inboxOwner = false,
+  meta = false,
   owner,
 }: {
   askId?: string;
@@ -25,15 +26,19 @@ export function AskOwnerLink({
   className?: string;
   /** Marks the link an Inbox row's `o` binding follows; a group header's link is never one. */
   inboxOwner?: boolean;
+  /** The link sits in a row's line of marks, under the row's own title, so it takes that
+   *  line's size rather than a title's. */
+  meta?: boolean;
   owner: OpenAskOwner;
 }): ReactNode {
+  const size = meta ? "text-xs" : "text-sm";
   const marker = inboxOwner ? "" : undefined;
   const issue = owner.issue;
   if (issue !== undefined) {
     const { key, title } = issue;
     return (
       <Link
-        className={`flex min-w-0 items-baseline gap-2 text-sm ${linkText} ${linkHoverText} ${className}`}
+        className={`flex min-w-0 items-baseline ${meta ? "gap-1.5" : "gap-2"} ${size} ${linkChrome} ${className}`}
         data-inbox-owner={marker}
         to={buildIssuePath(
           askId === undefined ? { key, kind: "issue" } : { id: askId, key, kind: "ask" }
@@ -51,7 +56,7 @@ export function AskOwnerLink({
   const { name, project, slug } = document;
   return (
     <Link
-      className={`min-w-0 truncate text-sm font-semibold ${linkText} ${linkHoverText} ${className}`}
+      className={`min-w-0 truncate ${size} font-semibold ${linkChrome} ${className}`}
       data-inbox-owner={marker}
       to={buildProjectPath({
         item: askId === undefined ? undefined : { id: askId, kind: "ask" },
@@ -70,7 +75,16 @@ export function AskOwnerLink({
 
 /** An Inbox row's owner, which opens the row's ask. A row read without its issue object names
  *  the issue by key; a row with neither an issue nor a document has nothing to link. */
-export function InboxOwnerLink({ ask, rowOwner }: { ask: InboxRow; rowOwner: boolean }): ReactNode {
+export function InboxOwnerLink({
+  ask,
+  meta = false,
+  rowOwner,
+}: {
+  ask: InboxRow;
+  /** As `AskOwnerLink`'s: the short row's line of marks. */
+  meta?: boolean;
+  rowOwner: boolean;
+}): ReactNode {
   const key = askIssueKey(ask);
   const owner: OpenAskOwner | null =
     ask.document !== undefined
@@ -79,9 +93,15 @@ export function InboxOwnerLink({ ask, rowOwner }: { ask: InboxRow; rowOwner: boo
         ? null
         : { issue: { key, title: ask.issue?.title ?? key } };
   if (owner === null) {
-    return <p className={`truncate text-sm ${textMutedOnCanvas}`}>Document ask</p>;
+    return (
+      <p className={`truncate ${meta ? "text-xs" : "text-sm"} ${textMutedOnCanvas}`}>
+        Document ask
+      </p>
+    );
   }
-  return <AskOwnerLink askId={ask.id} className="grow" inboxOwner={rowOwner} owner={owner} />;
+  return (
+    <AskOwnerLink askId={ask.id} className="grow" inboxOwner={rowOwner} meta={meta} owner={owner} />
+  );
 }
 
 /** A thread row's owner, wherever one is drawn: the short row beside the reading pane, the
@@ -92,10 +112,13 @@ export function InboxOwnerLink({ ask, rowOwner }: { ask: InboxRow; rowOwner: boo
  *  way. */
 export function ThreadOwnerLine({
   className,
+  meta = false,
   thread,
 }: {
   /** The classes the host's line gives the session's name. */
   className: string;
+  /** As `AskOwnerLink`'s: the short row's line of marks. */
+  meta?: boolean;
   thread: MyReplyRow;
 }): ReactNode {
   const row = inboxThreadRow(thread);
@@ -103,5 +126,5 @@ export function ThreadOwnerLine({
     return <span className={className}>{row.session.name}</span>;
   }
   const owner = threadOwner(thread);
-  return owner === null ? null : <AskOwnerLink className="grow" owner={owner} />;
+  return owner === null ? null : <AskOwnerLink className="grow" meta={meta} owner={owner} />;
 }

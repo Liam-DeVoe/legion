@@ -4,9 +4,9 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import { api } from "../../api/client";
 import type { SearchOwner, Suggestions, WriteSuggestion } from "../../api/types";
+import { badgeClassName } from "../../components/Badge";
 import { QueryError } from "../../components/QueryError";
 import {
-  badgeLow,
   linkHoverText,
   linkText,
   textMutedOnSurface,
@@ -204,9 +204,7 @@ function RelatedItemRow({
       <div
         className={`flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs ${textMutedOnSurface}`}
       >
-        <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
-          {itemKindLabel(item.kind)}
-        </span>
+        <span className={badgeClassName("neutral")}>{itemKindLabel(item.kind)}</span>
         <span className="min-w-0 [overflow-wrap:anywhere]">{ownerStanding(owner)}</span>
       </div>
       <a

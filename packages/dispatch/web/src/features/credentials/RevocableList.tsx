@@ -2,23 +2,17 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import type { WriteBounds } from "../../api/client";
+import { Button } from "../../components/Button";
+import { SectionHeader } from "../../components/Layout";
 import { QueryError } from "../../components/QueryError";
+import { Table, Td, Th, Tr } from "../../components/Table";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
-  hoverToDangerText,
-  secondaryButtonBorder,
-  secondaryButtonDisabledText,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
   textMutedOnCanvas,
-  textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
-import { settingsTableWrapper } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 
@@ -45,7 +39,6 @@ export interface RevocableColumn<Row> {
  * fail.
  */
 export function RevocableList<Row>({
-  className,
   columns,
   confirm,
   description,
@@ -60,7 +53,6 @@ export function RevocableList<Row>({
   rowName,
   unrevocable,
 }: {
-  className: string;
   columns: readonly RevocableColumn<Row>[];
   confirm?: (row: Row) => string;
   description: ReactNode;
@@ -103,86 +95,74 @@ export function RevocableList<Row>({
   };
 
   return (
-    <section aria-labelledby={headingId} className={className}>
-      <h2 className={`text-xl font-semibold ${textPrimaryOnCanvas}`} id={headingId}>
-        {heading}
-      </h2>
-      <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>{description}</p>
+    <section aria-labelledby={headingId}>
+      <SectionHeader description={description} id={headingId} title={heading} />
 
-      {query.isPending ? <p className={`mt-6 ${textMutedOnCanvas}`}>Loading {noun}…</p> : null}
+      {query.isPending ? <p className={`text-sm ${textMutedOnCanvas}`}>Loading {noun}…</p> : null}
       {query.isError ? (
-        <div className="mt-6">
-          <QueryError
-            message={`Couldn't load ${noun}.`}
-            onRetry={() => void query.refetch()}
-            retrying={query.isFetching}
-          />
-        </div>
+        <QueryError
+          message={`Couldn't load ${noun}.`}
+          onRetry={() => void query.refetch()}
+          retrying={query.isFetching}
+        />
       ) : null}
       {query.isSuccess ? (
-        <div className={settingsTableWrapper}>
-          <table className="w-full text-left text-sm">
-            <thead className={`border-b ${textSecondaryOnSurface}`}>
-              <tr>
-                {columns.map((column) => (
-                  <th className="px-4 py-3 font-semibold" key={column.header} scope="col">
-                    {column.header}
-                  </th>
+        <Table
+          head={
+            <>
+              {columns.map((column) => (
+                <Th key={column.header}>{column.header}</Th>
+              ))}
+              <Th>
+                <span className="sr-only">Actions</span>
+              </Th>
+            </>
+          }
+        >
+          {query.data.length === 0 ? (
+            <Tr>
+              <Td className={textMutedOnCanvas} colSpan={columns.length + 1}>
+                {empty}
+              </Td>
+            </Tr>
+          ) : (
+            query.data.map((row) => (
+              <Tr key={rowKey(row)}>
+                {columns.map((column, index) => (
+                  <Td
+                    className={
+                      index === 0 ? `font-medium ${textPrimaryOnCanvas}` : textSecondaryOnCanvas
+                    }
+                    key={column.header}
+                  >
+                    {column.cell(row)}
+                  </Td>
                 ))}
-                <th className="px-4 py-3" scope="col">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {query.data.length === 0 ? (
-                <tr>
-                  <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={columns.length + 1}>
-                    {empty}
-                  </td>
-                </tr>
-              ) : (
-                query.data.map((row) => (
-                  <tr className="border-b last:border-0" key={rowKey(row)}>
-                    {columns.map((column, index) => (
-                      <td
-                        className={
-                          index === 0
-                            ? `px-4 py-3 font-medium ${textPrimaryOnSurface}`
-                            : `px-4 py-3 ${textSecondaryOnSurface}`
-                        }
-                        key={column.header}
-                      >
-                        {column.cell(row)}
-                      </td>
-                    ))}
-                    <td className="px-4 py-3 text-right">
-                      {unrevocable?.(row) ? (
-                        <span className={`text-xs whitespace-nowrap ${textMutedOnSurface}`}>
-                          {unrevocable(row)}
-                        </span>
-                      ) : (
-                        <button
-                          className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
-                          disabled={mutation.isPending}
-                          onClick={() => press(row)}
-                          type="button"
-                        >
-                          Revoke
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                <Td className="text-right">
+                  {unrevocable?.(row) ? (
+                    <span className={`text-xs whitespace-nowrap ${textMutedOnCanvas}`}>
+                      {unrevocable(row)}
+                    </span>
+                  ) : (
+                    <Button
+                      disabled={mutation.isPending}
+                      onClick={() => press(row)}
+                      size="sm"
+                      variant="danger"
+                    >
+                      Revoke
+                    </Button>
+                  )}
+                </Td>
+              </Tr>
+            ))
+          )}
+        </Table>
       ) : null}
       {/* A revoke the reader stopped may have been made, and Revoke is a press of its own, under
           a key of its own: it never makes the stopped revoke again. */}
       {refused === undefined ? null : (
-        <p className={`mt-2 ${dangerText}`}>
+        <p className={`mt-3 text-sm ${dangerText}`}>
           {mutation.error instanceof SendStoppedError
             ? stoppedWriteNote(`the revoke of ${rowName(refused)}`, "made", {
                 anew: "Pressing Revoke again sends a new revoke.",

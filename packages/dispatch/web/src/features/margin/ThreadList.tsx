@@ -1,5 +1,7 @@
 import { type ReactNode, useCallback, useMemo } from "react";
 
+import { DisclosureToggle } from "../../components/DisclosureToggle";
+import { textSecondaryOnSurface } from "../../theme/classes";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { useCardStack } from "./card-stack";
 import { marginReplySendKey } from "./margin-context";
@@ -200,14 +202,12 @@ export function ThreadList({
       )}
       {resolvedThreads.length + foldedAskCount === 0 ? null : (
         <>
-          <button
-            aria-expanded={showResolved}
-            className="min-h-11 text-sm font-medium"
-            onClick={onToggleResolved}
-            type="button"
-          >
-            Resolved ({resolvedThreads.length + foldedAskCount})
-          </button>
+          <DisclosureToggle
+            expanded={showResolved}
+            label={`Resolved (${resolvedThreads.length + foldedAskCount})`}
+            onToggle={onToggleResolved}
+            textClassName={textSecondaryOnSurface}
+          />
           {showResolved ? (
             <section aria-label="Resolved" className="space-y-3">
               {resolvedThreads.map((thread) => card(thread))}

@@ -1,24 +1,17 @@
 import { DISPATCH_EVENT_BODY_MAX, dispatchWritingBox } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
-
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type { Ask, AskRead } from "../../api/types";
+import { Button } from "../../components/Button";
+import { fieldLabelClassName } from "../../components/Field";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   backdrop40,
-  borderDefault,
   card,
-  cardHoverBorder,
   dangerText,
-  primaryButtonBg,
-  primaryButtonDisabled,
-  primaryButtonEnabledHoverBg,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -107,6 +100,7 @@ function DeclineDialog({
             }}
             issueKey={issueKey}
             label="Note (optional)"
+            labelClassName={fieldLabelClassName}
             maxLength={DISPATCH_EVENT_BODY_MAX}
             onChange={(change) => setNote(change.body)}
             onKeyDown={(event) =>
@@ -136,22 +130,12 @@ function DeclineDialog({
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
-            <button
-              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-              disabled={saving}
-              onClick={close}
-              type="button"
-            >
+            <Button disabled={saving} onClick={close}>
               Cancel
-            </button>
-            <button
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={!canSend}
-              onClick={() => onSubmit(note.trim())}
-              type="button"
-            >
+            </Button>
+            <Button disabled={!canSend} onClick={() => onSubmit(note.trim())} variant="primary">
               {saving ? "Declining…" : "Decline to answer"}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -225,14 +209,9 @@ export function DeclineControl({
   return (
     <div className="mt-3">
       {question.reads}
-      <button
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-        disabled={write.isPending}
-        onClick={() => setOpen(true)}
-        type="button"
-      >
+      <Button disabled={write.isPending} onClick={() => setOpen(true)}>
         {write.isPending ? "Declining…" : "Decline to answer"}
-      </button>
+      </Button>
       {open ? (
         <DeclineDialog
           error={write.isError ? write.error : null}

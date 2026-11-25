@@ -1,17 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
-
+import { type ReactNode, useId, useState } from "react";
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
+import { Button } from "../../components/Button";
+import { fieldLabelClassName, Select } from "../../components/Field";
 import {
   borderDefault,
   dangerText,
-  inputClasses,
-  linkText,
+  linkChrome,
   surfaceMutedBg,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
+  textPrimaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ChangeView } from "../doc/ChangeView";
@@ -76,12 +77,15 @@ function CompareVersionSelect({
   value: number | undefined;
   versions: readonly Version[];
 }): ReactNode {
+  const id = useId();
   return (
-    <label className={`text-xs font-medium ${textSecondaryOnSurface}`}>
-      {label}
-      <select
+    <div className="flex flex-col gap-1.5">
+      <label className={fieldLabelClassName} htmlFor={id}>
+        {label}
+      </label>
+      <Select
+        id={id}
         aria-label={ariaLabel}
-        className={`mt-1 block min-h-11 w-full rounded border px-2 py-2 text-sm ${inputClasses(true)}`}
         onChange={(event) => onChange(Number(event.target.value))}
         value={value}
       >
@@ -90,8 +94,8 @@ function CompareVersionSelect({
             {versionLabel(version)}
           </option>
         ))}
-      </select>
-    </label>
+      </Select>
+    </div>
   );
 }
 
@@ -130,15 +134,15 @@ export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode
     <div className="space-y-4">
       <section aria-label={`Versions for ${artifact.name}`} className="space-y-2">
         <div className="flex items-center justify-between gap-3">
-          <h3 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Versions</h3>
+          <h3 className={`text-[15px] leading-6 font-semibold ${textPrimaryOnCanvas}`}>Versions</h3>
           {versions.length > namedVersions.length ? (
-            <button
-              className={`min-h-11 text-sm font-medium ${linkText}`}
+            <Button
               onClick={() => setShowAllVersions((current) => !current)}
-              type="button"
+              size="sm"
+              variant="ghost"
             >
               {showAllVersions ? "Show named versions" : "Show all versions"}
-            </button>
+            </Button>
           ) : null}
         </div>
         {displayedVersions.length === 0 ? (
@@ -152,7 +156,7 @@ export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode
               >
                 <span className={textSecondaryOnSurface}>{versionLabel(version)}</span>
                 <a
-                  className={`inline-flex min-h-11 items-center font-medium ${linkText}`}
+                  className={`inline-flex items-center text-xs font-medium ${linkChrome}`}
                   download=""
                   href={artifactVersionUrl(artifact.id, version.number, { download: true })}
                 >
@@ -172,15 +176,17 @@ export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode
       {versions.length >= 2 ? (
         <section aria-label={`Compare versions for ${artifact.name}`} className="space-y-2">
           <div className="flex items-center justify-between gap-3">
-            <h3 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Compare versions</h3>
-            <button
+            <h3 className={`text-[15px] leading-6 font-semibold ${textPrimaryOnCanvas}`}>
+              Compare versions
+            </h3>
+            <Button
               aria-expanded={compareOpen}
-              className={`min-h-11 text-sm font-medium ${linkText}`}
               onClick={() => setCompareOpen((current) => !current)}
-              type="button"
+              size="sm"
+              variant="ghost"
             >
               {compareOpen ? "Hide comparison" : "Show comparison"}
-            </button>
+            </Button>
           </div>
           {compareOpen ? (
             <>

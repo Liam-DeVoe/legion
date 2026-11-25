@@ -10,23 +10,27 @@ import type {
   DispatchScope,
   DispatchTokenScope,
 } from "../../api/types";
+import { Button } from "../../components/Button";
+import { Field, Input } from "../../components/Field";
+import { Card, SectionHeader } from "../../components/Layout";
 import { QueryError } from "../../components/QueryError";
+import {
+  tableCellClassName,
+  tableClassName,
+  tableHeadCellClassName,
+  tableHeadRowClassName,
+  tableRowClassName,
+  tableWrapperClassName,
+} from "../../components/Table";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
-  borderDefault,
-  card,
   checkboxAccent,
-  dangerHoverText,
   dangerText,
-  inputClasses,
-  primaryButtonBg,
-  primaryButtonHoverBg,
   successText,
   surfaceMutedBg,
   textMutedOnCanvas,
   textMutedOnSurface,
-  textPrimaryOnCanvas,
   textPrimaryOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
@@ -34,12 +38,6 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-} from "./classes";
 
 const agentTokensQueryKey = ["agent-tokens"] as const;
 
@@ -160,9 +158,7 @@ function TokenScopeChoices<Id extends DispatchTokenScope>({
     <div className="space-y-2">
       {offered.map((scope) => (
         <div key={scope.id}>
-          <label
-            className={`flex items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
-          >
+          <label className={`flex items-center gap-2 text-sm ${textPrimaryOnSurface}`}>
             <input
               aria-label={`${scope.label} (${subject})`}
               checked={chosen.includes(scope.id)}
@@ -175,7 +171,7 @@ function TokenScopeChoices<Id extends DispatchTokenScope>({
             />
             {scope.label}
           </label>
-          <p className={`mt-0.5 max-w-xs text-xs ${textMutedOnSurface}`}>{scope.allows}</p>
+          <p className={`mt-0.5 max-w-xs pl-6 text-xs ${textMutedOnSurface}`}>{scope.allows}</p>
         </div>
       ))}
     </div>
@@ -194,7 +190,7 @@ function ReadOnlyScopes({
   return (
     <ul aria-label={`What ${subject} may do`} className="space-y-1">
       {MINT_SCOPES.filter((scope) => held.includes(scope.id)).map((scope) => (
-        <li className={`text-sm font-medium ${textSecondaryOnSurface}`} key={scope.id}>
+        <li className={`text-sm ${textPrimaryOnSurface}`} key={scope.id}>
           {scope.label}
         </li>
       ))}
@@ -334,18 +330,17 @@ export function AgentTokensSection(): ReactNode {
 
   return (
     <section aria-labelledby="agent-tokens-heading">
-      <h2 className={`text-xl font-semibold ${textPrimaryOnCanvas}`} id="agent-tokens-heading">
-        Agent tokens
-      </h2>
-      <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-        Create a token for an agent you run. Its writes are attributed to you.
-      </p>
+      <SectionHeader
+        description="Create a token for an agent you run. Its writes are attributed to you."
+        id="agent-tokens-heading"
+        title="Agent tokens"
+      />
 
       {tokens.isPending ? (
-        <p className={`mt-6 ${textMutedOnCanvas}`}>Loading agent tokens…</p>
+        <p className={`text-sm ${textMutedOnCanvas}`}>Loading agent tokens…</p>
       ) : null}
       {tokens.isError ? (
-        <div className="mt-6">
+        <div>
           <QueryError
             message="Couldn't load agent tokens."
             onRetry={() => void tokens.refetch()}
@@ -354,34 +349,34 @@ export function AgentTokensSection(): ReactNode {
         </div>
       ) : null}
       {tokens.isSuccess ? (
-        <div className={settingsTableWrapper}>
-          <table className="w-full text-left text-sm">
-            <thead className={settingsTableHead}>
-              <tr>
-                <th className="px-4 py-3 font-semibold" scope="col">
+        <div className={tableWrapperClassName}>
+          <table className={tableClassName}>
+            <thead>
+              <tr className={tableHeadRowClassName}>
+                <th className={tableHeadCellClassName} scope="col">
                   Name
                 </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
+                <th className={tableHeadCellClassName} scope="col">
                   Token
                 </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
+                <th className={tableHeadCellClassName} scope="col">
                   Created
                 </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
+                <th className={tableHeadCellClassName} scope="col">
                   Last used
                 </th>
-                <th className="px-4 py-3 font-semibold" scope="col">
+                <th className={tableHeadCellClassName} scope="col">
                   What it may do
                 </th>
-                <th className="px-4 py-3" scope="col">
+                <th className={tableHeadCellClassName} scope="col">
                   <span className="sr-only">Actions</span>
                 </th>
               </tr>
             </thead>
             <tbody>
               {tokens.data.length === 0 ? (
-                <tr>
-                  <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={6}>
+                <tr className={tableRowClassName}>
+                  <td className={`${tableCellClassName} ${textMutedOnSurface}`} colSpan={6}>
                     No agent tokens yet.
                   </td>
                 </tr>
@@ -389,24 +384,24 @@ export function AgentTokensSection(): ReactNode {
                 tokens.data.map((token) => {
                   const held = heldScopes(token.scopes);
                   return (
-                    <tr className={settingsTableRow} key={token.id}>
-                      <td className={`px-4 py-3 font-medium ${textPrimaryOnSurface}`}>
+                    <tr className={tableRowClassName} key={token.id}>
+                      <td className={`${tableCellClassName} font-medium ${textPrimaryOnSurface}`}>
                         {token.name}
                       </td>
-                      <td className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}>
+                      <td className={`${tableCellClassName} font-mono ${textSecondaryOnSurface}`}>
                         {`dsp_${token.prefix}…`}
                       </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
+                      <td className={`${tableCellClassName} ${textSecondaryOnSurface}`}>
                         <Timestamp at={token.created_at} />
                       </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
+                      <td className={`${tableCellClassName} ${textSecondaryOnSurface}`}>
                         {token.last_used_at === null ? (
                           "Never used"
                         ) : (
                           <Timestamp at={token.last_used_at} />
                         )}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className={tableCellClassName}>
                         {held.includes("read") ? (
                           <ReadOnlyScopes held={held} subject={token.name} />
                         ) : (
@@ -421,17 +416,17 @@ export function AgentTokensSection(): ReactNode {
                           />
                         )}
                       </td>
-                      <td className="px-4 py-3 text-right">
+                      <td className={`${tableCellClassName} text-right whitespace-nowrap`}>
                         {token.revoked_at === null ? (
-                          <button
+                          <Button
                             aria-label={`Revoke ${token.name}`}
-                            className={`min-h-11 px-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
                             disabled={revokeToken.isPending}
                             onClick={() => revoke(token)}
-                            type="button"
+                            size="sm"
+                            variant="danger"
                           >
                             Revoke
-                          </button>
+                          </Button>
                         ) : (
                           <span className={textMutedOnSurface}>Revoked</span>
                         )}
@@ -445,18 +440,10 @@ export function AgentTokensSection(): ReactNode {
         </div>
       ) : null}
 
-      <form
-        className={`mt-6 flex flex-col gap-4 rounded-xl border p-4 ${borderDefault}`}
-        onSubmit={submit}
-      >
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-          <label
-            className={`grid flex-1 gap-1 text-sm font-medium ${textSecondaryOnCanvas}`}
-            htmlFor="agent-token-name"
-          >
-            Token label
-            <input
-              className={`min-h-11 rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+      <form className="mt-6 flex flex-col gap-4" onSubmit={submit}>
+        <div className="grid gap-4 sm:grid-cols-[minmax(0,20rem)_auto] sm:items-end">
+          <Field htmlFor="agent-token-name" label="Token label">
+            <Input
               id="agent-token-name"
               onChange={(event) => {
                 createToken.forgetUnanswered();
@@ -466,10 +453,10 @@ export function AgentTokensSection(): ReactNode {
               required
               value={name}
             />
-          </label>
-          <button className={settingsSubmitButton} disabled={createToken.isPending} type="submit">
+          </Field>
+          <Button className="justify-self-start" disabled={createToken.isPending} type="submit">
             New token
-          </button>
+          </Button>
         </div>
         <TokenScopeChoices
           chosen={newScopes}
@@ -495,14 +482,12 @@ export function AgentTokensSection(): ReactNode {
               revoked.
             </p>
           ) : candidates.length === 1 ? (
-            <button
-              className={settingsSubmitButton}
+            <Button
               disabled={replacing}
               onClick={() => candidates[0] !== undefined && replaceLost(candidates[0])}
-              type="button"
             >
               Revoke it and mint another
-            </button>
+            </Button>
           ) : (
             <>
               <p className={`text-sm ${textSecondaryOnCanvas}`}>
@@ -512,14 +497,9 @@ export function AgentTokensSection(): ReactNode {
               <ul className="space-y-2">
                 {candidates.map((token) => (
                   <li key={token.id}>
-                    <button
-                      className={settingsSubmitButton}
-                      disabled={replacing}
-                      onClick={() => replaceLost(token)}
-                      type="button"
-                    >
+                    <Button disabled={replacing} onClick={() => replaceLost(token)}>
                       Revoke the one created {new Date(token.created_at).toLocaleString()}
-                    </button>
+                    </Button>
                   </li>
                 ))}
               </ul>
@@ -540,23 +520,19 @@ export function AgentTokensSection(): ReactNode {
         </div>
       ) : null}
       {shownToken === undefined ? null : (
-        <div className={`mt-4 rounded-xl border p-4 ${card}`} role="status">
-          <p className={`font-medium ${textPrimaryOnSurface}`}>
+        <Card className="mt-4" role="status">
+          <p className={`text-sm font-medium ${textPrimaryOnSurface}`}>
             Copy this token now. It will not be shown again.
           </p>
-          <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
             <code
-              className={`break-all rounded-md px-3 py-2 select-text ${surfaceMutedBg} ${textPrimaryOnSurface}`}
+              className={`min-w-0 break-all rounded-md px-2.5 py-1.5 text-sm select-text ${surfaceMutedBg} ${textPrimaryOnSurface}`}
             >
               {shownToken.token}
             </code>
-            <button
-              className={`min-h-11 rounded-md px-4 py-2 font-medium ${primaryButtonBg} ${primaryButtonHoverBg}`}
-              onClick={copyToken}
-              type="button"
-            >
+            <Button className="self-start sm:self-auto" onClick={copyToken} variant="primary">
               Copy token
-            </button>
+            </Button>
           </div>
           {copyStatus === "idle" ? null : (
             <p
@@ -600,7 +576,7 @@ export function AgentTokensSection(): ReactNode {
           >
             <code>{`DISPATCH_URL=${window.location.origin}\nDISPATCH_TOKEN=${shownToken.token}`}</code>
           </pre>
-        </div>
+        </Card>
       )}
     </section>
   );

@@ -1,7 +1,8 @@
-import { badgeLow, hoverToDangerText, secondaryButtonText } from "../../theme/classes";
+import { badgeClassName } from "../../components/Badge";
 
-/** The pill a session is listed in (subscribed agents, an ask's followers). */
-export const sessionChipClassName = `flex items-center gap-2 rounded-full px-3 py-1 text-sm ${badgeLow.bg} ${badgeLow.text}`;
+/** The row a session is listed in (subscribed agents, an ask's followers): the session's badge,
+ *  then the control that removes it, a ghost `Button` of the compact size. */
+export const sessionChipClassName = "flex max-w-full items-center gap-1 text-xs";
 
-/** The chip's remove control, red on hover. */
-export const sessionRemoveButtonClassName = `font-medium ${secondaryButtonText} ${hoverToDangerText} disabled:cursor-not-allowed disabled:opacity-50`;
+/** The badge that names the session, in the badge family's shape (`DESIGN.md`). */
+export const sessionBadgeClassName = `${badgeClassName("neutral")} gap-1.5`;

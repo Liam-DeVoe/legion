@@ -4,15 +4,14 @@ import { type ReactNode, useMemo } from "react";
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
 import type { UserState } from "../../api/types";
+import { Button } from "../../components/Button";
 import { PinButton } from "../../components/PinButton";
 import {
   dangerText,
   linkText,
   newDividerLine,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
   textMutedOnCanvas,
+  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { writePin } from "../issue/pin-write";
 import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
@@ -96,7 +95,7 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
       item="data-event-seq"
       label="Activity"
     >
-      <ol aria-label="Issue activity" className="flex flex-col gap-1">
+      <ol aria-label="Issue activity" className="flex flex-col">
         {items.map((item) => {
           if (item.kind === "day-divider" || item.kind === "unread-divider") {
             const label = item.kind === "day-divider" ? item.label : "New since you last read";
@@ -107,12 +106,13 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
               // hears, and `e2e/activity.e2e.ts` finds the dividers by it.
               <li
                 aria-label={label}
-                className={`my-2 flex items-center gap-3 text-xs font-semibold tracking-wide uppercase ${
+                className={`flex items-center gap-3 pt-3 pb-1 text-xs font-medium first:pt-0 ${
                   item.kind === "unread-divider" ? linkText : textMutedOnCanvas
                 }`}
                 key={item.id}
               >
-                <span className={`h-px flex-1 ${newDividerLine}`} />
+                {/* The label starts at the rows' left edge and its rule runs to the right one,
+                    so a day reads as the heading of the rows under it. */}
                 {label}
                 <span className={`h-px flex-1 ${newDividerLine}`} />
               </li>
@@ -123,29 +123,36 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
           const pinned = isPinnedEvent(issueState.dismissed ?? [], item.event.id);
           return (
             <li
-              className={`flex flex-wrap items-baseline gap-x-2 px-2 text-xs ${textMutedOnCanvas}`}
+              className={`flex items-center gap-x-2 text-xs ${textMutedOnCanvas}`}
               data-event-seq={item.seq}
               key={item.id}
             >
-              {/* Who and when are one group that never breaks, so the time never wraps alone to
+              {/* The words wrap among themselves and the pin keeps the row's end, so a narrow
+                  row never drops the pin to a line of its own under the words. */}
+              <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+                {/* Who and when are one group that never breaks, so the time never wraps alone to
                   the start of the next row when the author takes most of the line. The author
                   truncates inside it, with the full label on hover - a live session title can
                   be a whole sentence - and only the description wraps, with a floor so it
                   wraps as prose rather than one word per line. */}
-              <span className="flex max-w-full min-w-0 shrink-0 items-baseline gap-x-2 whitespace-nowrap">
-                <span className="min-w-0 truncate font-medium" title={author}>
-                  <AgentName actor={item.author} inline />
+                <span className="flex max-w-full min-w-0 shrink-0 items-baseline gap-x-2 whitespace-nowrap">
+                  <span
+                    className={`min-w-0 truncate font-medium ${textSecondaryOnCanvas}`}
+                    title={author}
+                  >
+                    <AgentName actor={item.author} inline />
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <Timestamp at={item.at} />
                 </span>
-                <span aria-hidden="true">·</span>
-                <Timestamp at={item.at} />
-              </span>
-              <span className="min-w-48 flex-1 break-words">
-                <ActivityLine
-                  description={item.description}
-                  event={item.event}
-                  issueKey={issueKey}
-                />
-              </span>
+                <span className={`min-w-40 flex-1 break-words ${textSecondaryOnCanvas}`}>
+                  <ActivityLine
+                    description={item.description}
+                    event={item.event}
+                    issueKey={issueKey}
+                  />
+                </span>
+              </div>
               <PinButton
                 label={pinned ? "Unpin" : "Pin"}
                 onClick={() => togglePin(item.event.id)}
@@ -159,14 +166,9 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
       {items.length === 0 ? <p className={textMutedOnCanvas}>No activity yet.</p> : null}
       {log.hasNextPage ? (
         <div className="flex items-center justify-center">
-          <button
-            className={`min-h-11 rounded-lg px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            disabled={log.isFetchingNextPage}
-            onClick={() => void log.fetchNextPage()}
-            type="button"
-          >
+          <Button disabled={log.isFetchingNextPage} onClick={() => void log.fetchNextPage()}>
             {log.isFetchingNextPage ? "Loading…" : "Load older"}
-          </button>
+          </Button>
         </div>
       ) : null}
     </ViewportAnchor>

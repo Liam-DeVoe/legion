@@ -1,7 +1,9 @@
 import { type RefObject, useCallback, useLayoutEffect, useRef, useState } from "react";
 
-/** The room between two cards one region of the margin stacks, in pixels. */
-const CARD_GAP = 8;
+/** The room between two cards one region of the margin stacks, in pixels: the `space-y-3` every
+ *  other card of the margin stands apart by, so placed and listed cards keep one rhythm. A
+ *  region ends at its last card's foot, and the list's own spacing follows it. */
+const CARD_GAP = 12;
 
 /**
  * Where the anchored region's own content starts, in viewport terms, with the margin's scroll
@@ -75,7 +77,7 @@ export function useCardStack<Card>(
         ? current
         : next
     );
-    setHeight(bottom);
+    setHeight(cards.length === 0 ? 0 : bottom - CARD_GAP);
   }, [cards, keyOf, wantedTop]);
   useLayoutEffect(() => {
     measure();

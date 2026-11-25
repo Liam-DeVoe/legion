@@ -4,8 +4,8 @@ import { Link } from "react-router-dom";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import {
   focusVisibleRing,
-  linkHoverText,
-  linkText,
+  linkChrome,
+  surfaceMutedHoverBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
@@ -113,7 +113,7 @@ function OrderCell({ item }: { item: PriorityItem }) {
       {actions.canWrite && actions.canReorder ? (
         <button
           aria-label={`Move ${item.order} ${item.priority.title}: drag it, or press the up and down arrows`}
-          className={`-ml-1 flex cursor-grab items-center gap-1 rounded p-0.5 active:cursor-grabbing ${textMutedOnCanvas} ${focusVisibleRing}`}
+          className={`-ml-1 flex cursor-grab items-center gap-1 rounded p-0.5 active:cursor-grabbing ${textMutedOnCanvas} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
           draggable
           onDragEnd={actions.onDragEnd}
           onDragStart={(event) => {
@@ -138,7 +138,7 @@ function OrderCell({ item }: { item: PriorityItem }) {
       <button
         aria-expanded={open}
         aria-label={`${open ? "Close" : "Open"} ${item.order} ${item.priority.title}`}
-        className={`-ml-1 rounded p-0.5 ${textMutedOnCanvas} ${focusVisibleRing}`}
+        className={`-ml-1 rounded p-0.5 ${textMutedOnCanvas} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
         onClick={() => actions.onOpen(item)}
         type="button"
       >
@@ -191,7 +191,7 @@ function TitleCell({ item }: { item: PriorityItem }) {
           click, or `o` and Enter on the focused row, which open the row's `data-issue-link`.
           It wraps whole, however long, in the type of the Issues table's titles. */}
       <Link
-        className={`flex w-full min-w-0 ${linkText} ${linkHoverText}`}
+        className={`flex w-full min-w-0 ${linkChrome}`}
         data-issue-link
         to={priorityPath(item.priority.id)}
       >

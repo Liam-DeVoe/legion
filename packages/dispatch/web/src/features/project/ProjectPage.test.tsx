@@ -372,7 +372,7 @@ test("the Icebox & Done toggle lives in Board view only and persists per signed-
     await screen.findByRole("heading", { name: "Core" });
     const toggle = await screen.findByRole("button", { name: "Show Icebox & Done" });
     expect(toggle).toHaveAttribute("aria-pressed", "false");
-    expect(toggle).toHaveClass("min-h-11");
+    expect(toggle).toHaveClass("h-8");
     await user.click(toggle);
     expect(screen.getByRole("button", { name: "Hide Icebox & Done" })).toHaveAttribute(
       "aria-pressed",
@@ -520,7 +520,7 @@ test("the Lanes toggle lives in Board view only and persists per signed-in user"
     await screen.findByRole("heading", { name: "Core" });
     const toggle = await screen.findByRole("button", { name: "Show lanes" });
     expect(toggle).toHaveAttribute("aria-pressed", "false");
-    expect(toggle).toHaveClass("min-h-11");
+    expect(toggle).toHaveClass("h-8");
     await user.click(toggle);
     expect(screen.getByRole("button", { name: "Hide lanes" })).toHaveAttribute(
       "aria-pressed",

@@ -5,6 +5,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
+import { buttonClassName } from "../../components/Button";
 import { approvalPillClassName } from "../../components/Pill";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -25,12 +26,6 @@ import {
   pageMutedText,
   pagePaperBg,
   pageQuietText,
-  primaryButtonBg,
-  primaryButtonDisabled,
-  primaryButtonEnabledHoverBg,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -311,7 +306,11 @@ function RequestChangesDialog({
               // dialog as Escape and the backdrop do: `onClose` leaves the write going, and the
               // dialog gives the focus back to the button that opened it. Once the write has ended
               // it is Cancel again. Outside it is `disabled` while the write is out, as on `main`.
-              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`}
+              className={
+                page === null
+                  ? buttonClassName()
+                  : `rounded-lg border px-3 py-1.5 text-sm font-medium ${ON_PAGE.action}`
+              }
               disabled={page === null && saving}
               onClick={onClose}
               type="button"
@@ -320,7 +319,11 @@ function RequestChangesDialog({
             </button>
             <button
               aria-disabled={(page !== null && saving) || undefined}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`}
+              className={
+                page === null
+                  ? buttonClassName({ variant: "primary" })
+                  : `rounded-lg px-3 py-1.5 text-sm font-medium ${ON_PAGE.filled}`
+              }
               disabled={trimmed === "" || (page === null && saving)}
               onClick={() => {
                 if (saving) {
@@ -548,7 +551,9 @@ export function ApprovalChip({
               className={
                 size === "compact"
                   ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
-                  : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`
+                  : page === null
+                    ? buttonClassName({ variant: "primary" })
+                    : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${ON_PAGE.filled}`
               }
               disabled={page === null && review.isPending}
               onClick={() => {
@@ -577,7 +582,9 @@ export function ApprovalChip({
             className={
               size === "compact"
                 ? pageHeaderControl
-                : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : ON_PAGE.action}`
+                : page === null
+                  ? buttonClassName()
+                  : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${ON_PAGE.action}`
             }
             disabled={page === null && review.isPending}
             onClick={() => {

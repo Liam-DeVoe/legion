@@ -8,7 +8,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { issueProject } from "../../lib/issue-key";
-import { card, linkHoverText, linkText, textSecondaryOnCanvas } from "../../theme/classes";
+import { card, linkChrome, textSecondaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
 import { useKeymapScope } from "../shell/keymap";
@@ -61,7 +61,7 @@ const WORK_LAYOUT = {
 /** The way back to the priorities page, above the page's header as above an empty page. */
 function BackLink(): ReactNode {
   return (
-    <Link className={`text-sm ${linkText} ${linkHoverText}`} to={PRIORITIES_PATH}>
+    <Link className={`text-sm ${linkChrome}`} to={PRIORITIES_PATH}>
       ‹ Priorities
     </Link>
   );
@@ -275,7 +275,7 @@ function PriorityShown({
                 .sort((a, b) => a[0].localeCompare(b[0]))
                 .map(([project, keys]) => (
                   <Link
-                    className={`mr-3 ${linkText} ${linkHoverText}`}
+                    className={`mr-3 ${linkChrome}`}
                     key={project}
                     to={`/projects/${project}/issues?${selectIssues(new URLSearchParams(), keys, title)}`}
                   >

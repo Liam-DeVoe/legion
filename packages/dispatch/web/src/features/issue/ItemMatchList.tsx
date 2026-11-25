@@ -1,9 +1,8 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-
 import type { IDCandidate } from "../../api/types";
+import { badgeClassName } from "../../components/Badge";
 import {
-  badgeLow,
   linkHoverText,
   linkText,
   textMutedOnCanvas,
@@ -101,9 +100,7 @@ function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
       <div
         className={`flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs ${textMutedOnCanvas}`}
       >
-        <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
-          {candidateNoun[candidate.kind]}
-        </span>
+        <span className={badgeClassName("neutral")}>{candidateNoun[candidate.kind]}</span>
         {owner === undefined ? null : (
           <span className="min-w-0 [overflow-wrap:anywhere]">{owner}</span>
         )}

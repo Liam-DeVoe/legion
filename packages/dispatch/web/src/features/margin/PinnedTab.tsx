@@ -30,7 +30,7 @@ export function PinnedTab({
   pinnedIds,
 }: PinnedTabProps): ReactNode {
   return (
-    <div className="pt-3">
+    <div className="space-y-3 pt-3">
       {conversations.map((conversation) => (
         <article className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={conversation.id}>
           <div className="flex items-start justify-between gap-2">

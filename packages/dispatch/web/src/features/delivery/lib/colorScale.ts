@@ -37,6 +37,24 @@ export const COLOR_PALETTE = [
   "#4ade80",
 ];
 
+/** The same ten hues, slot for slot, stepped darker for a light surface, where the palette above
+ *  (chosen for the prototype's dark page) stands at 1.5:1 to 2.9:1 against white. Run through the
+ *  dataviz palette validator on a white surface: lightness band, chroma floor, adjacent-pair
+ *  colour-vision separation and the normal-vision floor all pass; one slot (orange, 2.3:1) sits
+ *  under 3:1, which the List view's table relieves. */
+export const COLOR_PALETTE_LIGHT = [
+  "#0284c7",
+  "#db2777",
+  "#4d7c0f",
+  "#fb923c",
+  "#9333ea",
+  "#a16207",
+  "#0d9488",
+  "#dc2626",
+  "#4f46e5",
+  "#16a34a",
+];
+
 /** Placeholder values ("No issue", "No session", ...) recede in neutral grey. */
 export const PLACEHOLDER_COLOR = "#64748b";
 
@@ -67,10 +85,12 @@ export function colorKeyFor(pr: DeliveryPR, colorBy: ColorFacet): string {
  *  applied), largest group first, so a value keeps its colour when facets or a brush window change
  *  which PRs are shown. Placeholder values are grey and don't use up a palette slot. With values
  *  `chosen`, those take the palette in the order chosen and every other value shares
- *  OTHER_COLOR, so the chosen ones stand out however many values there are. */
+ *  OTHER_COLOR, so the chosen ones stand out however many values there are. `palette` is the
+ *  colour scheme's: a value keeps its slot, and so its hue, in both. */
 export function buildColorScale(
   counts: Readonly<Record<string, number>>,
-  chosen: readonly string[] = []
+  chosen: readonly string[] = [],
+  palette: readonly string[] = COLOR_PALETTE
 ): Map<string, string> {
   const scale = new Map<string, string>();
   const ranked = Object.keys(counts).sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0));
@@ -78,7 +98,7 @@ export function buildColorScale(
   let next = 0;
   for (const key of order) {
     if (key in PLACEHOLDER_LABELS) continue;
-    scale.set(key, COLOR_PALETTE[next % COLOR_PALETTE.length] ?? "#38bdf8");
+    scale.set(key, palette[next % palette.length] ?? "#38bdf8");
     next += 1;
   }
   for (const key of ranked) {

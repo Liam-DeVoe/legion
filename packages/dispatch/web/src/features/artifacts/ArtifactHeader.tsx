@@ -1,20 +1,19 @@
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import type { Artifact, Version } from "../../api/types";
+import { Button } from "../../components/Button";
+import { Select } from "../../components/Field";
+import { cardClassName } from "../../components/Layout";
 import {
   borderDefault,
-  card,
   dangerText,
   highlightRing,
-  inputClasses,
   linkHoverText,
   linkText,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
   textMutedOnCanvas,
+  textMutedOnSurface,
   textPrimaryOnCanvas,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -96,6 +95,7 @@ export function ArtifactHeader({
   version: number | undefined;
 }): ReactNode {
   const [highlighted, setHighlighted] = useState(highlight);
+  const versionId = useId();
   const navigate = useNavigate();
   const versions = versionsNewestFirst(toolbar?.versions ?? artifact.versions);
   // An artifact of an agent's conversation (a picture sent in a direct message) belongs to no
@@ -133,20 +133,19 @@ export function ArtifactHeader({
   // no version to diff, and sits before that box where there is one.
   const nameVersion =
     toolbar === undefined ? null : (
-      <button
-        className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+      <Button
         disabled={isClosed || toolbar.isNamingVersion}
         onClick={toolbar.requestNamedVersion}
-        type="button"
+        size="sm"
       >
         Name version
-      </button>
+      </Button>
     );
 
   return (
     <section className="space-y-4">
       <header
-        className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
+        className={`flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3 ${cardClassName("none")} ${
           highlighted ? highlightRing : ""
         }`}
         data-highlighted={highlighted ? "" : undefined}
@@ -178,10 +177,10 @@ export function ArtifactHeader({
               button (44 px, 32 px from `md`) is taller than one `text-lg` line (28 px), so a
               negative margin of half the difference centres its icon on that first line. */}
           <div className="flex min-w-0 items-start gap-1">
-            <h2 className={`min-w-0 break-words text-lg font-semibold ${textPrimaryOnSurface}`}>
+            <h2 className={`min-w-0 break-words text-[15px] font-semibold ${textPrimaryOnSurface}`}>
               {artifact.name}
             </h2>
-            <CopyRefButton className="-my-2 md:-my-0.5" route={documentRoute(artifact, version)} />
+            <CopyRefButton className="-my-2.5 md:-my-1" route={documentRoute(artifact, version)} />
           </div>
           {artifact.approval === undefined ? null : (
             <div className="mt-1">
@@ -193,15 +192,18 @@ export function ArtifactHeader({
           )}
         </div>
         {showVersionPicker || toolbar !== undefined ? (
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             {showVersionPicker ? (
-              <label
-                className={`flex min-h-11 min-w-0 items-center gap-2 text-sm font-medium ${textSecondaryOnSurface}`}
-              >
-                Version
-                <select
+              <div className="flex min-w-0 items-center gap-2">
+                <label className={`text-xs font-medium ${textMutedOnSurface}`} htmlFor={versionId}>
+                  Version
+                </label>
+                <Select
+                  id={versionId}
                   aria-label="Version"
-                  className={`min-h-11 min-w-0 max-w-56 truncate rounded border px-2 py-2 font-normal ${inputClasses(true)}`}
+                  className="w-auto max-w-56 font-normal"
+                  size="sm"
+                  surface="recessed"
                   onChange={(event) => {
                     // Both path builders read `version: undefined` as the unversioned route.
                     const picked =
@@ -232,8 +234,8 @@ export function ArtifactHeader({
                       {versionLabel(item)}
                     </option>
                   ))}
-                </select>
-              </label>
+                </Select>
+              </div>
             ) : null}
             {toolbar === undefined ? null : (
               // Two boxes. The outer one wraps, because at 320 px the actions are wider than the
@@ -241,7 +243,7 @@ export function ArtifactHeader({
               // the document these actions write to, so it shares that box with the action
               // beside it — the diff button on a version view, Name version where there is none
               // — and travels with it instead of wrapping onto a line of its own.
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2">
                 {!correctionIsOffered(artifact) ? null : (
                   // Keyed by the document, as Remove is below: the form holds the title typed
                   // into it and what became of its last Save, both that document's alone. The
@@ -279,17 +281,13 @@ export function ArtifactHeader({
                   />
                 )}
                 {version === undefined ? null : nameVersion}
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
                   {version === undefined ? (
                     nameVersion
                   ) : (
-                    <button
-                      className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-                      onClick={() => onShowDiffChange?.(!showDiff)}
-                      type="button"
-                    >
+                    <Button onClick={() => onShowDiffChange?.(!showDiff)} size="sm">
                       {showDiff ? "Show version" : "Diff vs current"}
-                    </button>
+                    </Button>
                   )}
                   <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
                 </div>
@@ -351,7 +349,7 @@ export function ArtifactBlobView({
         Uploaded <Timestamp at={selected.created_at} />
       </p>
       <a
-        className={`inline-flex min-h-11 items-center font-medium underline ${linkText} ${linkHoverText}`}
+        className={`inline-flex items-center text-sm font-medium hover:underline ${linkText} ${linkHoverText}`}
         download=""
         href={artifactVersionUrl(artifact.id, selected.number, { download: true })}
       >

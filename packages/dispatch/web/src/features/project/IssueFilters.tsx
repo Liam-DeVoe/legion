@@ -1,16 +1,12 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useState } from "react";
 
 import { projectIssuesQuery } from "../../api/queries";
+import { Button } from "../../components/Button";
 import { Chip } from "../../components/Chip";
+import { fieldLabelClassName, Input } from "../../components/Field";
 import { MultiSelect } from "../../components/MultiSelect";
-import {
-  borderDefault,
-  inputClasses,
-  surfaceMutedBg,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
 import { useUserPreference } from "../shell/userPreference";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
@@ -23,6 +19,7 @@ import { useIssueFilters } from "./issue-filters";
  */
 export function IssueFilters({ project }: { project: string }): ReactNode {
   const filters = useIssueFilters();
+  const searchId = useId();
   const { activeFilterCount, activeFilters, labels, setLabels } = filters;
   const noIdentityFiltersExpanded = labels.length > 0;
   // The saved preference is the only owner of the open state: the strip reads it when it mounts
@@ -60,16 +57,14 @@ export function IssueFilters({ project }: { project: string }): ReactNode {
 
   return (
     <>
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <button
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Button
           aria-controls="project-issue-filters"
           aria-expanded={filtersExpanded}
-          className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`}
           onClick={() => setFiltersOpen(!filtersExpanded)}
-          type="button"
         >
           Filters · {activeFilterCount} active
-        </button>
+        </Button>
         {activeFilters.map(({ label, remove }) => (
           <Chip
             aria-label={`Remove ${label} filter`}
@@ -84,7 +79,7 @@ export function IssueFilters({ project }: { project: string }): ReactNode {
         <UnclaimedUnchecked reason={filters.unclaimedUnchecked} />
       </div>
       {filtersExpanded ? (
-        <div className="mb-4 flex flex-wrap items-end gap-3" id="project-issue-filters">
+        <div className="mb-3 flex flex-wrap items-end gap-2" id="project-issue-filters">
           <MultiSelect
             emptyMessage="No labels yet."
             label="Labels"
@@ -95,11 +90,12 @@ export function IssueFilters({ project }: { project: string }): ReactNode {
             searchLabel="Search labels"
             selected={labels}
           />
-          <label className={`text-sm font-medium ${textSecondaryOnCanvas}`}>
+          <label className={fieldLabelClassName} htmlFor={searchId}>
             Search
-            <input
+            <Input
               aria-label="Search issues"
-              className={`mt-1 block min-h-11 rounded-lg px-3 py-2 text-sm font-normal ${inputClasses(true)}`}
+              className="mt-1.5 w-56 font-normal"
+              id={searchId}
               maxLength={SEARCH_QUERY_MAX}
               onChange={(event) => filters.setSearch(event.target.value)}
               title={`At most ${SEARCH_QUERY_MAX} characters`}
@@ -107,13 +103,16 @@ export function IssueFilters({ project }: { project: string }): ReactNode {
               value={filters.search}
             />
           </label>
-          <IssueFlagChips />
-          <Chip
-            onClick={() => filters.setUnclaimed(!filters.unclaimed)}
-            selected={filters.unclaimed}
-          >
-            Unclaimed
-          </Chip>
+          {/* The chips are 24 px beside 32 px controls: one 32 px line centres them. */}
+          <div className="flex h-8 items-center gap-2">
+            <IssueFlagChips />
+            <Chip
+              onClick={() => filters.setUnclaimed(!filters.unclaimed)}
+              selected={filters.unclaimed}
+            >
+              Unclaimed
+            </Chip>
+          </div>
         </div>
       ) : null}
     </>

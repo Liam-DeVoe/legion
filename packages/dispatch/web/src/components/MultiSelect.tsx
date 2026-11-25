@@ -5,10 +5,9 @@ import {
   borderDefault,
   borderStrong,
   card,
-  cardHoverBorder,
   dangerText,
   focusBorder,
-  inputClasses,
+  optionCheckOn,
   pageFailedText,
   pageHairBorder,
   pageInkText,
@@ -19,14 +18,15 @@ import {
   pagePaperBg,
   pageQuietText,
   pageRowHoverBg,
-  selectedCardBg,
-  selectedCardBorder,
-  surfaceMutedBg,
+  popoverPanel,
+  rowHoverBg,
+  rowSelectedBg,
   textMutedOnSurface,
-  textSecondaryOnCanvas,
-  textSecondaryOnSurface,
+  textPrimaryOnSurface,
 } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
+import { buttonClassName } from "./Button";
+import { inputClassName } from "./Field";
 import { TruncatedText } from "./TruncatedText";
 import { useTooltips } from "./tooltips";
 
@@ -132,10 +132,7 @@ export function MultiSelect({
   const id = useId();
   const tooltips = useTooltips();
   const trigger =
-    triggerClassName ??
-    (tooltips
-      ? `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
-      : ON_PAGE.trigger);
+    triggerClassName ?? (tooltips ? buttonClassName({ variant: "secondary" }) : ON_PAGE.trigger);
   const listboxId = `${id}-options`;
   const optionId = (value: string) => `${id}-option-${encodeURIComponent(value)}`;
   const [query, setQuery] = useState("");
@@ -256,8 +253,8 @@ export function MultiSelect({
 
   const rowClassName = (active: boolean) =>
     tooltips
-      ? `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
-          active ? `${selectedCardBg} ${selectedCardBorder}` : ""
+      ? `flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm ${textPrimaryOnSurface} ${
+          active ? rowSelectedBg : rowHoverBg
         }`
       : `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${pageLineBorder} ${pageInkText} ${pageRowHoverBg} ${
           active ? pageMarkBg : ""
@@ -281,17 +278,23 @@ export function MultiSelect({
       {open ? (
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
+          className={`z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto ${tooltips ? popoverPanel : `rounded-lg border shadow-lg ${ON_PAGE.panel}`}`}
           onDismiss={() => onOpenChange(false)}
         >
-          <div className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}>
+          <div
+            className={`sticky top-0 border-b ${tooltips ? `p-1.5 ${card}` : `p-2 ${ON_PAGE.panel}`}`}
+          >
             <input
               aria-activedescendant={activeRow === undefined ? undefined : optionId(activeRow)}
               aria-autocomplete="list"
               aria-controls={listboxId}
               aria-expanded="true"
               aria-label={searchLabel}
-              className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${tooltips ? inputClasses(true) : ON_PAGE.search}`}
+              className={
+                tooltips
+                  ? inputClassName({ surface: "recessed" })
+                  : `block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${ON_PAGE.search}`
+              }
               disabled={disabled}
               onChange={(event) => {
                 setQuery(event.target.value);
@@ -309,6 +312,7 @@ export function MultiSelect({
           <div
             aria-label={`${label} options`}
             aria-multiselectable="true"
+            className={tooltips ? "p-1" : undefined}
             id={listboxId}
             role="listbox"
           >
@@ -333,7 +337,7 @@ export function MultiSelect({
                 >
                   <span
                     aria-hidden="true"
-                    className={`grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${tooltips ? borderStrong : ON_PAGE.checkbox}`}
+                    className={`grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${tooltips ? (isSelected ? optionCheckOn : borderStrong) : ON_PAGE.checkbox}`}
                   >
                     {isSelected ? "✓" : ""}
                   </span>
@@ -375,7 +379,13 @@ export function MultiSelect({
               </button>
             )}
             {rows.length === 0 ? (
-              <p className={`px-3 py-2 text-sm ${tooltips ? textMutedOnSurface : ON_PAGE.empty}`}>
+              <p
+                className={
+                  tooltips
+                    ? `px-2 py-1.5 text-sm ${textMutedOnSurface}`
+                    : `px-3 py-2 text-sm ${ON_PAGE.empty}`
+                }
+              >
                 {emptyMessage}
               </p>
             ) : null}
@@ -388,9 +398,15 @@ export function MultiSelect({
             </p>
           )}
           {selected.length === 0 ? null : (
-            <div className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}>
+            <div
+              className={`sticky bottom-0 border-t ${tooltips ? `p-1 ${card}` : `p-2 ${ON_PAGE.panel}`}`}
+            >
               <button
-                className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
+                className={
+                  tooltips
+                    ? `${buttonClassName({ size: "sm", variant: "ghost" })} w-full`
+                    : `min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${ON_PAGE.clear}`
+                }
                 disabled={disabled}
                 onClick={() => onChange([])}
                 onClickCapture={focusSearchFirst}

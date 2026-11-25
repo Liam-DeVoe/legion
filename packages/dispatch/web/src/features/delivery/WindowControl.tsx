@@ -1,13 +1,7 @@
 import { type ReactNode, useId, useState } from "react";
-
-import {
-  borderStrong,
-  dangerText,
-  secondaryButtonCompact,
-  surfaceMutedBg,
-  textMutedOnCanvas,
-  textPrimaryOnCanvas,
-} from "../../theme/classes";
+import { Button } from "../../components/Button";
+import { Input, Select } from "../../components/Field";
+import { dangerText, textMutedOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
 import {
   customRange,
   lastUtcDate,
@@ -16,8 +10,6 @@ import {
   WINDOW_PRESETS,
   type WindowChoice,
 } from "./lib/window";
-
-const fieldClass = `rounded border px-2 py-1 text-sm ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`;
 
 /** The Delivery page's window: a rolling preset (the last 7, 14, 28 or 84 days) or a custom range
  *  of whole UTC days. A custom range is applied only once both dates are set and it spans at most
@@ -46,59 +38,64 @@ export function WindowControl({
   };
 
   return (
-    <div className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
-      <label className="flex items-center gap-2" htmlFor={`${id}-window`}>
-        Window
-      </label>
-      <select
-        className={fieldClass}
-        id={`${id}-window`}
-        onChange={(event) => {
-          const next = event.target.value;
-          const preset = WINDOW_PRESETS.find((candidate) => candidate === next);
-          if (preset === undefined) {
-            setCustom(true);
-            return;
-          }
-          setCustom(false);
-          setRefused(null);
-          onChange({ kind: "preset", preset });
-        }}
-        value={custom ? "custom" : value.kind === "preset" ? value.preset : "custom"}
-      >
-        {WINDOW_PRESETS.map((preset) => (
-          <option key={preset} value={preset}>
-            {PRESET_LABELS[preset]}
-          </option>
-        ))}
-        <option value="custom">Custom range…</option>
-      </select>
+    <div
+      className={`flex max-w-full flex-wrap items-center gap-x-3 gap-y-2 text-sm ${textSecondaryOnCanvas}`}
+    >
+      {/* Each label stays on its control's line when the row wraps. */}
+      {/* The select's own value ("Last 28 days", "Custom range…") says what it sets, so its label
+          is a screen reader's only. */}
+      <span className="flex items-center gap-2">
+        <label className="sr-only" htmlFor={`${id}-window`}>
+          Window
+        </label>
+        <Select
+          className="w-40"
+          id={`${id}-window`}
+          onChange={(event) => {
+            const next = event.target.value;
+            const preset = WINDOW_PRESETS.find((candidate) => candidate === next);
+            if (preset === undefined) {
+              setCustom(true);
+              return;
+            }
+            setCustom(false);
+            setRefused(null);
+            onChange({ kind: "preset", preset });
+          }}
+          value={custom ? "custom" : value.kind === "preset" ? value.preset : "custom"}
+        >
+          {WINDOW_PRESETS.map((preset) => (
+            <option key={preset} value={preset}>
+              {PRESET_LABELS[preset]}
+            </option>
+          ))}
+          <option value="custom">Custom range…</option>
+        </Select>
+      </span>
       {custom ? (
         <>
-          <label className="flex items-center gap-1" htmlFor={`${id}-from`}>
-            From
-          </label>
-          <input
-            className={fieldClass}
-            id={`${id}-from`}
-            onChange={(event) => setFromDate(event.target.value)}
-            type="date"
-            value={fromDate}
-          />
-          <label className="flex items-center gap-1" htmlFor={`${id}-to`}>
-            To
-          </label>
-          <input
-            className={fieldClass}
-            id={`${id}-to`}
-            onChange={(event) => setToDate(event.target.value)}
-            type="date"
-            value={toDate}
-          />
-          <span className="text-xs">(UTC)</span>
-          <button className={secondaryButtonCompact} onClick={apply} type="button">
-            Apply
-          </button>
+          <span className="flex items-center gap-2">
+            <label htmlFor={`${id}-from`}>From</label>
+            <Input
+              className="w-36"
+              id={`${id}-from`}
+              onChange={(event) => setFromDate(event.target.value)}
+              type="date"
+              value={fromDate}
+            />
+          </span>
+          <span className="flex items-center gap-2">
+            <label htmlFor={`${id}-to`}>To</label>
+            <Input
+              className="w-36"
+              id={`${id}-to`}
+              onChange={(event) => setToDate(event.target.value)}
+              type="date"
+              value={toDate}
+            />
+            <span className={`text-xs ${textMutedOnCanvas}`}>(UTC)</span>
+          </span>
+          <Button onClick={apply}>Apply</Button>
           {refused === null ? null : (
             <p className={`basis-full text-xs ${dangerText}`} role="alert">
               {refused}

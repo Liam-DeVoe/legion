@@ -944,7 +944,7 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
       expect(screen.getByTestId("main-content")).toHaveAttribute("data-shell-layout", "full-width");
       const main = screen.getByTestId("main-content");
       expect(main).toHaveClass("xl:w-full");
-      expect(main).toHaveClass("xl:pl-20");
+      expect(main).toHaveClass("xl:pl-22");
       expect(main).toHaveClass("xl:pr-20");
       expect(window.localStorage.getItem(sidebarStorageKey)).toBe("hidden");
       expect(window.localStorage.getItem(marginStorageKey)).toBe("hidden");

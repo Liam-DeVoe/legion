@@ -1,7 +1,12 @@
 import type { ReactNode } from "react";
 
 import type { MyReplyRow } from "../../api/types";
-import { textMutedOnCanvas, textPrimaryOnCanvas, unreadDotBg } from "../../theme/classes";
+import {
+  textMutedOnCanvas,
+  textPrimaryOnCanvas,
+  textSecondaryOnCanvas,
+  unreadDotBg,
+} from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { EditedMark } from "../refs/PostMarks";
@@ -64,6 +69,7 @@ export function ThreadLine({
 export function ThreadTitle({
   className,
   href,
+  selected = false,
   thread,
 }: {
   /** The classes the host's line gives the title; the unread weight is added to them. The host
@@ -72,13 +78,20 @@ export function ThreadTitle({
   className: string;
   /** Where the title links, for the host that draws it as a link; plain text without one. */
   href?: string;
+  /** Whether the title sits on the selected row's fill, where a read title takes the
+   *  secondary text: the muted grey is not registered on that fill. */
+  selected?: boolean;
   thread: MyReplyRow;
 }): ReactNode {
   const agentText = useAgentText();
   const deleted = postDeletion(thread);
   const deletedWords = deleted === null ? undefined : deletedLineText(deleted, agentText);
   const text = `${className} ${
-    thread.unread ? `font-semibold ${textPrimaryOnCanvas}` : textMutedOnCanvas
+    thread.unread
+      ? `font-semibold ${textPrimaryOnCanvas}`
+      : selected
+        ? textSecondaryOnCanvas
+        : textMutedOnCanvas
   }`;
   const line =
     deletedWords === undefined ? (

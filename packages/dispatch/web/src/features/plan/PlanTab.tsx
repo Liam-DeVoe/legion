@@ -5,7 +5,8 @@ import { type ReactNode, useMemo } from "react";
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, ArtifactBlock } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
-import { card, dangerText, textMutedOnCanvas, textMutedOnSurface } from "../../theme/classes";
+import { cardClassName } from "../../components/Layout";
+import { dangerText, textMutedOnCanvas, textMutedOnSurface } from "../../theme/classes";
 import { ReplacingUploadNote } from "../artifacts/ArtifactUpload";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { withBlock } from "../refs/block-reference";
@@ -58,7 +59,7 @@ function Pointers({
 /** One task of the plan: its own link, what it serves, what it needs, and what points at it. */
 function Task({ task }: { task: PlanTask }): ReactNode {
   return (
-    <li className={`space-y-2 rounded-lg p-3 ${card}`} data-testid="plan-task">
+    <li className={`space-y-2 ${cardClassName()}`} data-testid="plan-task">
       <BlockLink reference={task.reference} />
       <Pointers label="Serves" references={task.serves} testId="plan-task-serves" />
       <Pointers label="Needs" references={task.needs} testId="plan-task-needs" />
@@ -127,7 +128,7 @@ function Tasks({ artifact }: { artifact: Artifact }): ReactNode {
   }
 
   return (
-    <ul aria-label="Plan tasks" className="space-y-3" data-testid="plan-tasks">
+    <ul aria-label="Plan tasks" className="space-y-2" data-testid="plan-tasks">
       {tasks.map((task) => (
         <Task key={task.id} task={task} />
       ))}
@@ -168,7 +169,7 @@ export function PlanTab({
 
   return (
     <section className="space-y-4" data-testid="plan-tab">
-      <div className="flex flex-wrap items-center gap-2" data-testid="plan-approval">
+      <div className="flex flex-wrap items-center gap-2 empty:hidden" data-testid="plan-approval">
         <ApprovalChip artifact={artifact} />
       </div>
       {children}

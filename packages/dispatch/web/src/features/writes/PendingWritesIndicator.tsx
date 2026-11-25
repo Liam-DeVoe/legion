@@ -267,7 +267,7 @@ export function PendingWritesIndicator(): ReactNode {
   return (
     <section
       aria-label="Pending changes"
-      className={`w-full max-w-md rounded-xl border px-3 py-2 text-xs shadow-lg ${card} ${
+      className={`w-full max-w-md rounded-lg border px-3 py-2 text-xs shadow-lg ${card} ${
         actionable ? calloutWarningBorder : borderDefault
       }`}
       data-testid="pending-writes"

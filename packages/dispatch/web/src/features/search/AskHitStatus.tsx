@@ -1,9 +1,8 @@
 import { actorActText } from "@legion/contracts";
 import { Fragment, type ReactNode } from "react";
-
 import type { SearchAsk } from "../../api/types";
+import { Badge } from "../../components/Badge";
 import {
-  badgeLow,
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -52,9 +51,7 @@ export function AskHitStatus({
       className={`mt-1 min-w-0 text-xs ${muted ? textMutedOnSelectedCard : textSecondaryOnSurface}`}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-        <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
-          {askStateLabel(ask)}
-        </span>
+        <Badge>{askStateLabel(ask)}</Badge>
         {ask.state === "resolved" && resolution !== undefined ? (
           <span className="min-w-0 [overflow-wrap:anywhere]">
             <AskResolutionLine agent="static" resolution={resolution} /> ·{" "}

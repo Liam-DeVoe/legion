@@ -4,11 +4,11 @@
 // computed here but the two lead-time cards' met/missed, which the prototype judges on the page as
 // this does, against the targets the response carries. Differences, each from LEGION-567's slice 3
 // plan or for the same reason as the measures panel's: Dispatch's sidebar replaces the
-// prototype's row of page links; the cards take the prototype's column counts at the prototype's
-// content widths (one column, two from 46rem, six from 78rem: its `md:grid-cols-2
-// xl:grid-cols-6` less its `px-4` page padding) measured on the page's own width rather than the
-// viewport, since beside Dispatch's sidebar the viewport rule put six cards in too little room for
-// their figures; a pipeline whose settings name no staging end-to-end gate (or no staging deploy)
+// prototype's row of page links; the cards take one column, two from 46rem and three from 78rem
+// (the prototype's breakpoints, `md` and `xl` less its `px-4` page padding, but three columns
+// where it has six: a sixth of the page is too little room for a card's two figures and its
+// bars, which wrapped and ran together), measured on the page's own width rather than the
+// viewport, since Dispatch's sidebar takes a share of it; a pipeline whose settings name no staging end-to-end gate (or no staging deploy)
 // omits that card; the prototype's note counting runs whose jobs are not fetched yet is gone, so a
 // run whose jobs are not stored (intake and reconcile write a run and its jobs separately, and a
 // run whose jobs listing GitHub refuses is marked jobs-unfetchable and never gets any) counts in
@@ -32,15 +32,15 @@ import type {
   DeliveryTiming,
   DeliveryTimingDay,
 } from "../../api/types";
+import { cardClassName, PageHeader, SectionHeader } from "../../components/Layout";
 import { QueryError } from "../../components/QueryError";
+import { Table, Td, Th, Tr } from "../../components/Table";
 import {
-  borderDefault,
   dangerText,
-  linkText,
-  surfaceBg,
+  linkChrome,
+  linkInline,
   textMutedOnCanvas,
   textMutedOnSurface,
-  textPrimaryOnCanvas,
   textPrimaryOnSurface,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
@@ -53,7 +53,10 @@ import { Sparkbars } from "./Sparkbars";
 import { SpreadBars } from "./SpreadBars";
 import { TargetBadge } from "./TargetBadge";
 
-const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
+const CARD = `flex min-w-0 flex-col gap-2 ${cardClassName()}`;
+
+// One line a cell, so on a phone a table scrolls sideways instead of breaking a job's name.
+const NUM = "text-right whitespace-nowrap tabular-nums";
 
 /** `/pipeline`: how long PR checks, the staging end-to-end gate and the two deploys take, and how
  *  often each ends in success, over the last seven UTC days. */
@@ -72,20 +75,25 @@ export function PipelinePage(): ReactNode {
   if (query.dataUpdatedAt > 0) answeredAtRef.current = query.dataUpdatedAt;
 
   return (
-    <section className="flex flex-col gap-3">
-      <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h1 className={`text-xl font-bold ${textPrimaryOnCanvas}`}>Pipeline</h1>
-        {query.data === undefined ? null : (
-          <div className={`text-xs ${textMutedOnCanvas}`}>
-            Generated {new Date(answeredAtRef.current).toLocaleString()}
-          </div>
-        )}
-      </header>
+    <section className="flex flex-col gap-4">
+      {/* When the answer on screen was read stays inside the page's `header`, where the visual
+          review masks it (e2e/visual.e2e.ts): it is the one thing on the page that differs
+          from run to run. */}
+      <PageHeader
+        description={
+          query.data === undefined ? undefined : (
+            <span className="text-xs">
+              Generated {new Date(answeredAtRef.current).toLocaleString()}
+            </span>
+          )
+        }
+        title="Pipeline"
+      />
       {query.isPending ? <p className={textMutedOnCanvas}>Loading pipeline…</p> : null}
       {isDeliveryNotConfigured(query.error) ? (
         <p className={`text-sm ${textSecondaryOnCanvas}`}>
           The Pipeline page reads the delivery timeline's deploy repository and workflows.{" "}
-          <Link className={`underline ${linkText}`} to="/delivery">
+          <Link className={linkInline} to="/delivery">
             Set up the delivery timeline
           </Link>
         </p>
@@ -122,8 +130,11 @@ export function PipelineView({
 
   return (
     <>
-      <SourceFreshness freshness={pipeline.freshness} readAtMs={readAtMs} />
-      <p className={`text-xs ${textMutedOnCanvas}`}>
+      {/* The sources, on one quiet line under the title. */}
+      <div className="-mt-8">
+        <SourceFreshness freshness={pipeline.freshness} readAtMs={readAtMs} />
+      </div>
+      <p className={`max-w-4xl text-xs leading-5 ${textMutedOnCanvas}`}>
         Last 7 days, {formatDue(first)} to {formatDue(last)} (UTC), by the day each run started;
         today is partial and drawn faded. Not filtered by the timeline&apos;s window or facets.
         Times are wall clock. Success is success over success plus failure; cancelled runs and jobs
@@ -132,7 +143,7 @@ export function PipelineView({
 
       <div className="@container">
         <div
-          className="grid grid-cols-1 gap-3 @min-[46rem]:grid-cols-2 @min-[78rem]:grid-cols-6"
+          className="grid grid-cols-1 gap-4 @min-[46rem]:grid-cols-2 @min-[78rem]:grid-cols-3"
           data-section="stage-cards"
         >
           <TimingCard
@@ -182,112 +193,99 @@ export function PipelineView({
         </div>
       </div>
 
-      <section aria-label="PR CI slowest jobs" className="mt-1" data-section="slowest-jobs">
-        <h2 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>PR CI: slowest jobs</h2>
-        <p className={`text-xs ${textMutedOnCanvas}`}>
-          Ranked by their 7-day median; a job needs 50 timed results in the 7 days to be ranked.
-        </p>
+      <section aria-label="PR CI slowest jobs" className="mt-4" data-section="slowest-jobs">
+        <SectionHeader
+          description="Ranked by their 7-day median; a job needs 50 timed results in the 7 days to be ranked."
+          title="PR CI: slowest jobs"
+        />
         {(checks.slowest_jobs ?? []).length === 0 ? (
-          <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job has 50 timed results yet.</p>
+          <p className={`text-sm ${textMutedOnCanvas}`}>No job has 50 timed results yet.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="mt-1 w-full max-w-6xl text-xs tabular-nums">
-              <thead className={textMutedOnCanvas}>
-                <tr>
-                  <th className="px-2 py-1 text-left font-normal">Job</th>
-                  <th className="px-2 py-1 text-right font-normal">Today median</th>
-                  <th className="px-2 py-1 text-right font-normal">Today p90</th>
-                  <th className="px-2 py-1 text-right font-normal">Today</th>
-                  <th className="px-2 py-1 text-right font-normal">7-day median</th>
-                  <th className="px-2 py-1 text-right font-normal">7-day p90</th>
-                  <th className="px-2 py-1 text-right font-normal">7 days</th>
-                  <th className="px-2 py-1 text-right font-normal">Success</th>
-                  <th className="w-40 px-2 py-1 text-left font-normal">Trend</th>
-                </tr>
-              </thead>
-              <tbody className={textSecondaryOnCanvas}>
-                {(checks.slowest_jobs ?? []).map((job) => {
-                  const today = lastDay(job);
-                  return (
-                    <tr className={`border-t ${borderDefault}`} data-job={job.name} key={job.name}>
-                      <td className="px-2 py-1">{job.name}</td>
-                      <td className="px-2 py-1 text-right font-semibold">
-                        {formatDuration(today.median_minutes)}
-                      </td>
-                      <td className="px-2 py-1 text-right">{formatDuration(today.p90_minutes)}</td>
-                      <td className={`px-2 py-1 text-right ${textMutedOnCanvas}`}>{today.n}</td>
-                      <td className="px-2 py-1 text-right font-semibold">
-                        {formatDuration(job.total.median_minutes)}
-                      </td>
-                      <td className="px-2 py-1 text-right">
-                        {formatDuration(job.total.p90_minutes)}
-                      </td>
-                      <td className={`px-2 py-1 text-right ${textMutedOnCanvas}`}>{job.total.n}</td>
-                      <td className="px-2 py-1 text-right">{formatRate(job.total.success_rate)}</td>
-                      <td className="px-2 py-1">
-                        <SpreadBars days={job.days ?? []} format={formatDuration} noun="results" />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <Table
+            head={
+              <>
+                <Th>Job</Th>
+                <Th className="text-right">Today median</Th>
+                <Th className="text-right">Today p90</Th>
+                <Th className="text-right">Today</Th>
+                <Th className="text-right">7-day median</Th>
+                <Th className="text-right">7-day p90</Th>
+                <Th className="text-right">7 days</Th>
+                <Th className="text-right">Success</Th>
+                <Th className="w-32 min-w-32">Trend</Th>
+              </>
+            }
+          >
+            {(checks.slowest_jobs ?? []).map((job) => {
+              const today = lastDay(job);
+              return (
+                <Tr hover data-job={job.name} key={job.name}>
+                  <Td className="whitespace-nowrap">{job.name}</Td>
+                  <Td className={`font-medium ${NUM}`}>{formatDuration(today.median_minutes)}</Td>
+                  <Td className={`${textSecondaryOnCanvas} ${NUM}`}>
+                    {formatDuration(today.p90_minutes)}
+                  </Td>
+                  <Td className={`${textMutedOnCanvas} ${NUM}`}>{today.n}</Td>
+                  <Td className={`font-medium ${NUM}`}>
+                    {formatDuration(job.total.median_minutes)}
+                  </Td>
+                  <Td className={`${textSecondaryOnCanvas} ${NUM}`}>
+                    {formatDuration(job.total.p90_minutes)}
+                  </Td>
+                  <Td className={`${textMutedOnCanvas} ${NUM}`}>{job.total.n}</Td>
+                  <Td className={`${textSecondaryOnCanvas} ${NUM}`}>
+                    {formatRate(job.total.success_rate)}
+                  </Td>
+                  <Td>
+                    <SpreadBars days={job.days ?? []} format={formatDuration} noun="results" />
+                  </Td>
+                </Tr>
+              );
+            })}
+          </Table>
         )}
       </section>
 
-      <section aria-label="PR CI failing jobs" className="mt-1" data-section="failing-jobs">
-        <h2 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>
-          PR CI: jobs that failed in the last 24 hours
-        </h2>
-        <p className={`text-xs ${textMutedOnCanvas}`}>
-          Every failed job but the roll-up job the settings name, most failures first; a failure is
-          often the pull request&apos;s own change.
-        </p>
+      <section aria-label="PR CI failing jobs" className="mt-4" data-section="failing-jobs">
+        <SectionHeader
+          description="Every failed job but the roll-up job the settings name, most failures first; a failure is often the pull request's own change."
+          title="PR CI: jobs that failed in the last 24 hours"
+        />
         {(checks.failing_jobs ?? []).length === 0 ? (
-          <p className={`mt-1 text-xs ${textMutedOnCanvas}`}>No job failed in the last 24 hours.</p>
+          <p className={`text-sm ${textMutedOnCanvas}`}>No job failed in the last 24 hours.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="mt-1 w-full max-w-4xl text-xs tabular-nums">
-              <thead className={textMutedOnCanvas}>
-                <tr>
-                  <th className="px-2 py-1 text-left font-normal">Job</th>
-                  <th className="px-2 py-1 text-right font-normal">Failures</th>
-                  <th className="px-2 py-1 text-right font-normal">Of runs</th>
-                  <th className="px-2 py-1 text-right font-normal">Failure share</th>
-                  <th className="px-2 py-1 text-left font-normal">Last failure</th>
-                </tr>
-              </thead>
-              <tbody className={textSecondaryOnCanvas}>
-                {(checks.failing_jobs ?? []).map((job) => (
-                  <tr
-                    className={`border-t ${borderDefault}`}
-                    data-failing-job={job.name}
-                    key={job.name}
+          <Table
+            head={
+              <>
+                <Th>Job</Th>
+                <Th className="text-right">Failures</Th>
+                <Th className="text-right">Of runs</Th>
+                <Th className="text-right">Failure share</Th>
+                <Th>Last failure</Th>
+              </>
+            }
+          >
+            {(checks.failing_jobs ?? []).map((job) => (
+              <Tr hover data-failing-job={job.name} key={job.name}>
+                <Td className="whitespace-nowrap">{job.name}</Td>
+                <Td className={`font-semibold ${dangerText} ${NUM}`}>{job.failures}</Td>
+                <Td className={`${textMutedOnCanvas} ${NUM}`}>{job.results}</Td>
+                <Td className={`${textSecondaryOnCanvas} ${NUM}`}>
+                  {formatRate(job.failures / job.results)}
+                </Td>
+                <Td className="whitespace-nowrap">
+                  <a
+                    className={linkChrome}
+                    href={job.last_run_url}
+                    rel="noreferrer"
+                    target="_blank"
                   >
-                    <td className="px-2 py-1">{job.name}</td>
-                    <td className={`px-2 py-1 text-right font-semibold ${dangerText}`}>
-                      {job.failures}
-                    </td>
-                    <td className={`px-2 py-1 text-right ${textMutedOnCanvas}`}>{job.results}</td>
-                    <td className="px-2 py-1 text-right">
-                      {formatRate(job.failures / job.results)}
-                    </td>
-                    <td className="px-2 py-1">
-                      <a
-                        className={`hover:underline ${linkText}`}
-                        href={job.last_run_url}
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        {formatAge(Math.max(0, (nowMs - Date.parse(job.last_failed_at)) / 1000))}
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    {formatAge(Math.max(0, (nowMs - Date.parse(job.last_failed_at)) / 1000))}
+                  </a>
+                </Td>
+              </Tr>
+            ))}
+          </Table>
         )}
       </section>
     </>
@@ -311,12 +309,12 @@ function Figure(props: {
 }): ReactNode {
   return (
     <div className="min-w-0">
-      <div className={`text-[11px] ${textMutedOnSurface}`}>{props.label}</div>
-      <div className="flex items-baseline gap-1">
-        <span className={`text-lg font-semibold ${textPrimaryOnSurface}`}>
+      <div className={`text-xs ${textMutedOnSurface}`}>{props.label}</div>
+      <div className="flex flex-wrap items-baseline gap-x-1.5">
+        <span className={`text-[22px] leading-7 font-semibold ${textPrimaryOnSurface}`}>
           {formatDuration(props.median)}
         </span>
-        <span className={`text-[11px] ${textMutedOnSurface}`}>median</span>
+        <span className={`text-xs ${textMutedOnSurface}`}>median</span>
       </div>
       <div className={`text-xs ${textSecondaryOnSurface}`}>
         p90 {formatDuration(props.p90)} · {props.n}{" "}
@@ -330,7 +328,7 @@ function CardTitle({ title, detail }: { title: string; detail: string }): ReactN
   return (
     <div className="min-w-0">
       <div className={`text-sm font-semibold ${textPrimaryOnSurface}`}>{title}</div>
-      <div className={`truncate text-[11px] ${textMutedOnSurface}`} title={detail}>
+      <div className={`truncate text-xs ${textMutedOnSurface}`} title={detail}>
         {detail}
       </div>
     </div>
@@ -348,7 +346,7 @@ function TimingCard(props: {
   return (
     <div className={CARD} data-metric={props.metric}>
       <CardTitle detail={props.detail} title={props.title} />
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 gap-4">
         <Figure
           label="Today"
           median={today.median_minutes}
@@ -386,7 +384,7 @@ function TimingCard(props: {
           value: d.success_rate,
         }))}
       />
-      <div className={`text-[11px] ${textMutedOnSurface}`}>
+      <div className={`text-xs ${textMutedOnSurface}`}>
         {timing.total.cancelled} cancelled in 7 days, not counted
       </div>
     </div>
@@ -418,7 +416,7 @@ function LeadTimeCard(props: {
         <CardTitle detail={props.detail} title={props.title} />
         <TargetBadge met={met} metLabel="target met" missedLabel="target missed" />
       </div>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 gap-4">
         <Figure
           label="Today"
           median={today.median_minutes}
@@ -445,7 +443,7 @@ function LeadTimeCard(props: {
           {formatDuration(judgedValue)}
         </span>
       </div>
-      <div className={`text-[11px] ${textMutedOnSurface}`}>
+      <div className={`text-xs ${textMutedOnSurface}`}>
         {judged === "longest"
           ? `target under ${target}m for every change (the dashed line)`
           : `target median under ${target}m (the dashed line)`}

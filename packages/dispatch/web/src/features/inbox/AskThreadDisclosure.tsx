@@ -2,7 +2,7 @@ import { type ReactNode, useId, useState } from "react";
 
 import type { ArtifactOwner } from "../../api/client";
 import type { Ask } from "../../api/types";
-import { linkHoverText, linkText } from "../../theme/classes";
+import { buttonClassName } from "../../components/Button";
 import type { DwellRef } from "../shell/useDwell";
 import { composerFirst } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
@@ -55,7 +55,7 @@ export function AskThreadDisclosure({
     return (
       <button
         aria-expanded="false"
-        className={`mt-3 min-h-11 text-sm font-medium ${linkText} ${linkHoverText}`}
+        className={`mt-2 -ml-2.5 ${buttonClassName({ variant: "ghost" })}`}
         onClick={() => {
           void thread.refetch();
         }}
@@ -98,7 +98,7 @@ export function AskThreadDisclosure({
       <button
         aria-controls={composerId}
         aria-expanded={composerOpen}
-        className={`mt-3 min-h-11 text-sm font-medium ${linkText} ${linkHoverText}`}
+        className={`mt-2 -ml-2.5 ${buttonClassName({ variant: "ghost" })}`}
         onClick={() => setComposerOpen((open) => !open)}
         type="button"
       >

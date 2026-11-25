@@ -5,16 +5,20 @@ import { Link, useLocation } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import type { Artifact, IssueReferencesAnswer, ReferenceLink } from "../../api/types";
+import { Badge } from "../../components/Badge";
+import { buttonClassName } from "../../components/Button";
+import { Input } from "../../components/Field";
+import { cardClassName } from "../../components/Layout";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
-  badgePrimary,
   borderDefault,
   dangerText,
-  inputClasses,
+  linkChrome,
   linkHoverText,
   linkText,
+  rowHoverBg,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -133,10 +137,8 @@ function ReferencesDisclosure({
   label: "References" | "Referenced by";
 }): ReactNode {
   return (
-    <details className={`rounded-lg border p-3 ${borderDefault}`}>
-      <summary
-        className={`min-h-11 cursor-pointer text-sm font-semibold ${textSecondaryOnSurface}`}
-      >
+    <details className={`rounded-lg border px-4 py-2 ${borderDefault}`}>
+      <summary className={`cursor-pointer py-1 text-sm font-medium ${textSecondaryOnSurface}`}>
         {label} ({count})
       </summary>
       {children}
@@ -376,7 +378,7 @@ function ArtifactRow({
   // squeezing the name to nothing.
   return (
     <li
-      className={`flex flex-wrap items-center gap-3 border-b py-3 last:border-b-0 ${borderDefault}`}
+      className={`relative flex items-center gap-3 border-b px-4 py-3 first:rounded-t-lg last:rounded-b-lg last:border-b-0 ${borderDefault} ${rowHoverBg}`}
       data-testid={`artifact-${artifact.slug}`}
     >
       <span className={`shrink-0 ${textSecondaryOnSurface}`}>{kindIcon(artifact.kind)}</span>
@@ -388,54 +390,76 @@ function ArtifactRow({
           src={artifactVersionUrl(artifact.id, latestVersion.number)}
         />
       ) : null}
-      <div className="min-w-32 flex-1">
-        {/* `max-w-full`: below 1280 px the link is inline-flex rather than `block`, and an
-            inline-flex box is as wide as its whole name unless something caps it. */}
-        <Link
-          className={`block max-w-full truncate font-medium underline ${linkText} ${linkHoverText}`}
-          to={buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug })}
-        >
-          <TruncatedText title={artifact.name}>{artifact.name}</TruncatedText>
-        </Link>
-        {/* The name truncates; its details wrap. Truncating them hid the update time on a row
+      {/* The name and what follows it wrap as two boxes inside this one, so on a phone the
+          row's controls go under the name, on the name's left edge, rather than under the icon. */}
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+        <div className="min-w-32 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            {/* `max-w-full`: below 1280 px the link is inline-flex rather than `block`, and an
+            inline-flex box is as wide as its whole name unless something caps it. The link's
+            `after` box covers the row, so a press anywhere on the row that is not one of its
+            own controls opens the document; those sit above it (`z-[1]`). `truncate` clips
+            nothing of that box: the link is not positioned, so the row is what holds it. */}
+            <Link
+              className={`block max-w-full min-w-0 truncate text-sm font-medium after:absolute after:inset-0 ${linkChrome}`}
+              to={buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug })}
+            >
+              <TruncatedText title={artifact.name}>{artifact.name}</TruncatedText>
+            </Link>
+            {artifact.primary ? <Badge tone="info">Primary</Badge> : null}
+          </div>
+          {/* The name truncates; its details wrap. Truncating them hid the update time on a row
             with room to spare. The size is the latest version's as stored (a document's
             markdown), so a document near the size cap shows here without being opened. */}
-        <p className={`text-xs ${textMutedOnSurface}`}>
-          {artifact.kind} · {versions.length} {versions.length === 1 ? "version" : "versions"} ·
-          {latestVersion?.size === undefined
-            ? null
-            : ` ${formatArtifactBytes(latestVersion.size)} ·`}{" "}
-          Updated <Timestamp at={latestVersion?.created_at ?? artifact.created_at} />
-        </p>
-      </div>
-      {artifact.primary ? (
-        <span
-          className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
-        >
-          Primary
-        </span>
-      ) : null}
-      <CopyRefButton route={documentRoute(artifact)} />
-      <ApprovalChip artifact={artifact} />
-      {latestVersion === undefined ? null : (
-        <a
-          className={`shrink-0 text-sm font-medium underline ${linkText} ${linkHoverText}`}
-          download=""
-          href={artifactVersionUrl(artifact.id, latestVersion.number, { download: true })}
-        >
-          Download version {latestVersion.number}
-        </a>
-      )}
-      {/* A removal is offered only where the server can take one: a document of this issue that
+          <p className={`text-xs ${textMutedOnSurface}`}>
+            {artifact.kind} · {versions.length} {versions.length === 1 ? "version" : "versions"} ·
+            {latestVersion?.size === undefined
+              ? null
+              : ` ${formatArtifactBytes(latestVersion.size)} ·`}{" "}
+            Updated <Timestamp at={latestVersion?.created_at ?? artifact.created_at} />
+          </p>
+        </div>
+        <div className="relative z-[1] ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-1 gap-y-1">
+          <CopyRefButton route={documentRoute(artifact)} />
+          <ApprovalChip artifact={artifact} />
+          {latestVersion === undefined ? null : (
+            // The icon and one word: spelled out whole, "Download version 1" took a line of its own
+            // on a row that also holds an approval; the version stays in the name and the title.
+            <a
+              className={buttonClassName({ size: "sm", variant: "ghost-muted" })}
+              download=""
+              href={artifactVersionUrl(artifact.id, latestVersion.number, { download: true })}
+              title={`Download version ${latestVersion.number}`}
+            >
+              <svg
+                aria-hidden="true"
+                className="size-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 16 16"
+              >
+                <path
+                  d="M8 2.5v7.5m0 0L5 7m3 3 3-3M3 12.5h10"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.5"
+                />
+              </svg>
+              Download<span className="sr-only"> version {latestVersion.number}</span>
+            </a>
+          )}
+          {/* A removal is offered only where the server can take one: a document of this issue that
           is neither its spec nor a document that plays a role, since those are refused whatever
           state they are in (`removalIsOffered`). Every other refusal is the server's, shown on
           the row. */}
-      {removalIsOffered(artifact) ? (
-        <RemoveDocument
-          artifact={artifact}
-          refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
-        />
-      ) : null}
+          {removalIsOffered(artifact) ? (
+            <RemoveDocument
+              artifact={artifact}
+              refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+            />
+          ) : null}
+        </div>
+      </div>
     </li>
   );
 }
@@ -510,17 +534,16 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
     <div className="space-y-3 pt-3">
       {/* One control strip: what narrows the list on the left, what adds to it on the right. */}
       <div className="flex flex-wrap items-center gap-2">
-        <label className="block min-w-48 flex-1">
-          <span className="sr-only">Filter artifacts</span>
-          <input
+        <div className="min-w-48 flex-1">
+          <Input
             aria-label="Filter artifacts"
-            className={`block min-h-11 w-full rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
+            className="max-w-md"
             onChange={(event) => setFilter(event.target.value)}
             placeholder="Filter artifacts"
             type="search"
             value={filter}
           />
-        </label>
+        </div>
         <CreateDocument
           documents={orderedArtifacts}
           owner={{ issue: issueKey }}
@@ -554,7 +577,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
               : "No artifacts match this filter."}
           </p>
         ) : (
-          <ul className={`rounded-lg border px-3 ${borderDefault}`}>
+          <ul className={cardClassName("none")}>
             {visibleArtifacts.map((artifact) => (
               <ArtifactRow
                 artifact={artifact}

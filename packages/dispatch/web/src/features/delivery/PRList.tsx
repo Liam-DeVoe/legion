@@ -1,15 +1,16 @@
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { DeliveryPR, DeliverySessionGroup } from "../../api/types";
+import { cardClassName } from "../../components/Layout";
 import {
   borderDefault,
   dangerText,
   inlineWarningText,
-  linkText,
+  linkChrome,
+  rowHoverBg,
+  rowSelectedBg,
   successText,
   surfaceBg,
-  surfaceMutedBg,
-  surfaceMutedHoverBg,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -148,7 +149,7 @@ function Cell({
     case "pr":
       return (
         <a
-          className={`truncate hover:underline ${linkText}`}
+          className={`truncate ${linkChrome}`}
           href={pr.url}
           onClick={(event) => event.stopPropagation()}
           rel="noreferrer"
@@ -199,7 +200,7 @@ function Cell({
             // The list's way to a deploy's drill-down, which the chart offers only to a pointer.
             <button
               aria-label={`Open deploy run #${runId}`}
-              className="underline"
+              className="underline-offset-2 hover:underline"
               onClick={(event) => {
                 event.stopPropagation();
                 onSelectRun(runId);
@@ -316,7 +317,7 @@ export function PRList({
 
   return (
     <div
-      className={`min-h-0 flex-1 overflow-auto rounded border max-xl:h-[70dvh] max-xl:flex-none ${borderDefault} ${surfaceBg} ${textPrimaryOnSurface}`}
+      className={`min-h-0 flex-1 overflow-auto max-xl:h-[70dvh] max-xl:flex-none ${cardClassName("none")} ${textPrimaryOnSurface}`}
       onScroll={(event) => {
         const element = event.currentTarget;
         if (scrollFrameRef.current !== null) return;
@@ -369,7 +370,9 @@ export function PRList({
         <tbody className="relative grid" style={{ height: sorted.length * ROW_HEIGHT_PX }}>
           {sorted.length === 0 ? (
             <tr className="absolute flex h-9 w-full items-center">
-              <td className={`px-2 ${textMutedOnSurface}`}>No PRs in the current filter/window.</td>
+              <td className={`px-1.5 ${textMutedOnSurface}`}>
+                No PRs in the current filter/window.
+              </td>
             </tr>
           ) : null}
           {sorted.slice(first, last).map((row, offset) => {
@@ -380,7 +383,7 @@ export function PRList({
               <tr
                 aria-rowindex={index + 2}
                 aria-selected={row.pr.id === selectedId}
-                className={`absolute flex h-9 w-full cursor-pointer items-center border-b outline-none ${borderDefault} ${row.pr.id === selectedId ? surfaceMutedBg : surfaceMutedHoverBg}`}
+                className={`absolute flex h-9 w-full cursor-pointer items-center border-b -outline-offset-2 ${borderDefault} ${row.pr.id === selectedId ? rowSelectedBg : rowHoverBg}`}
                 key={row.pr.id}
                 onClick={() => {
                   setFocusIndex(index);

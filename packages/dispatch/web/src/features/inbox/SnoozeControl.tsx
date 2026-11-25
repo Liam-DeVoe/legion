@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
+import { Button } from "../../components/Button";
 
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
+import { badgeLow, textMutedOnCanvas } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
 import { useLiveRegistration } from "../writes/useKeyedWrite";
@@ -78,15 +79,14 @@ export function SnoozeControl({
             </>
           )}
         </span>
-        <button
+        <Button
           aria-label={`Un-snooze ${label}`}
-          className={secondaryButtonCompact}
           disabled={write.pending}
           onClick={() => write.submit(null)}
-          type="button"
+          size="sm"
         >
           {pendingLabel ?? "Un-snooze"}
-        </button>
+        </Button>
         {failure}
       </>
     );

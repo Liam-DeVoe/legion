@@ -24,6 +24,9 @@ import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
+import { badgeClassName } from "../../components/Badge";
+import { Button } from "../../components/Button";
+import { Input, Select } from "../../components/Field";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -33,7 +36,6 @@ import { inputMethodKey } from "../../lib/input-method-key";
 import {
   badgePrimary,
   bgTransparent,
-  borderDefault,
   borderStrongHover,
   borderTransparent,
   calloutWarningBg,
@@ -42,21 +44,9 @@ import {
   card,
   dangerText,
   focusBorder,
-  focusVisibleRing,
-  inputClasses,
-  linkHoverText,
-  linkText,
-  secondaryButtonBorder,
-  secondaryButtonDisabledText,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-  statusPill,
-  statusPillDot,
-  surfaceMutedStrongBg,
-  textMutedHoverToSecondary,
+  linkChrome,
   textMutedOnSurface,
   textPrimaryOnSurface,
-  textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
@@ -409,25 +399,27 @@ export function IssueHeader({
         : agentText.sessionText(routeSession, undefined)
   }`;
   const routeButton = (name: ReactNode) => (
-    <button
+    <Button
       aria-label={routeLabel}
-      className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center truncate rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+      className="max-w-[16ch]"
+      size="sm"
       disabled={isClosed}
       onClick={() => setRouteEditing(true)}
       title={drafts.route === "" ? undefined : drafts.route}
-      type="button"
     >
       <TruncatedText>{name}</TruncatedText>
-    </button>
+    </Button>
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   const referencesPanelId = useId();
   // The title slot has one flex-basis whether it shows the heading or the editor: below 2xl the
-  // title always takes its own row (basis-full) and the state controls and details line share
-  // the row beneath it; from 2xl the slot is content-sized (basis-auto) so they join the title's
-  // row when they fit. A basis that changed between view and edit mode would move every other
-  // control on the blur a mousedown causes, and Chromium would deliver the mouseup — and so the
-  // click — to a different element, swallowing the first click after a title edit.
+  // title always takes its own row (basis-full), the state controls the full-width row beneath it
+  // and the details line the row beneath that; from 2xl the slot is content-sized (basis-auto)
+  // and the state row is as wide as its content, so they join the title's row when they fit
+  // (`e2e/ask-blocks.e2e.ts` holds the header to 96 px at 1770 px). A basis that changed between
+  // view and edit mode would move every other control on the blur a mousedown causes, and
+  // Chromium would deliver the mouseup — and so the click — to a different element, swallowing
+  // the first click after a title edit.
 
   return (
     // `data-issue-header` is load-bearing for the keyboard: the `issue` scope's bindings find
@@ -435,32 +427,31 @@ export function IssueHeader({
     // what keeps a child issue's row in the Children tab, which carries the same accessible
     // names, out of their reach.
     <header
-      className={`mb-3 min-w-0 rounded-xl border p-3 ${card}`}
+      className={`mb-3 min-w-0 rounded-lg border px-4 py-3 ${card}`}
       data-issue-header=""
       data-testid="issue-header"
     >
       {isClosed ? (
         <div
-          className={`mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg p-3 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+          className={`mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border py-1.5 pr-1.5 pl-3 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
         >
           <span>This issue is closed.</span>
-          <button
+          <Button
             aria-label="Reopen issue"
-            className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+            size="sm"
             disabled={statusBusy}
             onClick={() => requestStatus("backlog")}
             title="Reopen into Backlog"
-            type="button"
           >
             {pendingStatus === "backlog" ? "Reopening…" : "Reopen"}
-          </button>
+          </Button>
         </div>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex min-w-0 grow basis-full flex-col gap-2 sm:flex-row sm:items-start 2xl:basis-auto">
-          <div className="flex shrink-0 items-center gap-1 self-start">
+          <div className="flex shrink-0 items-center gap-1 self-start xl:mt-px">
             <p
-              className={`rounded-md px-2.5 py-1.5 font-mono text-sm font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
+              className={`inline-flex h-7 items-center rounded-md px-2 font-mono text-sm font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
             >
               {issue.key}
             </p>
@@ -474,7 +465,7 @@ export function IssueHeader({
               <input
                 aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
                 aria-label="Issue title"
-                className={`min-w-0 flex-1 rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+                className={`min-w-0 flex-1 rounded-md border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight outline-none max-sm:-ml-[9px] md:py-0 ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
                 disabled={isClosed}
                 maxLength={ISSUE_TITLE_MAX}
                 onBlur={() => {
@@ -500,7 +491,7 @@ export function IssueHeader({
               />
             ) : (
               <h1
-                className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
+                className={`min-w-0 flex-1 break-words rounded-md border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight max-sm:-ml-[9px] md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
                   isClosed ? "" : `cursor-text ${borderStrongHover}`
                 }`}
                 onClick={() => {
@@ -533,30 +524,25 @@ export function IssueHeader({
           </div>
         </div>
         <div
-          className="flex w-full min-w-0 flex-wrap items-center gap-2 md:w-auto"
+          className="flex w-full min-w-0 flex-wrap items-center gap-2 2xl:w-auto"
           data-testid="issue-state-actions"
         >
-          <label
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-full border px-2 text-sm font-semibold uppercase tracking-wide sm:px-3 md:min-h-8 xl:px-2 ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
+          {/* The system's compact select: its own chevron says it opens. */}
+          <Select
+            aria-label="Status"
+            className="w-auto shrink-0"
+            disabled={isClosed || statusBusy}
+            onChange={(event) => requestStatus(event.target.value)}
+            size="sm"
+            surface="recessed"
+            value={pendingStatus ?? issue.status}
           >
-            <span
-              aria-hidden="true"
-              className={`hidden h-2 w-2 rounded-full sm:block ${statusPillDot}`}
-            />
-            <select
-              aria-label="Status"
-              className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
-              disabled={isClosed || statusBusy}
-              onChange={(event) => requestStatus(event.target.value)}
-              value={pendingStatus ?? issue.status}
-            >
-              {selectableStatuses.map((status) => (
-                <option key={status} value={status}>
-                  {statusLabel(status)}
-                </option>
-              ))}
-            </select>
-          </label>
+            {selectableStatuses.map((status) => (
+              <option key={status} value={status}>
+                {statusLabel(status)}
+              </option>
+            ))}
+          </Select>
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
@@ -617,25 +603,24 @@ export function IssueHeader({
                   row wraps, so both stay visible and tappable at 390px; the metadata rail
                   below never wraps (#1211) and would clip them. */}
               <ClaimChip claim={issue.claim} liveness={issue} />
-              <button
+              <Button
                 aria-label={`Release the claim on ${issue.key}`}
-                className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+                size="sm"
                 disabled={releaseClaim.isPending}
                 onClick={() => releaseClaim.mutate()}
                 title="Release this claim so another agent can take the issue"
-                type="button"
               >
                 {releaseClaim.isPending ? "Releasing…" : "Release"}
-              </button>
+              </Button>
             </>
           )}
           {isClosed ? null : (
-            <button
+            <Button
               aria-label="Close issue"
-              className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+              className="ml-auto"
+              size="sm"
               disabled={statusBusy}
               onClick={() => requestStatus("done")}
-              type="button"
             >
               {pendingStatus === "done" ? (
                 "Closing…"
@@ -645,7 +630,7 @@ export function IssueHeader({
                   <span className="hidden sm:inline">Close issue</span>
                 </>
               )}
-            </button>
+            </Button>
           )}
         </div>
         {/* The details line scrolls sideways rather than widening the page, and at a phone width
@@ -653,22 +638,23 @@ export function IssueHeader({
             fade says the cut is a scroll, and it is off at the end of the scroll, where a fade
             would hide the last item instead. */}
         <div
-          className={`flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin] md:[&_button]:min-h-7 md:[&_button]:py-0 ${railFade.fade}`}
+          className={`flex min-w-0 flex-nowrap items-center gap-3 overflow-x-auto [scrollbar-width:thin] xl:[&_button]:min-h-6 xl:[&_button]:py-0 ${railFade.fade}`}
           data-testid="issue-metadata-rail"
           ref={railFade.ref}
         >
           {phone ? priorityLine : null}
           {whoseTurn === null ? null : (
-            <span
-              className={`inline-flex shrink-0 items-center rounded-full border px-3 py-1 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
-              data-testid="issue-whose-turn"
-            >
+            <span className={badgeClassName("warning")} data-testid="issue-whose-turn">
               {whoseTurn}
             </span>
           )}
+          {/* Who opened the issue sits right after whose turn it is (and, on a phone, the
+              priority line), where readers have always found it. */}
           {issue.created_by == null ? null : (
-            <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              <span className="font-medium">Opened by:</span>
+            <div
+              className={`flex shrink-0 items-center gap-1.5 text-[13px] ${textSecondaryOnSurface}`}
+            >
+              <span className={textMutedOnSurface}>Opened by:</span>
               <span
                 className="shrink-0 whitespace-nowrap"
                 title={agentText.label(issue.created_by)}
@@ -677,8 +663,10 @@ export function IssueHeader({
               </span>
             </div>
           )}
-          <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-            <span className="font-medium">Labels:</span>
+          <div
+            className={`flex shrink-0 items-center gap-1.5 text-[13px] ${textSecondaryOnSurface}`}
+          >
+            <span className={textMutedOnSurface}>Labels:</span>
             <IssueLabels
               disabled={isClosed}
               labels={issue.labels ?? []}
@@ -689,8 +677,14 @@ export function IssueHeader({
             />
           </div>
           {routeEditing ? null : (
-            <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              <span aria-describedby="issue-route-hint" className="font-medium" title={routeHint}>
+            <div
+              className={`flex shrink-0 items-center gap-1.5 text-[13px] ${textSecondaryOnSurface}`}
+            >
+              <span
+                aria-describedby="issue-route-hint"
+                className={textMutedOnSurface}
+                title={routeHint}
+              >
                 Message route:
               </span>
               {routeSession === undefined ? (
@@ -706,15 +700,16 @@ export function IssueHeader({
               )}
             </div>
           )}
-          <button
+          <Button
             aria-expanded={subscribersOpen}
-            className={`flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryHoverToPrimary}`}
+            className="-mx-2"
+            size="sm"
+            variant="ghost"
             onClick={() => setSubscribersOpen((open) => !open)}
-            type="button"
           >
             <span>{subscribersCounted ? "Subscribers:" : "Subscribers"}</span>
             {subscribersCounted ? <span>{subscriberList.length}</span> : null}
-          </button>
+          </Button>
           <ReferencedByToggle
             controls={referencesPanelId}
             count={issue.referenced_by_count}
@@ -722,28 +717,29 @@ export function IssueHeader({
             onToggle={() => setReferencesOpen((open) => !open)}
           />
           {parentEditing ? null : (
-            <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-              <span className="font-medium">Parent:</span>
+            <div
+              className={`flex shrink-0 items-center gap-1.5 text-[13px] ${textSecondaryOnSurface}`}
+            >
+              <span className={textMutedOnSurface}>Parent:</span>
               {issue.parent === null ? null : (
                 <Link
-                  className={`dispatch-inline-link shrink-0 underline ${linkText} ${linkHoverText}`}
+                  className={`dispatch-inline-link shrink-0 font-medium ${linkChrome}`}
                   to={buildIssuePath({ key: issue.parent, kind: "issue" })}
                 >
                   {issue.parent}
                 </Link>
               )}
-              <button
+              <Button
                 // The name starts with the word on the button - "None" or "Edit" - because a
                 // name that does not contain the visible text leaves the control out of reach
                 // of a voice user (WCAG 2.5.3, axe's `label-content-name-mismatch`).
                 aria-label={issue.parent === null ? "None, set parent issue" : "Edit parent issue"}
-                className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+                size="sm"
                 disabled={isClosed}
                 onClick={() => setParentEditing(true)}
-                type="button"
               >
                 {issue.parent === null ? "None" : "Edit"}
-              </button>
+              </Button>
             </div>
           )}
           {/* The repository is where the work goes, like the parent, so it sits in this rail,
@@ -777,19 +773,22 @@ export function IssueHeader({
         {routeHint}
       </span>
       {routeEditing ? (
-        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={saveRoute}>
+        <form className="mt-3 flex flex-wrap items-center gap-2" onSubmit={saveRoute}>
           <label
             aria-describedby="issue-route-hint"
-            className={`text-sm font-medium ${textSecondaryOnSurface}`}
+            className={`text-xs font-medium ${textSecondaryOnSurface}`}
             htmlFor="issue-route"
             title={routeHint}
           >
             Message route:
           </label>
-          <input
+          <Input
             aria-label="Message route"
             aria-describedby="issue-route-hint issue-route-help"
-            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
+            className="w-auto min-w-40 flex-1 xl:max-w-64"
+            mono
+            size="sm"
+            surface="recessed"
             disabled={isClosed}
             id="issue-route"
             onChange={(event) => drafts.writeRoute(event.target.value)}
@@ -803,23 +802,23 @@ export function IssueHeader({
             ref={routeInputRef}
             value={drafts.route}
           />
-          <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+          <Button
+            size="sm"
             disabled={isClosed || !drafts.routeIsValid || updateIssue.isPending}
             type="submit"
           >
             Save route
-          </button>
-          <button
-            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
             onClick={() => {
               drafts.discardRoute();
               setRouteEditing(false);
             }}
-            type="button"
           >
             Cancel
-          </button>
+          </Button>
           <span
             className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
             id="issue-route-help"
@@ -829,16 +828,19 @@ export function IssueHeader({
         </form>
       ) : null}
       {parentEditing ? (
-        <form className="mt-2 flex flex-wrap items-center gap-2" onSubmit={saveParent}>
+        <form className="mt-3 flex flex-wrap items-center gap-2" onSubmit={saveParent}>
           <label className="sr-only" htmlFor="issue-parent">
             Parent
           </label>
-          <span aria-hidden="true" className={`text-sm font-medium ${textSecondaryOnSurface}`}>
+          <span aria-hidden="true" className={`text-xs font-medium ${textSecondaryOnSurface}`}>
             Parent:
           </span>
-          <input
+          <Input
             aria-describedby="issue-parent-help"
-            className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
+            className="w-auto min-w-40 flex-1 xl:max-w-64"
+            mono
+            size="sm"
+            surface="recessed"
             disabled={isClosed}
             id="issue-parent"
             onChange={(event) => drafts.writeParent(event.target.value)}
@@ -852,23 +854,19 @@ export function IssueHeader({
             ref={parentInputRef}
             value={drafts.parent}
           />
-          <button
-            className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-            disabled={isClosed || updateIssue.isPending}
-            type="submit"
-          >
+          <Button size="sm" disabled={isClosed || updateIssue.isPending} type="submit">
             Save parent
-          </button>
-          <button
-            className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
             onClick={() => {
               drafts.discardParent();
               setParentEditing(false);
             }}
-            type="button"
           >
             Cancel
-          </button>
+          </Button>
           <span className="sr-only" id="issue-parent-help">
             Parent issue key, in {issue.project} or another project; leave empty to clear the
             parent.

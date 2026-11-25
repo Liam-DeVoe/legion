@@ -1,11 +1,10 @@
 import { type ReactNode, useEffect, useId, useRef } from "react";
 
+import { Button } from "../../components/Button";
 import {
-  borderDefault,
-  card,
-  focusVisibleRing,
+  popoverPanel,
+  rowHoverBg,
   selectedCardBg,
-  surfaceMutedBg,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
@@ -51,13 +50,15 @@ function Choice<T extends string>({
 }): ReactNode {
   return (
     <label
-      className={`flex min-h-11 w-full cursor-pointer items-center gap-2 rounded px-2 text-left text-sm ${
-        chosen ? `font-semibold ${selectedCardBg} ${textSecondaryOnSurface}` : textSecondaryOnCanvas
+      className={`flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-left text-sm ${
+        chosen
+          ? `font-medium ${selectedCardBg} ${textSecondaryOnSurface}`
+          : `${textSecondaryOnCanvas} ${rowHoverBg}`
       }`}
     >
       <input
         checked={chosen}
-        className={`size-4 shrink-0 outline-none focus-visible:ring-2 ${focusVisibleRing}`}
+        className="size-4 shrink-0"
         data-inbox-view-choice={value}
         name={group}
         onChange={() => onChoose(value)}
@@ -69,14 +70,19 @@ function Choice<T extends string>({
   );
 }
 
-function Section({ children, label }: { children: ReactNode; label: string }): ReactNode {
+function Section({
+  children,
+  className = "",
+  label,
+}: {
+  children: ReactNode;
+  /** Where the section sits in the panel's two columns. */
+  className?: string;
+  label: string;
+}): ReactNode {
   return (
-    <fieldset className="py-1">
-      <legend
-        className={`px-2 pb-1 text-xs font-semibold tracking-wide uppercase ${textMutedOnCanvas}`}
-      >
-        {label}
-      </legend>
+    <fieldset className={`min-w-0 py-1 ${className}`}>
+      <legend className={`px-2 pb-1 text-xs font-medium ${textMutedOnCanvas}`}>{label}</legend>
       {children}
     </fieldset>
   );
@@ -142,21 +148,21 @@ export function ViewMenu({
 
   return (
     <div className="relative">
-      <button
+      <Button
         aria-expanded={open}
         aria-haspopup="menu"
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`}
         data-inbox-view=""
         onClick={() => onOpenChange(!open)}
         ref={triggerRef}
-        type="button"
       >
         View
-      </button>
+      </Button>
       {open ? (
         <div
           aria-label="View"
-          className={`absolute right-0 z-50 mt-1 max-h-96 w-64 overflow-auto rounded-lg border p-1 shadow-lg ${card} ${borderDefault}`}
+          // Two columns, so the whole menu shows without a scroll: the long **Group by** takes
+          // the right one, and the other three stack in the left in the order they are read.
+          className={`absolute right-0 z-50 mt-1 grid max-h-[calc(100dvh-8rem)] w-88 max-w-[calc(100vw-2rem)] grid-cols-2 gap-x-1 overflow-auto p-1 ${popoverPanel}`}
           onKeyDown={(event) => {
             if (event.key !== "Escape") return;
             event.preventDefault();
@@ -166,7 +172,7 @@ export function ViewMenu({
           ref={panelRef}
           role="menu"
         >
-          <Section label="Sort by">
+          <Section className="col-start-1" label="Sort by">
             {INBOX_SORTS.map((value) => (
               <Choice
                 chosen={value === sort}
@@ -178,7 +184,7 @@ export function ViewMenu({
               />
             ))}
           </Section>
-          <Section label="Group by">
+          <Section className="col-start-2 row-span-3 row-start-1" label="Group by">
             {INBOX_GROUP_BYS.map((value) => (
               <Choice
                 chosen={value === group}
@@ -190,7 +196,7 @@ export function ViewMenu({
               />
             ))}
           </Section>
-          <Section label="Show">
+          <Section className="col-start-1" label="Show">
             {INBOX_SHOWS.map((value) => (
               <Choice
                 chosen={value === show}
@@ -202,7 +208,7 @@ export function ViewMenu({
               />
             ))}
           </Section>
-          <Section label="Thread order">
+          <Section className="col-start-1" label="Thread order">
             {THREAD_ORDERS.map((value) => (
               <Choice
                 chosen={value === threadOrder}

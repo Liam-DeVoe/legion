@@ -1,10 +1,11 @@
 import { type ReactNode, useState } from "react";
 
 import type { Subscriber } from "../../api/types";
+import { Button } from "../../components/Button";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import { pageLabelChip, pageMutedText, textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
-import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
+import { sessionBadgeClassName, sessionChipClassName } from "../refs/SessionChip";
 import { Timestamp } from "../refs/Timestamp";
 import { UnsubscribeDialog } from "./UnsubscribeDialog";
 
@@ -67,30 +68,57 @@ export function SubscribedAgents({
             className={page === null ? sessionChipClassName : PAGE_SESSION_CHIP}
             key={subscriber.session_id}
           >
-            <span title={tooltips ? subscriber.session_id : undefined}>
-              <AgentName sessionId={subscriber.session_id} storedTitle={subscriber.title} />
-            </span>
-            <Timestamp at={new Date(subscriber.last_seen).toISOString()} />
-            {subscriber.removable ? null : page === null ? (
-              <span className="text-xs italic">via {subscriber.via}</span>
+            {page === null ? (
+              <>
+                <span className={sessionBadgeClassName}>
+                  <span title={tooltips ? subscriber.session_id : undefined}>
+                    <AgentName sessionId={subscriber.session_id} storedTitle={subscriber.title} />
+                  </span>
+                  <Timestamp at={new Date(subscriber.last_seen).toISOString()} />
+                  {subscriber.removable ? null : (
+                    <span className="text-xs italic">via {subscriber.via}</span>
+                  )}
+                </span>
+                <Button
+                  disabled={!subscriber.removable}
+                  onClick={() => setConfirming(subscriber)}
+                  size="sm"
+                  title={
+                    subscriber.removable
+                      ? undefined
+                      : `Subscribed only via ${subscriber.via}, which also covers other issues and documents — cannot unsubscribe just this one`
+                  }
+                  variant="ghost"
+                >
+                  Unsubscribe
+                </Button>
+              </>
             ) : (
-              <span className="text-xs italic" {...page.pageChrome}>
-                {page.STATE_LINES.subscription_wider}
-              </span>
+              <>
+                <span title={tooltips ? subscriber.session_id : undefined}>
+                  <AgentName sessionId={subscriber.session_id} storedTitle={subscriber.title} />
+                </span>
+                <Timestamp at={new Date(subscriber.last_seen).toISOString()} />
+                {subscriber.removable ? null : (
+                  <span className="text-xs italic" {...page.pageChrome}>
+                    {page.STATE_LINES.subscription_wider}
+                  </span>
+                )}
+                <button
+                  className={PAGE_SESSION_REMOVE}
+                  disabled={!subscriber.removable}
+                  onClick={() => setConfirming(subscriber)}
+                  title={
+                    subscriber.removable || !tooltips
+                      ? undefined
+                      : `Subscribed only via ${subscriber.via}, which also covers other issues and documents — cannot unsubscribe just this one`
+                  }
+                  type="button"
+                >
+                  Unsubscribe
+                </button>
+              </>
             )}
-            <button
-              className={page === null ? sessionRemoveButtonClassName : PAGE_SESSION_REMOVE}
-              disabled={!subscriber.removable}
-              onClick={() => setConfirming(subscriber)}
-              title={
-                subscriber.removable || !tooltips
-                  ? undefined
-                  : `Subscribed only via ${subscriber.via}, which also covers other issues and documents — cannot unsubscribe just this one`
-              }
-              type="button"
-            >
-              Unsubscribe
-            </button>
           </li>
         ))}
       </ul>

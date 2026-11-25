@@ -1,7 +1,8 @@
 import type { FormEvent, ReactNode } from "react";
-
+import { Button } from "../../components/Button";
+import { Input } from "../../components/Field";
 import { RefusableButton } from "../../components/RefusableButton";
-import { dangerText, inputClasses, linkHoverText, linkText } from "../../theme/classes";
+import { dangerText } from "../../theme/classes";
 
 /**
  * The strip one title control holds, in both its states: closed it shows `idle`, the single
@@ -58,34 +59,27 @@ export function TitleForm({
           className="flex w-full min-w-0 flex-wrap items-center gap-2"
           onSubmit={onSubmit}
         >
-          <label className="block min-w-48 flex-1">
-            <span className="sr-only">Title</span>
-            <input
+          <div className="min-w-48 flex-1">
+            <Input
               aria-label="Title"
-              className={`block min-h-11 w-full rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
+              size="sm"
               onChange={(event) => onTitleChange(event.target.value)}
               placeholder="Title"
               required
               value={title}
             />
-          </label>
+          </div>
           <RefusableButton
             busy={pending ? busyLabel : undefined}
-            className="min-h-11 shrink-0"
             refusal={refusal}
             refusalShownBy={refusalShownBy}
             type="submit"
           >
             {submitLabel}
           </RefusableButton>
-          <button
-            className={`min-h-11 shrink-0 text-sm font-medium ${linkText} ${linkHoverText}`}
-            disabled={pending}
-            onClick={onCancel}
-            type="button"
-          >
+          <Button disabled={pending} onClick={onCancel} size="sm" variant="ghost">
             Cancel
-          </button>
+          </Button>
           {problem === undefined ? null : (
             <p className={`w-full text-sm ${dangerText}`} role="alert">
               {problem}

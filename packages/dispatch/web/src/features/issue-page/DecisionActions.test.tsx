@@ -11,6 +11,7 @@ import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api
 import {
   borderDefault,
   dangerText,
+  fieldControl,
   inputClasses,
   pageFailedText,
   pageHairBorder,
@@ -398,7 +399,7 @@ test("the Change's box is the shared field, in the page's shape inside NoTooltip
         );
         expect(faces.length, "an element of the form draws in a face of its own").toBe(0);
       } else {
-        expect(wears(box, inputClasses(true)), "the box keeps the field's own").toBe(true);
+        expect(wears(box, fieldControl.recessed), "the box keeps the field's own").toBe(true);
       }
     } finally {
       unmount();

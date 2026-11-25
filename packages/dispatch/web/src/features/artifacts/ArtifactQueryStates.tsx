@@ -45,14 +45,16 @@ export function ArtifactQueryStates({
   errorMessage,
 }: ArtifactQueryStatesProps): ReactNode {
   if (query.isPending) {
-    return <p className={textMutedOnCanvas}>{loadingLabel}</p>;
+    return <p className={`text-sm ${textMutedOnCanvas}`}>{loadingLabel}</p>;
   }
   if (query.error instanceof ApiError && query.error.status === 404) {
     return (
       <section>
-        <h1 className={`text-xl font-semibold ${textPrimaryOnCanvas}`}>{notFoundLabel}</h1>
+        <h1 className={`text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}>
+          {notFoundLabel}
+        </h1>
         <Link
-          className={`mt-4 inline-flex min-h-11 items-center text-sm font-medium underline ${linkText} ${linkHoverText}`}
+          className={`mt-2 inline-flex items-center text-sm font-medium hover:underline ${linkText} ${linkHoverText}`}
           to={notFoundTo}
         >
           {notFoundLinkText}

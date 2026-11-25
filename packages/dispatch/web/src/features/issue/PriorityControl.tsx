@@ -4,7 +4,7 @@ import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
 import {
-  badgeLow,
+  badgeGhost,
   pageInkText,
   pageLabelChip,
   pagePaneBg,
@@ -82,7 +82,7 @@ export function PriorityEditor({
 }): ReactNode {
   const page = usePageWords();
   const priority = write.shown;
-  const tone = priority === null ? badgeLow : priorityBadge[priority];
+  const tone = priority === null ? badgeGhost : priorityBadge[priority];
   // Inside `NoTooltips` the badge is the new issue page's label chip, and the word Priority its
   // quiet words on the same ground, as the header variant says it in the quiet grey: each colour
   // there is one of that page's. The prototype's `.prio` draws how urgent a priority is by its

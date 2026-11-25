@@ -15,8 +15,10 @@ import {
   useState,
 } from "react";
 
+import { badgeClassName } from "../../components/Badge";
 import {
-  inputClasses,
+  fieldControl,
+  fieldInvalid,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -34,6 +36,11 @@ import type { TextEditRange } from "./block-spans";
 
 /** One edit of the field: the text now, and the edit the browser named, which a host following
  *  block spans maps its spans through (`followEdit`). */
+/** The dashboard's box: the shared `Textarea`'s shape and recessed colours
+ *  (`components/Field.tsx`), at the field's own heights. A host that passes `fieldClassName`
+ *  (the new issue page) keeps its own shape. */
+const DASHBOARD_BOX = `rounded-md px-2.5 py-1.5 text-sm ${fieldControl.recessed} ${fieldInvalid}`;
+
 export interface MentionFieldChange {
   readonly body: string;
   readonly inputType?: string;
@@ -287,7 +294,7 @@ export function MentionField({
           aria-controls={open ? listboxId : undefined}
           aria-describedby={[hintId, ...(describedBy ?? [])].join(" ")}
           aria-label={label}
-          className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${fieldClassName ?? `${inputClasses(true)} ${textPrimaryOnSurface}`} ${className ?? ""}`}
+          className={`mt-1 block w-full border font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${fieldClassName === undefined ? DASHBOARD_BOX : `rounded-lg px-3 py-2 ${fieldClassName}`} ${className ?? ""}`}
           disabled={disabled}
           maxLength={maxLength}
           onChange={(event) => changed(event.target.value, event.target.selectionStart)}
@@ -333,7 +340,7 @@ export function MentionField({
           className={`flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}`}
         >
           {parties.map((target) => (
-            <li className="rounded-full border px-2 py-1" key={target}>
+            <li className={badgeClassName("outline")} key={target}>
               <code>{target}</code>
             </li>
           ))}

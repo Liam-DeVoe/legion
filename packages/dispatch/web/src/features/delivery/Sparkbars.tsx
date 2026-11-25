@@ -1,6 +1,7 @@
 // The prototype's web/src/components/Sparkbars.tsx, ported as it is; its fills are the `chartBar`
 // tokens, since no component writes a colour utility of its own.
 import { chartBar } from "../../theme/classes";
+import { BarSlots, BarTooltip, barGeometry } from "./BarSlots";
 import { barScale } from "./lib/barScale";
 
 export interface SparkbarPoint {
@@ -24,7 +25,8 @@ const HEIGHT = 28;
 
 /** One bar per day with a dashed target line: green bars meet the target, red
  * bars miss it, faded bars are days the window only partly covers. Plain SVG,
- * no chart library, so it costs nothing on a filter change. */
+ * no chart library, so it costs nothing on a filter change. A bar is at most 24px wide, and the
+ * day under the pointer is tinted and named in a tooltip (`BarSlots`). */
 export function Sparkbars({ points, target, max, met, format }: Props) {
   const y = barScale(
     max,
@@ -33,10 +35,40 @@ export function Sparkbars({ points, target, max, met, format }: Props) {
     HEIGHT
   );
   return (
+    <BarSlots
+      className="h-7 w-full"
+      count={points.length}
+      tooltip={(index) => {
+        const p = points[index];
+        if (p === undefined) return null;
+        return (
+          <BarTooltip
+            day={p.label}
+            note={p.partial ? "partial day" : undefined}
+            rows={[{ value: p.value === null ? "no runs" : format(p.value) }]}
+          />
+        );
+      }}
+    >
+      {(widthPx) => <Chart {...{ points, target, max, met, format, y }} widthPx={widthPx} />}
+    </BarSlots>
+  );
+}
+
+function Chart({
+  points,
+  target,
+  met,
+  format,
+  y,
+  widthPx,
+}: Props & { y: (value: number) => number; widthPx: number }) {
+  const bar = barGeometry(BAR, points.length, widthPx);
+  return (
     <svg
       viewBox={`0 0 ${points.length * BAR} ${HEIGHT}`}
       preserveAspectRatio="none"
-      className="w-full h-7 block"
+      className="block h-full w-full"
       role="img"
       aria-label="per-day trend"
     >
@@ -46,17 +78,17 @@ export function Sparkbars({ points, target, max, met, format }: Props) {
           <rect x={i * BAR} y={0} width={BAR} height={HEIGHT} fill="transparent" />
           {p.value === null ? (
             <rect
-              x={i * BAR + 1}
+              x={i * BAR + bar.inset}
               y={HEIGHT - 1}
-              width={BAR - 2}
+              width={bar.width}
               height={1}
               className={chartBar.empty}
             />
           ) : (
             <rect
-              x={i * BAR + 1}
+              x={i * BAR + bar.inset}
               y={y(p.value)}
-              width={BAR - 2}
+              width={bar.width}
               height={Math.max(HEIGHT - y(p.value), 1)}
               className={
                 target === undefined || met === undefined

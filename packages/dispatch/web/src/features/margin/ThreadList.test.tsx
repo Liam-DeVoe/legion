@@ -339,10 +339,10 @@ test("the anchored region follows its card's height when the card resizes, with 
     Object.defineProperty(wrapper, "offsetHeight", { configurable: true, get: () => height });
     resize.resize(wrapper);
     const region = screen.getByRole("region", { name: "Anchored comments" });
-    expect(region.style.minHeight).toBe(`${180 + 300 + 8}px`);
+    expect(region.style.minHeight).toBe(`${180 + 300}px`);
     height = 250;
     resize.resize(wrapper);
-    expect(region.style.minHeight).toBe(`${180 + 250 + 8}px`);
+    expect(region.style.minHeight).toBe(`${180 + 250}px`);
   } finally {
     view.unmount();
     resize.restore();

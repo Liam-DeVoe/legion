@@ -103,6 +103,10 @@ const SCANNED_ROOTS = ["packages/dispatch/web/src", "packages/proof-editor/src"]
  *  covered box mounts - rather than a box of its own, so the walk reads no box out of it. */
 const SHARED_FIELD = "packages/dispatch/web/src/features/conversation/MentionField.tsx";
 
+/** The plain text box primitive's own file (`Textarea`). Its one `<textarea>` is the primitive
+ *  itself rather than a box of its own: a box made of it is the file that mounts `<Textarea>`. */
+const TEXTAREA_PRIMITIVE = "packages/dispatch/web/src/components/Field.tsx";
+
 /** One construct of a box the walk looks for, and the words a failure calls it by. */
 interface Construct {
   readonly name: string;
@@ -126,7 +130,7 @@ const SHARED_FIELD_ELEMENTS: readonly string[] = ["MentionField", "MentionCompos
 /** What a box is made of: the plain textarea of a box that takes no picker, an editor that
  *  hosts the picker, and a mount of the shared field. */
 const WRITING_CONSTRUCTS: readonly Construct[] = [
-  { name: "a textarea element", pattern: /<textarea\b/ },
+  { name: "a textarea element", pattern: /<[tT]extarea\b/ },
   EDITOR_MOUNT,
   {
     name: "a mount of the shared field",
@@ -591,7 +595,7 @@ function sitesOf(constructs: readonly Construct[], skipped: ReadonlySet<string>)
   return sites;
 }
 
-const WRITING_SITES = sitesOf(WRITING_CONSTRUCTS, new Set([SHARED_FIELD]));
+const WRITING_SITES = sitesOf(WRITING_CONSTRUCTS, new Set([SHARED_FIELD, TEXTAREA_PRIMITIVE]));
 
 const WRITING_FILES = new Set(DISPATCH_WRITING_BOXES.flatMap((row) => row.files));
 

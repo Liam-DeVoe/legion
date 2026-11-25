@@ -5,22 +5,20 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
+import { Button } from "../../components/Button";
+import { fieldLabelClassName } from "../../components/Field";
 import { QueryError } from "../../components/QueryError";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
 import {
   borderDefault,
-  borderStrong,
-  enabledCardHoverBorder,
   pageInkText,
   pageLineBorder,
   pageQuietText,
   surfaceMutedBg,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurfaceMuted,
-  textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
 import { MentionField } from "../conversation/MentionField";
@@ -257,7 +255,7 @@ export function AskReplyComposer({
         disabled={sending}
         issueKey={ask.issue_key ?? undefined}
         label="Reply"
-        labelClassName={`block text-sm font-medium ${textSecondaryOnCanvas}`}
+        labelClassName={fieldLabelClassName}
         onChange={(change) => setBody(change.body)}
         onDrop={
           uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner, ask.id)
@@ -271,13 +269,13 @@ export function AskReplyComposer({
         writing={dispatchWritingBox("ask-thread-reply", "comment")}
       />
       <DraftUploadStatus upload={upload} />
-      <button
-        className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} disabled:cursor-not-allowed disabled:opacity-50`}
+      <Button
+        className="self-start"
         disabled={body.trim() === "" || sending || uploading}
         type="submit"
       >
         {sending ? "Replying…" : "Reply"}
-      </button>
+      </Button>
       {submit.isError ? (
         <QueryError
           message={stoppedNote(submit, "your reply", "posted") ?? "Could not post your reply."}

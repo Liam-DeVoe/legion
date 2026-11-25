@@ -19,7 +19,6 @@ import { inboxThreadRow } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-
 import { api } from "../../api/client";
 import { agentMessagesQuery, askThreadQuery, issueQuery, myRepliesKey } from "../../api/queries";
 import type {
@@ -32,11 +31,11 @@ import type {
   MyReplyRow,
   MyReplyThreadRow,
 } from "../../api/types";
+import { Badge } from "../../components/Badge";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
-  badgePrimary,
   borderDefault,
   dangerText,
   linkHoverText,
@@ -124,7 +123,7 @@ function ThreadTurnView({
 }): ReactNode {
   return (
     <div
-      className={`rounded-lg p-2 text-sm ${surfaceMutedBg}`}
+      className={`rounded-lg p-3 text-sm ${surfaceMutedBg}`}
       data-inbox-thread-first-unread={first === true ? "" : undefined}
       data-inbox-thread-turn={turn.id}
       data-inbox-thread-unread={unread ? "" : undefined}
@@ -134,13 +133,7 @@ function ThreadTurnView({
           <AgentName actor={turn.author} inline /> · <Timestamp at={turn.created_at} />
           <EditedMark at={turn.edited} deleted={turn.deleted} />
         </span>
-        {unread ? (
-          <span
-            className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase ${badgePrimary.bg} ${badgePrimary.text}`}
-          >
-            New
-          </span>
-        ) : null}
+        {unread ? <Badge tone="info">New</Badge> : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
         <PostBody
@@ -673,11 +666,15 @@ export interface ThreadBodyProps {
   /** Whether the text the thread is anchored to is drawn above it, which a card and the pane's
    *  fall-back do in place of the document. */
   quote?: boolean;
+  /** Whether the body is the whole of a bordered card (`ThreadRowCard`), which then draws no
+   *  rule of its own above it. */
+  carded?: boolean;
   thread: MyReplyRow;
 }
 
 /** A Reply or an Agent row's thread, whichever shape it is. */
 export function ThreadBody({
+  carded = false,
   openAtFirstUnread = false,
   quote = false,
   thread,
@@ -732,7 +729,9 @@ export function ThreadBody({
   };
   return (
     <div
-      className={`border-t pt-2 ${borderDefault}`}
+      // Under the reading column's head the body starts at a rule. In a card the card's own
+      // edge is that rule.
+      className={carded ? undefined : `border-t pt-2 ${borderDefault}`}
       data-inbox-thread-body={thread.kind}
       data-testid={`inbox-thread-${thread.kind}`}
     >

@@ -11,17 +11,17 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
-
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult } from "../../api/types";
+import { Badge } from "../../components/Badge";
+import { Input } from "../../components/Field";
 import { QueryError } from "../../components/QueryError";
 import {
   backdrop50,
-  badgeLow,
   borderDefault,
   card,
-  inputClasses,
-  kbdHint,
+  kbdKey,
+  rowHoverBg,
   searchHitBg,
   searchHitText,
   selectedCardBg,
@@ -107,6 +107,9 @@ interface RecentRow {
  *  back into the offer to run it. */
 type PaletteRow = ActionRow | OfferRow | ProjectRow | RecentRow | ResultRow;
 
+/** A key hint at the palette's foot: the key's own outline, as the shortcut help draws one. */
+const KBD_CLASS = `inline-flex h-5 min-w-5 items-center justify-center rounded border px-1 font-sans text-xs font-medium ${kbdKey}`;
+
 /** One row of the listbox, a hit or a command: the selected outline and fill, and a click, Enter
  *  or Space selecting it. `layout` arranges the row's own content. */
 function PaletteOption({
@@ -131,8 +134,8 @@ function PaletteOption({
     <ReferenceHostIs host="control">
       <div
         aria-selected={active}
-        className={`relative isolate min-h-11 cursor-pointer border-b px-3 py-2 last:border-b-0 ${layout} ${borderDefault} ${
-          active ? selectedCardBorder : ""
+        className={`relative isolate min-h-10 cursor-pointer border-b px-3 py-2 last:border-b-0 ${layout} ${borderDefault} ${
+          active ? selectedCardBorder : rowHoverBg
         }`}
         id={id}
         onClick={onSelect}
@@ -209,9 +212,7 @@ function ResultOption({
         }`}
       >
         {kind === undefined ? null : <RefKindIcon kind={kind} />}
-        <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
-          {kind === undefined ? result.kind : kindLabel(kind)}
-        </span>
+        <Badge>{kind === undefined ? result.kind : kindLabel(kind)}</Badge>
         {result.artifact === undefined ? null : (
           <span className="truncate">{result.artifact.name}</span>
         )}
@@ -310,7 +311,7 @@ function CommandGroup({
     <>
       <div
         aria-hidden="true"
-        className={`flex min-w-0 items-center border-b px-3 py-1.5 text-xs font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnSurfaceMuted}`}
+        className={`flex h-7 min-w-0 items-center border-b px-3 text-xs font-medium ${borderDefault} ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`}
         id={section.id}
         role="presentation"
       >
@@ -691,18 +692,18 @@ function PaletteDialog({
         <div
           aria-label="Search"
           aria-modal="true"
-          className={`pointer-events-auto flex max-h-full w-full flex-col overflow-hidden rounded-b-lg border shadow-2xl xl:max-w-2xl xl:rounded-lg ${card} ${borderDefault}`}
+          className={`pointer-events-auto flex max-h-full w-full flex-col overflow-hidden rounded-b-lg border shadow-2xl xl:max-w-2xl xl:rounded-lg ${card}`}
           ref={dialog.containerRef}
           role="dialog"
         >
           {scope.header}
           <div className={`shrink-0 border-b p-3 ${borderDefault}`}>
-            <input
+            <Input
               aria-activedescendant={activeRow?.id}
               aria-controls="search-results"
               aria-expanded={rows.length > 0}
               aria-label="Search"
-              className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+              surface="recessed"
               onChange={(event) => {
                 setQuery(event.target.value);
                 // A new query is a new list, so the highlight is undecided again and the first
@@ -782,7 +783,7 @@ function PaletteDialog({
                     <div
                       aria-hidden="true"
                       aria-label={`${header.key}: ${header.name}`}
-                      className={`flex min-w-0 items-center gap-2 border-b px-3 py-1.5 text-xs ${borderDefault} ${surfaceMutedBg} ${
+                      className={`flex h-7 min-w-0 items-center gap-2 border-b px-3 text-xs ${borderDefault} ${surfaceMutedBg} ${
                         muted ? textMutedOnSurfaceMuted : ""
                       }`}
                       data-status={header.status}
@@ -798,11 +799,7 @@ function PaletteDialog({
                         {header.name}
                       </span>
                       {header.status === undefined ? null : (
-                        <span
-                          className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}
-                        >
-                          {statusText(header.status)}
-                        </span>
+                        <Badge tone="outline">{statusText(header.status)}</Badge>
                       )}
                     </div>
                     {/* The hits of one owner are a group named by the row above them, so a
@@ -888,20 +885,20 @@ function PaletteDialog({
               that can hover, since a touch reader has none of these keys and the row would
               cost them 33px of hits. */}
           <div
-            className={`hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-2 text-xs pointer-fine:flex ${borderDefault} ${textMutedOnSurface}`}
+            className={`hidden shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-t px-3 py-2 text-xs pointer-fine:flex ${borderDefault} ${textMutedOnSurface}`}
             data-testid="search-keyboard-hints"
           >
-            <span className="inline-flex items-center gap-1">
-              <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>↑</kbd>
-              <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>↓</kbd>
+            <span className="inline-flex items-center gap-1.5">
+              <kbd className={KBD_CLASS}>↑</kbd>
+              <kbd className={KBD_CLASS}>↓</kbd>
               to move
             </span>
-            <span className="inline-flex items-center gap-1">
-              <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Enter</kbd>
+            <span className="inline-flex items-center gap-1.5">
+              <kbd className={KBD_CLASS}>Enter</kbd>
               to open
             </span>
-            <span className="inline-flex items-center gap-1">
-              <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Esc</kbd>
+            <span className="inline-flex items-center gap-1.5">
+              <kbd className={KBD_CLASS}>Esc</kbd>
               to close
             </span>
           </div>

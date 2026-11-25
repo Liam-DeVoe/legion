@@ -1,15 +1,7 @@
 import type { ReactNode } from "react";
 
-import {
-  backdrop40,
-  card,
-  dangerHoverBorder,
-  hoverToDangerText,
-  secondaryButtonBorder,
-  secondaryButtonText,
-  textMutedHoverToSecondary,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+import { Button } from "../../components/Button";
+import { backdrop40, card, textPrimaryOnSurface } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
 
 export interface UnsubscribeDialogProps {
@@ -47,20 +39,10 @@ export function UnsubscribeDialog({
         >
           <p className={`text-sm ${textPrimaryOnSurface}`}>{message}</p>
           <div className="flex justify-end gap-2">
-            <button
-              className={`rounded border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${textMutedHoverToSecondary}`}
-              onClick={onCancel}
-              type="button"
-            >
-              Cancel
-            </button>
-            <button
-              className={`rounded border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${hoverToDangerText} ${dangerHoverBorder}`}
-              onClick={onConfirm}
-              type="button"
-            >
+            <Button onClick={onCancel}>Cancel</Button>
+            <Button onClick={onConfirm} variant="danger">
               Confirm
-            </button>
+            </Button>
           </div>
         </div>
       </div>

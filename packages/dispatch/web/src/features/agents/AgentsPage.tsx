@@ -2,6 +2,7 @@ import { DELIVERY_CAPABILITIES, dispatchWritingBox } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Fragment,
   type ReactNode,
   type RefObject,
   useCallback,
@@ -28,12 +29,15 @@ import type {
   MessageWithTrees,
   UserAgentStates,
 } from "../../api/types";
+import { Badge, type BadgeTone } from "../../components/Badge";
+import { Button } from "../../components/Button";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
+import { Input, Select } from "../../components/Field";
+import { PageHeader } from "../../components/Layout";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
-import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -47,16 +51,16 @@ import {
   dangerText,
   disclosureButtonText,
   focusVisibleRing,
-  inputClasses,
-  linkHoverText,
-  linkText,
+  linkChrome,
+  rowHoverBg,
   secondaryButtonBorder,
-  secondaryButtonHoverBorder,
   secondaryButtonText,
+  surfaceMutedHoverBg,
   textMutedHoverToSecondary,
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
+  textSecondaryHoverToPrimary,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { replyParentOf } from "../conversation/composer-model";
@@ -426,7 +430,7 @@ function AgentMessageList({
     />
   );
   return (
-    <div className={`mt-3 border-t pt-3 ${borderDefault}`}>
+    <div className="mt-3">
       {newest === undefined ? null : (
         <ol aria-label={`Conversation with ${label}`} className="space-y-2">
           {row(newest)}
@@ -452,7 +456,7 @@ function AgentMessageList({
             <span aria-hidden>·</span>
             <button
               aria-pressed={showCleared}
-              className={`inline-flex min-h-11 items-center underline-offset-2 hover:underline md:min-h-8 ${textMutedHoverToSecondary}`}
+              className={`inline-flex h-8 items-center underline-offset-2 hover:underline ${textMutedHoverToSecondary}`}
               onClick={() => setShowCleared((open) => !open)}
               type="button"
             >
@@ -461,8 +465,8 @@ function AgentMessageList({
           </p>
         )}
         {visible.length === 0 ? null : (
-          <button
-            className={`ml-auto inline-flex min-h-11 items-center text-sm md:min-h-8 ${textMutedHoverToSecondary}`}
+          <Button
+            className="ml-auto"
             disabled={clear.isPending}
             onClick={() =>
               clear.mutate(
@@ -471,10 +475,11 @@ function AgentMessageList({
                   .reduce((latest, at) => (compareTimestamps(at, latest) > 0 ? at : latest))
               )
             }
-            type="button"
+            size="sm"
+            variant="ghost-muted"
           >
             Clear conversation
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -492,27 +497,31 @@ function AskCountPill({
   assignees,
   count,
   section,
-  selected = false,
   title,
+  tone,
   wording,
 }: {
   agent: Agent;
   assignees?: readonly string[];
   count: number;
   section?: "needs-you";
-  selected?: boolean;
   title: string;
+  /** What the count says: `warning` for what waits on the reader, `neutral` for what does not. */
+  tone: BadgeTone;
   wording: string;
 }): ReactNode {
   return (
     <Link
-      className="inline-flex min-h-11 items-center rounded-full md:min-h-8"
+      // The link is the hit area and the badge inside it the mark: below 1280 px every link is
+      // lifted to 44 px (`styles.css`), and a badge that was the link itself would be a 44 px
+      // block of its colour.
+      className="inline-flex h-8 items-center rounded"
       title={title}
       to={buildInboxPath({ agent: agent.session_id, assignees, section })}
     >
-      <LabelPill selected={selected}>
+      <Badge className="tabular-nums" tone={tone}>
         {wording} {count}
-      </LabelPill>
+      </Badge>
     </Link>
   );
 }
@@ -528,8 +537,11 @@ function lastPathSegment(dir: string): string {
 /** A row's machine name, the one link in its directory line. It sits inside that line's
  *  sentence, so it keeps its line box (`dispatch-inline-link`, `styles.css`) rather than taking
  *  the 44 px touch floor every other link below 1280 px takes, which would make every row on a
- *  phone a line taller; its padding reaches the hit size instead. */
-const machineLink = `dispatch-inline-link rounded underline outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
+ *  phone a line taller; its padding reaches the hit size instead. It is chrome, not prose: one
+ *  step stronger than the muted directory beside it and a medium weight, which is what tells it
+ *  from that text without colour (axe's `link-in-text-block`), and underlined only under the
+ *  pointer. */
+const machineLink = `dispatch-inline-link rounded font-medium underline-offset-2 outline-none hover:underline focus-visible:ring-2 ${focusVisibleRing} ${textSecondaryHoverToPrimary}`;
 
 function AgentRow({
   agent,
@@ -615,7 +627,7 @@ function AgentRow({
 
   return (
     <article
-      className={`rounded-xl border outline-none focus-visible:ring-2 ${card} ${borderDefault} ${focusVisibleRing}`}
+      className={`rounded-lg border outline-none focus-visible:ring-2 ${card} ${borderDefault} ${focusVisibleRing}`}
       data-agent-row={agent.session_id}
       data-agent-section={section}
       // The issue picker renders only while this row is not answering a message, and a collapsed
@@ -629,7 +641,10 @@ function AgentRow({
           way, each to an ellipsis with its whole text one hover away. Below `md` the directory
           wraps to a line of its own (the span below), which is the shape the row had before
           this change and what keeps the name a box wide enough to tap on a phone. */}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 overflow-hidden px-3 py-1.5 md:flex-nowrap">
+      <div
+        className={`group/row flex flex-wrap items-center gap-x-2 gap-y-1 overflow-hidden rounded-t-[7px] px-3 py-1.5 md:flex-nowrap ${expanded ? "" : "rounded-b-[7px]"} ${rowHoverBg}`}
+        data-agent-row-line=""
+      >
         <input
           aria-label={`Select ${label} for broadcast`}
           checked={selected}
@@ -650,7 +665,7 @@ function AgentRow({
               <button
                 aria-controls={detailsId}
                 aria-expanded={expanded}
-                className={`flex min-h-11 w-full items-center gap-1 text-left md:min-h-8 ${textPrimaryOnCanvas}`}
+                className={`flex h-8 w-full items-center gap-1 text-left ${textPrimaryOnCanvas}`}
                 data-agent-toggle=""
                 onClick={() => onExpand(!expanded)}
                 title={label}
@@ -667,14 +682,6 @@ function AgentRow({
           sessionId={agent.session_id}
           storedTitle={agent.title}
         />
-        <CopyButton value={agent.session_id} what="session ID">
-          ID
-        </CopyButton>
-        {agent.title.trim() === "" ? null : (
-          <CopyButton value={agent.title} what="session title">
-            title
-          </CopyButton>
-        )}
         {/* The directory. From `md` it takes the width the rest of the line leaves and keeps
             the segment that names the session's work, with the machine before it and the whole
             path one hover away. Below `md` it takes a line of its own under the name
@@ -700,26 +707,38 @@ function AgentRow({
           </Link>
           {` · ${shownDir}`}
         </span>
-        {(agent.roles ?? []).map((role) => (
-          <span className="shrink-0" key={role}>
-            <LabelPill>{role}</LabelPill>
-          </span>
-        ))}
-        {/* A session that has missed its heartbeats is still listed and still worth
-            messaging, so the row says which it is rather than looking like any other: its
-            name's mark alone is a ring a reader would have to hover. */}
-        <AgentUnresponsiveNote
-          lastSeen={agent.last_seen}
-          state={agent.state === "unresponsive" ? "unresponsive" : "running"}
-        />
-        <div className="flex shrink-0 items-center gap-2">
-          <span className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}>
-            {agent.last_activity === null ? (
-              "No Dispatch activity"
-            ) : (
-              <Timestamp at={agent.last_activity} />
-            )}
-          </span>
+        {/* The two things a reader copies to address this session from a terminal. They are
+            tools, not facts about the row, so where a pointer hovers they wait until it is over
+            the row, or the keyboard is inside it; a screen with no hover always draws them, and
+            they keep their place in the line either way, so nothing moves when they appear. */}
+        <span
+          className="flex shrink-0 items-center gap-1 transition-opacity group-focus-within/row:opacity-100 group-hover/row:opacity-100 max-md:ml-auto md:[@media(hover:hover)]:opacity-0"
+          data-agent-copy=""
+        >
+          <CopyButton value={agent.session_id} what="session ID">
+            ID
+          </CopyButton>
+          {agent.title.trim() === "" ? null : (
+            <CopyButton value={agent.title} what="session title">
+              Title
+            </CopyButton>
+          )}
+        </span>
+        {/* What the row says about the session, at its right from `md`: its roles, whether it
+            has gone unresponsive, what waits on whom, how long ago Dispatch heard from it, and
+            the pin. Below `md` they take the row's second line, wrapping when a row carries
+            many, with the pin at that line's end. */}
+        <div className="flex shrink-0 items-center gap-2 max-md:basis-full max-md:flex-wrap">
+          {(agent.roles ?? []).map((role) => (
+            <Badge key={role}>{role}</Badge>
+          ))}
+          {/* A session that has missed its heartbeats is still listed and still worth
+              messaging, so the row says which it is rather than looking like any other: its
+              name's mark alone is a ring a reader would have to hover. */}
+          <AgentUnresponsiveNote
+            lastSeen={agent.last_seen}
+            state={agent.state === "unresponsive" ? "unresponsive" : "running"}
+          />
           {unreadReplies === 0 ? null : (
             // Opening the conversation is what reads it, so the badge opens it.
             <button
@@ -727,12 +746,12 @@ function AgentRow({
               // user can press what they read (WCAG 2.5.3, axe's
               // `label-content-name-mismatch`); the session's name says whose replies they are.
               aria-label={`${unreadRepliesLabel(unreadReplies)} from ${label}`}
-              className="inline-flex min-h-11 items-center rounded-full md:min-h-8"
+              className="inline-flex h-8 items-center rounded"
               onClick={() => onExpand(true)}
               title={`Replies from ${label} you have not read`}
               type="button"
             >
-              <LabelPill selected>{unreadRepliesLabel(unreadReplies)}</LabelPill>
+              <Badge tone="info">{unreadRepliesLabel(unreadReplies)}</Badge>
             </button>
           )}
           {needsYou === 0 ? null : (
@@ -740,8 +759,8 @@ function AgentRow({
               agent={agent}
               count={needsYou}
               section="needs-you"
-              selected
               title={`Open asks from ${label} waiting on your answer`}
+              tone="warning"
               wording="Needs you"
             />
           )}
@@ -757,15 +776,27 @@ function AgentRow({
               assignees={[]}
               count={waitingOnAgent}
               title={`Open asks from ${label} whose next move is ${label}'s`}
+              tone="neutral"
               wording="Waiting on agent"
             />
           )}
+          {/* When Dispatch last heard from the session: the last words of every row, so the
+              ages read down one right-hand column whatever pills a row carries before it. */}
+          <span className={`whitespace-nowrap text-xs tabular-nums ${textMutedOnCanvas}`}>
+            {agent.last_activity === null ? (
+              "No Dispatch activity"
+            ) : (
+              <Timestamp at={agent.last_activity} />
+            )}
+          </span>
           {/* `contents` so the keymap has a handle on the pin without a box in the flex row. */}
           <span className="contents" data-agent-pin="">
             <PinButton
+              className="max-md:ml-auto"
               label={pinned ? `Unpin ${label}` : `Pin ${label}`}
               onClick={onPin}
               pinned={pinned}
+              quiet
               title={pinned ? "Unpin agent" : "Pin agent"}
             />
           </span>
@@ -823,17 +854,25 @@ function AgentRowDetails({
     [messages.data]
   );
   return (
-    <div className={`border-t px-4 pb-4 ${borderDefault}`} hidden={!expanded} id={id}>
+    <div className={`border-t px-3 pb-3 ${borderDefault}`} hidden={!expanded} id={id}>
+      {/* One muted line of facts, each parted from the next by a middle dot, as the row's
+          directory line parts its own. */}
       <div
-        className={`mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs ${textMutedOnCanvas}`}
+        className={`mt-3 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnCanvas}`}
       >
         {modes.length === 0 ? (
           // A session that advertises no mode refuses every message: an empty list says its plugin
           // cannot reach its conversation, and a list of unknown capabilities names no mode to use.
           <span>Takes no messages</span>
         ) : (
-          modes.map((mode) => <span key={mode}>{MODE_LABELS[mode]}</span>)
+          modes.map((mode) => (
+            <Fragment key={mode}>
+              <span>{MODE_LABELS[mode]}</span>
+              <span aria-hidden>·</span>
+            </Fragment>
+          ))
         )}
+        {modes.length === 0 ? <span aria-hidden>·</span> : null}
         <span>
           Seen <Timestamp at={new Date(agent.last_seen).toISOString()} />
         </span>
@@ -892,13 +931,16 @@ function GroupHeading({
     <div data-agent-fold={group} data-testid={`agents-group-${group}`}>
       <button
         aria-expanded={expanded}
-        className={`flex min-h-11 items-center gap-1 text-sm font-medium ${textSecondaryOnCanvas}`}
+        className={`-mx-1.5 flex h-8 items-center gap-1.5 rounded-md px-1.5 text-sm font-semibold ${textPrimaryOnCanvas} ${surfaceMutedHoverBg}`}
         data-testid={`agents-group-toggle-${group}`}
         onClick={onToggle}
         type="button"
       >
         <span data-testid={`agents-group-name-${group}`}>{AGENT_GROUP_LABELS[group]}</span>
-        <span className="tabular-nums" data-testid={`agents-group-count-${group}`}>
+        <span
+          className={`font-normal tabular-nums ${textMutedOnCanvas}`}
+          data-testid={`agents-group-count-${group}`}
+        >
           {groupCountLabel(agents, selected)}
         </span>
         <span className={disclosureButtonText}>
@@ -930,10 +972,25 @@ function AgentFilterBar({
   // One panel open at a time: each is a portalled popover, and two of them over one row would
   // cover each other.
   const [open, setOpen] = useState<OpenFilter>(null);
-  const field = `min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`;
   return (
-    <fieldset className="mb-3 flex flex-wrap items-center gap-2" data-testid="agents-filters">
+    <fieldset className="mb-2 flex flex-wrap items-center gap-2" data-testid="agents-filters">
       <legend className="sr-only">Agent filters</legend>
+      {/* The search leads: it is the page's first way to narrow the list, so it takes the row
+          the filters leave, at the primary search's 40 px height, and a row of its own on a
+          phone, so the fields it searches stay readable there. */}
+      <Input
+        aria-label="Search agents"
+        className="flex-1 basis-64 max-md:basis-full"
+        data-testid="agents-filter-search"
+        maxLength={SEARCH_QUERY_MAX}
+        onChange={(event) => onFilters({ ...filters, search: event.target.value })}
+        placeholder="Title, directory, machine, session or open issue"
+        ref={searchInputRef}
+        size="lg"
+        title={`At most ${SEARCH_QUERY_MAX} characters`}
+        type="search"
+        value={filters.search}
+      />
       {/* No dropdown on this page (R7): each filter is a multi-select whose panel holds a text
           box that narrows its own options, because forty machines cannot be read in a list that
           does not search. */}
@@ -981,20 +1038,6 @@ function AgentFilterBar({
           triggerAriaLabel="Filter by role"
         />
       </span>
-      {/* It takes the rest of the row, and a row of its own on a phone, so the fields it searches
-          stay readable in the placeholder. */}
-      <input
-        aria-label="Search agents"
-        className={`${field} min-w-0 flex-1 basis-64`}
-        data-testid="agents-filter-search"
-        maxLength={SEARCH_QUERY_MAX}
-        onChange={(event) => onFilters({ ...filters, search: event.target.value })}
-        placeholder="Title, directory, machine, session or open issue"
-        ref={searchInputRef}
-        title={`At most ${SEARCH_QUERY_MAX} characters`}
-        type="search"
-        value={filters.search}
-      />
     </fieldset>
   );
 }
@@ -1026,7 +1069,7 @@ function SelectionHeader({
     if (checkbox.current !== null) checkbox.current.indeterminate = state === "some";
   }, [state]);
   return (
-    <div className="mb-2 flex min-h-11 items-center gap-x-2 px-[13px] md:min-h-8">
+    <div className={`mb-3 flex h-10 items-center gap-x-2 border-b px-[13px] ${borderDefault}`}>
       <input
         aria-describedby={countId}
         aria-label="Select all matching agents"
@@ -1037,17 +1080,13 @@ function SelectionHeader({
         ref={checkbox}
         type="checkbox"
       />
-      <span className={`min-w-0 flex-1 text-xs ${textMutedOnCanvas}`} id={countId}>
+      <span className={`min-w-0 flex-1 text-xs tabular-nums ${textMutedOnCanvas}`} id={countId}>
         {selectionSummary(selection)}
       </span>
       {selected.size === 0 ? null : (
-        <button
-          className={`min-h-11 shrink-0 rounded-lg border px-2 text-xs font-medium md:min-h-7 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-          onClick={onClear}
-          type="button"
-        >
+        <Button onClick={onClear} size="sm" variant="ghost">
           Clear selection
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -1147,7 +1186,7 @@ function BroadcastComposer({
   return (
     <section
       aria-label="Broadcast"
-      className={`max-h-[50vh] overflow-y-auto rounded-xl border p-3 narrow-or-short:sticky narrow-or-short:bottom-0 narrow-or-short:z-10 narrow-or-short:mt-3 narrow-or-short:grid narrow-or-short:grid-cols-[auto_minmax(0,1fr)_auto] narrow-or-short:items-center narrow-or-short:gap-2 short:grid-cols-[auto_minmax(0,1fr)_auto_auto] ${card} ${borderDefault}`}
+      className={`max-h-[50vh] overflow-y-auto rounded-lg border p-3 shadow-lg narrow-or-short:sticky narrow-or-short:bottom-0 narrow-or-short:z-10 narrow-or-short:mt-3 narrow-or-short:grid narrow-or-short:grid-cols-[auto_minmax(0,1fr)_auto] narrow-or-short:items-center narrow-or-short:gap-2 short:grid-cols-[auto_minmax(0,1fr)_auto_auto] ${card} ${borderDefault}`}
       ref={sectionRef}
     >
       <h2
@@ -1170,7 +1209,7 @@ function BroadcastComposer({
                 className="flex items-center"
                 control={(name) => (
                   <button
-                    className={`min-h-8 rounded-full border px-2 py-1 text-xs narrow-or-short:min-h-11 narrow-or-short:whitespace-nowrap ${secondaryButtonBorder} ${left === undefined ? secondaryButtonText : dangerText} ${secondaryButtonHoverBorder}`}
+                    className={`inline-flex h-6 items-center rounded border px-2 text-xs font-medium narrow-or-short:whitespace-nowrap ${secondaryButtonBorder} ${left === undefined ? secondaryButtonText : dangerText} ${surfaceMutedHoverBg}`}
                     onClick={() => onDeselect(sessionID)}
                     title={`Remove ${text.sessionText(sessionID, agent?.title)} from this broadcast`}
                     type="button"
@@ -1189,9 +1228,9 @@ function BroadcastComposer({
         })}
       </ul>
       <div className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:order-2 narrow-or-short:mt-0">
-        <select
+        <Select
           aria-label="Delivery mode"
-          className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
+          className="w-28"
           onChange={(event) => onDelivery(event.target.value as MessageDeliveryMode)}
           value={delivery}
         >
@@ -1200,7 +1239,7 @@ function BroadcastComposer({
               {MODE_LABELS[mode]}
             </option>
           ))}
-        </select>
+        </Select>
       </div>
       {/* The box is one grid cell of the short-screen layout, so the label the field wraps it
           in carries that placement and the box itself only its own size. */}
@@ -1425,7 +1464,12 @@ function WindowedList({
           if (item === undefined) return [];
           return [
             <div
-              className="absolute inset-x-0 pb-3"
+              // A row sits 8 px above the next; a heading 4 px above its first row and, but
+              // for the list's first, 12 px under the row before it, so a group reads as one
+              // block 20 px from the last.
+              className={`absolute inset-x-0 ${
+                item.kind === "row" ? "pb-2" : index === 0 ? "pb-1" : "pt-3 pb-1"
+              }`}
               data-row-key={item.key}
               key={item.key}
               style={{ top: `${list.tops[index] ?? 0}px` }}
@@ -1736,20 +1780,21 @@ export function AgentsPage(): ReactNode {
       }
       ref={listRef}
     >
-      <header className={`mb-5 border-b pb-4 ${borderDefault}`}>
-        <h1 className={`text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}>
-          Agents
-        </h1>
-        <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
-          <span>Live Envoy sessions and their Dispatch activity.</span>
-          <Link className={`${linkText} ${linkHoverText}`} to="/agents/broadcasts">
-            Broadcasts
-          </Link>
-          <Link className={`${linkText} ${linkHoverText}`} to="/machines">
-            Machines
-          </Link>
-        </p>
-      </header>
+      <PageHeader
+        // The page's two neighbours sit at the right of its title, as a page's actions do.
+        actions={
+          <div className="flex items-center gap-4 text-sm">
+            <Link className={linkChrome} to="/agents/broadcasts">
+              Broadcasts
+            </Link>
+            <Link className={linkChrome} to="/machines">
+              Machines
+            </Link>
+          </div>
+        }
+        description="Live Envoy sessions and their Dispatch activity."
+        title="Agents"
+      />
       {refilling ? (
         <AgentListRefilling className={`mb-3 text-sm ${textSecondaryOnCanvas}`} />
       ) : isError ? (
@@ -1779,18 +1824,22 @@ export function AgentsPage(): ReactNode {
             selected={selected}
           />
           {matching.length === 0 && current ? (
-            <EmptyState
-              label="Agents filtered empty state"
-              // A role nothing live holds is not a role Dispatch can show as stopped: the
-              // registry lists sessions, and a role is here only while a session carries it.
-              // The words say so, rather than letting the reader read the list as every role
-              // there is.
-              message={
-                unheldRoles.length > 0 && unheldRoles.length === roles.length
-                  ? `No live session holds ${unheldRoles.join(", ")}. Outside an issue, this list holds only the roles a live session carries; Dispatch keeps no list of every role.`
-                  : "No agent matches these filters."
-              }
-            />
+            // The gap is the wrapper's: the empty state draws no margin of its own, and the
+            // first group's heading follows it directly.
+            <div className="mb-3">
+              <EmptyState
+                label="Agents filtered empty state"
+                // A role nothing live holds is not a role Dispatch can show as stopped: the
+                // registry lists sessions, and a role is here only while a session carries it.
+                // The words say so, rather than letting the reader read the list as every role
+                // there is.
+                message={
+                  unheldRoles.length > 0 && unheldRoles.length === roles.length
+                    ? `No live session holds ${unheldRoles.join(", ")}. Outside an issue, this list holds only the roles a live session carries; Dispatch keeps no list of every role.`
+                    : "No agent matches these filters."
+                }
+              />
+            </div>
           ) : null}
           <WindowedList items={items} kept={kept} keptAside={keptAside} renderItem={renderItem} />
         </>

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { borderDefault, linkHoverText, linkText } from "../theme/classes";
+import { Button } from "./Button";
 
 /** The button at the foot of an offset-paged list: it reads the next page and says so while that
  *  read is in flight. A list with no next page renders none, so a caller hands it the infinite
@@ -18,13 +18,8 @@ export function ShowMore({
     return null;
   }
   return (
-    <button
-      className={`mt-4 min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${linkText} ${linkHoverText}`}
-      disabled={fetching}
-      onClick={onFetch}
-      type="button"
-    >
+    <Button className="mt-4" disabled={fetching} onClick={onFetch}>
       {fetching ? "Loading…" : "Show more"}
-    </button>
+    </Button>
   );
 }

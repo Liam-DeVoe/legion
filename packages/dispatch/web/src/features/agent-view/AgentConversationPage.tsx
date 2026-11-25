@@ -7,6 +7,7 @@ import { agentMessageRequest, apiErrorMessage } from "../../api/client";
 import { agentMessagesQuery, whoAmIQuery } from "../../api/queries";
 import type { Message } from "../../api/types";
 import { ContextRing } from "../../components/ContextRing";
+import { Select } from "../../components/Field";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -15,9 +16,7 @@ import {
   connectionDotConnecting,
   connectionDotFailed,
   dangerText,
-  inputClasses,
-  linkHoverText,
-  linkText,
+  linkChrome,
   liveDotBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
@@ -380,16 +379,24 @@ export function AgentConversationPage({
   // screen and the document never scrolls.
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="agent-conversation">
+      {/* `PageHeader`'s measures, drawn here because this header holds more than a title: the
+          session's state sits beside its name, outside the heading, and the page is a
+          full-height conversation, so the header takes no description line and no 24 px under
+          it. The way back is the eyebrow above the name from 1280 px up; below that every link
+          is a 44 px target, so it stays in the name's row and the conversation keeps the
+          height. */}
       <header
         className="flex flex-wrap items-center gap-x-3 gap-y-1"
         data-testid="agent-view-header"
       >
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to="/agents">
+        <Link className={`text-sm xl:w-full ${linkChrome}`} to="/agents">
           ← Agents
         </Link>
         {/* This is that agent's own live conversation, so its name links nowhere: `AgentName`
             draws it, with its running state, without a link. */}
-        <h1 className={`min-w-0 truncate text-lg font-semibold ${textPrimaryOnCanvas}`}>
+        <h1
+          className={`min-w-0 truncate text-[22px] leading-8 font-semibold tracking-tight ${textPrimaryOnCanvas}`}
+        >
           <AgentName kind="static" sessionId={sessionId} storedTitle={undefined} />
         </h1>
         {presence === undefined ? null : (
@@ -429,6 +436,7 @@ export function AgentConversationPage({
           />
         )}
         <PinButton
+          className="ml-auto"
           label={pinned ? `Unpin ${label}` : `Pin ${label}`}
           onClick={() => writePin(sessionId, !pinned)}
           pinned={pinned}
@@ -504,14 +512,16 @@ export function AgentConversationPage({
             from here rather than inside a clipped scroller. */}
         <div className="mt-2 flex items-center gap-2 text-xs" data-testid="agent-composer-footer">
           <div
-            className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-3 gap-y-1 overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
+            className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-2 gap-y-1 overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
             data-testid="agent-composer-facts"
           >
-            <select
+            <Select
               aria-label="Delivery mode"
-              className={`min-h-8 shrink-0 rounded-lg px-2 py-1 text-xs ${inputClasses(false)}`}
+              className="w-auto shrink-0"
               data-testid="agent-delivery-picker"
               onChange={(event) => setPicked(event.target.value as MessageDeliveryMode)}
+              size="sm"
+              title="How the session takes your message"
               value={mode}
             >
               {modes.map((candidate) => (
@@ -519,7 +529,7 @@ export function AgentConversationPage({
                   {MODE_LABELS[candidate]}
                 </option>
               ))}
-            </select>
+            </Select>
             {/* A claim that the session is gone starts only from a current list. The header's
                 presence and the transcript's line keep that fact through a failed read, from the
                 kept rows of the last read that returned a list; this line waits for a current
@@ -541,6 +551,9 @@ export function AgentConversationPage({
                   title="The machine this session runs on"
                 >
                   {agent.host}
+                </span>
+                <span aria-hidden="true" className={`shrink-0 ${textMutedOnCanvas}`}>
+                  ·
                 </span>
                 {/* The flex item the ellipsis applies to is the span inside, not this one
                     (`packages/dispatch/AGENTS.md`): a flex container never draws one on its own

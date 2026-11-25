@@ -12,9 +12,11 @@ import { Link } from "react-router-dom";
 
 import type { DeliveryMeasuresResponse } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
+import { cardClassName } from "../../components/Layout";
 import {
   borderDefault,
   dangerText,
+  linkChrome,
   linkText,
   successText,
   surfaceBg,
@@ -22,8 +24,12 @@ import {
   textMutedOnCanvas,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
+  textPrimaryOnCanvas,
   textPrimaryOnSurface,
   textPrimaryOnSurfaceMuted,
+  textSecondaryOnCanvas,
+  textSecondaryOnSurface,
+  textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
 import { formatMinutes, pct } from "./lib/format";
@@ -59,33 +65,37 @@ function KpiCard(props: {
   children: ReactNode;
 }): ReactNode {
   return (
-    <div
-      className={`flex min-w-0 flex-col gap-1 rounded border px-2.5 py-2 ${surfaceBg} ${borderDefault}`}
-      data-kpi={props.title}
-    >
-      <div className="flex items-start justify-between gap-2">
+    <div className={`flex min-w-0 flex-col gap-1.5 ${cardClassName("sm")}`} data-kpi={props.title}>
+      <div className="flex min-h-5 items-start justify-between gap-2">
         {/* Two lines at most: a narrow card (Dispatch's sidebar leaves the grid narrower than the
             prototype's page) shows its whole title rather than cutting it to a word. */}
-        <span className={`line-clamp-2 min-w-0 text-xs ${textMutedOnSurface}`}>{props.title}</span>
+        <span
+          className={`line-clamp-2 min-w-0 text-xs leading-5 font-medium ${textSecondaryOnSurface}`}
+        >
+          {props.title}
+        </span>
         {props.met === undefined ? null : (
           <TargetBadge met={props.met} metLabel={"\u2713 met"} missedLabel={"\u2717 missed"} />
         )}
       </div>
       {props.children}
-      <div className={`text-[11px] ${textMutedOnSurface}`}>target {props.target}</div>
+      {/* At the card's foot, so the targets of one row of cards sit on one line. */}
+      <div className={`mt-auto pt-0.5 text-xs ${textMutedOnSurface}`}>target {props.target}</div>
     </div>
   );
 }
 
 function BigNumber({ className, children }: { className: string; children: string }): ReactNode {
-  return <span className={`text-lg font-semibold ${className}`}>{children}</span>;
+  return <span className={`text-[22px] leading-7 font-semibold ${className}`}>{children}</span>;
 }
 
 function DefinitionCard(props: { title: string; value: string; children: ReactNode }): ReactNode {
   return (
-    <div className={`rounded p-3 ${surfaceMutedBg}`}>
-      <div className={`text-xs uppercase ${textMutedOnSurfaceMuted}`}>{props.title}</div>
-      <div className={`text-xl font-semibold ${textPrimaryOnSurfaceMuted}`}>{props.value}</div>
+    <div className={`rounded-lg p-3 ${surfaceMutedBg}`}>
+      <div className={`text-xs font-medium ${textSecondaryOnSurfaceMuted}`}>{props.title}</div>
+      <div className={`mt-1 text-[15px] leading-6 font-semibold ${textPrimaryOnSurfaceMuted}`}>
+        {props.value}
+      </div>
       <div className={`text-xs ${textMutedOnSurfaceMuted}`}>{props.children}</div>
     </div>
   );
@@ -123,14 +133,14 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
   ];
 
   return (
-    <section className={`@container rounded border ${borderDefault}`}>
+    <section className="@container">
       {/* Columns follow the panel's own width, not the viewport's, since the page's sidebar takes a
           share of the viewport that varies with the breakpoint. A card needs 212px for its badge
           and a title of at most two lines ("Deploy runs reaching production" at text-xs), so six
-          columns need 83.5rem, three 42.25rem and two 28.5rem, padding and gaps included. */}
+          columns need 83.5rem, three 42.25rem and two 28.5rem, gaps included. */}
       <fieldset
         aria-label="KPI targets"
-        className="grid min-w-0 grid-cols-1 gap-2 px-3 pt-2 text-sm @min-[28.5rem]:grid-cols-2 @min-[42.25rem]:grid-cols-3 @min-[83.5rem]:grid-cols-6"
+        className="grid min-w-0 grid-cols-1 gap-3 text-sm @min-[28.5rem]:grid-cols-2 @min-[42.25rem]:grid-cols-3 @min-[83.5rem]:grid-cols-6"
       >
         <KpiCard
           met={status?.deploys_per_day}
@@ -177,7 +187,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
           </div>
           {data === undefined ? null : data.flags_source === "none" ? (
-            <div className={`text-xs ${textMutedOnCanvas}`}>
+            <div className={`text-xs ${textMutedOnSurface}`}>
               Flags arrive with flag confirmation
             </div>
           ) : (
@@ -191,7 +201,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                 </span>{" "}
                 if every pending flag is confirmed
               </div>
-              <div className={`text-[11px] ${textMutedOnSurface}`}>
+              <div className={`text-xs ${textMutedOnSurface}`}>
                 {failureRateBreakdown(
                   data.measures.change_failure_rate.per_deploy.confirmed,
                   data.measures.change_failure_rate.per_deploy.confirmed_or_pending
@@ -226,7 +236,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               <span className={`text-xs ${textMutedOnSurface}`}>max</span>
             </span>
           </div>
-          <div className={`text-[11px] ${textMutedOnSurface}`}>
+          <div className={`text-xs ${textMutedOnSurface}`}>
             PRs merged in the window and deployed
           </div>
         </KpiCard>
@@ -252,7 +262,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               <span className={`text-xs ${textMutedOnSurface}`}>p90</span>
             </span>
           </div>
-          <div className={`text-[11px] ${textMutedOnSurface}`}>every PR merged in the window</div>
+          <div className={`text-xs ${textMutedOnSurface}`}>every PR merged in the window</div>
         </KpiCard>
 
         <KpiCard
@@ -290,7 +300,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                 }))}
                 target={targets.deploy_run_success_rate}
               />
-              <div className={`text-[11px] ${textMutedOnSurface}`}>
+              <div className={`text-xs ${textMutedOnSurface}`}>
                 {measures.deploy_run_success.cancelled} cancelled runs not counted
               </div>
             </>
@@ -317,10 +327,10 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             )}
           </div>
           {data === undefined ? null : (
-            <div className="flex flex-wrap gap-x-2 text-xs">
+            <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-xs">
               {(data.unowned_p0 ?? []).slice(0, UNOWNED_P0_SHOWN).map((issue) => (
                 <Link
-                  className={`hover:underline ${linkText}`}
+                  className={linkChrome}
                   key={issue.key}
                   title={issue.title}
                   to={buildIssuePath({ key: issue.key, kind: "issue" })}
@@ -347,11 +357,22 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
       {/* The prototype's strip scrolls sideways and its fold link follows the stats. In the
           narrower panel Dispatch's sidebar leaves, a scrolling strip hides stats behind the link,
           so the stats wrap, each whole, and the link takes its own line where they fill the row. */}
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-1 px-3 py-2 text-sm">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1" data-testid="measures-strip">
+      <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+        {/* Two columns on a phone, so the five stats stand in rows instead of a ragged wrap. */}
+        <div
+          className="grid grow grid-cols-2 gap-x-6 gap-y-1 @min-[28.5rem]:flex @min-[28.5rem]:grow-0 @min-[28.5rem]:flex-wrap @min-[28.5rem]:items-center"
+          data-testid="measures-strip"
+        >
           {strip.map((stat) => (
-            <div className="flex items-baseline gap-2 whitespace-nowrap" key={stat.label}>
-              <span className={`text-lg font-semibold ${textPrimaryOnSurface}`}>{stat.value}</span>
+            <div
+              className="flex min-w-0 items-baseline gap-1.5 @min-[28.5rem]:whitespace-nowrap"
+              key={stat.label}
+            >
+              <span
+                className={`text-[15px] font-semibold whitespace-nowrap ${textPrimaryOnCanvas}`}
+              >
+                {stat.value}
+              </span>
               <span className={`text-xs ${textMutedOnCanvas}`}>{stat.label}</span>
             </div>
           ))}
@@ -384,9 +405,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   const perDeploy = measures.change_failure_rate.per_deploy;
   return (
     <>
-      <div
-        className={`grid grid-cols-2 gap-4 border-t px-3 pt-3 pb-3 text-sm md:grid-cols-3 ${borderDefault}`}
-      >
+      <div className="mt-1 grid grid-cols-1 gap-3 text-sm @min-[28.5rem]:grid-cols-2 @min-[42.25rem]:grid-cols-4">
         <DefinitionCard title="Deploy frequency" value={`${frequency.per_day.toFixed(2)}/day`}>
           {frequency.successful_deploys} successful ({frequency.deploys_with_prs} shipped a PR,{" "}
           {frequency.with_prs_per_day.toFixed(2)}/day)
@@ -436,20 +455,20 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
         </DefinitionCard>
       </div>
 
-      <div className="px-3 pb-3 text-sm">
-        <div className={`mb-1 text-xs uppercase ${textMutedOnCanvas}`}>
+      <div className="mt-4 text-sm">
+        <div className={`mb-2 text-xs font-medium ${textSecondaryOnCanvas}`}>
           Per day (UTC), newest first
         </div>
-        <div className={`max-h-48 overflow-y-auto rounded border ${borderDefault}`}>
+        <div className={`max-h-48 overflow-auto rounded-lg border ${surfaceBg} ${borderDefault}`}>
           <table className="w-full text-xs tabular-nums">
-            <thead className={`sticky top-0 ${surfaceBg} ${textMutedOnSurface}`}>
+            <thead className={`sticky top-0 whitespace-nowrap ${surfaceBg} ${textMutedOnSurface}`}>
               <tr>
-                <th className="px-2 py-1 text-left font-normal">Day</th>
-                <th className="px-2 py-1 text-right font-normal">Deploys</th>
-                <th className="px-2 py-1 text-right font-normal">Concluded runs</th>
-                <th className="px-2 py-1 text-right font-normal">Reached production</th>
-                <th className="px-2 py-1 text-right font-normal">Run success</th>
-                <th className="px-2 py-1 text-right font-normal">Cancelled</th>
+                <th className="px-3 py-1.5 text-left font-medium">Day</th>
+                <th className="px-3 py-1.5 text-right font-medium">Deploys</th>
+                <th className="px-3 py-1.5 text-right font-medium">Concluded runs</th>
+                <th className="px-3 py-1.5 text-right font-medium">Reached production</th>
+                <th className="px-3 py-1.5 text-right font-medium">Run success</th>
+                <th className="px-3 py-1.5 text-right font-medium">Cancelled</th>
               </tr>
             </thead>
             <tbody>
@@ -458,19 +477,19 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                   className={`border-t ${borderDefault} ${d.partial ? textMutedOnSurface : textPrimaryOnSurface}`}
                   key={d.day}
                 >
-                  <td className="px-2 py-0.5">
+                  <td className="px-3 py-1 whitespace-nowrap">
                     {d.day}
                     {d.partial ? " (partial)" : ""}
                   </td>
                   <td
-                    className={`px-2 py-0.5 text-right ${d.partial ? "" : tone(d.deploys >= targets.deploys_per_day)}`}
+                    className={`px-3 py-1 text-right ${d.partial ? "" : tone(d.deploys >= targets.deploys_per_day)}`}
                   >
                     {d.deploys}
                   </td>
-                  <td className="px-2 py-0.5 text-right">{d.concluded}</td>
-                  <td className="px-2 py-0.5 text-right">{d.reached_production}</td>
+                  <td className="px-3 py-1 text-right">{d.concluded}</td>
+                  <td className="px-3 py-1 text-right">{d.reached_production}</td>
                   <td
-                    className={`px-2 py-0.5 text-right ${
+                    className={`px-3 py-1 text-right ${
                       d.partial || d.run_success_rate === null
                         ? ""
                         : tone(d.run_success_rate >= targets.deploy_run_success_rate)
@@ -478,7 +497,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                   >
                     {d.run_success_rate === null ? "n/a" : pct(d.run_success_rate)}
                   </td>
-                  <td className="px-2 py-0.5 text-right">{d.cancelled}</td>
+                  <td className="px-3 py-1 text-right">{d.cancelled}</td>
                 </tr>
               ))}
             </tbody>

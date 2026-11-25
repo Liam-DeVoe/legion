@@ -88,24 +88,24 @@ export function ComponentDetails({
   return (
     <section
       aria-labelledby={headingId}
-      className={`rounded-xl border p-4 ${card} ${borderDefault}`}
+      className={`rounded-lg border p-4 ${card} ${borderDefault}`}
       data-testid="component-details"
       ref={section}
     >
       <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 className={`text-lg font-semibold ${textPrimaryOnSurface}`} id={headingId}>
+        <h2 className={`text-[15px] font-semibold ${textPrimaryOnSurface}`} id={headingId}>
           {component.title}
         </h2>
         <code className={`text-xs ${textMutedOnSurface}`}>{component.id}</code>
         {component.external ? (
           <span
-            className={`rounded-full px-2 py-0.5 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
+            className={`inline-flex h-5 items-center rounded px-1.5 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
           >
             external
           </span>
         ) : null}
         {component.external ? null : (
-          <span className={`text-sm ${textSecondaryOnSurface}`}>
+          <span className={`text-xs ${textMutedOnSurface}`}>
             {component.done}/{component.total} issues done
             {component.total !== component.own_total
               ? ` · ${component.own_done}/${component.own_total} on this component itself`
@@ -114,7 +114,7 @@ export function ComponentDetails({
         )}
       </header>
 
-      <h3 className={`mt-4 text-sm font-semibold ${textSecondaryOnSurface}`}>Work</h3>
+      <h3 className={`mt-4 text-xs font-medium ${textMutedOnSurface}`}>Work</h3>
       {issues.length === 0 ? (
         <p className={`mt-1 text-sm ${textMutedOnSurface}`}>
           {component.external
@@ -126,7 +126,7 @@ export function ComponentDetails({
           {open.length === 0 ? (
             <p className={`mt-1 text-sm ${textMutedOnSurface}`}>Every issue here is done.</p>
           ) : (
-            <ul aria-label={`Open work on ${component.title}`} className="mt-1 space-y-1">
+            <ul aria-label={`Open work on ${component.title}`} className="mt-2 space-y-1">
               {open.map((issue) => (
                 <WorkRow
                   component={component.id}
@@ -168,9 +168,7 @@ export function ComponentDetails({
         </>
       )}
 
-      <h3 className={`mt-4 text-sm font-semibold ${textSecondaryOnSurface}`}>
-        Code &amp; definition
-      </h3>
+      <h3 className={`mt-4 text-xs font-medium ${textMutedOnSurface}`}>Code &amp; definition</h3>
       {component.prose.trim() === "" ? (
         <p className={`mt-1 text-sm ${textMutedOnSurface}`}>No description in the model.</p>
       ) : (
@@ -263,14 +261,14 @@ function WorkRow({
   tree: ArchitectureTree;
 }): ReactNode {
   return (
-    <li className={`rounded-lg border ${borderDefault}`} data-testid={`work-${issue.key}`}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1">
+    <li className={`rounded-md border ${borderDefault}`} data-testid={`work-${issue.key}`}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 py-0.5 pr-3 pl-1">
         <button
           aria-expanded={expanded}
           aria-label={
             expanded ? `Collapse children of ${issue.key}` : `Expand children of ${issue.key}`
           }
-          className={`grid size-11 shrink-0 place-items-center rounded md:size-8 ${disclosureButtonText}`}
+          className={`grid size-8 shrink-0 place-items-center rounded-md ${disclosureButtonText}`}
           onClick={onToggle}
           type="button"
         >
@@ -281,7 +279,7 @@ function WorkRow({
             90 px title into "CORE-1 · We"; from `sm` everything shares one row. */}
         <div className="flex min-w-0 flex-1 basis-[calc(100%-3.5rem)] items-center sm:basis-0">
           <Link
-            className={`flex min-w-0 flex-1 font-medium ${linkText} ${linkHoverText}`}
+            className={`flex min-w-0 flex-1 text-sm font-medium ${linkText} ${linkHoverText}`}
             to={buildIssuePath({ key: issue.key, kind: "issue" })}
             {...referenceTriggerProps({ key: issue.key, kind: "issue" })}
           >

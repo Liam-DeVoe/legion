@@ -364,13 +364,13 @@ test("AskCard exposes medium urgency to screen readers without an inline label",
   }
 });
 
-test("AskCard renders a blocking urgency notch", () => {
+test("AskCard renders a blocking urgency badge", () => {
   const input = ask({ urgency: "blocking" });
   const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
 
   try {
     const card = view.getByRole("article", { name: "Urgency: Blocking" });
-    expect(within(card).getByText("BLOCKING", { exact: true })).toBeTruthy();
+    expect(within(card).getByText("Blocking", { exact: true })).toBeTruthy();
   } finally {
     view.unmount();
   }

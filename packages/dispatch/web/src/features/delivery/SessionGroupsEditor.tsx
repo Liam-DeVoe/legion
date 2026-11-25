@@ -4,14 +4,14 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
+import { Button } from "../../components/Button";
+import { Input } from "../../components/Field";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
   borderStrong,
-  dangerText,
   dismissButtonText,
   inputClasses,
-  secondaryButtonCompact,
   surfaceBg,
   textMutedOnSurface,
   textPrimaryOnSurface,
@@ -35,8 +35,8 @@ interface GroupChange {
   readonly what: string;
 }
 
-const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
-const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
+const sectionLabel = `text-xs font-medium ${textMutedOnSurface}`;
+const _fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
  *  sessions to add. While any group write is pending, every mutating button is disabled so a
@@ -59,19 +59,22 @@ function GroupCard({
   const [name, setName] = useState(group.name);
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
   return (
-    <fieldset aria-label={group.name} className={`grid gap-2 rounded border p-3 ${borderDefault}`}>
+    <fieldset
+      aria-label={group.name}
+      className={`grid gap-2 rounded-lg border p-3 ${borderDefault}`}
+    >
       <div className="flex items-center gap-2">
         <label className="sr-only" htmlFor={`${id}-name`}>
           Name
         </label>
-        <input
-          className={fieldClass}
+        <Input
+          className="flex-1"
           id={`${id}-name`}
           onChange={(event) => setName(event.target.value)}
+          surface="recessed"
           value={name}
         />
-        <button
-          className={secondaryButtonCompact}
+        <Button
           disabled={pending || name.trim() === "" || name.trim() === group.name}
           onClick={() =>
             write({
@@ -82,15 +85,14 @@ function GroupCard({
               what: `the rename of the group ${group.name}`,
             })
           }
-          type="button"
         >
           Rename
-        </button>
+        </Button>
       </div>
       <ul className="flex flex-wrap gap-1">
         {(group.sessions ?? []).map((session) => (
           <li
-            className={`flex items-center gap-1 rounded border px-2 py-0.5 text-xs ${borderStrong}`}
+            className={`flex h-6 items-center gap-0.5 rounded border pl-2 text-xs ${borderStrong}`}
             key={session}
           >
             <AgentName
@@ -100,7 +102,7 @@ function GroupCard({
             />
             <button
               aria-label={`Remove ${text.sessionText(session, storedTitle(session))}`}
-              className={dismissButtonText}
+              className={`flex size-6 items-center justify-center rounded ${dismissButtonText}`}
               disabled={pending}
               onClick={() =>
                 write({
@@ -119,9 +121,9 @@ function GroupCard({
         ))}
       </ul>
       <div className="flex gap-2">
-        <button
-          className={secondaryButtonCompact}
+        <Button
           disabled={pending || addable.length === 0}
+          size="sm"
           onClick={() =>
             write({
               group,
@@ -130,13 +132,13 @@ function GroupCard({
               what: `the sessions added to ${group.name}`,
             })
           }
-          type="button"
         >
           Add selected
-        </button>
-        <button
-          className={`${secondaryButtonCompact} ${dangerText}`}
+        </Button>
+        <Button
           disabled={pending}
+          size="sm"
+          variant="danger"
           onClick={() =>
             write({
               group,
@@ -145,10 +147,9 @@ function GroupCard({
               what: `the deletion of the group ${group.name}`,
             })
           }
-          type="button"
         >
           Delete group
-        </button>
+        </Button>
       </div>
     </fieldset>
   );
@@ -239,23 +240,30 @@ export function SessionGroupsEditor({
     <aside
       aria-labelledby={`${id}-heading`}
       aria-modal="true"
-      className={`fixed top-0 right-0 z-30 flex h-full w-[28rem] max-w-full flex-col gap-4 overflow-y-auto border-l p-4 shadow-xl ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`}
+      className={`fixed top-0 right-0 z-30 flex h-full w-[28rem] max-w-full flex-col gap-4 overflow-y-auto border-l p-5 shadow-xl ${borderDefault} ${surfaceBg} ${textPrimaryOnSurface}`}
       ref={dialog.containerRef}
       role="dialog"
     >
       <div className="flex items-start justify-between gap-2">
-        <h2 className="text-lg font-semibold" id={`${id}-heading`}>
+        <h2 className="text-[15px] leading-8 font-semibold" id={`${id}-heading`}>
           Session groups
         </h2>
-        <button
+        <Button
           aria-label="Close session groups"
-          className={dismissButtonText}
+          iconOnly
           onClick={onClose}
           ref={closeButtonRef}
-          type="button"
+          variant="ghost-muted"
         >
-          ✕
-        </button>
+          <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 16 16">
+            <path
+              d="m4 4 8 8m0-8-8 8"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeWidth="1.5"
+            />
+          </svg>
+        </Button>
       </div>
       <p className={`text-sm ${textMutedOnSurface}`}>
         A group is one Parent agent: every pull request its sessions wrote first counts under the
@@ -301,24 +309,23 @@ export function SessionGroupsEditor({
           <label className="sr-only" htmlFor={`${id}-new-name`}>
             New group name
           </label>
-          <input
-            className={fieldClass}
+          <Input
+            className="flex-1"
             id={`${id}-new-name`}
             onChange={(event) => {
               save.forgetUnanswered();
               setName(event.target.value);
             }}
             placeholder="Group name"
+            surface="recessed"
             value={name}
           />
-          <button
-            className={secondaryButtonCompact}
+          <Button
             disabled={name.trim() === "" || selected.length === 0 || save.isPending}
             onClick={create}
-            type="button"
           >
             Create group
-          </button>
+          </Button>
         </div>
         {madeUnanswered === undefined ? null : <LandedWithoutAnswer what={madeUnanswered} />}
       </section>

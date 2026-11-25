@@ -4,6 +4,7 @@ import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { DisplayTree, GraphEdge, GraphReferences } from "../../api/types";
+import { Button } from "../../components/Button";
 import {
   borderDefault,
   linkHoverText,
@@ -262,14 +263,15 @@ function Excerpt({
         </p>
       )}
       {clampable ? (
-        <button
+        <Button
           aria-expanded={expanded}
-          className={`min-h-11 text-xs font-medium ${linkText} ${linkHoverText}`}
+          className="-ml-2.5"
           onClick={() => setExpanded((open) => !open)}
-          type="button"
+          size="sm"
+          variant="ghost"
         >
           {expanded ? "Show less" : "Show more"}
-        </button>
+        </Button>
       ) : null}
     </>
   );
@@ -296,24 +298,25 @@ export function ReferencedByToggle({
 }): ReactNode {
   if (count === 0) {
     return (
-      <span
-        className={`inline-flex min-h-11 shrink-0 items-center px-2 py-1 text-sm ${textMutedOnSurface}`}
-      >
+      <span className={`inline-flex h-7 shrink-0 items-center text-[13px] ${textMutedOnSurface}`}>
         Referenced by (0)
       </span>
     );
   }
 
   return (
-    <button
+    // A disclosure in a row of metadata: the ghost button the header's Subscribers beside it is,
+    // pulled out by its own inset so its words sit on the rail's rhythm.
+    <Button
       aria-controls={controls}
       aria-expanded={expanded}
-      className={`flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${linkText} ${linkHoverText}`}
+      className="-mx-2"
       onClick={onToggle}
-      type="button"
+      size="sm"
+      variant="ghost"
     >
       {count === undefined ? "Referenced by" : `Referenced by (${count})`}
-    </button>
+    </Button>
   );
 }
 
@@ -424,7 +427,7 @@ export function ReferencedBy({
                 ) : (
                   <Link
                     {...referenceTriggerProps(group.path.route)}
-                    className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+                    className={`dispatch-inline-link hover:underline ${linkText} ${linkHoverText}`}
                     to={group.path.href}
                   >
                     {group.label}
@@ -461,7 +464,7 @@ export function ReferencedBy({
                         ) : (
                           <Link
                             {...referenceTriggerProps(row.route)}
-                            className={`underline ${linkText} ${linkHoverText}`}
+                            className={`hover:underline ${linkText} ${linkHoverText}`}
                             to={row.href}
                           >
                             <Timestamp at={edge.created_at} />
@@ -473,7 +476,7 @@ export function ReferencedBy({
                             <span aria-hidden="true">·</span>
                             <Link
                               {...referenceTriggerProps(cited.route)}
-                              className={`underline ${linkText} ${linkHoverText}`}
+                              className={`hover:underline ${linkText} ${linkHoverText}`}
                               to={cited.href}
                             >
                               block {edge.block?.block_id}

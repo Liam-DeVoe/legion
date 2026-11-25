@@ -13,8 +13,8 @@ import {
 } from "@assistant-ui/react";
 import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
 import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
-
 import { ChevronIcon } from "../../components/DisclosureToggle";
+import { inputClassName } from "../../components/Field";
 import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useFootInset } from "../../hooks/useFootInset";
@@ -25,18 +25,20 @@ import {
   cardHoverBorder,
   dangerText,
   disclosureButtonText,
-  inputClasses,
   primaryButtonBg,
   primaryButtonHoverBg,
   selectedCardBg,
   selectedCardBorder,
   surfaceMutedBg,
   textMutedOnCanvas,
+  textMutedOnSurface,
   textMutedOnSurfaceMuted,
   textOptionDescription,
   textPrimaryOnCanvas,
   textPrimaryOnSurface,
+  textPrimaryOnSurfaceMuted,
   textSecondaryOnCanvas,
+  textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import type { SessionSends } from "../conversation/useSessionSends";
@@ -56,6 +58,17 @@ import { useFrameCoalesced } from "./useFrameCoalesced";
  * theme classes rather than the library's stock styles, so it reads as part of the dashboard.
  * The runtime is supplied by the page above; this file is presentation only.
  */
+
+/** One shape for every boxed turn of the thread: the viewer's own message on the right, and on the
+ *  left a message somebody else sent the session and a reply the session sent through Dispatch.
+ *  They differ in side and fill alone, so the thread reads as one conversation. `w-fit` keeps a
+ *  short turn as wide as its words; `max-w-[80%]` keeps a long one clear of the other side. */
+const bubble = "mt-4 w-fit max-w-[80%] rounded-lg border px-3 py-2 text-sm";
+/** The viewer's own bubble, which its turn's `justify-end` row places: the muted fill on the
+ *  same rule as the others. `PendingSendTurn` draws a send that is still out in the same box. */
+const ownBubble = `max-w-[80%] rounded-lg border px-3 py-2 text-sm ${borderDefault} ${surfaceMutedBg} ${textPrimaryOnSurfaceMuted}`;
+/** Who a boxed turn is from, above its words. */
+const bubbleLabel = `mb-1 text-xs font-medium ${textMutedOnSurface}`;
 
 const preClasses = `mt-2 max-h-64 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
 
@@ -183,11 +196,11 @@ function UserMessage(): ReactNode {
   if (actor !== undefined) {
     return (
       <div
-        className={`mt-4 max-w-[80%] rounded-xl border px-3 py-2 text-sm ${borderDefault} ${textPrimaryOnCanvas}`}
+        className={`${bubble} ${card} ${textPrimaryOnSurface}`}
         data-message-id={turn}
         data-testid="agent-message-other"
       >
-        <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>
+        <p className={bubbleLabel}>
           <AgentName actor={actor} inline />
           {issue === undefined ? null : ` · ${issue}`}
           <EditedMark at={edited} deleted={deleted} />
@@ -198,9 +211,7 @@ function UserMessage(): ReactNode {
   }
   return (
     <div className="mt-4 flex justify-end" data-message-id={turn} data-testid="agent-message-user">
-      <div
-        className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${surfaceMutedBg} ${textPrimaryOnCanvas}`}
-      >
+      <div className={ownBubble}>
         <CorrectedParts deleted={deleted} />
       </div>
     </div>
@@ -230,11 +241,11 @@ function AssistantMessage(): ReactNode {
   if (fromDispatch) {
     return (
       <div
-        className={`mt-4 rounded-xl border px-3 py-2 text-sm ${card} ${borderDefault} ${textPrimaryOnCanvas}`}
+        className={`${bubble} ${card} ${textPrimaryOnSurface}`}
         data-message-id={turn}
         data-testid="agent-dispatch-reply"
       >
-        <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>
+        <p className={bubbleLabel}>
           Reply via Dispatch
           <EditedMark at={edited} deleted={deleted} />
         </p>
@@ -550,7 +561,10 @@ export function AgentThread({
               assistant-ui applies it in a passive effect (`useExternalStoreRuntime`), and for that
               commit the line showed beside the empty slot. */}
           {notice === undefined || threadEmpty ? null : (
-            <p className={`mt-3 text-sm ${textMutedOnCanvas}`} data-testid="agent-silence-line">
+            <p
+              className={`mt-3 rounded-lg border px-3 py-2 text-sm ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnSurfaceMuted}`}
+              data-testid="agent-silence-line"
+            >
               {notice}
             </p>
           )}
@@ -573,7 +587,7 @@ export function AgentThread({
               as a scroll event nothing can tell from the reader's own. */}
           <ThreadPrimitive.Viewport
             autoScroll={false}
-            className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 pl-1 [overflow-anchor:none]"
+            className="-mx-1 mt-3 min-h-0 flex-1 overflow-y-auto pr-1 pl-1 [overflow-anchor:none]"
             data-testid="agent-thread"
             ref={setViewport}
             scrollToBottomOnInitialize={false}
@@ -599,7 +613,7 @@ export function AgentThread({
           </ThreadPrimitive.Viewport>
           {follow.atEnd ? null : (
             <button
-              className={`absolute bottom-3 left-1/2 z-10 min-h-11 -translate-x-1/2 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg ${primaryButtonBg} ${primaryButtonHoverBg}`}
+              className={`absolute bottom-3 left-1/2 z-10 h-8 -translate-x-1/2 rounded-full px-3 text-xs font-semibold whitespace-nowrap shadow-lg ${primaryButtonBg} ${primaryButtonHoverBg}`}
               data-testid="jump-to-latest"
               onClick={follow.jumpToEnd}
               ref={jumpRef}
@@ -631,7 +645,7 @@ export function AgentThread({
                 phone's width, then a desktop's, left it 636px tall), and the composer then lay
                 over the row under it, so a press at Send reached that row. */}
             <ComposerPrimitive.Input
-              className={`max-h-[40dvh] min-h-11 flex-1 overflow-y-auto rounded-lg px-3 py-2 text-sm ${inputClasses(false)}`}
+              className={`${inputClassName()} max-h-[40dvh] min-h-8 flex-1 resize-none overflow-y-auto py-[5px] leading-5`}
               // The one handle a browser row reaches this box by, since its accessible name is
               // the placeholder, which says what the session is doing (`DISPATCH_WRITING_BOXES`).
               data-agent-message=""
@@ -644,7 +658,6 @@ export function AgentThread({
                 composer root turns into assistant-ui's own send: one way out for a message. */}
             <RefusableButton
               busy={held ? "Send" : undefined}
-              className="min-h-11"
               describedBy={held ? hintId : undefined}
               onRefusedPress={() => setRefusedPress(true)}
               refusal={refusal}

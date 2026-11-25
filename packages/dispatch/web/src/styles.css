@@ -76,6 +76,47 @@ a {
     border-color 150ms ease;
 }
 
+/* The app's base rules for every control, in Tailwind's base layer so a component's own
+   utilities (`outline-none`, `cursor-default`, a ring of its own) still outrank them.
+
+   One focus ring: 2 px of the focus accent (`theme/classes.ts`'s `FOCUS_ACCENT`, 3:1 on every
+   surface in both schemes), 2 px off a button or a link, and on the rule of a field, whose box
+   is already drawn. Only the keyboard draws it on a button (`:focus-visible`); a field draws it
+   whenever it holds the caret. An editor's own surface (`contenteditable`) draws none: its
+   caret says where the focus is, and a ring around a whole document says nothing.
+
+   A control that can be pressed shows the pointer's hand; one that cannot keeps the arrow. */
+@layer base {
+  :where(a, button, input, select, textarea, summary, [tabindex], [role="button"]):focus-visible {
+    outline: 2px solid var(--color-sky-600);
+    outline-offset: 2px;
+  }
+
+  :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea):focus-visible {
+    outline-offset: -1px;
+  }
+
+  :where([contenteditable]):focus-visible {
+    outline: none;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :where(a, button, input, select, textarea, summary, [tabindex], [role="button"]):focus-visible {
+      outline-color: var(--color-sky-400);
+    }
+  }
+
+  :where(
+      button,
+      summary,
+      select,
+      [role="button"],
+      label:has(input[type="checkbox"], input[type="radio"])
+    ):not(:disabled, [aria-disabled="true"]) {
+    cursor: pointer;
+  }
+}
+
 /* The new issue page's typeface: Inter, the face every width of that page's spec and pictures
    is measured in (dispatch://INFRA-1196 R36), shipped in the bundle so that no reader of it is
    drawn in whatever face their machine happens to hold. It is declared under a family name of
@@ -554,20 +595,28 @@ html:has([data-issue-page]) {
   --bg-color: transparent;
   --text-color: currentColor;
   --font-family: inherit;
-  --code-bg: #f1f5f9; /* slate-100 */
-  --pre-bg: #0f172b; /* slate-900 */
-  --pre-color: #f1f5f9; /* slate-100 */
-  --blockquote-border: #cad5e2; /* slate-300 */
-  --blockquote-color: #45556c; /* slate-600 */
+  --code-bg: var(--color-slate-100);
+  --pre-bg: var(--color-slate-100);
+  --pre-color: var(--color-slate-800);
+  --blockquote-border: var(--color-slate-300);
+  --blockquote-color: var(--color-slate-600);
+  --doc-rule: var(--color-slate-200);
+  --doc-quiet: var(--color-slate-500);
+  --doc-marker: var(--color-slate-400);
+  --doc-head-bg: var(--color-slate-100);
 }
 
 @media (prefers-color-scheme: dark) {
   .dispatch-doc .proof-editor {
-    --code-bg: #1d293d; /* slate-800 */
-    --pre-bg: #020618; /* slate-950 */
-    --pre-color: #f1f5f9; /* slate-100 */
-    --blockquote-border: #45556c; /* slate-600 */
-    --blockquote-color: #cad5e2; /* slate-300 */
+    --code-bg: var(--color-slate-800);
+    --pre-bg: var(--color-slate-900);
+    --pre-color: var(--color-slate-200);
+    --blockquote-border: var(--color-slate-600);
+    --blockquote-color: var(--color-slate-300);
+    --doc-rule: var(--color-slate-800);
+    --doc-quiet: var(--color-slate-400);
+    --doc-marker: var(--color-slate-500);
+    --doc-head-bg: var(--color-slate-900);
   }
 }
 
@@ -577,14 +626,20 @@ html:has([data-issue-page]) {
 .dispatch-doc .milkdown table {
   display: block;
   max-width: 100%;
+  margin-block: 1.25em;
   overflow-x: auto;
   border-collapse: collapse;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
 }
 
+/* A table is ruled between its rows only: a full grid of rules, a rule on every side of every
+   cell, reads as a form. The head is the app's table head, `text-xs` and quiet, on the recessed
+   surface. */
 .dispatch-doc .milkdown th,
 .dispatch-doc .milkdown td {
-  border: 1px solid #cad5e2; /* slate-300 */
-  padding: 0.375rem 0.75rem;
+  border: 0;
+  padding: 0.5rem 0.75rem;
   text-align: left;
   vertical-align: top;
   overflow-wrap: anywhere;
@@ -598,9 +653,28 @@ html:has([data-issue-page]) {
   text-align: right;
 }
 
+/* The rule is each body cell's top edge, and the last row's bottom edge. */
+.dispatch-doc .milkdown td {
+  border-top: 1px solid var(--doc-rule);
+}
+
+.dispatch-doc .milkdown tr:last-child > td {
+  border-bottom: 1px solid var(--doc-rule);
+}
+
 .dispatch-doc .milkdown th {
+  font-size: 0.75rem;
   font-weight: 600;
-  background-color: #f8fafc; /* slate-50 */
+  color: var(--doc-quiet);
+  background-color: var(--doc-head-bg);
+}
+
+.dispatch-doc .milkdown th:first-child {
+  border-top-left-radius: 0.375rem;
+}
+
+.dispatch-doc .milkdown th:last-child {
+  border-top-right-radius: 0.375rem;
 }
 
 .dispatch-doc .milkdown th > p,
@@ -608,22 +682,28 @@ html:has([data-issue-page]) {
   margin: 0;
 }
 
-@media (prefers-color-scheme: dark) {
-  .dispatch-doc .milkdown th,
-  .dispatch-doc .milkdown td {
-    border-color: #45556c; /* slate-600 */
-  }
-
-  .dispatch-doc .milkdown th {
-    background-color: #1d293d; /* slate-800 */
-  }
-}
-
 /* The library mounts the editor with Tailwind Typography's `prose`, whose 65ch cap left the
    document at ~600px inside a column twice as wide; the column is the measure here. */
+/* The editor keeps room to click into only where it takes typing: an empty or short document
+   a reader can edit still offers a field to start in, and one that cannot be edited - a closed
+   issue's, a saved version - is as tall as its text, so no blank block stands between a short
+   document and what follows it. The library's own floor is 400px on every editor. */
 .dispatch-doc .milkdown .editor {
-  min-height: 24rem;
+  min-height: 0;
   max-width: none;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.dispatch-doc[data-read-only="false"] .milkdown .editor {
+  min-height: 6rem;
+}
+
+/* The library opens every editor 2em below its box and closes it 2em above, which put a band
+   of nothing between the page's own chrome and the document's first line. The page spaces the
+   document itself. */
+.dispatch-doc .milkdown .editor.ProseMirror {
+  margin-block: 0;
 }
 
 /* A priority's description is drawn in the documents' editor (`PriorityDescription.tsx`), but it
@@ -641,20 +721,211 @@ html:has([data-issue-page]) {
    document. The scale starts one step below the page title's own 22px and descends from
    there, so the page's identity outranks its document's heading rather than tying with it. The
    library's stylesheet is unlayered, so the override has to outrank `.milkdown h1` (0,1,1);
-   `.dispatch-doc .milkdown h1` (0,2,1) does. */
+   `.dispatch-doc .milkdown h1` (0,2,1) does.
+
+   One rhythm for the whole document: a heading stands closer to the text it heads than to the
+   text before it, blocks are 12px apart, and the items of a list stand as close as the lines
+   of a paragraph. Typography's `prose` and the library each set margins of their own on these
+   elements, in `em` of a 16px body; both are stated here so neither shows through. */
+.dispatch-doc .milkdown :is(h1, h2, h3, h4) {
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
 .dispatch-doc .milkdown h1 {
+  margin-top: 2rem;
   font-size: 1.25rem;
   line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 
 .dispatch-doc .milkdown h2 {
-  font-size: 1.125rem;
+  margin-top: 1.75rem;
+  font-size: 1.0625rem;
   line-height: 1.4;
 }
 
 .dispatch-doc .milkdown h3 {
-  font-size: 1rem;
+  margin-top: 1.5rem;
+  font-size: 0.9375rem;
   line-height: 1.5;
+}
+
+.dispatch-doc .milkdown h4 {
+  margin-top: 1.25rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.dispatch-doc .milkdown :is(p, ul, ol, blockquote, pre),
+.dispatch-doc .milkdown .proof-code-block {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+}
+
+.dispatch-doc .milkdown :is(ul, ol) {
+  padding-left: 1.375rem;
+}
+
+.dispatch-doc .milkdown li {
+  margin-block: 0.125rem;
+  padding-left: 0.125rem;
+}
+
+.dispatch-doc .milkdown li::marker {
+  color: var(--doc-marker);
+}
+
+.dispatch-doc .milkdown li > :is(p, ul, ol) {
+  margin-bottom: 0;
+}
+
+.dispatch-doc .milkdown li > p + p {
+  margin-top: 0.5rem;
+}
+
+.dispatch-doc .milkdown li > :is(ul, ol) {
+  margin-top: 0.125rem;
+}
+
+/* Code is the app's mono at one size below the text it stands in, at the text's own weight. A
+   block of it is a recessed panel with a hairline, the same in both schemes, rather than a
+   black slab in a light document that vanished into the canvas in a dark one. */
+.dispatch-doc .milkdown code {
+  padding: 0.0625rem 0.3125rem;
+  border-radius: 0.25rem;
+  font-size: 0.875em;
+  font-weight: 500;
+}
+
+.dispatch-doc .milkdown pre {
+  border: 1px solid var(--doc-rule);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.dispatch-doc .milkdown .proof-code-block .proof-code-block-pre {
+  margin-bottom: 0;
+}
+
+.dispatch-doc .milkdown pre code {
+  padding: 0;
+  font-size: inherit;
+  font-weight: 400;
+}
+
+/* The library's syntax colours are written for its own black slab. On the light panel each
+   takes the 700 shade of its hue, which holds 4.5:1 there; the dark panel takes the 300. */
+.dispatch-doc .milkdown pre code .token:is(.comment, .prolog, .doctype, .cdata) {
+  color: var(--color-slate-500);
+}
+
+.dispatch-doc .milkdown pre code .token:is(.punctuation, .operator, .entity, .url, .variable) {
+  color: var(--color-slate-700);
+}
+
+.dispatch-doc .milkdown pre code .token:is(.property, .tag, .constant, .symbol, .deleted) {
+  color: var(--color-rose-700);
+}
+
+.dispatch-doc .milkdown pre code .token:is(.boolean, .number) {
+  color: var(--color-violet-700);
+}
+
+.dispatch-doc
+  .milkdown
+  pre
+  code
+  .token:is(.selector, .attr-name, .string, .char, .builtin, .inserted) {
+  color: var(--color-emerald-700);
+}
+
+.dispatch-doc .milkdown pre code .token:is(.atrule, .attr-value, .function, .class-name) {
+  color: var(--color-amber-700);
+}
+
+.dispatch-doc .milkdown pre code .token.keyword {
+  color: var(--color-sky-700);
+}
+
+.dispatch-doc .milkdown pre code .token:is(.regex, .important) {
+  color: var(--color-orange-700);
+}
+
+@media (prefers-color-scheme: dark) {
+  .dispatch-doc .milkdown pre code .token:is(.comment, .prolog, .doctype, .cdata) {
+    color: var(--color-slate-400);
+  }
+
+  .dispatch-doc .milkdown pre code .token:is(.punctuation, .operator, .entity, .url, .variable) {
+    color: var(--color-slate-300);
+  }
+
+  .dispatch-doc .milkdown pre code .token:is(.property, .tag, .constant, .symbol, .deleted) {
+    color: var(--color-rose-300);
+  }
+
+  .dispatch-doc .milkdown pre code .token:is(.boolean, .number) {
+    color: var(--color-violet-300);
+  }
+
+  .dispatch-doc
+    .milkdown
+    pre
+    code
+    .token:is(.selector, .attr-name, .string, .char, .builtin, .inserted) {
+    color: var(--color-emerald-300);
+  }
+
+  .dispatch-doc .milkdown pre code .token:is(.atrule, .attr-value, .function, .class-name) {
+    color: var(--color-amber-300);
+  }
+
+  .dispatch-doc .milkdown pre code .token.keyword {
+    color: var(--color-sky-300);
+  }
+
+  .dispatch-doc .milkdown pre code .token:is(.regex, .important) {
+    color: var(--color-orange-300);
+  }
+}
+
+/* A quotation is set off by its rule and its quieter ink. Typography adds italics, a medium
+   weight and printed quotation marks around it, which read as emphasis the author did not
+   write. */
+.dispatch-doc .milkdown blockquote {
+  border-left-width: 2px;
+  padding-left: 0.75rem;
+  font-style: normal;
+  font-weight: 400;
+  quotes: none;
+}
+
+.dispatch-doc .milkdown blockquote > :nth-last-child(1) {
+  margin-bottom: 0;
+}
+
+.dispatch-doc .milkdown blockquote p::before,
+.dispatch-doc .milkdown blockquote p::after {
+  content: none;
+}
+
+.dispatch-doc .milkdown hr {
+  margin-block: 1.5rem;
+  border-color: var(--doc-rule);
+}
+
+/* The document starts at the top of its box and ends at the bottom of it, whatever its first
+   and last blocks are. (`:nth-child(1)`, not `:first-child`: the linter reads two rules that end
+   in the same compound as one cascade, and the outline's rule further down ends in it too.) */
+.dispatch-doc .milkdown .editor > :nth-child(1) {
+  margin-top: 0;
+}
+
+.dispatch-doc .milkdown .editor > :nth-last-child(1) {
+  margin-bottom: 0;
 }
 
 .dispatch-doc .dispatch-mark-active,
@@ -753,7 +1024,7 @@ html:has([data-issue-page]) {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.5rem;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.25rem;
 }
 
 :is(.dispatch-doc, .dispatch-markdown) [data-proof-block-name] {
@@ -822,6 +1093,59 @@ html:has([data-issue-page]) {
   }
 }
 
+/* A typed block that is not a decision - a requirement, a check, a callout - is a block of the
+   document with a name: a rule down its leading edge joins the name to the text it names, and
+   sets the block off from the prose around it. Without one the name floated over the next
+   paragraph as a stray label, 28px above it. The block's own first and last lines stand flush
+   in it. A callout is an aside, so it takes the recessed surface as well. `--doc-rule` is the
+   document's hairline (`.dispatch-doc .proof-editor` above); a body outside a document falls
+   back to the same two swatches. */
+:is(.dispatch-doc, .dispatch-markdown) .proof-typed-block:not(.proof-typed-block-ask) {
+  margin-block: 0.75rem;
+  border-left: 2px solid var(--doc-rule, var(--color-slate-200));
+  padding: 0.125rem 0 0.125rem 0.75rem;
+}
+
+:is(.dispatch-doc, .dispatch-markdown)
+  .proof-typed-block:not(.proof-typed-block-ask)
+  > [data-proof-block-content]
+  > :nth-child(1) {
+  margin-top: 0;
+}
+
+:is(.dispatch-doc, .dispatch-markdown)
+  .proof-typed-block:not(.proof-typed-block-ask)
+  > [data-proof-block-content]
+  > :nth-last-child(1) {
+  margin-bottom: 0;
+}
+
+:is(.dispatch-doc, .dispatch-markdown) .proof-typed-block-callout {
+  border-left-color: var(--color-slate-400);
+  border-radius: 0 0.375rem 0.375rem 0;
+  padding: 0.625rem 0.875rem;
+  background-color: var(--color-slate-100);
+}
+
+:is(.dispatch-doc, .dispatch-markdown) .proof-typed-block-callout [data-proof-block-badge] {
+  background-color: var(--color-slate-200);
+}
+
+@media (prefers-color-scheme: dark) {
+  :is(.dispatch-doc, .dispatch-markdown) .proof-typed-block-callout [data-proof-block-badge] {
+    background-color: var(--color-slate-800);
+  }
+
+  :is(.dispatch-doc, .dispatch-markdown) .proof-typed-block:not(.proof-typed-block-ask) {
+    border-left-color: var(--doc-rule, var(--color-slate-800));
+  }
+
+  :is(.dispatch-doc, .dispatch-markdown) .proof-typed-block-callout {
+    border-left-color: var(--color-slate-500);
+    background-color: var(--color-slate-900);
+  }
+}
+
 /* The library paints a document's links in a blue of its own (`.milkdown a`,
    `@legion/proof-editor`'s `lib.css`), which is 3.9:1 on the light document surface - under
    WCAG AA's 4.5:1 for body text, and a serious finding of `e2e/accessibility.e2e.ts`. A
@@ -831,6 +1155,19 @@ html:has([data-issue-page]) {
    card the app draws inside a block keeps the colours its own utilities give it. */
 .dispatch-doc .milkdown a {
   color: #0069a8; /* sky-700 */
+}
+
+/* A link in the document's running text is underlined, as a link in any text of the app is; a
+   reference drawn as its target's title is a name, and is underlined under the pointer. */
+.dispatch-doc .milkdown a:not(.dispatch-reference) {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in oklab, currentColor 40%, transparent);
+}
+
+.dispatch-doc .milkdown a:not(.dispatch-reference):hover {
+  text-decoration-color: currentColor;
 }
 
 @media (prefers-color-scheme: dark) {

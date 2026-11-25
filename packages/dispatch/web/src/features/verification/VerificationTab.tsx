@@ -10,9 +10,10 @@ import type {
   ResultCommitStands,
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
+import { cardClassName } from "../../components/Layout";
 import { pillClassName, pillShapeClassName } from "../../components/Pill";
 import {
-  card,
+  borderDefault,
   dangerText,
   successText,
   surfaceMutedBg,
@@ -102,7 +103,7 @@ function Fact({
   testId: string;
 }): ReactNode {
   return (
-    <div className="flex flex-wrap items-baseline gap-x-2">
+    <div className="flex flex-wrap content-start items-baseline gap-x-2">
       <dt className={`text-xs font-medium ${textMutedOnSurface}`}>{label}</dt>
       <dd className={`text-sm ${textSecondaryOnSurface}`} data-testid={testId}>
         {children === undefined || children === "" ? "—" : children}
@@ -207,7 +208,7 @@ function Result({
 }): ReactNode {
   const retracted = result.retracted;
   return (
-    <li className="space-y-2" data-testid="verification-result">
+    <li className={`space-y-2 border-t pt-3 ${borderDefault}`} data-testid="verification-result">
       <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-sm ${textMutedOnSurface}`}>
         <span
           className={`${pillShapeClassName} ${surfaceMutedBg} ${result.verdict === "pass" ? successText : dangerText}`}
@@ -303,7 +304,7 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
   const results = check.results ?? [];
   return (
     <li
-      className={`space-y-3 rounded-lg p-3 ${card}`}
+      className={`space-y-3 ${cardClassName()}`}
       data-pass-stands={stands}
       data-testid="verification-check"
     >

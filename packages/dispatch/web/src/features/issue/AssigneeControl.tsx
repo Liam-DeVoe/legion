@@ -5,7 +5,7 @@ import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
 import {
-  badgeLow,
+  badgeGhost,
   badgePrimary,
   pageAvatar,
   pageInkText,
@@ -71,7 +71,7 @@ export function AssigneeControl({
   // An assignee the list does not carry still names who holds the issue; keep it selectable
   // so the control never shows a value its options lack.
   const options = assignee === null || logins.includes(assignee) ? logins : [assignee, ...logins];
-  const tone = assignee === null ? badgeLow : badgePrimary;
+  const tone = assignee === null ? badgeGhost : badgePrimary;
   // Inside `NoTooltips` the badge is the new issue page's label chip, and Unassigned its quiet
   // words on the same ground, as the header variant says it in the quiet grey: each colour there
   // is one of that page's.

@@ -2,6 +2,7 @@ import { type ReactNode, useCallback } from "react";
 import { Link } from "react-router-dom";
 
 import {
+  borderDefault,
   card,
   decisionUnsureBorder,
   decisionUnsureText,
@@ -9,6 +10,7 @@ import {
   linkText,
   selectedCardBg,
   selectedCardBorder,
+  surfaceBg,
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
@@ -42,7 +44,6 @@ export function DecisionCard({
   // A decision names the record it was made in; one naming no page of this dashboard - a
   // person (R5) - leaves the heading as plain words.
   const href = route === undefined ? undefined : referenceHref(route);
-  const active = selected || hovered;
   const source = textSourceOf(
     "artifact",
     item.documentId,
@@ -56,9 +57,13 @@ export function DecisionCard({
       aria-current={selected ? "true" : undefined}
       // The card's name is its heading's plain words: the reading list's `decision-heading-words`.
       aria-label={`Decision: ${heading}`}
-      className={`rounded-xl border p-3 text-sm shadow-sm ${
-        active ? `${selectedCardBorder} ${selectedCardBg}` : card
-      } ${decision.unsure ? `border-l-4 ${decisionUnsureBorder}` : ""}`}
+      className={`rounded-lg border p-3 text-sm ${
+        selected
+          ? `${selectedCardBorder} ${surfaceBg}`
+          : hovered
+            ? `${borderDefault} ${selectedCardBg}`
+            : card
+      } ${decision.unsure ? `border-l-[3px] ${decisionUnsureBorder}` : ""}`}
       data-decision-unsure={decision.unsure ? "true" : undefined}
       data-margin-item={item.id}
       onClick={(event) => {
@@ -82,7 +87,7 @@ export function DecisionCard({
           <span className={`font-semibold ${decisionUnsureText}`}>Unsure</span>
         ) : null}
       </p>
-      <h3 className={`mt-1 font-medium ${textPrimaryOnSurface}`}>
+      <h3 className={`mt-1.5 font-medium ${textPrimaryOnSurface}`}>
         {reads}
         {href === undefined ? (
           <MarkdownBody

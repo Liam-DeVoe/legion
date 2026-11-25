@@ -22,7 +22,7 @@ export function UnsentText({
   why: string;
 }): ReactNode {
   return (
-    <div className={`rounded-xl border p-3 ${borderDefault} ${className}`} data-testid={testId}>
+    <div className={`rounded-lg border p-3 ${borderDefault} ${className}`} data-testid={testId}>
       <p className={`text-xs ${textMutedOnSurface}`}>{why}</p>
       <p className={`mt-1 text-sm whitespace-pre-wrap ${textPrimaryOnSurface}`}>{text}</p>
     </div>

@@ -17,37 +17,23 @@ import type {
   ProjectDefaultAssignee,
   ProjectDefaultRepository,
 } from "../../api/types";
+import { Button } from "../../components/Button";
+import { Field, Input, Select } from "../../components/Field";
+import { SectionHeader } from "../../components/Layout";
 import { QueryError } from "../../components/QueryError";
+import { Table, Td, Th, Tr } from "../../components/Table";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
-  borderDefault,
-  dangerHoverText,
   dangerText,
-  inputClasses,
-  linkHoverText,
-  linkText,
   textMutedOnCanvas,
-  textMutedOnSurface,
   textPrimaryOnCanvas,
-  textPrimaryOnSurface,
   textSecondaryOnCanvas,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { type KeyedPress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  NOT_OWNER_NAME,
-  ownerRepoPattern,
-  settingsFieldLabel,
-  settingsMonoInput,
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-  wholeValue,
-} from "./classes";
+import { NOT_OWNER_NAME, ownerRepoPattern, wholeValue } from "./classes";
 
 /** Lists native projects, lets a human create one, and carries two settings of each project:
  *
@@ -114,16 +100,17 @@ export function ProjectsSection(): ReactNode {
 
   return (
     <section aria-labelledby="projects-heading">
-      <h2 className={`text-xl font-semibold ${textPrimaryOnCanvas}`} id="projects-heading">
-        Projects
-      </h2>
-      <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-        Native issues are grouped under a project key, such as CORE-1.
-      </p>
+      <SectionHeader
+        description="Native issues are grouped under a project key, such as CORE-1."
+        id="projects-heading"
+        title="Projects"
+      />
 
-      {projects.isPending ? <p className={`mt-6 ${textMutedOnCanvas}`}>Loading projects…</p> : null}
+      {projects.isPending ? (
+        <p className={`text-sm ${textMutedOnCanvas}`}>Loading projects…</p>
+      ) : null}
       {projects.isError ? (
-        <div className="mt-6">
+        <div>
           <QueryError
             message="Couldn't load projects."
             onRetry={() => void projects.refetch()}
@@ -133,70 +120,55 @@ export function ProjectsSection(): ReactNode {
       ) : null}
       {projects.isSuccess ? (
         <>
-          <div className={settingsTableWrapper}>
-            <table className="w-full text-left text-sm">
-              <thead className={settingsTableHead}>
-                <tr>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Key
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Name
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Default assignee
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Default repository
-                  </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
-                    Created
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {projects.data.length === 0 ? (
-                  <tr>
-                    <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={5}>
-                      No projects yet.
-                    </td>
-                  </tr>
-                ) : (
-                  projects.data.map((candidate) => (
-                    <tr className={settingsTableRow} key={candidate.key}>
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
-                        {candidate.key}
-                      </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>{candidate.name}</td>
-                      <td className="px-4 py-3">
-                        <DefaultAssigneeCell
-                          logins={logins}
-                          onReach={() => setWantUsers(true)}
-                          project={candidate.key}
-                          readFailed={defaults.isError}
-                          // A project the defaults read has not answered for - one created since
-                          // that read - reads as not read yet rather than as nobody: every project
-                          // names a person, and the read behind this cell is the one place it is.
-                          stored={defaultAssignees.get(candidate.key)}
-                        />
-                      </td>
-                      <td className="px-4 py-3">
-                        <DefaultRepositoryCell
-                          project={candidate.key}
-                          // A project with no default repository carries no `default_repo`.
-                          stored={candidate.default_repo ?? null}
-                        />
-                      </td>
-                      <td className={`px-4 py-3 ${textMutedOnSurface}`}>
-                        <Timestamp at={candidate.created_at} />
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-          <p className={`mt-2 text-sm ${textSecondaryOnCanvas}`}>
+          <Table
+            head={
+              <>
+                <Th>Key</Th>
+                <Th>Name</Th>
+                <Th>Default assignee</Th>
+                <Th>Default repository</Th>
+                <Th>Created</Th>
+              </>
+            }
+          >
+            {projects.data.length === 0 ? (
+              <Tr>
+                <Td className={textMutedOnCanvas} colSpan={5}>
+                  No projects yet.
+                </Td>
+              </Tr>
+            ) : (
+              projects.data.map((candidate) => (
+                <Tr key={candidate.key}>
+                  <Td className={`font-mono ${textPrimaryOnCanvas}`}>{candidate.key}</Td>
+                  <Td className={textSecondaryOnCanvas}>{candidate.name}</Td>
+                  <Td>
+                    <DefaultAssigneeCell
+                      logins={logins}
+                      onReach={() => setWantUsers(true)}
+                      project={candidate.key}
+                      readFailed={defaults.isError}
+                      // A project the defaults read has not answered for - one created since
+                      // that read - reads as not read yet rather than as nobody: every project
+                      // names a person, and the read behind this cell is the one place it is.
+                      stored={defaultAssignees.get(candidate.key)}
+                    />
+                  </Td>
+                  <Td>
+                    <DefaultRepositoryCell
+                      project={candidate.key}
+                      // A project with no default repository carries no `default_repo`.
+                      stored={candidate.default_repo ?? null}
+                    />
+                  </Td>
+                  <Td className={`whitespace-nowrap ${textMutedOnCanvas}`}>
+                    <Timestamp at={candidate.created_at} />
+                  </Td>
+                </Tr>
+              ))
+            )}
+          </Table>
+          <p className={`mt-3 max-w-3xl text-xs leading-5 ${textMutedOnCanvas}`}>
             Every project names a default assignee, and it cannot be cleared: an issue created with
             nobody named, and with no person, token owner or assigned parent to take it, goes to
             that person, and so does a question on an issue nobody holds. A project's default
@@ -214,14 +186,13 @@ export function ProjectsSection(): ReactNode {
           ) : null}
 
           <form
-            className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_1fr_auto] sm:items-end ${borderDefault}`}
+            className="mt-6 grid gap-4 sm:grid-cols-[8rem_minmax(0,16rem)_12rem_auto] sm:items-end"
             onSubmit={submitProject}
           >
-            <label className={settingsFieldLabel} htmlFor="project-key">
-              Key
-              <input
-                className={settingsMonoInput}
+            <Field htmlFor="project-key" label="Key">
+              <Input
                 disabled={createProject.isPending}
+                mono
                 id="project-key"
                 onChange={(event) => {
                   createProject.forgetUnanswered();
@@ -231,11 +202,9 @@ export function ProjectsSection(): ReactNode {
                 required
                 value={projectKey}
               />
-            </label>
-            <label className={settingsFieldLabel} htmlFor="project-name">
-              Name
-              <input
-                className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+            </Field>
+            <Field htmlFor="project-name" label="Name">
+              <Input
                 disabled={createProject.isPending}
                 id="project-name"
                 maxLength={PROJECT_NAME_MAX}
@@ -244,11 +213,9 @@ export function ProjectsSection(): ReactNode {
                 required
                 value={projectName}
               />
-            </label>
-            <label className={settingsFieldLabel} htmlFor="project-default-assignee">
-              Default assignee
-              <select
-                className={`w-full min-w-0 rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+            </Field>
+            <Field htmlFor="project-default-assignee" label="Default assignee">
+              <Select
                 disabled={createProject.isPending || newProjectAssignee === ""}
                 id="project-default-assignee"
                 onChange={(event) => setProjectAssignee(event.target.value)}
@@ -269,15 +236,11 @@ export function ProjectsSection(): ReactNode {
                     {login}
                   </option>
                 ))}
-              </select>
-            </label>
-            <button
-              className={settingsSubmitButton}
-              disabled={createProject.isPending}
-              type="submit"
-            >
+              </Select>
+            </Field>
+            <Button className="justify-self-start" disabled={createProject.isPending} type="submit">
               New project
-            </button>
+            </Button>
           </form>
           {createProject.unanswered === undefined ? null : (
             <div className="mt-4">
@@ -575,10 +538,11 @@ function DefaultAssigneeSelect({
 }): ReactNode {
   const options = assigneeOptions(assignee, logins);
   return (
-    <select
+    <Select
       aria-label={`Default assignee of ${project}`}
-      className={`rounded-md px-3 py-2 disabled:cursor-not-allowed disabled:opacity-50 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+      className="w-40"
       disabled={unread !== null}
+      size="sm"
       onChange={(event) => onPick(event.target.value)}
       onFocus={onReach}
       onPointerEnter={onReach}
@@ -594,7 +558,7 @@ function DefaultAssigneeSelect({
       ) : (
         <option value={unread}>{unread}</option>
       )}
-    </select>
+    </Select>
   );
 }
 
@@ -645,12 +609,14 @@ function DefaultRepositoryCell({
   };
   return (
     <>
-      <form className="flex flex-wrap items-center gap-x-3 gap-y-2" onSubmit={save}>
-        <input
+      <form className="flex items-center gap-1" onSubmit={save}>
+        <Input
           aria-invalid={refused || undefined}
           aria-label={`Default repository of ${project}`}
           autoComplete="off"
-          className={`w-48 min-w-0 ${settingsMonoInput}`}
+          className="mr-1 w-48"
+          mono
+          size="sm"
           onChange={(event) => {
             setDraft(event.target.value);
             setRefused(false);
@@ -659,26 +625,27 @@ function DefaultRepositoryCell({
           spellCheck={false}
           value={draft ?? repo ?? ""}
         />
-        <button
+        <Button
           aria-label={`Save the default repository of ${project}`}
-          className={`font-medium ${linkText} ${linkHoverText}`}
+          size="sm"
           type="submit"
+          variant="ghost"
         >
           Save
-        </button>
+        </Button>
         {repo === null ? null : (
-          <button
+          <Button
             aria-label={`Clear the default repository of ${project}`}
-            className={`font-medium ${dangerText} ${dangerHoverText}`}
             onClick={() => submit(null)}
-            type="button"
+            size="sm"
+            variant="ghost"
           >
             Clear
-          </button>
+          </Button>
         )}
       </form>
       {refused ? (
-        <p className={`mt-2 text-sm ${dangerText}`} role="alert">
+        <p className={`mt-1 text-xs ${dangerText}`} role="alert">
           {NOT_OWNER_NAME}
         </p>
       ) : null}

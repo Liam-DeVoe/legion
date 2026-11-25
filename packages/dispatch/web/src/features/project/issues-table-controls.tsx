@@ -4,6 +4,7 @@ import {
   type ReactNode,
   type RefObject,
   useCallback,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -12,14 +13,17 @@ import { flushSync } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { AnchoredPanel } from "../../components/AnchoredPanel";
+import { Button, buttonClassName } from "../../components/Button";
 import type { RowNoun } from "../../components/DataTable";
+import { Input, Select } from "../../components/Field";
 import { MultiSelect } from "../../components/MultiSelect";
 import { useFootInset } from "../../hooks/useFootInset";
 import {
   borderDefault,
-  card,
   checkboxAccent,
   issueStatusScale,
+  popoverPanel,
+  rowHoverBg,
   surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
@@ -28,6 +32,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
   toolbarControlHeight,
+  toolbarSelectHeight,
 } from "../../theme/classes";
 import { useMediaQuery } from "../shell/useDialog";
 import { issueStatuses, statusLabel } from "./board-model";
@@ -53,7 +58,7 @@ function FunnelIcon(): ReactNode {
 }
 
 const filterTrigger = (active: boolean) =>
-  `min-h-11 min-w-11 rounded p-1 md:min-h-8 md:min-w-8 ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
+  `inline-flex size-7 items-center justify-center rounded-md ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
 
 export function ColumnFilter<TData>({
   column,
@@ -88,15 +93,16 @@ export function ColumnFilter<TData>({
         title={`Filter ${name}`}
       >
         {() => (
-          <input
-            aria-label={`Filter ${name}`}
-            className={`m-1 rounded-md border px-2 py-1 text-sm ${borderDefault} ${surfaceBg}`}
-            // biome-ignore lint/a11y/noAutofocus: the popover opens to type a filter
-            autoFocus
-            onChange={(event) => column.setFilterValue(event.target.value || undefined)}
-            placeholder={`${name} contains…`}
-            value={value}
-          />
+          <div className="p-1">
+            <Input
+              aria-label={`Filter ${name}`}
+              autoFocus
+              onChange={(event) => column.setFilterValue(event.target.value || undefined)}
+              placeholder={`${name} contains…`}
+              surface="recessed"
+              value={value}
+            />
+          </div>
         )}
       </Popover>
     );
@@ -139,7 +145,7 @@ export function ColumnFilter<TData>({
 }
 
 /** How a popover's button is drawn where its host names no look of its own. */
-const POPOVER_TRIGGER = `rounded-md border px-2 py-1 text-xs font-normal whitespace-nowrap ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas}`;
+const POPOVER_TRIGGER = buttonClassName({ size: "sm" });
 
 /** A button and the panel it opens: the table's own popovers, on the shared `AnchoredPanel`. */
 export function Popover({
@@ -192,7 +198,7 @@ export function Popover({
         <AnchoredPanel
           align={align}
           anchorRef={trigger}
-          className={`z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`}
+          className={`z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto p-1 text-sm font-normal ${popoverPanel}`}
           label={title ?? (typeof label === "string" ? label : "Table actions")}
           onDismiss={() => setOpen(false)}
           role="dialog"
@@ -212,14 +218,14 @@ export function ColumnsMenu<Row>({ columns }: { columns: Column<Row, unknown>[] 
     <Popover
       align="right"
       label="Columns"
-      labelClassName={`${POPOVER_TRIGGER} ${toolbarControlHeight}`}
+      labelClassName={`${buttonClassName()} ${toolbarControlHeight}`}
     >
       {() =>
         columns
           .filter((column) => column.getCanHide())
           .map((column) => (
             <label
-              className={`flex items-center gap-2 rounded px-2 py-1 ${surfaceMutedHoverBg}`}
+              className={`flex items-center gap-2 rounded px-2 py-1 ${rowHoverBg}`}
               key={column.id}
             >
               <input
@@ -246,14 +252,9 @@ export function Action({
   onClick: () => void;
 }): ReactNode {
   return (
-    <button
-      className={`rounded-lg border px-3 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
-      disabled={disabled}
-      onClick={onClick}
-      type="button"
-    >
+    <Button disabled={disabled} onClick={onClick} size="sm">
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -263,11 +264,11 @@ const SEGMENT_TYPE = "text-xs font-medium whitespace-nowrap";
 /** What sets a status segment's width with its name, which the bar's hidden copy of its segments
  *  draws them with too (`IssueTableStatus`), so the copy is as wide as the segments it stands
  *  for. */
-const SEGMENT = `px-3 ${SEGMENT_TYPE}`;
+const SEGMENT = `px-2 ${SEGMENT_TYPE}`;
 
 /** The padding and type of a segment that draws its count alone (`IssueTableStatus`'s
- *  `legend`): on a phone the padding its count needs, and from `md` up a named segment's. */
-const COUNT_SEGMENT = `px-2 ${SEGMENT_TYPE} md:px-3`;
+ *  `legend`): a named segment's. */
+const COUNT_SEGMENT = SEGMENT;
 
 /** How narrow a segment that draws its count alone may be: 24 px, WCAG 2.5.8's least target
  *  width, in place of the 44 px floor `styles.css` gives every button below 1280 px, so the eight
@@ -281,6 +282,7 @@ export function IssueTableStatus({
   items,
   epics,
   legend = false,
+  notice,
 }: {
   table: Table<Item>;
   items: readonly Item[];
@@ -290,6 +292,9 @@ export function IssueTableStatus({
    *  each segment draws its name and its count, and the bar scrolls sideways where they are
    *  wider than it, as a project's does on a phone. */
   legend?: boolean;
+  /** The line that says what the last table action did, which the strip places so that its
+   *  arrival moves nothing on the page. */
+  notice?: ReactNode;
 }): ReactNode {
   const statusColumn = table.getColumn("status");
   const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
@@ -325,22 +330,26 @@ export function IssueTableStatus({
   }, [legend]);
   const countsOnly = legend && namesOverflow;
   return (
-    <div className={`rounded-xl border p-3 ${borderDefault}`}>
+    <div className={`relative rounded-lg border p-3 ${borderDefault} ${surfaceBg}`}>
       <div
-        className={`mb-2 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm ${textSecondaryOnCanvas}`}
+        className={`mb-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm ${textSecondaryOnCanvas}`}
       >
         <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{queuedCount}</b> in Legion's
-          queue
+          <b className={`font-semibold tabular-nums ${textPrimaryOnCanvas}`}>{queuedCount}</b> in
+          Legion's queue
         </span>
         <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{runningCount}</b> running
+          <b className={`font-semibold tabular-nums ${textPrimaryOnCanvas}`}>{runningCount}</b>{" "}
+          running
         </span>
         <span>
-          <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{epics.length}</b>{" "}
+          <b className={`font-semibold tabular-nums ${textPrimaryOnCanvas}`}>{epics.length}</b>{" "}
           {epics.length === 1 ? "epic" : "epics"}
         </span>
       </div>
+      {/* Absolute from `sm` up, at the right of the counts; on a phone the line under them. It
+          stands before the bar, so the bar's next sibling is its legend alone. */}
+      {notice}
       {legend ? (
         // The copy the bar is measured against: the segments with their names, each at its
         // natural width, in a strip that takes no height and clips them, so nothing of it is
@@ -358,7 +367,7 @@ export function IssueTableStatus({
       ) : null}
       <fieldset
         aria-label="Issues by status"
-        className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
+        className={`flex min-w-0 overflow-x-auto rounded border-0 p-0 ${surfaceMutedBg}`}
         ref={barRef}
       >
         {shown.map((status) => {
@@ -368,7 +377,7 @@ export function IssueTableStatus({
             <button
               // A count alone is named by its status, as its segment is with the name drawn.
               aria-label={countsOnly ? `${statusLabel(status)} ${count}` : undefined}
-              className={`min-h-11 shrink-0 py-2 text-left md:min-h-7 md:py-1 ${countsOnly ? COUNT_SEGMENT : SEGMENT} ${issueStatusScale[status]} ${on ? "" : "opacity-30"}`}
+              className={`h-6 shrink-0 text-left ${countsOnly ? COUNT_SEGMENT : SEGMENT} ${issueStatusScale[status]} ${on ? "" : "opacity-30"}`}
               key={status}
               onClick={() =>
                 statusColumn?.setFilterValue(
@@ -425,6 +434,7 @@ export function IssueTableToolbar({
   unclaimedUnchecked: "refilling" | "unreachable" | undefined;
 }): ReactNode {
   const flags = useIssueFilters();
+  const groupId = useId();
   const [, setParams] = useSearchParams();
   const { globalFilter: search, columnFilters: filters, grouping } = table.getState();
   const setSearch = table.setGlobalFilter;
@@ -435,13 +445,13 @@ export function IssueTableToolbar({
       {/* The toolbar is one row where the search box, its whole placeholder (about 406 px) and
           the five controls after it (about 557 px with their gaps) fit; in a narrower box, as
           beside a priority's margin, the search box takes a row of its own and the controls the
-          row under it, rather than cut the placeholder and leave the last control alone. From
-          1280 px up every control stands at one height (`toolbarControlHeight`); below it each
-          takes the 44 px floor `styles.css` gives a control. */}
+          row under it, rather than cut the placeholder and leave the last control alone. Every
+          control stands at a toolbar's one height from 1280 px up (`toolbarControlHeight`, 34 px);
+          below 1280 px each takes the 44 px floor `styles.css` gives a control. */}
       <div className="@container flex flex-wrap items-center gap-2">
-        <input
+        <Input
           aria-label="Search issues"
-          className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 @max-[61rem]:basis-full ${toolbarControlHeight} ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+          className={`w-full flex-none sm:w-auto sm:min-w-64 sm:flex-1 @max-[61rem]:basis-full ${toolbarControlHeight}`}
           onChange={(event) => {
             setSearch(event.target.value);
           }}
@@ -450,10 +460,14 @@ export function IssueTableToolbar({
           value={search}
           maxLength={SEARCH_QUERY_MAX}
         />
-        <label className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
+        <label
+          className={`flex items-center gap-2 text-sm ${textSecondaryOnCanvas}`}
+          htmlFor={groupId}
+        >
           Group by
-          <select
-            className={`rounded-lg border px-2 py-1.5 ${toolbarControlHeight} ${borderDefault} ${surfaceBg}`}
+          <Select
+            className={`w-36 ${toolbarSelectHeight}`}
+            id={groupId}
             onChange={(event) => {
               setGrouping(event.target.value ? [event.target.value] : []);
               setExpanded(true);
@@ -469,13 +483,12 @@ export function IssueTableToolbar({
                   {String(column.columnDef.header)}
                 </option>
               ))}
-          </select>
+          </Select>
         </label>
         <ColumnsMenu columns={table.getAllLeafColumns()} />
         <IssueFlagChips inToolbar />
         {filters.length > 0 || search !== "" || flags.needsYou || flags.unread ? (
-          <button
-            className={`rounded-lg border px-2 py-1.5 text-sm ${toolbarControlHeight} ${borderDefault} ${surfaceMutedHoverBg}`}
+          <Button
             onClick={() =>
               setParams(
                 (current) => {
@@ -493,10 +506,11 @@ export function IssueTableToolbar({
                 { replace: true }
               )
             }
-            type="button"
+            className={toolbarControlHeight}
+            variant="ghost"
           >
             Clear filters
-          </button>
+          </Button>
         ) : null}
       </div>
       <UnclaimedUnchecked reason={unclaimedUnchecked} />
@@ -526,38 +540,47 @@ export function IssueTablePager<TData>({
     <div
       ref={pagerRef}
       data-testid="issues-table-pager"
-      className={`flex shrink-0 flex-wrap items-center gap-3 text-sm ${textSecondaryOnCanvas}`}
+      className={`flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 text-sm ${textSecondaryOnCanvas}`}
     >
-      <span>
+      {/* The count takes the room the controls leave. On a phone it shares the first line with
+          the page size, and Previous, the page and Next keep the second line together. */}
+      <span className="min-w-max flex-1">
         {leafCount} of {total} {total === 1 ? noun.one : noun.many}
         {grouping.length > 0 ? ` in ${groupCount} ${groupCount === 1 ? "group" : "groups"}` : ""}
       </span>
-      <span className="ml-auto">
-        {pageSize >= ALL_ROWS
-          ? `All ${rowsOnPages} ${rowsOnPages === 1 ? "row" : "rows"}`
-          : `Rows ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
-      </span>
-      <Action disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
-        ‹ Previous
-      </Action>
-      <span>
-        Page {pageIndex + 1} of {Math.max(table.getPageCount(), 1)}
-      </span>
-      <Action disabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>
-        Next ›
-      </Action>
-      <select
-        aria-label="Rows per page"
-        className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
-        onChange={(event) => table.setPageSize(Number(event.target.value))}
-        value={pageSize}
-      >
-        {PAGE_SIZES.map((size) => (
-          <option key={size} value={size}>
-            {size >= ALL_ROWS ? "All rows" : `${size} per page`}
-          </option>
-        ))}
-      </select>
+      {/* One cluster from `sm`, so in a narrow box the three wrap to the next line together,
+          at the right, and no control is left alone on a line of its own. */}
+      <div className="ml-auto flex items-center gap-x-3 max-sm:contents">
+        <span className={`max-sm:hidden ${textMutedOnCanvas}`}>
+          {pageSize >= ALL_ROWS
+            ? `All ${rowsOnPages} ${rowsOnPages === 1 ? "row" : "rows"}`
+            : `Rows ${rowsOnPages === 0 ? 0 : pageIndex * pageSize + 1}–${Math.min((pageIndex + 1) * pageSize, rowsOnPages)} of ${rowsOnPages}`}
+        </span>
+        <div className="flex items-center gap-2 max-sm:order-last max-sm:basis-full max-sm:justify-between">
+          <Action disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>
+            ‹ Previous
+          </Action>
+          <span className="tabular-nums whitespace-nowrap">
+            Page {pageIndex + 1} of {Math.max(table.getPageCount(), 1)}
+          </span>
+          <Action disabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>
+            Next ›
+          </Action>
+        </div>
+        <Select
+          aria-label="Rows per page"
+          className="w-32"
+          size="sm"
+          onChange={(event) => table.setPageSize(Number(event.target.value))}
+          value={pageSize}
+        >
+          {PAGE_SIZES.map((size) => (
+            <option key={size} value={size}>
+              {size >= ALL_ROWS ? "All rows" : `${size} per page`}
+            </option>
+          ))}
+        </Select>
+      </div>
     </div>
   );
 }
@@ -605,7 +628,7 @@ export function IssueTableSelection({
       {/* Over the page, not in it: selecting a row moves nothing else. */}
       {selectedKeys.length === 0 ? null : (
         <div
-          className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap rounded-2xl border px-4 py-2 text-sm shadow-xl sm:top-auto sm:bottom-4 [&>*]:shrink-0 ${card} ${textPrimaryOnCanvas}`}
+          className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-nowrap items-center gap-2 overflow-x-auto whitespace-nowrap px-3 py-2 text-sm sm:top-auto sm:bottom-4 [&>*]:shrink-0 ${popoverPanel} ${textPrimaryOnCanvas}`}
           ref={barRef}
           role="toolbar"
         >
@@ -628,9 +651,11 @@ export function IssueTableSelection({
           {/* Two steps: the select stages an epic and Move commits it. A closed `<select>`
               commits on an arrow key in Chrome on Linux and Windows, and this one reparents
               every selected issue. */}
-          <select
+          <Select
             aria-label="Move to epic"
-            className={`rounded-lg border px-2 py-1 ${borderDefault} ${surfaceBg}`}
+            className="w-40"
+            size="sm"
+            surface="recessed"
             disabled={busy}
             onChange={(event) => setEpic(event.target.value)}
             value={epic}
@@ -641,7 +666,7 @@ export function IssueTableSelection({
                 {option.title}
               </option>
             ))}
-          </select>
+          </Select>
           <Action
             disabled={busy || epic === ""}
             onClick={() => {

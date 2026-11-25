@@ -3,11 +3,11 @@ import type { ReactNode } from "react";
 
 import { ApiError, api } from "../../api/client";
 import type { ExternalLink } from "../../api/types";
+import { badgeClassName } from "../../components/Badge";
 import { TruncatedText } from "../../components/TruncatedText";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import { safeExternalHref } from "../../lib/external-href";
 import {
-  badgeLow,
   linkHoverText,
   linkText,
   pageInkText,
@@ -260,7 +260,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
           them does. */}
       {state === undefined ? null : (
         <span
-          className={`${page === null ? "shrink-0" : "min-w-0 max-w-full [overflow-wrap:anywhere]"} rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
+          className={`${page === null ? "shrink-0" : "min-w-0 max-w-full [overflow-wrap:anywhere]"} ${page === null ? badgeClassName("neutral") : `rounded-full px-2 py-0.5 text-xs ${pageLabelChip}`}`}
           {...page?.authorText}
         >
           {state}
@@ -268,7 +268,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       )}
       {isPullRequest && !checks.isError && checks.data !== undefined ? (
         <span
-          className={`${page === null ? "shrink-0" : "min-w-0 max-w-full [overflow-wrap:anywhere]"} rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
+          className={`${page === null ? "shrink-0" : "min-w-0 max-w-full [overflow-wrap:anywhere]"} ${page === null ? badgeClassName("neutral") : `rounded-full px-2 py-0.5 text-xs ${pageLabelChip}`}`}
           {...page?.pageChrome}
         >
           {page === null ? (

@@ -1,18 +1,10 @@
 import type { UseMutationResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
 import { apiErrorMessage } from "../../api/client";
 import type { DecisionResponse, StateResponse } from "../../api/types";
+import { Button } from "../../components/Button";
 import type { SubmitGuard } from "../../hooks/useSubmitGuard";
-import {
-  dangerText,
-  primaryButtonBg,
-  primaryButtonDisabled,
-  primaryButtonEnabledHoverBg,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-} from "../../theme/classes";
+import { dangerText } from "../../theme/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 
 /**
@@ -36,23 +28,17 @@ export function CredentialDecisionButtons({
     <div className="space-y-2">
       <div className="flex gap-2">
         {approve === undefined ? null : (
-          <button
-            className={`min-h-11 rounded-lg px-4 py-2 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+          <Button
+            variant="primary"
             disabled={deciding}
             onClick={() => submitGuard.guard(() => approve.mutate())}
-            type="button"
           >
             Approve
-          </button>
+          </Button>
         )}
-        <button
-          className={`min-h-11 rounded-lg border px-4 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-          disabled={deciding}
-          onClick={() => submitGuard.guard(() => deny.mutate())}
-          type="button"
-        >
+        <Button disabled={deciding} onClick={() => submitGuard.guard(() => deny.mutate())}>
           Deny
-        </button>
+        </Button>
       </div>
       {/* A decision the reader stopped may have been made, and each button is a press of its own,
           under a key of its own: none makes the stopped decision again. */}

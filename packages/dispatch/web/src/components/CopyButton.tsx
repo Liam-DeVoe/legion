@@ -3,9 +3,9 @@ import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from "re
 import { focusOnDocument } from "../features/shell/roving";
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
 import {
+  buttonGhost,
+  buttonGhostMuted,
   dangerText,
-  linkHoverText,
-  linkText,
   pageFailedText,
   pageMutedText,
   pageRowAct,
@@ -41,7 +41,11 @@ export function CopyButton({
   // Inside `NoTooltips` each colour is one of the new issue page's: the control is that page's
   // quiet act, muted words that turn ink and underline under the pointer, and its confirmation
   // is the page's passed green or failed red.
-  const look = tooltips ? `${linkText} ${linkHoverText}` : `${pageMutedText} ${pageRowAct}`;
+  const look = tooltips
+    ? children === undefined
+      ? buttonGhostMuted
+      : buttonGhost
+    : `${pageMutedText} ${pageRowAct}`;
   const { copy, reset, status } = useCopyFeedback();
   // Inside `NoTooltips` the clipboard write is the button's own write. From a press until `status`
   // leaves `idle` the copy is out: the button carries `aria-disabled` (never `disabled`, which
@@ -68,8 +72,12 @@ export function CopyButton({
   const name = label ?? (typeof value === "string" ? `Copy ${what} ${value}` : `Copy ${what}`);
   const shape =
     children === undefined
-      ? "min-w-11 justify-center md:min-w-8"
-      : "max-w-full gap-1 px-1 font-mono text-xs font-medium select-text";
+      ? tooltips
+        ? "size-7 justify-center rounded-md"
+        : "min-h-11 min-w-11 justify-center rounded-lg md:min-h-8 md:min-w-8"
+      : tooltips
+        ? "h-6 max-w-full gap-1 rounded px-1 font-mono text-xs font-medium select-text"
+        : "min-h-11 max-w-full gap-1 rounded-lg px-1 font-mono text-xs font-medium select-text md:min-h-8";
   // Inside `NoTooltips` what the button draws can be a value (an ask card's tmux target), and so
   // is what a failed copy prints: each breaks anywhere, and a button that draws one narrows to
   // its line rather than keep its width. A button that draws only its icon holds no value and
@@ -81,7 +89,7 @@ export function CopyButton({
       <button
         aria-disabled={copyOut || undefined}
         aria-label={name}
-        className={`inline-flex min-h-11 ${width} items-center rounded-lg md:min-h-8 ${shape} ${look} ${className ?? ""}`}
+        className={`inline-flex ${width} items-center ${shape} ${look} ${className ?? ""}`}
         onClick={(event) => {
           if (!tooltips && trail.current !== null) return;
           const text = typeof value === "string" ? value : value(event);

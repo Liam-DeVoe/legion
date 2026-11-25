@@ -5,15 +5,12 @@ import { api, apiErrorMessage } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
+import { Button } from "../../components/Button";
+import { Field, fieldHintClassName, Input, Textarea } from "../../components/Field";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { borderDefault, textMutedOnCanvas } from "../../theme/classes";
-import {
-  ownerRepoPattern,
-  settingsFieldLabel,
-  settingsMonoInput,
-  settingsSubmitButton,
-} from "../settings/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
+import { ownerRepoPattern } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -193,25 +190,28 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
 
   return (
     <>
-      <form className={`mt-6 grid gap-4 rounded-xl border p-4 ${borderDefault}`} onSubmit={submit}>
-        <fieldset className="grid min-w-0 gap-4 sm:grid-cols-2" disabled={save.isPending}>
-          <label className={settingsFieldLabel} htmlFor={`${id}-deploy-repo`}>
-            Deploy repository
-            <input
-              className={settingsMonoInput}
+      {/* `items-start`: a field keeps its own height beside a taller neighbour, so an input next
+          to a textarea is not stretched to the textarea's height. */}
+      <form className="grid max-w-4xl gap-4" onSubmit={submit}>
+        <fieldset
+          className="grid min-w-0 items-start gap-4 sm:grid-cols-2"
+          disabled={save.isPending}
+        >
+          <Field htmlFor={`${id}-deploy-repo`} label="Deploy repository">
+            <Input
               id={`${id}-deploy-repo`}
+              mono
               onChange={(event) => setDraft({ ...draft, deploy_repo: event.target.value })}
               pattern={ownerRepoPattern}
               placeholder="owner/repo"
               required
               value={draft.deploy_repo}
             />
-          </label>
-          <label className={settingsFieldLabel} htmlFor={`${id}-deploy-workflow`}>
-            Deploy workflow
-            <input
-              className={settingsMonoInput}
+          </Field>
+          <Field htmlFor={`${id}-deploy-workflow`} label="Deploy workflow">
+            <Input
               id={`${id}-deploy-workflow`}
+              mono
               onChange={(event) =>
                 setDraft({ ...draft, deploy_workflow_path: textOrEmpty(event.target.value) })
               }
@@ -219,73 +219,78 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               required
               value={draft.deploy_workflow_path}
             />
-          </label>
-          <div className="grid gap-1">
-            <label className={settingsFieldLabel} htmlFor={`${id}-production-jobs`}>
-              Production jobs
-              {/* One setting per line rather than prose, so this box takes neither the
-                  reference picker nor the renderer: `delivery-production-jobs` in
-                  `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
-              <textarea
-                aria-describedby={`${id}-production-jobs-hint`}
-                className={settingsMonoInput}
-                id={`${id}-production-jobs`}
-                onChange={(event) =>
-                  setDraft({ ...draft, production_job_names: textOrEmpty(event.target.value) })
-                }
-                placeholder="One job name per line, as a deploy run lists it"
-                required
-                rows={2}
-                value={draft.production_job_names}
-              />
-            </label>
-            <p className={`text-xs ${textMutedOnCanvas}`} id={`${id}-production-jobs-hint`}>
-              The jobs whose success counts as a production deploy, one per line, named as a run
-              lists each: a reusable workflow&apos;s job reads &lt;caller&gt; / &lt;job&gt;. After a
-              rename, keep the old name beside the new so history still counts.
-            </p>
-          </div>
-          <div className="grid gap-1">
-            <label className={settingsFieldLabel} htmlFor={`${id}-production-apply-step`}>
-              Production apply step
-              <input
-                aria-describedby={`${id}-production-apply-step-hint`}
-                className={settingsMonoInput}
-                id={`${id}-production-apply-step`}
-                onChange={(event) =>
-                  setDraft({ ...draft, production_apply_step_name: event.target.value })
-                }
-                placeholder="The step whose success means the job applied (optional)"
-                value={draft.production_apply_step_name}
-              />
-            </label>
-            <p className={`text-xs ${textMutedOnCanvas}`} id={`${id}-production-apply-step-hint`}>
-              Named as GitHub lists the job&apos;s step. Set, a production job that succeeds without
-              this step succeeding is not a deploy.
-            </p>
-          </div>
+          </Field>
+          <Field
+            hint={
+              <>
+                The jobs whose success counts as a production deploy, one per line, named as a run
+                lists each: a reusable workflow&apos;s job reads &lt;caller&gt; / &lt;job&gt;. After
+                a rename, keep the old name beside the new so history still counts.
+              </>
+            }
+            hintId={`${id}-production-jobs-hint`}
+            htmlFor={`${id}-production-jobs`}
+            label="Production jobs"
+          >
+            {/* One setting per line rather than prose, so this box takes neither the reference
+                picker nor the renderer: `delivery-production-jobs` in `DISPATCH_WRITING_BOXES`
+                and `DISPATCH_READING_SURFACES` says why. */}
+            <Textarea
+              aria-describedby={`${id}-production-jobs-hint`}
+              id={`${id}-production-jobs`}
+              mono
+              onChange={(event) =>
+                setDraft({ ...draft, production_job_names: textOrEmpty(event.target.value) })
+              }
+              placeholder="One job name per line, as a deploy run lists it"
+              required
+              rows={2}
+              value={draft.production_job_names}
+            />
+          </Field>
+          <Field
+            hint={
+              <>
+                Named as GitHub lists the job&apos;s step. Set, a production job that succeeds
+                without this step succeeding is not a deploy.
+              </>
+            }
+            hintId={`${id}-production-apply-step-hint`}
+            htmlFor={`${id}-production-apply-step`}
+            label="Production apply step"
+          >
+            <Input
+              aria-describedby={`${id}-production-apply-step-hint`}
+              id={`${id}-production-apply-step`}
+              mono
+              onChange={(event) =>
+                setDraft({ ...draft, production_apply_step_name: event.target.value })
+              }
+              placeholder="The step whose success means the job applied (optional)"
+              value={draft.production_apply_step_name}
+            />
+          </Field>
           {PIPELINE_JOB_FIELDS.map(({ key, label, placeholder }) => (
-            <label className={settingsFieldLabel} htmlFor={`${id}-${key}`} key={key}>
-              {label}
-              <input
+            <Field htmlFor={`${id}-${key}`} key={key} label={label}>
+              <Input
                 aria-describedby={`${id}-pipeline-jobs-hint`}
-                className={settingsMonoInput}
                 id={`${id}-${key}`}
+                mono
                 onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
                 placeholder={placeholder}
                 value={draft[key]}
               />
-            </label>
+            </Field>
           ))}
-          <p className={`text-xs ${textMutedOnCanvas}`} id={`${id}-pipeline-jobs-hint`}>
+          {/* Beside the third job field, level with its control (a label and its gap above). */}
+          <p className={`sm:mt-5.5 ${fieldHintClassName}`} id={`${id}-pipeline-jobs-hint`}>
             Leave empty if the pipeline has no such step; the Pipeline page omits that card. With no
             roll-up job the failing-jobs table leaves nothing out.
           </p>
-          <label className={settingsFieldLabel} htmlFor={`${id}-pr-checks-workflow`}>
-            PR checks workflow
-            <input
-              className={settingsMonoInput}
+          <Field htmlFor={`${id}-pr-checks-workflow`} label="PR checks workflow">
+            <Input
               id={`${id}-pr-checks-workflow`}
+              mono
               onChange={(event) =>
                 setDraft({ ...draft, pr_checks_workflow_path: textOrEmpty(event.target.value) })
               }
@@ -293,57 +298,55 @@ function DeliverySettingsFields({ record }: { record: DeliverySettings | null })
               required
               value={draft.pr_checks_workflow_path}
             />
-          </label>
-          <div className="grid gap-1">
-            <label className={settingsFieldLabel} htmlFor={`${id}-population-authors`}>
-              Population authors
-              {/* One setting per line rather than prose: `delivery-population-authors` in
-                  `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
-              <textarea
-                aria-describedby={`${id}-population-authors-hint`}
-                className={settingsMonoInput}
-                id={`${id}-population-authors`}
-                onChange={(event) =>
-                  setDraft({ ...draft, population_authors: listOrEmpty(event.target.value) })
-                }
-                placeholder="One GitHub login per line"
-                required
-                rows={4}
-                value={draft.population_authors}
-              />
-            </label>
-            <p className={`text-xs ${textMutedOnCanvas}`} id={`${id}-population-authors-hint`}>
-              Whose merged pull requests count, as GitHub spells each login: an App's ends in [bot].
-            </p>
-          </div>
-          <div className="grid gap-1">
-            <label className={settingsFieldLabel} htmlFor={`${id}-excluded-repos`}>
-              Excluded repositories
-              {/* One setting per line rather than prose: `delivery-excluded-repos` in
-                  `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
-              <textarea
-                aria-describedby={`${id}-excluded-repos-hint`}
-                className={settingsMonoInput}
-                id={`${id}-excluded-repos`}
-                onChange={(event) => setDraft({ ...draft, excluded_repos: event.target.value })}
-                placeholder="One owner/repo per line"
-                rows={4}
-                value={draft.excluded_repos}
-              />
-            </label>
-            <p className={`text-xs ${textMutedOnCanvas}`} id={`${id}-excluded-repos-hint`}>
-              Repositories whose merged pull requests never count, as GitHub spells each owner/repo,
-              capitals included.
-            </p>
-          </div>
+          </Field>
+          <Field
+            hint="Whose merged pull requests count, as GitHub spells each login: an App's ends in [bot]."
+            hintId={`${id}-population-authors-hint`}
+            htmlFor={`${id}-population-authors`}
+            label="Population authors"
+          >
+            {/* One setting per line rather than prose: `delivery-population-authors` in
+                `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
+            <Textarea
+              aria-describedby={`${id}-population-authors-hint`}
+              id={`${id}-population-authors`}
+              mono
+              onChange={(event) =>
+                setDraft({ ...draft, population_authors: listOrEmpty(event.target.value) })
+              }
+              placeholder="One GitHub login per line"
+              required
+              rows={4}
+              value={draft.population_authors}
+            />
+          </Field>
+          <Field
+            hint="Repositories whose merged pull requests never count, as GitHub spells each owner/repo, capitals included."
+            hintId={`${id}-excluded-repos-hint`}
+            htmlFor={`${id}-excluded-repos`}
+            label="Excluded repositories"
+          >
+            {/* One setting per line rather than prose: `delivery-excluded-repos` in
+                `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` says why. */}
+            <Textarea
+              aria-describedby={`${id}-excluded-repos-hint`}
+              id={`${id}-excluded-repos`}
+              mono
+              onChange={(event) => setDraft({ ...draft, excluded_repos: event.target.value })}
+              placeholder="One owner/repo per line"
+              rows={4}
+              value={draft.excluded_repos}
+            />
+          </Field>
         </fieldset>
-        <button
-          className={`justify-self-start ${settingsSubmitButton}`}
+        <Button
+          className="justify-self-start"
           disabled={save.isPending}
           type="submit"
+          variant="primary"
         >
           Save delivery settings
-        </button>
+        </Button>
       </form>
       {save.isError ? (
         <div className="mt-4">

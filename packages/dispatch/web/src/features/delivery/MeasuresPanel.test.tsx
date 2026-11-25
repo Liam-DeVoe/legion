@@ -196,7 +196,7 @@ test("with stored flags the change failure rate card shows the upper bound and t
     },
   });
   const cfr = within(card("Change failure rate"));
-  expect(cfr.getByText("40.00%", { selector: "span.text-lg" })).toBeDefined();
+  expect(cfr.getByText("40.00%", { selector: "span.leading-7" })).toBeDefined();
   expect(
     cfr.getByText(
       (_, element) =>

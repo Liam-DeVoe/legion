@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import type { PersonSignInResp } from "../../api/types";
-import { textSecondaryOnSurface } from "../../theme/classes";
+import { textSecondaryOnCanvas } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 import { shortThumbprint, signInsQuery } from "./signins";
@@ -14,7 +14,7 @@ const columns: readonly RevocableColumn<PersonSignInResp>[] = [
       <>
         {signIn.machine}
         <span
-          className={`block font-mono text-xs font-normal ${textSecondaryOnSurface}`}
+          className={`block font-mono text-xs font-normal ${textSecondaryOnCanvas}`}
           title={signIn.thumbprint}
         >
           key {shortThumbprint(signIn.thumbprint)}
@@ -46,7 +46,6 @@ export function SignInsSection(): ReactNode {
 
   return (
     <RevocableList
-      className="mt-10"
       columns={columns}
       confirm={(signIn) =>
         `Revoke your sign-in on ${signIn.machine}? Every agent session running there loses Dispatch and its secrets at once, and the machine needs you to run \`agent-secrets login\` again.`

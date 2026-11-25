@@ -390,7 +390,8 @@ test("the control variant keeps the host control and puts the live link beside i
     expect(live.parentElement).toBe(host.parentElement);
     expect(live.getAttribute("href")).toBe(`/agents/${LISTED_ID}/live`);
     expect(live.classList.contains("dispatch-inline-link")).toBe(false);
-    expect(live.textContent?.trim()).not.toBe("");
+    // The link is an icon: it draws a glyph, and its name is its `aria-label`.
+    expect(live.querySelector("svg")).not.toBeNull();
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(agentNode(view.container, LISTED_ID).textContent).toContain("Planner (for alice)");
   } finally {

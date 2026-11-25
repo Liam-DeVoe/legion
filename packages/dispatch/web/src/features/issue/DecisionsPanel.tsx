@@ -13,6 +13,9 @@ import type {
   IssueAskRow,
   IssueDecisions,
 } from "../../api/types";
+import { Button } from "../../components/Button";
+import { fieldLabelClassName } from "../../components/Field";
+import { cardClassName } from "../../components/Layout";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -21,8 +24,6 @@ import {
   decisionUnsureAccent,
   linkHoverText,
   linkText,
-  primaryButton,
-  secondaryButtonCompact,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -180,7 +181,7 @@ function Section({
   const id = useId();
   return (
     <section aria-labelledby={id} className="space-y-3">
-      <h2 className={`text-xs font-semibold uppercase ${textSecondaryOnSurface}`} id={id}>
+      <h2 className={`text-[15px] font-semibold ${textPrimaryOnSurface}`} id={id}>
         {title}
       </h2>
       {children.length === 0 ? (
@@ -292,7 +293,7 @@ function ChangeComposer({
         body={body}
         issueKey={issueKey}
         label="Your change"
-        labelClassName={`block text-sm ${textPrimaryOnSurface}`}
+        labelClassName={fieldLabelClassName}
         onChange={(change) => setBody(change.body)}
         rows={3}
         writing={dispatchWritingBox("decisions-change", "comment")}
@@ -309,16 +310,17 @@ function ChangeComposer({
         </p>
       )}
       <div className="flex gap-2">
-        <button
-          className={primaryButton}
+        <Button
           disabled={send.isPending || body.trim() === ""}
+          size="sm"
           type="submit"
+          variant="primary"
         >
           Send
-        </button>
-        <button className={secondaryButtonCompact} onClick={onDone} type="button">
+        </Button>
+        <Button onClick={onDone} size="sm">
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -347,7 +349,7 @@ function DecisionCard({
   // One reading per answer: a fresh tree every render would be a fresh text to draw.
   const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
   return (
-    <li className={`space-y-2 rounded-lg border p-3 ${card}`} data-decision={decision.block_id}>
+    <li className={`space-y-2 ${cardClassName()}`} data-decision={decision.block_id}>
       <h3 className={`text-[15px] font-medium ${textPrimaryOnSurface}`}>
         <MarkdownBody
           markdown={decision.heading}
@@ -470,23 +472,13 @@ function WaitingDecision({
           <div className="space-y-2">
             {reads}
             <div className="flex gap-2">
-              <button
-                className={secondaryButtonCompact}
-                disabled={keep.isPending}
-                onClick={() => keep.mutate(documentId)}
-                type="button"
-              >
+              <Button size="sm" disabled={keep.isPending} onClick={() => keep.mutate(documentId)}>
                 Keep
-              </button>
+              </Button>
               {quote === undefined ? null : (
-                <button
-                  aria-expanded={changing}
-                  className={secondaryButtonCompact}
-                  onClick={() => setChanging(!changing)}
-                  type="button"
-                >
+                <Button aria-expanded={changing} size="sm" onClick={() => setChanging(!changing)}>
                   Change
-                </button>
+                </Button>
               )}
             </div>
             {keep.error === null ? null : (

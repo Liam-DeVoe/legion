@@ -1,10 +1,9 @@
 import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import type { ReactNode } from "react";
-
 import type { Actor, Agent, DeliveryAttemptState, MessageDeliveryMode } from "../../api/types";
+import { buttonClassName } from "../../components/Button";
 import {
   secondaryButtonBorder,
-  secondaryButtonText,
   surfaceMutedHoverBg,
   textMutedOnSurface,
   textPrimaryOnSurface,
@@ -229,7 +228,7 @@ export function DeliveryRetry({
       {!sameModeRetry ? null : (
         <div>
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
+            className={buttonClassName()}
             disabled={retrying || !supports[mode]}
             onClick={() => onRetry(mode)}
             type="button"
@@ -246,7 +245,7 @@ export function DeliveryRetry({
       {mode === "btw" ? null : (
         <div>
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
+            className={buttonClassName()}
             disabled={retrying || !canBtw}
             onClick={() => onRetry("btw")}
             type="button"
@@ -263,7 +262,7 @@ export function DeliveryRetry({
       {mode === "steer" ? null : (
         <div>
           <button
-            className={`min-h-11 rounded-lg border px-3 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText}`}
+            className={buttonClassName()}
             disabled={retrying || !canSteer}
             onClick={() => onRetry("steer")}
             type="button"

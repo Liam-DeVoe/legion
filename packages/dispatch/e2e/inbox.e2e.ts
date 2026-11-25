@@ -82,10 +82,11 @@ test("ask cards show urgency accents and copy their session ID, title, and tmux 
     // column, which draws the row it is given.
     const blockingAccent = await askCard(page, blocking.id);
     await expect(blockingAccent).toHaveAccessibleName("Urgency: Blocking");
-    await expect(blockingAccent).toContainText("BLOCKING");
+    // The urgency's word is the card's own badge, in the word's own case.
+    await expect(blockingAccent.locator("[data-ask-urgency]")).toHaveText("Blocking");
     const highAccent = await askCard(page, high.id);
     await expect(highAccent).toHaveAccessibleName("Urgency: High");
-    await expect(highAccent).toContainText("HIGH");
+    await expect(highAccent.locator("[data-ask-urgency]")).toHaveText("High");
     const mediumAccent = await askCard(page, medium.id);
     await expect(mediumAccent).toHaveAccessibleName("Urgency: Medium");
     // The card spends no word on a medium question - its accent is the whole mark - while the

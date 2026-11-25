@@ -3,11 +3,12 @@ import type { ReactNode } from "react";
 import { apiErrorMessage } from "../../api/client";
 import { RefusableButton } from "../../components/RefusableButton";
 import {
+  borderDefault,
   dangerText,
   surfaceMutedBg,
   textMutedOnCanvas,
   textMutedOnSurfaceMuted,
-  textPrimaryOnCanvas,
+  textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -45,7 +46,7 @@ export function PendingSendTurn({
       data-testid="agent-send-held"
     >
       <div
-        className={`max-w-[80%] rounded-xl px-3 py-2 text-sm opacity-80 ${surfaceMutedBg} ${textPrimaryOnCanvas}`}
+        className={`max-w-[80%] rounded-lg border px-3 py-2 text-sm opacity-80 ${borderDefault} ${surfaceMutedBg} ${textPrimaryOnSurfaceMuted}`}
       >
         <p className={`text-xs font-medium ${textMutedOnSurfaceMuted}`}>Your message</p>
         <MarkdownBody markdown={held.draft.draft.body} surface="agent-held-send" />

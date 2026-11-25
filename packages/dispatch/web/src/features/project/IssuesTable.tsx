@@ -2,16 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { userStateQuery } from "../../api/queries";
+import { Button } from "../../components/Button";
 import { Chip } from "../../components/Chip";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import {
-  borderDefault,
-  dangerText,
-  focusVisibleRing,
-  textMutedOnCanvas,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
+import { dangerText, textMutedOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
@@ -64,6 +59,7 @@ const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.ori
 
 export function IssuesTable({
   empty,
+  footRoom = true,
   label,
   layout: ownLayout,
   listing,
@@ -78,6 +74,10 @@ export function IssuesTable({
   /** What this list is called, for a reader who cannot see where it sits; by its listing when
    *  unset: a project's issues, or the issues advancing one priority. */
   label?: string;
+  /** Whether the table keeps the floating selection bar's room under its own pager. A page
+   *  that stacks several tables says no on each and keeps that room once, at its own foot
+   *  (`PrioritiesPage`), so the tables are not 96 px further apart than its other sections. */
+  footRoom?: boolean;
   /** The layout this table keeps, under its own key, where it is not its listing's: the whole
    *  set of columns it opens with shown (`opens`), registry and listing columns alike, every
    *  other one opening hidden for the reader to show, the widths it gives any column in place
@@ -333,7 +333,7 @@ export function IssuesTable({
   const visibleColumns = table.getVisibleLeafColumns().length + (rowActions ? 1 : 0);
 
   return (
-    <section aria-label={name} className="space-y-3 sm:pb-24">
+    <section aria-label={name} className={`space-y-3 ${footRoom ? "sm:pb-24" : ""}`}>
       <div className="space-y-3" ref={attachAbove}>
         {listingError ? (
           <p className={dangerText} role="alert">
@@ -367,6 +367,22 @@ export function IssuesTable({
           items={allItems}
           legend={ownLayout?.statusLegend}
           table={table}
+          notice={
+            // What the last table action did. It is drawn in the strip's own first line, at
+            // the right of the counts, so its arrival moves nothing: the table under it keeps
+            // its place (a row the reader is about to press must not jump), and no blank line
+            // is kept for it between the toolbar and the table. On a phone the counts fill
+            // that line, so the strip keeps one line under them for it instead.
+            <p
+              aria-live="polite"
+              role={notice ? (notice.kind === "error" ? "alert" : "status") : undefined}
+              className={`text-sm max-sm:mb-2 max-sm:min-h-5 sm:absolute sm:top-3 sm:right-3 sm:left-[21rem] sm:truncate sm:text-right ${notice?.kind === "error" ? dangerText : textSecondaryOnCanvas}`}
+              title={notice?.text}
+            >
+              {/* The table's own notice of what a table action did. */}
+              {notice?.text}
+            </p>
+          }
         />
         {picked === null ? null : (
           /* What the table is narrowed to, and the way back to every row: removing the chip
@@ -395,31 +411,15 @@ export function IssuesTable({
           }
         />
 
-        <p
-          aria-live="polite"
-          role={notice ? (notice.kind === "error" ? "alert" : "status") : undefined}
-          className={`min-h-5 text-sm ${notice?.kind === "error" ? dangerText : textSecondaryOnCanvas}`}
-        >
-          {/* The table's own notice of what a table action did. */}
-          {notice?.text}
-        </p>
         {interrupted ? (
           <section aria-label="Interrupted table action" className={textSecondaryOnCanvas}>
             <p>{interruptedDescription}</p>
-            <button
-              type="button"
-              onClick={finish}
-              className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${focusVisibleRing}`}
-            >
-              Finish
-            </button>{" "}
-            <button
-              type="button"
-              onClick={dismiss}
-              className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${focusVisibleRing}`}
-            >
-              Dismiss
-            </button>
+            <div className="mt-2 flex gap-2">
+              <Button onClick={finish}>Finish</Button>
+              <Button onClick={dismiss} variant="ghost">
+                Dismiss
+              </Button>
+            </div>
           </section>
         ) : null}
         {unansweredEpic ? (

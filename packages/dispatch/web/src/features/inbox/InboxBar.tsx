@@ -1,13 +1,9 @@
 import { type ReactNode, useState } from "react";
 
+import { Button } from "../../components/Button";
+import { Chip } from "../../components/Chip";
 import { MultiSelect } from "../../components/MultiSelect";
-import {
-  borderDefault,
-  dangerText,
-  focusVisibleRing,
-  surfaceMutedBg,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
+import { dangerText } from "../../theme/classes";
 import {
   INBOX_FILTER_FIELDS,
   INBOX_PRIORITY_VALUES,
@@ -32,10 +28,6 @@ import { ViewMenu, type ViewMenuProps } from "./ViewMenu";
 /** The bar's popovers, each of which opens alone: one of the five filter fields, the assignee
  *  picker beside them, or the **View** menu. */
 export type InboxPopover = InboxFilterField | "assignee" | "view";
-
-/** The chrome **Filter** and **Mark all read** share. The **View** trigger's is deliberately
- *  its own: it carries no focus ring, since its panel takes the focus. */
-const BAR_BUTTON_CLASS = `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold outline-none focus-visible:ring-2 ${focusVisibleRing} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
 
 /** The chosen values of every field the address carries as a comma list. */
 export type InboxFilters = Partial<Record<InboxFilterField, readonly string[]>>;
@@ -92,6 +84,7 @@ export function InboxBar({
   onFiltersChange,
   onPopoverOpenChange,
   rows,
+  search,
   selection,
   view,
   viewer,
@@ -116,6 +109,8 @@ export function InboxBar({
   onPopoverOpenChange: (open: InboxPopover | undefined) => void;
   /** Every row the list could hold before these five fields narrow it: what the counts count. */
   rows: readonly InboxListRow[];
+  /** The Inbox's own search box, which the bar only places: the first thing in its row. */
+  search: ReactNode;
   /** Who the list is for, as the assignee filter resolves it (the reader alone by default). */
   selection: readonly string[];
   /** Everything the **View** menu shows and changes, which the bar only hands on. */
@@ -189,26 +184,20 @@ export function InboxBar({
   return (
     <div className="space-y-2" data-inbox-bar="">
       <div className="flex flex-wrap items-center gap-2">
-        <button
+        {search}
+        <Button
           aria-expanded={fieldsOpen}
-          className={BAR_BUTTON_CLASS}
           data-inbox-filter=""
           onClick={() => setFieldsOpen((open) => !open)}
-          type="button"
         >
           Filter
-        </button>
+        </Button>
         {/* Between **Filter** and **View**, and only while the list holds an unread Reply or
             Agent row. It asks nothing first: the rows go, and a refusal brings them back. */}
         {markAll.offered ? (
-          <button
-            className={BAR_BUTTON_CLASS}
-            data-inbox-mark-all=""
-            onClick={markAll.markAll}
-            type="button"
-          >
+          <Button data-inbox-mark-all="" onClick={markAll.markAll}>
             Mark all read
-          </button>
+          </Button>
         ) : null}
         {markAll.failure === "refused" ? (
           <p className={`text-sm ${dangerText}`} data-inbox-mark-all-refused="" role="alert">
@@ -267,26 +256,19 @@ export function InboxBar({
         <div className="flex flex-wrap items-center gap-2" data-inbox-filter-tokens="">
           {agentToken}
           {tokens.map((token) => (
-            <button
+            <Chip
               aria-label={`Remove filter ${token.label}`}
-              className={`inline-flex min-h-11 shrink-0 items-center gap-1 rounded-full border px-3 text-xs font-medium outline-none focus-visible:ring-2 ${focusVisibleRing} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`}
               data-inbox-filter-token={token.key}
               key={token.key}
               onClick={token.remove}
-              type="button"
+              removable
             >
               {token.label}
-              <span aria-hidden="true">×</span>
-            </button>
+            </Chip>
           ))}
-          <button
-            className={`min-h-11 rounded-lg px-2 text-xs font-medium outline-none focus-visible:ring-2 ${focusVisibleRing} ${textSecondaryOnCanvas}`}
-            data-inbox-clear-filters=""
-            onClick={clearAll}
-            type="button"
-          >
+          <Button data-inbox-clear-filters="" onClick={clearAll} size="sm" variant="ghost">
             Clear filters
-          </button>
+          </Button>
         </div>
       )}
     </div>

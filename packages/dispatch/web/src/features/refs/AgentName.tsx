@@ -20,7 +20,10 @@ import {
   pageInkText,
   pageSegmentDoneBg,
   pageStateText,
+  railText,
   stalledDotBorder,
+  surfaceMutedHoverBg,
+  textMutedHoverToSecondary,
   unknownDotBorder,
 } from "../../theme/classes";
 import { askResolutionBadge } from "./actor";
@@ -144,6 +147,10 @@ type AgentNameProps = AgentSubject &
     className?: string;
     /** Inside a sentence: the link keeps its line box (`.dispatch-inline-link`, `styles.css`). */
     inline?: boolean;
+    /** The surface the name stands on. `"rail"` is the dark navigation rail, where a session's
+     *  link takes the rail's own light ink and underlines under the pointer: the link blue,
+     *  which is chosen for the light surface, is dim on the rail's slate-950 in light mode. */
+    tone?: "rail";
   };
 
 const LINK_CLASS = `rounded outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
@@ -152,6 +159,9 @@ const LINK_CLASS = `rounded outline-none focus-visible:ring-2 ${focusVisibleRing
  *  since ink beside ink says link by the underline alone; the focus ring stays `main`'s, the
  *  application's one focus indicator. */
 const PAGE_LINK_CLASS = `rounded outline-none focus-visible:ring-2 ${focusVisibleRing} ${pageInkText} underline`;
+
+/** `LINK_CLASS` on the dark navigation rail (`tone="rail"`). */
+const RAIL_LINK_CLASS = `rounded outline-none focus-visible:ring-2 hover:underline underline-offset-2 ${focusVisibleRing} ${railText}`;
 
 const MARK_CLASS = "mr-1 inline-block h-2 w-2 shrink-0 rounded-full align-middle";
 
@@ -279,6 +289,7 @@ export function AgentName(props: AgentNameProps): ReactNode {
         className={props.className}
         inline={props.inline}
         subject={{ sessionId: props.sessionId, storedTitle: props.storedTitle }}
+        tone={props.tone}
         variant={props}
       />
     );
@@ -297,6 +308,7 @@ export function AgentName(props: AgentNameProps): ReactNode {
       className={props.className}
       inline={props.inline}
       subject={{ actor }}
+      tone={props.tone}
       variant={props}
     />
   );
@@ -306,11 +318,13 @@ function SessionAgentName({
   className,
   inline,
   subject,
+  tone,
   variant,
 }: {
   className: string | undefined;
   inline: boolean | undefined;
   subject: SessionRef;
+  tone: "rail" | undefined;
   variant: AgentVariant;
 }): ReactNode {
   const tooltips = useTooltips();
@@ -326,7 +340,7 @@ function SessionAgentName({
   const fallbackMark = unnamed ? page?.pageChrome : undefined;
   const shownName = fallbackMark === undefined ? name : <span {...fallbackMark}>{name}</span>;
   const state = registry.state(sessionId);
-  const linkClass = tooltips ? LINK_CLASS : PAGE_LINK_CLASS;
+  const linkClass = tone === "rail" ? RAIL_LINK_CLASS : tooltips ? LINK_CLASS : PAGE_LINK_CLASS;
   const to = generatePath(AGENT_LIVE_PATH, { sessionId: encodeURIComponent(sessionId) });
 
   let named: ReactNode;
@@ -334,13 +348,28 @@ function SessionAgentName({
   if (variant.kind === "control") {
     named = variant.control(shownName);
     const openLabel = `Open live conversation with ${name}${attribution}`;
-    liveLink = (
+    // A quiet square icon after the name: an arrow in the link blue after every name of a list
+    // read as the list's loudest column. Inside `NoTooltips` the link is the new issue page's
+    // own, its arrow in the page's ink with its underline, as that page draws every link.
+    liveLink = tooltips ? (
       <Link
         aria-label={openLabel}
-        className={`ml-1 px-1 ${linkClass}`}
-        title={tooltips ? openLabel : undefined}
+        className={`ml-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded align-middle outline-none focus-visible:ring-2 ${focusVisibleRing} ${textMutedHoverToSecondary} ${surfaceMutedHoverBg}`}
+        title={openLabel}
         to={to}
       >
+        <svg aria-hidden="true" className="size-3" fill="none" viewBox="0 0 12 12">
+          <path
+            d="M3.5 8.5 8.5 3.5M4.5 3.5h4v4"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+          />
+        </svg>
+      </Link>
+    ) : (
+      <Link aria-label={openLabel} className={`ml-1 px-1 ${PAGE_LINK_CLASS}`} to={to}>
         <span aria-hidden="true">↗</span>
       </Link>
     );

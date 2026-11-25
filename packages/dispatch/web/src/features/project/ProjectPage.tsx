@@ -5,17 +5,15 @@ import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import { Button, segmentedClassName } from "../../components/Button";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
 import {
-  borderDefault,
   dangerText,
   surfaceMutedBg,
-  surfaceMutedStrongBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryHoverToPrimary,
-  textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ArchitecturePage } from "../architecture/ArchitecturePage";
@@ -163,7 +161,7 @@ export function ProjectPage(): ReactNode {
           when they outgrow the row. The title gives, truncating, which is what a long project
           name should do; otherwise the last control - the blocked-on-you pill - would be pushed
           off the right edge and unreachable. */}
-      <header className="flex flex-wrap items-center gap-2 md:min-h-12 md:flex-nowrap">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 md:min-h-10 md:flex-nowrap">
         {/* `flex-initial` at `md`: the title takes the width its name needs and no more, so
             the project key sits beside a short name instead of 380px away, and only a long
             name truncates - carrying the whole name as its `title`. */}
@@ -174,10 +172,14 @@ export function ProjectPage(): ReactNode {
           {project.name}
         </h1>
         <Link
-          className={`order-2 inline-flex min-h-11 shrink-0 items-center rounded-full px-3 text-xs font-semibold md:min-h-9 md:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
+          className={`order-2 inline-flex shrink-0 items-center justify-center text-xs font-medium ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
           to={buildProjectPath({ kind: "issues", project: route.project })}
         >
-          {route.project}
+          {/* The chip is the drawn part; the link around it keeps the 44 px target a phone
+              gives every link, without drawing a 44 px grey square. */}
+          <span className={`inline-flex h-5 items-center rounded px-1.5 ${surfaceMutedBg}`}>
+            {route.project}
+          </span>
         </Link>
         {/* The reader's own questions on this project, and no credential request: the pending
             list is global (a request belongs to no project), so counting one here would make
@@ -200,55 +202,45 @@ export function ProjectPage(): ReactNode {
           />
         </div>
         {activeTab === "issues" ? (
-          <fieldset
-            className={`order-6 inline-flex shrink-0 rounded-xl border p-1 md:order-4 md:ml-auto ${borderDefault}`}
-          >
+          <fieldset className={`order-6 md:order-4 md:ml-auto ${segmentedClassName}`}>
             <legend className="sr-only">Issue view</legend>
             {(["list", "board"] as const).map((view) => (
-              <button
+              <Button
                 aria-pressed={issueView === view}
-                className={`min-h-11 rounded-lg px-3 text-sm font-medium md:min-h-9 md:px-2 ${
-                  issueView === view ? surfaceMutedStrongBg : surfaceMutedBg
-                } ${textSecondaryOnCanvas}`}
                 key={view}
                 onClick={() => setIssueView(view)}
-                type="button"
+                size="sm"
+                variant="ghost"
               >
                 {view === "list" ? "List" : "Board"}
-              </button>
+              </Button>
             ))}
           </fieldset>
         ) : null}
         {activeTab === "issues" && issueView === "board" ? (
-          <button
+          <Button
             aria-pressed={showEdges}
-            className={`order-7 min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${
-              showEdges ? surfaceMutedStrongBg : surfaceMutedBg
-            } ${textSecondaryOnCanvas}`}
+            className="order-7 md:order-4"
             onClick={() => setShowEdges(!showEdges)}
-            type="button"
           >
             {showEdges ? "Hide Icebox & Done" : "Show Icebox & Done"}
-          </button>
+          </Button>
         ) : null}
         {activeTab === "issues" && issueView === "board" ? (
-          <button
+          <Button
             aria-pressed={lanes}
-            className={`order-8 min-h-11 shrink-0 rounded-xl border px-3 text-sm font-medium md:order-4 md:min-h-9 md:px-2 ${borderDefault} ${
-              lanes ? surfaceMutedStrongBg : surfaceMutedBg
-            } ${textSecondaryOnCanvas}`}
+            className="order-8 md:order-4"
             onClick={() => setLanes(!lanes)}
-            type="button"
           >
             {lanes ? "Hide lanes" : "Show lanes"}
-          </button>
+          </Button>
         ) : null}
       </header>
       {hasSource ? (
         <div
           aria-hidden={activeTab !== "architecture"}
           aria-labelledby="project-architecture-tab"
-          className="mt-3"
+          className="mt-4"
           hidden={activeTab !== "architecture"}
           id="project-architecture-panel"
           role="tabpanel"
@@ -259,7 +251,7 @@ export function ProjectPage(): ReactNode {
       <div
         aria-hidden={activeTab !== "issues"}
         aria-labelledby="project-issues-tab"
-        className="mt-3"
+        className="mt-4"
         hidden={activeTab !== "issues"}
         id="project-issues-panel"
         role="tabpanel"
@@ -288,6 +280,7 @@ export function ProjectPage(): ReactNode {
       <div
         aria-hidden={activeTab !== "documents"}
         aria-labelledby="project-documents-tab"
+        className="mt-4"
         hidden={activeTab !== "documents"}
         id="project-documents-panel"
         role="tabpanel"

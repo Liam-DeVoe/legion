@@ -1,16 +1,16 @@
 import type { ReactNode } from "react";
 
 import {
+  buttonGhostMuted,
+  buttonPrimary,
+  buttonSecondary,
   pageInkFill,
   pageLineBorder,
   pageMutedText,
   pageQuietText,
-  primaryButtonBg,
-  primaryButtonEnabledHoverBg,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-  textMutedHoverToSecondary,
+  railControlHoverBg,
+  railHoverText,
+  railMutedText,
 } from "../theme/classes";
 import { useTooltips } from "./tooltips";
 
@@ -29,16 +29,19 @@ function PinIcon({ pinned }: { pinned: boolean }): ReactNode {
   );
 }
 
-/** A pin toggle: 44 px tap target that shrinks to 32 px on desktop, `aria-pressed` for the
- *  pinned state, filled primary once pinned. `quiet` is for hosts that show one per row
- *  (conversation turns): no resting border, so a list is not a column of boxes, and the 44 px
- *  target on every breakpoint, so a turn's height never depends on its asynchronously rendered
- *  Markdown body (`ViewportAnchor` compensates React commits, not that later DOM swap). */
+/** A pin toggle: the system's square icon button, 32 px with the secondary's rule, `aria-pressed`
+ *  for the pinned state, filled primary once pinned. `quiet` is for hosts that show one per row
+ *  (conversation turns, the rail's pinned agents): the 28 px ghost, with no resting rule, so a
+ *  list is not a column of boxes. Its size is fixed at each width (44 px below 1280 px, where
+ *  `styles.css` lifts every control), so a turn's height never depends on its asynchronously
+ *  rendered Markdown body (`ViewportAnchor` compensates React commits, not that later DOM
+ *  swap). Inside `NoTooltips` it keeps the new issue page's own sizes. */
 export function PinButton({
   className,
   disabled = false,
   label,
   onClick,
+  onRail = false,
   pinned,
   quiet = false,
   title,
@@ -47,6 +50,9 @@ export function PinButton({
   disabled?: boolean;
   label: string;
   onClick: () => void;
+  /** The pin is drawn on the navigation rail, which is dark in both schemes: a 24 px control in
+   *  the rail's own muted text, whose filled glyph alone says it is pinned. */
+  onRail?: boolean;
   pinned: boolean;
   quiet?: boolean;
   /** A shorter tooltip than `label`, for a host whose label names a long thing. Drawn only on
@@ -54,27 +60,33 @@ export function PinButton({
   title?: string;
 }): ReactNode {
   const tooltips = useTooltips();
-  const resting = quiet
-    ? textMutedHoverToSecondary
-    : `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
+  const resting = quiet ? buttonGhostMuted : buttonSecondary;
   // Inside `NoTooltips` each colour is one of the new issue page's: pinned is filled with the
   // page's ink, as its one filled control is; unpinned is its header control's rule and muted
   // words, or quiet words that turn muted under the pointer for a quiet pin.
-  const look = tooltips
-    ? pinned
-      ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg}`
-      : resting
-    : pinned
-      ? pageInkFill
-      : quiet
-        ? `${pageQuietText} hover:text-page-muted`
-        : `${pageLineBorder} ${pageMutedText}`;
+  const look = onRail
+    ? `${railMutedText} ${railHoverText} ${railControlHoverBg}`
+    : tooltips
+      ? pinned
+        ? buttonPrimary
+        : resting
+      : pinned
+        ? pageInkFill
+        : quiet
+          ? `${pageQuietText} hover:text-page-muted`
+          : `${pageLineBorder} ${pageMutedText}`;
   return (
     <button
       aria-label={label}
       aria-pressed={pinned}
-      className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50 ${
-        quiet ? "" : "md:min-h-8 md:min-w-8"
+      className={`flex shrink-0 items-center justify-center disabled:cursor-not-allowed disabled:opacity-50 ${
+        onRail
+          ? "size-6 rounded"
+          : tooltips
+            ? quiet
+              ? "size-7 rounded-md"
+              : "size-8 rounded-md"
+            : `min-h-11 min-w-11 rounded-lg ${quiet ? "" : "md:min-h-8 md:min-w-8"}`
       } ${look} ${className ?? ""}`}
       disabled={disabled}
       onClick={onClick}

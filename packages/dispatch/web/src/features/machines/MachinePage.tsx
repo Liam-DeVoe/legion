@@ -1,16 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { Link, useLocation } from "react-router-dom";
-
 import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
+import { PageHeader } from "../../components/Layout";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { useCappedSearchParam } from "../../lib/query-param";
 import {
   borderDefault,
   dangerText,
   inlineWarningText,
-  linkHoverText,
-  linkText,
+  linkChrome,
+  rowHoverBg,
   selectedCardBg,
   selectedCardBorder,
   textMutedOnCanvas,
@@ -122,34 +122,34 @@ function MachineView({ host }: { host: string }): ReactNode {
 
   return (
     <section aria-label={`Machine ${host}`} data-machine={host} data-testid="machine-page">
-      <header className={`mb-5 border-b pb-4 ${borderDefault}`}>
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to="/machines">
-          ← Machines
-        </Link>
-        <h1
-          className={`mt-1 min-w-0 break-words text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}
-        >
-          {host}
-        </h1>
-        <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
-          <span>{sessionCountSentence(model.summary)}</span>
-          <Link className={`${linkText} ${linkHoverText}`} to={buildAgentsMachinePath(host)}>
+      <PageHeader
+        // The machine's agents are this page's one way on, so the link sits at the right of
+        // the title, as a page's actions do.
+        actions={
+          <Link className={`text-sm ${linkChrome}`} to={buildAgentsMachinePath(host)}>
             Agents on this machine
           </Link>
-        </p>
-      </header>
+        }
+        description={<span className="tabular-nums">{sessionCountSentence(model.summary)}</span>}
+        eyebrow={
+          <Link className={linkChrome} to="/machines">
+            ← Machines
+          </Link>
+        }
+        title={<span className="break-words">{host}</span>}
+      />
       {model.sharedName ? (
-        <p className={`mb-3 text-sm ${textSecondaryOnCanvas}`} data-testid="machine-shared-name">
+        <p className={`mb-2 text-sm ${textSecondaryOnCanvas}`} data-testid="machine-shared-name">
           {SHARED_NAME}
         </p>
       ) : null}
       {age === undefined ? null : (
-        <p className={`mb-3 text-sm ${textMutedOnCanvas}`} data-testid="machine-drawing-age">
+        <p className={`mb-2 text-sm ${textMutedOnCanvas}`} data-testid="machine-drawing-age">
           Oldest report drawn: {oldest}.
         </p>
       )}
       {age?.stale === true ? (
-        <p className={`mb-3 text-sm ${inlineWarningText}`} data-testid="machine-drawing-stale">
+        <p className={`mb-2 text-sm ${inlineWarningText}`} data-testid="machine-drawing-stale">
           {DRAWING_STALE}
         </p>
       ) : null}
@@ -162,7 +162,7 @@ function MachineView({ host }: { host: string }): ReactNode {
           {NONE_IN_TMUX}
         </p>
       ) : (
-        <div className="space-y-5">
+        <div className="mt-6 space-y-8">
           {model.servers.map((server) => (
             <ServerPart
               counts={counts}
@@ -201,12 +201,14 @@ function ServerPart({
   return (
     <section
       aria-label={`tmux server ${server.socket}`}
-      className={`border-t pt-3 ${borderDefault}`}
+      className={`border-t pt-4 ${borderDefault}`}
       data-server-pid={server.serverPid}
       data-socket={server.socket}
       data-testid="machine-server"
     >
-      <h2 className={`min-w-0 break-words text-sm font-semibold ${textPrimaryOnCanvas}`}>
+      <h2
+        className={`min-w-0 break-words text-[15px] leading-6 font-semibold ${textPrimaryOnCanvas}`}
+      >
         {server.socket}
         {server.showPid ? ` · pid ${server.serverPid}` : ""}
       </h2>
@@ -214,7 +216,7 @@ function ServerPart({
         {WINDOWS_WITH_AGENTS}
       </p>
       <ul
-        className="mt-2 mb-3 flex flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin]"
+        className="mt-3 mb-3 flex flex-nowrap items-center gap-1.5 overflow-x-auto [scrollbar-width:thin]"
         data-testid="window-strip"
       >
         {windows.map((entry) => {
@@ -222,10 +224,10 @@ function ServerPart({
           return (
             <li key={entry.window.windowId}>
               <Link
-                className={`block rounded-lg border px-2 py-1 text-xs whitespace-nowrap ${
+                className={`flex h-7 items-center rounded-md border px-2.5 text-xs font-medium whitespace-nowrap ${
                   current
                     ? `${selectedCardBorder} ${selectedCardBg} ${textPrimaryOnCanvas}`
-                    : `${borderDefault} ${textSecondaryOnCanvas}`
+                    : `${borderDefault} ${textSecondaryOnCanvas} ${rowHoverBg}`
                 }`}
                 data-picked={current ? "true" : "false"}
                 data-testid="window-pick"

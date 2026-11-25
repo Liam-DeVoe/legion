@@ -1,11 +1,11 @@
 import { type ReactNode, useRef, useState } from "react";
-
+import { Button } from "../../components/Button";
+import { inputClassName } from "../../components/Field";
 import {
   backdrop50,
   borderDefault,
   card,
-  inputClasses,
-  kbdHint,
+  kbdKey,
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
@@ -110,40 +110,34 @@ export function ShortcutHelp({
         <div
           aria-label="Keyboard shortcuts"
           aria-modal="true"
-          className={`pointer-events-auto flex max-h-full w-full flex-col overflow-hidden border shadow-2xl xl:max-w-2xl xl:rounded-lg ${card} ${borderDefault}`}
+          className={`pointer-events-auto flex max-h-full w-full flex-col overflow-hidden border shadow-2xl xl:max-w-xl xl:rounded-lg ${card} ${borderDefault}`}
           ref={dialog.containerRef}
           role="dialog"
         >
-          <div className={`flex items-center gap-3 border-b p-3 ${borderDefault}`}>
-            <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>
+          <div className={`flex items-center gap-3 border-b py-3 pr-3 pl-4 ${borderDefault}`}>
+            <h2 className={`shrink-0 text-[15px] font-semibold ${textPrimaryOnSurface}`}>
               Keyboard shortcuts
             </h2>
             <input
               aria-label="Filter shortcuts"
-              className={`block min-h-11 min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+              className={inputClassName({ surface: "recessed" })}
               onChange={(event) => setFilter(event.target.value)}
               placeholder="Filter"
               ref={filterRef}
               type="search"
               value={filter}
             />
-            <button
-              className={`min-h-11 rounded-lg px-3 text-sm font-medium ${textMutedOnSurface}`}
-              onClick={onClose}
-              type="button"
-            >
+            <Button onClick={onClose} variant="ghost">
               Close
-            </button>
+            </Button>
           </div>
-          <div className="overflow-y-auto p-3">
+          <div className="overflow-y-auto p-2">
             {shown.length === 0 ? (
               <p className={`px-2 py-3 text-sm ${textMutedOnSurface}`}>No shortcuts match</p>
             ) : (
               scopes.map((scope) => (
-                <section aria-label={SCOPE_LABELS[scope]} className="mb-4 last:mb-0" key={scope}>
-                  <h3
-                    className={`mb-1 px-2 text-xs font-semibold tracking-wide uppercase ${textMutedOnSurface}`}
-                  >
+                <section aria-label={SCOPE_LABELS[scope]} className="mb-3 last:mb-0" key={scope}>
+                  <h3 className={`px-2 py-1 text-xs font-medium ${textMutedOnSurface}`}>
                     {SCOPE_LABELS[scope]}
                   </h3>
                   <ul>
@@ -151,7 +145,7 @@ export function ShortcutHelp({
                       .filter((entry) => entry.scope === scope)
                       .map((entry) => (
                         <li
-                          className={`flex min-h-11 items-center justify-between gap-4 rounded-lg px-2 py-1.5 text-sm ${
+                          className={`flex min-h-8 items-center justify-between gap-4 rounded-md px-2 py-1 text-sm ${
                             entry.enabled
                               ? textPrimaryOnSurface
                               : `opacity-50 ${textMutedOnSurface}`
@@ -174,7 +168,7 @@ export function ShortcutHelp({
   );
 }
 
-const kbdClass = `rounded px-1.5 py-0.5 font-mono text-xs font-medium ${kbdHint}`;
+const kbdClass = `inline-flex h-5 min-w-5 items-center justify-center rounded border px-1 font-sans text-xs font-medium ${kbdKey}`;
 
 /**
  * The keys that run a binding, as `?` and the palette both show them: `["1", …, "9"]` collapses

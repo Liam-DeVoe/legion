@@ -1,7 +1,13 @@
 import { flexRender, type Row } from "@tanstack/react-table";
 import type { ReactNode } from "react";
 import { drawsPinnedDivider, type LineProps } from "../../components/DataTable";
-import { borderDefault, focusVisibleRing, selectedCardBg, surfaceBg } from "../../theme/classes";
+import {
+  borderDefault,
+  focusVisibleRing,
+  selectedCardBg,
+  surfaceBg,
+  surfaceMutedHoverBg,
+} from "../../theme/classes";
 
 /**
  * One row of the priorities table: its cells, and, while the table's order is the reader's to
@@ -28,7 +34,8 @@ export function TableBodyRow<Row_>({
   return (
     <tr
       aria-label={label}
-      className={`group align-top outline-none focus-visible:ring-2 ${focusVisibleRing} ${dragged ? selectedCardBg : ""}`}
+      // As `IssueRow`: the row carries the fill and the tint, and a pinned cell inherits it.
+      className={`group align-top outline-none focus-visible:ring-2 ${focusVisibleRing} ${dragged ? selectedCardBg : `${surfaceBg} ${surfaceMutedHoverBg}`}`}
       data-index={index}
       data-issue-group={row.getParentRow()?.id ?? "ungrouped"}
       data-issue-row={row.id}
@@ -50,7 +57,7 @@ export function TableBodyRow<Row_>({
         const pinned = cell.column.getIsPinned() === "left";
         return (
           <td
-            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${surfaceBg}` : ""} ${drawsPinnedDivider(cell.column, false) ? "border-r" : ""}`}
+            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? "sticky z-10 bg-inherit" : ""} ${drawsPinnedDivider(cell.column, false) ? "border-r" : ""}`}
             key={cell.id}
             style={{
               width: cell.column.getSize(),

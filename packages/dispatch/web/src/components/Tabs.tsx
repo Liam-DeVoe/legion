@@ -4,10 +4,11 @@ import { observeStrip } from "../hooks/observe-strip";
 import { useScrollFadeTrailing } from "../hooks/useScrollFadeTrailing";
 import {
   activeTabIndicatorBorder,
-  activeTabIndicatorText,
   borderDefault,
+  borderTransparent,
   scrollFadeTrailingPx,
-  textSecondaryOnCanvas,
+  textMutedHoverToSecondary,
+  textPrimaryOnCanvas,
 } from "../theme/classes";
 import { Pill } from "./Pill";
 
@@ -135,7 +136,7 @@ export function Tabs<Id extends string>({
     return observeStrip(list, settle, { childList: true });
   }, [activeTab]);
 
-  const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";
+  const tabMinHeight = "h-9";
   // Compact tabs sit tighter on phones, which is what keeps the shorter tablists on one line. The
   // issue's ten tabs, one carrying a count pill, no longer fit a 390 px viewport, nor the issue
   // page at 1440 px beside its comment margin: there the tablist scrolls sideways, as it already
@@ -147,11 +148,11 @@ export function Tabs<Id extends string>({
 
   return (
     <div
-      className={`${compact ? "mb-0" : "mb-3"} flex flex-wrap items-center gap-1 border-b ${borderDefault}`}
+      className={`${compact ? "mb-0" : "mb-4"} flex flex-wrap items-center gap-1 border-b ${borderDefault}`}
     >
       <div
         aria-label={ariaLabel}
-        className={`flex min-w-0 ${tabGap} overflow-x-auto [scrollbar-width:thin] ${tablistFade.fade}`}
+        className={`-mb-px flex min-w-0 ${tabGap} overflow-x-auto [scrollbar-width:thin] ${tablistFade.fade}`}
         ref={tablistFade.ref}
         role="tablist"
       >
@@ -167,8 +168,8 @@ export function Tabs<Id extends string>({
             aria-selected={activeTab === tab.id}
             className={
               activeTab === tab.id
-                ? `${tabMinHeight} ${tabPadding} inline-flex shrink-0 items-center gap-1.5 border-b-2 py-2 text-sm font-semibold whitespace-nowrap ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
-                : `${tabMinHeight} ${tabPadding} inline-flex shrink-0 items-center gap-1.5 py-2 text-sm whitespace-nowrap ${textSecondaryOnCanvas}`
+                ? `${tabMinHeight} ${tabPadding} inline-flex shrink-0 items-center gap-1.5 border-b-2 text-sm font-medium whitespace-nowrap -outline-offset-2 ${activeTabIndicatorBorder} ${textPrimaryOnCanvas}`
+                : `${tabMinHeight} ${tabPadding} inline-flex shrink-0 items-center gap-1.5 border-b-2 text-sm font-medium whitespace-nowrap -outline-offset-2 ${borderTransparent} ${textMutedHoverToSecondary}`
             }
             id={tabButtonId(idPrefix, tab.id)}
             key={tab.id}

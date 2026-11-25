@@ -2,7 +2,6 @@ import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
@@ -367,7 +366,7 @@ export function IssuePriorityLine({
             {labelOf(entry.id)}
           </Link>
           {entry.inherited ? (
-            <span className={`shrink-0 text-xs ${pageQuietText}`} {...page.pageChrome}>
+            <span className={`shrink-0 text-[13px] ${pageQuietText}`} {...page.pageChrome}>
               {page.CONTROL_LABELS.advances_inherited}
             </span>
           ) : null}

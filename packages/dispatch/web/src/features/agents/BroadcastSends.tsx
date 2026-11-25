@@ -179,7 +179,7 @@ export function BroadcastSends({
   return (
     <section
       aria-label="Sends"
-      className={`max-h-28 overflow-y-auto rounded-xl border px-3 py-2 text-sm narrow-or-short:text-xs ${card} ${borderDefault} ${className}`}
+      className={`max-h-28 overflow-y-auto rounded-lg border px-3 py-2 text-sm shadow-lg narrow-or-short:text-xs narrow-or-short:shadow-none ${card} ${borderDefault} ${className}`}
     >
       <ul className="space-y-1">
         {rows.map((row) => {

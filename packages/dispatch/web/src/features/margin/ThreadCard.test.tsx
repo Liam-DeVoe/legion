@@ -1183,7 +1183,8 @@ for (const kept of ["typed", "refused"] as const) {
           field: false,
           lines: [KEPT_EDIT_LINE],
           save: false,
-          words: `${root.anchor?.quote}Deleted by alice · alice · ${KEPT_EDIT_LINE}`,
+          // The byline stands over the comment: who and when, then the quote and what was said.
+          words: `alice · ${root.anchor?.quote}Deleted by alice · ${KEPT_EDIT_LINE}`,
         },
         saves: { after: 0, before: kept === "refused" ? 1 : 0 },
         started: root.body,

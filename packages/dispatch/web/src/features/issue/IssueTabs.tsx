@@ -24,7 +24,11 @@ export function IssueTabs({
   const navigate = useNavigate();
 
   return (
-    <div data-testid="issue-tabs">
+    // The frame gives every tab's body the same 16 px under the tab bar, so no body sets a top
+    // margin of its own. The Spec's toolbar is a row of its own under the bar, at every width: as
+    // the tablist's trailing item it shared the bar only on the widest screens and wrapped into
+    // the bar's box, above its rule, everywhere else.
+    <div className="mb-4" data-testid="issue-tabs">
       <Tabs
         activeTab={activeTab}
         ariaLabel="Issue detail"
@@ -33,8 +37,8 @@ export function IssueTabs({
         onBeforeTabChange={onBeforeTabChange}
         onSelect={(tab) => navigate(buildIssuePath({ key: issueKey, kind: tab }))}
         tabs={issueTabs(artifactCount)}
-        trailing={toolbar}
       />
+      {toolbar === undefined || toolbar === null ? null : <div className="mt-2">{toolbar}</div>}
     </div>
   );
 }

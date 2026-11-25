@@ -1,18 +1,19 @@
 import { type ReactNode, type RefObject, useRef } from "react";
 
 import type { Artifact, Ask, DispatchEvent } from "../../api/types";
+import { Button } from "../../components/Button";
 import { QueryError } from "../../components/QueryError";
 import { FOOT_COMPOSER_FRAME_BOUND, useFootInset } from "../../hooks/useFootInset";
 import {
   activeTabIndicatorBorder,
-  activeTabIndicatorText,
   backdrop50,
   borderDefault,
+  borderTransparent,
   card,
   dragHandleBg,
+  textMutedHoverToSecondary,
   textMutedOnSurface,
   textPrimaryOnSurface,
-  textSecondaryOnSurface,
 } from "../../theme/classes";
 import type { ComposerKind } from "../conversation/composer-model";
 import type { SaveCommentEdit } from "../conversation/send-request";
@@ -251,8 +252,8 @@ export function MarginSheet({
                 owner === undefined
                   ? "hidden"
                   : sheet.expanded
-                    ? "max-h-[85dvh] overflow-y-auto p-4"
-                    : "h-16 overflow-hidden"
+                    ? "max-h-[85dvh] overflow-y-auto rounded-t-2xl pt-2 xl:rounded-none"
+                    : "h-14 overflow-hidden pt-2"
               } xl:sticky xl:top-0 xl:block xl:h-dvh xl:max-h-dvh xl:w-full xl:overflow-y-auto xl:border-t-0 xl:border-l xl:p-4 xl:shadow-none`
         }
         data-expanded={sheet.expanded ? "true" : "false"}
@@ -266,14 +267,11 @@ export function MarginSheet({
       >
         {compactSheet ? (
           <>
-            <div
-              aria-hidden="true"
-              className={`mx-auto mb-1 h-1 w-10 rounded-full ${dragHandleBg}`}
-            />
+            <div aria-hidden="true" className={`mx-auto h-1 w-9 rounded-full ${dragHandleBg}`} />
             <button
               aria-expanded={sheet.expanded}
               aria-label={reviewToggleLabel}
-              className={`flex h-16 w-full items-center justify-between px-4 text-left text-sm font-semibold ${textPrimaryOnSurface}`}
+              className={`flex h-11 w-full items-center justify-between px-4 text-left text-sm font-semibold ${textPrimaryOnSurface}`}
               onClick={() => {
                 if (sheetDragMoved.current) {
                   sheetDragMoved.current = false;
@@ -311,7 +309,7 @@ export function MarginSheet({
           {covered ? null : (
             <>
               <div className={`flex items-center justify-between border-b ${borderDefault}`}>
-                <div className="flex" role="tablist">
+                <div className="-mb-px flex gap-4" role="tablist">
                   {(owner?.kind === "document"
                     ? (["comments"] as MarginTab[])
                     : owner?.kind === "issue"
@@ -320,11 +318,13 @@ export function MarginSheet({
                   ).map((name) => (
                     <button
                       aria-selected={tab.value === name}
-                      className={
+                      // One weight under every tab, and the room of the chosen tab's rule under the
+                      // others, so choosing a tab moves no other.
+                      className={`inline-flex h-10 items-center border-b-2 px-0.5 text-sm font-medium -outline-offset-2 ${
                         tab.value === name
-                          ? `min-h-11 border-b-2 px-3 py-2 text-sm font-semibold ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
-                          : `min-h-11 px-3 py-2 text-sm ${textSecondaryOnSurface}`
-                      }
+                          ? `${activeTabIndicatorBorder} ${textPrimaryOnSurface}`
+                          : `${borderTransparent} ${textMutedHoverToSecondary}`
+                      }`}
                       key={name}
                       onClick={() => tab.set(name)}
                       role="tab"
@@ -365,16 +365,12 @@ export function MarginSheet({
               ) : null}
               {filter.blockId === undefined ? null : (
                 <div
-                  className={`mt-3 flex items-center justify-between gap-2 text-sm ${textMutedOnSurface}`}
+                  className={`mt-3 flex items-center justify-between gap-2 text-xs ${textMutedOnSurface}`}
                 >
                   <span>References for this block</span>
-                  <button
-                    className={`min-h-11 font-medium ${textPrimaryOnSurface}`}
-                    onClick={filter.clear}
-                    type="button"
-                  >
+                  <Button onClick={filter.clear} size="sm" variant="ghost">
                     Clear filter
-                  </button>
+                  </Button>
                 </div>
               )}
             </>
@@ -462,21 +458,22 @@ export function MarginSheet({
             role="dialog"
             ref={threadDialog.containerRef}
           >
-            <header className={`flex items-center border-b px-4 py-3 ${borderDefault}`}>
-              <button
-                className={`min-h-11 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${textPrimaryOnSurface}`}
+            <header className={`flex items-center border-b px-4 py-1 ${borderDefault}`}>
+              <Button
+                className="-ml-3"
                 disabled={sheet.replySending}
                 onClick={sheet.closeThread}
-                type="button"
+                variant="ghost"
               >
                 Back
-              </button>
+              </Button>
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto px-4">
               <ThreadCard
                 actionFailure={actionFailure?.id === phoneThread.key ? actionFailure : undefined}
                 artifactSlug={visibleArtifact.slug}
-                className="min-h-full pb-32"
+                className="min-h-full pt-4 pb-32"
+                flat
                 composerClassName={`fixed inset-x-0 bottom-0 z-10 border-t px-4 pt-4 pb-2 ${FOOT_COMPOSER_FRAME_BOUND} ${card} ${borderDefault}`}
                 expanded
                 hovered={selection.hoveredMarkId === phoneThread.anchor?.mark_id}

@@ -1,21 +1,12 @@
 import { hashKey, type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
-
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
+import { Button } from "../../components/Button";
+import { fieldLabelClassName, Select } from "../../components/Field";
 import type { Sending } from "../../hooks/useSending";
-import {
-  borderDefault,
-  dangerText,
-  inputClasses,
-  secondaryButtonBorder,
-  secondaryButtonDisabledText,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-  textMutedOnCanvas,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
+import { borderDefault, dangerText, textMutedOnCanvas } from "../../theme/classes";
 import type { ListedReplies, ReplyParent, ReplyTarget } from "../conversation/composer-model";
 import { useHeldSends } from "../conversation/held-sends";
 import { MentionComposer } from "../conversation/MentionComposer";
@@ -211,6 +202,7 @@ export function AgentMessageComposer({
   // belongs to: focus is the picker's to take only while it is still where the open left it.
   // Once per open, so a refetch behind the reader never pulls them back either.
   const issueSelect = useRef<HTMLSelectElement>(null);
+  const issueSelectId = useId();
   const pickerTookFocus = useRef(false);
   useEffect(() => {
     if (!issuePickerOpen) return;
@@ -249,22 +241,21 @@ export function AgentMessageComposer({
   return (
     <div className={`mt-3 border-t pt-3 ${borderDefault}`} ref={box}>
       {replyTo === null ? (
-        <button
+        <Button
           aria-expanded={issuePickerOpen}
           aria-label="Choose issue"
-          className={`min-h-11 rounded-lg border px-3 text-sm font-medium disabled:cursor-not-allowed ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+          className="mb-2"
           data-agent-issue-picker=""
           disabled={sending}
           onClick={() => {
             if (!sendingNow()) setIssuePickerOpen((open) => !open);
           }}
-          type="button"
         >
           Issue: {issueKey === "" ? "No issue" : committedLabel}
-        </button>
+        </Button>
       ) : null}
       {issuePickerOpen && replyTo === null ? (
-        <div className="mt-2">
+        <div className="mb-2">
           {issues.isPending ? (
             <p className={`text-sm ${textMutedOnCanvas}`}>Loading issues…</p>
           ) : null}
@@ -272,12 +263,14 @@ export function AgentMessageComposer({
             <p className={`text-sm ${dangerText}`}>Could not load issues.</p>
           ) : null}
           {issues.data === undefined ? null : (
-            <label className={`block text-sm font-medium ${textSecondaryOnCanvas}`}>
+            <label className={fieldLabelClassName} htmlFor={issueSelectId}>
               Issue (optional)
-              <select
+              <Select
                 aria-label="Issue"
-                className={`mt-1 block min-h-11 w-full rounded-lg px-3 py-2 text-sm font-normal disabled:cursor-not-allowed disabled:opacity-50 ${inputClasses(true)}`}
+                id={issueSelectId}
+                className="mt-1.5 w-full font-normal"
                 data-agent-issue-select=""
+                surface="recessed"
                 disabled={sending}
                 onBlur={() => {
                   // A step is not a pick until `Enter`, so leaving the select any other way -
@@ -327,7 +320,7 @@ export function AgentMessageComposer({
                     {issue.key} · {issue.title}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
           )}
         </div>

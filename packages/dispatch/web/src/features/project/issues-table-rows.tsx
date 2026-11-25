@@ -1,21 +1,23 @@
 import { flexRender, type Row } from "@tanstack/react-table";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
+import { Button, buttonClassName } from "../../components/Button";
 import { DataTableGroupRow, drawsPinnedDivider } from "../../components/DataTable";
+import { Select } from "../../components/Field";
 import {
   borderDefault,
   focusVisibleRing,
   issueStatusScale,
   linkHoverText,
   linkText,
+  rowHoverBg,
   selectedCardBg,
   surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
   textMutedOnCanvas,
   textMutedOnSurfaceMuted,
-  textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
 import { issueStatuses, statusLabel } from "./board-model";
@@ -47,7 +49,10 @@ export function IssueRow({
   return (
     <tr
       aria-label={`${issue.key} ${issue.title}`}
-      className={`group align-top outline-none focus-visible:ring-2 ${focusVisibleRing} ${changed ? selectedCardBg : ""}`}
+      // The row carries the fill and the tint under the pointer, and a pinned cell inherits
+      // both: it needs a fill of its own to cover what scrolls beneath it, and the row's is the
+      // one that keeps the whole line one colour. The tint is the opaque one for that reason.
+      className={`group align-top outline-none focus-visible:ring-2 ${focusVisibleRing} ${changed ? selectedCardBg : `${surfaceBg} ${surfaceMutedHoverBg}`}`}
       data-index={index}
       data-issue-group={row.getParentRow()?.id ?? "ungrouped"}
       data-issue-row={issue.key}
@@ -59,7 +64,7 @@ export function IssueRow({
         const pinned = cell.column.getIsPinned() === "left";
         return (
           <td
-            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${drawsPinnedDivider(cell.column, onStartNext !== undefined) ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
+            className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? "sticky z-10 bg-inherit" : ""} ${drawsPinnedDivider(cell.column, onStartNext !== undefined) ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
             key={cell.id}
             style={{
               width: cell.column.getSize(),
@@ -74,7 +79,7 @@ export function IssueRow({
         <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
           {queue !== undefined && queue > 1 ? (
             <button
-              className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
+              className={`opacity-0 group-hover:opacity-100 focus:opacity-100 ${buttonClassName({ size: "sm" })}`}
               disabled={busy}
               onClick={() => onStartNext(issue.key)}
               type="button"
@@ -220,13 +225,14 @@ function EpicActions({
 }): ReactNode {
   /** The epic the reader has picked to merge into, which no write has been sent for yet. */
   const [target, setTarget] = useState("");
+  const mergeId = useId();
   return (
     <span className="ml-auto">
       <Popover align="right" label="Epic actions ▾">
         {(close) => (
           <>
             <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
+              className={`rounded px-2 py-1 text-left ${rowHoverBg}`}
               onClick={() => {
                 close();
                 onRename();
@@ -236,7 +242,7 @@ function EpicActions({
               Rename
             </button>
             <button
-              className={`rounded px-2 py-1 text-left ${surfaceMutedHoverBg}`}
+              className={`rounded px-2 py-1 text-left ${rowHoverBg}`}
               onClick={() => {
                 close();
                 onStartAll();
@@ -251,10 +257,13 @@ function EpicActions({
                     Merge… asks before anything is written. A closed `<select>` commits on an
                     arrow key in Chrome on Linux and Windows, which is one keystroke from a
                     closed epic. */}
-                <label className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
+                <label className={`px-2 py-1 text-xs ${textMutedOnCanvas}`} htmlFor={mergeId}>
                   Merge into another epic
-                  <select
-                    className={`mt-1 block w-full rounded-md border px-1 py-1 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+                  <Select
+                    className="mt-1 w-full"
+                    id={mergeId}
+                    size="sm"
+                    surface="recessed"
                     onChange={(event) => setTarget(event.target.value)}
                     value={target}
                   >
@@ -266,19 +275,19 @@ function EpicActions({
                           {epic.title}
                         </option>
                       ))}
-                  </select>
+                  </Select>
                 </label>
-                <button
-                  className={`mx-2 my-1 rounded border px-2 py-1 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg}`}
+                <Button
+                  className="mx-2 my-1 self-start"
                   disabled={target === ""}
                   onClick={() => {
                     close();
                     onMerge(target);
                   }}
-                  type="button"
+                  size="sm"
                 >
                   Merge…
-                </button>
+                </Button>
                 <span className={`px-2 py-1 text-xs ${textMutedOnCanvas}`}>
                   To split it, tick some of its issues and choose “New epic from these”.
                 </span>

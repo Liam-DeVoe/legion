@@ -1,18 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
-
 import { api, apiErrorMessage } from "../../api/client";
 import type { DecisionResponse, StateResponse } from "../../api/types";
+import { Button } from "../../components/Button";
+import { Field, Input } from "../../components/Field";
+import { PageHeader } from "../../components/Layout";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import {
-  dangerText,
-  inputClasses,
-  primaryButtonBg,
-  primaryButtonDisabled,
-  primaryButtonEnabledHoverBg,
-  textMutedOnCanvas,
-  textPrimaryOnCanvas,
-} from "../../theme/classes";
+import { dangerText, textMutedOnCanvas, textPrimaryOnCanvas } from "../../theme/classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -147,70 +141,74 @@ export function MachineLoginPage(): ReactNode {
           };
 
   return (
-    <section className="max-w-2xl space-y-6">
-      <h1 className={`text-xl font-semibold ${textPrimaryOnCanvas}`}>Enter machine login code</h1>
-      <form className="flex flex-wrap items-end gap-3" onSubmit={submit}>
-        <div className="flex flex-col gap-1">
-          <label className={`text-sm font-medium ${textMutedOnCanvas}`} htmlFor="machine-code">
-            Code shown on the machine
-          </label>
-          <input
-            className={`rounded-lg border px-3 py-2 font-mono ${inputClasses(false)} ${textPrimaryOnCanvas}`}
-            id="machine-code"
-            onChange={(event) => {
-              const cleaned = event.target.value
-                .toUpperCase()
-                .replaceAll(/[^A-Z0-9]/g, "")
-                .slice(0, 8);
-              setCode(cleaned.length > 4 ? `${cleaned.slice(0, 4)}-${cleaned.slice(4)}` : cleaned);
-            }}
-            placeholder="XXXX-XXXX"
-            value={code}
-          />
-        </div>
-        <button
-          className={`min-h-11 rounded-lg px-4 py-2 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-          disabled={lookup.isPending || code.trim() === ""}
-          type="submit"
-        >
-          Look up
-        </button>
-      </form>
-      {/* A lookup the reader stopped may have been made, and Look up is a press of its own, under
-          a key of its own. */}
-      {lookup.isError ? (
-        <p className={dangerText}>
-          {lookup.error instanceof SendStoppedError
-            ? stoppedWriteNote("the lookup of that code", "made", {
-                anew: "Look up sends the code in the field as a new lookup.",
-              })
-            : apiErrorMessage(lookup.error, "Could not look up that code.")}
-        </p>
-      ) : null}
-      {view === undefined ? null : (
+    <section className="max-w-4xl">
+      <PageHeader title="Enter machine login code" />
+      <div className="space-y-8">
         <div className="space-y-4">
-          <CredentialRecordFacts record={view.record} />
-          {view.record.state === "expired" ? (
-            <p className={`text-sm font-medium ${textPrimaryOnCanvas}`}>
-              This login expired before anyone decided it.
+          <form className="flex flex-wrap items-end gap-2" onSubmit={submit}>
+            <Field htmlFor="machine-code" label="Code shown on the machine">
+              <Input
+                className="w-44 tracking-wide"
+                id="machine-code"
+                mono
+                onChange={(event) => {
+                  const cleaned = event.target.value
+                    .toUpperCase()
+                    .replaceAll(/[^A-Z0-9]/g, "")
+                    .slice(0, 8);
+                  setCode(
+                    cleaned.length > 4 ? `${cleaned.slice(0, 4)}-${cleaned.slice(4)}` : cleaned
+                  );
+                }}
+                placeholder="XXXX-XXXX"
+                value={code}
+              />
+            </Field>
+            <Button
+              disabled={lookup.isPending || code.trim() === ""}
+              type="submit"
+              variant="primary"
+            >
+              Look up
+            </Button>
+          </form>
+          {/* A lookup the reader stopped may have been made, and Look up is a press of its own, under
+          a key of its own. */}
+          {lookup.isError ? (
+            <p className={`text-sm ${dangerText}`}>
+              {lookup.error instanceof SendStoppedError
+                ? stoppedWriteNote("the lookup of that code", "made", {
+                    anew: "Look up sends the code in the field as a new lookup.",
+                  })
+                : apiErrorMessage(lookup.error, "Could not look up that code.")}
             </p>
-          ) : view.decided !== null ? (
-            <MachineLoginDecision
-              credentialId={view.decided.credential_id}
-              event={view.decided.event}
-              host={view.record.identifiers?.[0] ?? ""}
-              service={view.record.service}
-            />
-          ) : view.record.state === "pending" ? (
-            <CredentialDecisionButtons
-              approve={view.record.service === null ? approve : undefined}
-              deny={deny}
-              submitGuard={submitGuard}
-            />
           ) : null}
+          {view === undefined ? null : (
+            <div className="space-y-4">
+              <CredentialRecordFacts record={view.record} />
+              {view.record.state === "expired" ? (
+                <p className={`text-sm font-medium ${textPrimaryOnCanvas}`}>
+                  This login expired before anyone decided it.
+                </p>
+              ) : view.decided !== null ? (
+                <MachineLoginDecision
+                  credentialId={view.decided.credential_id}
+                  event={view.decided.event}
+                  host={view.record.identifiers?.[0] ?? ""}
+                  service={view.record.service}
+                />
+              ) : view.record.state === "pending" ? (
+                <CredentialDecisionButtons
+                  approve={view.record.service === null ? approve : undefined}
+                  deny={deny}
+                  submitGuard={submitGuard}
+                />
+              ) : null}
+            </div>
+          )}
         </div>
-      )}
-      <MachineLoginsSection />
+        <MachineLoginsSection />
+      </div>
     </section>
   );
 }

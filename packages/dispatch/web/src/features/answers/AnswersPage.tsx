@@ -1,20 +1,18 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
-
 import { api } from "../../api/client";
 import { nextOffsetPage } from "../../api/queries";
 import type { MyAnswerRow } from "../../api/types";
+import { Button, buttonClassName } from "../../components/Button";
 import { EmptyState } from "../../components/EmptyState";
+import { cardClassName, PageHeader } from "../../components/Layout";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
 import { ShowMore } from "../../components/ShowMore";
 import {
-  borderDefault,
-  card,
   dangerText,
-  linkHoverText,
-  linkText,
+  linkChrome,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
@@ -69,12 +67,14 @@ function AnswerRow({
     row.ask_state === "answered" &&
     row.ask_kind !== "approval";
   return (
-    <li className={`rounded-xl border p-3 ${card} ${borderDefault}`} data-answer-row={row.ask_id}>
+    <li className={cardClassName()} data-answer-row={row.ask_id}>
+      {/* One line of marks: what the ask belongs to at the left, when the reader wrote at the
+          right end, where every row's time lines up with the next row's. */}
       <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-xs ${textMutedOnCanvas}`}>
-        <Timestamp at={row.at} />
         {/* The owner itself, not the ask: the row's Open already goes to the ask. */}
-        <AskOwnerLink owner={row.owner} />
+        <AskOwnerLink meta owner={row.owner} />
         {row.kind === "answer" && !row.current ? <LabelPill>Changed since</LabelPill> : null}
+        <Timestamp at={row.at} className="ml-auto shrink-0" />
       </div>
       <MarkdownPreview
         className={`mt-1 text-sm font-medium ${textPrimaryOnCanvas}`}
@@ -135,20 +135,18 @@ function AnswerRow({
           />
         </p>
       ) : null}
-      <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
+      {/* Ghost presses, pulled left by their own inset so their words start at the card's
+          text edge. */}
+      <div className="mt-2 -ml-2.5 flex flex-wrap items-center gap-1">
         {/* The server's `ref` is the ask's own item route: an issue ask's lands an anchored ask on
             its document with the card selected and an unanchored one on its Conversation turn. */}
-        <Link className={`font-medium ${linkText} ${linkHoverText}`} to={row.ref}>
+        <Link className={buttonClassName({ size: "sm", variant: "ghost" })} to={row.ref}>
           Open
         </Link>
         {changeable && !changing ? (
-          <button
-            className={`min-h-11 font-medium ${linkText} ${linkHoverText}`}
-            onClick={onChange}
-            type="button"
-          >
+          <Button onClick={onChange} size="sm" variant="ghost">
             Change answer
-          </button>
+          </Button>
         ) : null}
       </div>
     </li>
@@ -183,18 +181,16 @@ export function AnswersPage(): ReactNode {
       : rows.findIndex((row) => row.kind === "answer" && row.ask_id === changingAsk);
 
   return (
-    <section aria-label="Answered by you">
-      <header className={`mb-5 border-b pb-4 ${borderDefault}`}>
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to="/">
-          ← Inbox
-        </Link>
-        <h1 className={`mt-1 text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}>
-          Answered by you
-        </h1>
-        <p className={`mt-1 text-sm ${textMutedOnCanvas}`}>
-          Every answer you gave and every reply you wrote on an ask, newest first.
-        </p>
-      </header>
+    <section aria-label="Answered by you" className="max-w-4xl">
+      <PageHeader
+        description="Every answer you gave and every reply you wrote on an ask, newest first."
+        eyebrow={
+          <Link className={linkChrome} to="/">
+            ← Inbox
+          </Link>
+        }
+        title="Answered by you"
+      />
       {rows.length === 0 ? (
         <EmptyState
           label="Answers empty state"
@@ -203,7 +199,7 @@ export function AnswersPage(): ReactNode {
       ) : (
         // One flat list of keyed items, the card among them: a card nested under its row would
         // remount when the change puts a new row above it, and reopen its form.
-        <ul className="space-y-3">
+        <ul className="space-y-2">
           {rows.flatMap((row, index) => {
             const item = (
               <AnswerRow

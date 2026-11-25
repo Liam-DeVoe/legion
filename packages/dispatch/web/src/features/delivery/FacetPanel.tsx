@@ -1,15 +1,10 @@
 import { type ReactNode, useMemo, useState } from "react";
 
 import type { DeliveryTimelineWithMeasures } from "../../api/types";
+import { buttonClassName } from "../../components/Button";
+import { fieldLabelClassName, Input } from "../../components/Field";
 import { MultiSelect } from "../../components/MultiSelect";
-import {
-  borderStrong,
-  inputClasses,
-  linkText,
-  surfaceBg,
-  textMutedOnCanvas,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+import { linkChrome } from "../../theme/classes";
 import {
   DEPLOYED_LABELS,
   type DeployedFacet,
@@ -38,8 +33,9 @@ const LIST_FACETS: { key: ListFacet; label: string }[] = [
 const REWORK_VALUES: ReworkFacet[] = ["value", "rework"];
 const DEPLOYED_VALUES: DeployedFacet[] = ["deployed", "waiting", "not_tracked"];
 
-const facetLabelClass = `mb-1 block text-xs tracking-wide uppercase ${textMutedOnCanvas}`;
-const triggerClass = `flex h-7 w-full items-center justify-between rounded border px-2 text-left text-xs ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`;
+const facetLabelClass = `mb-1.5 ${fieldLabelClassName}`;
+// The shared button, as wide as the column; its words start at the left like a select's.
+const triggerClass = `${buttonClassName()} w-full`;
 
 /** One facet's searchable checkbox list: "Any <facet>" until something is picked, each value with
  *  its count, sorted by count. A facet with no values in the window and nothing picked is not
@@ -89,7 +85,7 @@ function Facet({
         triggerAriaLabel={`${label}: ${state}`}
         triggerClassName={triggerClass}
       >
-        <span className="truncate">{state}</span>
+        <span className="min-w-0 flex-1 truncate text-left font-normal">{state}</span>
       </MultiSelect>
     </div>
   );
@@ -167,8 +163,7 @@ export function FacetPanel({
         <label className={facetLabelClass} htmlFor="facet-search">
           Search
         </label>
-        <input
-          className={`h-8 w-full rounded border px-2 text-sm ${inputClasses(false)}`}
+        <Input
           id="facet-search"
           onChange={(event) => onChange({ ...filters, search: event.target.value })}
           placeholder="Title or PR id"
@@ -176,7 +171,7 @@ export function FacetPanel({
           value={filters.search}
         />
       </div>
-      <div className="flex gap-4">
+      <div className="flex gap-3">
         <div className="min-w-0 flex-1">
           <Facet
             {...facetProps("rework")}
@@ -209,7 +204,7 @@ export function FacetPanel({
           <div key={key}>
             {facet}
             <button
-              className={`mt-1 text-xs underline ${linkText}`}
+              className={`mt-1 text-xs ${linkChrome}`}
               onClick={() => setEditingGroups(true)}
               type="button"
             >

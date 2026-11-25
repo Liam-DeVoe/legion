@@ -11,13 +11,14 @@ import {
   useState,
 } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
 import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
 import { askSignInAgain } from "./api/query-client";
 import type { AuthenticatedUser } from "./api/types";
+import { Button, buttonClassName } from "./components/Button";
+import { PageHeader } from "./components/Layout";
 import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
@@ -114,13 +115,9 @@ import {
   calloutWarningBorder,
   canvasText,
   card,
-  linkHoverText,
+  linkChrome,
   linkText,
   pagePaperBg,
-  primaryButtonBg,
-  primaryButtonHoverBg,
-  railAccentHoverText,
-  railAccentText,
   railActiveBg,
   railBg,
   railBorder,
@@ -128,9 +125,11 @@ import {
   railFocusOverlayBg,
   railFocusOverlayText,
   railHoverBg,
+  railHoverText,
   railMutedText,
   railNeedsYouBadgeBg,
   railNeedsYouBadgeText,
+  railSecondaryText,
   railText,
   skeletonBg,
   statusConnecting,
@@ -283,11 +282,9 @@ function IssueFrameFallback(): ReactNode {
 function ShellMessagePage({ children, title }: { children?: ReactNode; title: string }): ReactNode {
   return (
     <main className={`grid min-h-dvh place-items-center px-6 ${canvasText}`}>
-      <section className={`w-full max-w-md rounded-2xl p-8 shadow-sm ${card}`}>
-        <p className={`text-sm font-medium tracking-wide uppercase ${textMutedOnSurface}`}>
-          Dispatch
-        </p>
-        <h1 className="mt-3 text-2xl font-semibold">{title}</h1>
+      <section className={`w-full max-w-md rounded-lg border p-8 shadow-sm ${card}`}>
+        <p className={`text-sm font-medium ${textMutedOnSurface}`}>Dispatch</p>
+        <h1 className="mt-2 text-[22px] leading-8 font-semibold tracking-tight">{title}</h1>
         {children}
       </section>
     </main>
@@ -302,12 +299,14 @@ function InboxPage(): ReactNode {
   return (
     <section className={readingPaneShown ? "flex min-h-0 flex-1 flex-col" : undefined}>
       {/* Only the page links to the answers page; the drawer's Inbox stays a peek. */}
-      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h1 className="text-[22px] font-semibold tracking-tight">Inbox</h1>
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to={ANSWERS_PATH}>
-          Answered by you
-        </Link>
-      </div>
+      <PageHeader
+        actions={
+          <Link className={`text-sm ${linkChrome}`} to={ANSWERS_PATH}>
+            Answered by you
+          </Link>
+        }
+        title="Inbox"
+      />
       <Inbox />
     </section>
   );
@@ -320,11 +319,11 @@ function SignInPage(): ReactNode {
   const queryClient = useQueryClient();
   return (
     <ShellMessagePage title="Make the next decision clear.">
-      <p className={`mt-3 ${textSecondaryOnSurface}`}>
+      <p className={`mt-2 text-sm ${textSecondaryOnSurface}`}>
         Sign in to review your team&apos;s open decisions.
       </p>
       <a
-        className={`mt-8 inline-flex rounded-lg px-4 py-2 font-semibold ${primaryButtonBg} ${primaryButtonHoverBg}`}
+        className={`mt-6 ${buttonClassName({ variant: "primary" })}`}
         href="/auth/start"
         onClick={(event) => {
           // A press that opens the link elsewhere leaves this page in place.
@@ -343,13 +342,7 @@ function ConnectionErrorPage({ onRetry }: { onRetry: () => void }): ReactNode {
   return (
     <ShellMessagePage title="Couldn't reach Dispatch.">
       <div className="mt-4" role="alert">
-        <button
-          className={`text-sm font-medium underline ${linkText} ${linkHoverText}`}
-          onClick={onRetry}
-          type="button"
-        >
-          Retry
-        </button>
+        <Button onClick={onRetry}>Retry</Button>
       </div>
     </ShellMessagePage>
   );
@@ -359,21 +352,23 @@ function ShellSkeleton(): ReactNode {
   return (
     <div aria-busy="true" className={`xl:flex ${canvasText}`}>
       <header
-        className={`flex items-center px-3 xl:hidden ${railBorder} ${railBg} ${railText} border-b`}
+        className={`flex h-12 items-center px-4 xl:hidden ${railBorder} ${railBg} ${railText} border-b`}
       >
-        <span className="text-lg font-semibold">Dispatch</span>
+        <span className="text-base font-semibold tracking-tight">Dispatch</span>
       </header>
       <aside
-        className={`hidden p-5 xl:block xl:min-h-dvh xl:w-80 xl:border-r ${railBorder} ${railBg} ${railText}`}
+        className={`hidden p-3 xl:block xl:min-h-dvh xl:w-68 xl:shrink-0 xl:border-r ${railBorder} ${railBg} ${railText}`}
       >
-        <span className="text-lg font-semibold">Dispatch</span>
-        <div aria-label="Loading navigation" className="mt-6 space-y-2" role="status">
+        <span className="flex h-8 items-center px-2 text-base font-semibold tracking-tight">
+          Dispatch
+        </span>
+        <div aria-label="Loading navigation" className="mt-4 space-y-3 px-2" role="status">
           {[0, 1, 2, 3].map((row) => (
             <div className={`h-4 w-full animate-pulse rounded ${railActiveBg}`} key={row} />
           ))}
         </div>
       </aside>
-      <main className="min-w-0 flex-1 p-6">
+      <main className="min-w-0 flex-1 px-4 pt-4 sm:px-8 sm:pt-6">
         <div aria-label="Loading Dispatch" className="space-y-3" role="status">
           {[0, 1, 2].map((row) => (
             <div className={`h-4 w-full animate-pulse rounded ${skeletonBg}`} key={row} />
@@ -424,14 +419,14 @@ function NavigationContents({
 }): ReactNode {
   return (
     <>
-      <div className="flex items-center justify-between">
-        <Link className="text-lg font-semibold" onClick={onClose} to="/">
+      <div className="flex min-h-8 items-center justify-between pl-2">
+        <Link className="text-base font-semibold tracking-tight" onClick={onClose} to="/">
           Dispatch
         </Link>
         {compact ? (
           <button
             aria-label="Close navigation"
-            className={`rounded-lg px-3 py-2 text-sm font-medium ${railHoverBg}`}
+            className={`rounded-md px-2 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
             onClick={onClose}
             ref={closeButtonRef}
             type="button"
@@ -442,7 +437,7 @@ function NavigationContents({
       </div>
       <RailButton
         ariaKeyshortcuts="Control+K Meta+K"
-        className="mt-4"
+        className="mt-3"
         label="Search"
         onOpen={() => {
           onClose();
@@ -454,7 +449,7 @@ function NavigationContents({
           it (`c`); `aria-keyshortcuts` names the same key in ARIA's uppercase form. */}
       <RailButton
         ariaKeyshortcuts="C"
-        className="mt-1"
+        className="mt-0.5"
         label="New issue"
         onOpen={() => {
           onClose();
@@ -470,33 +465,40 @@ function NavigationContents({
       />
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
           above is read on every visit, so the footer sits under it rather than over it. */}
-      <div className={`mt-auto border-t pt-4 ${railBorder}`}>
-        {/* The login is the way in to the reader's own page: what they wrote and what reached
-            them, which no other surface lists. The underline is what tells the link from the
-            text around it, which colour alone does not. */}
-        <p className={`px-2 text-sm ${railMutedText}`}>
-          Signed in as{" "}
-          <Link
-            className={`underline ${railAccentText} ${railAccentHoverText}`}
-            onClick={onClose}
-            to={buildPersonPath(user.login)}
+      <div className={`mt-auto border-t pt-3 ${railBorder}`}>
+        {/* One line: who is signed in at its left and the way out at its right. The login is
+            the way in to the reader's own page: what they wrote and what reached them, which no
+            other surface lists. It is the line's one bright word, and underlines under the
+            pointer as every link that is chrome does. */}
+        <div className="flex min-h-8 items-center justify-between gap-2 pl-2">
+          <p className={`min-w-0 truncate text-[13px] ${railMutedText}`}>
+            Signed in as{" "}
+            <Link
+              className={`font-medium underline-offset-2 hover:underline ${railText}`}
+              onClick={onClose}
+              to={buildPersonPath(user.login)}
+            >
+              {user.login}
+            </Link>
+          </p>
+          <button
+            className={`h-7 shrink-0 rounded-md px-2 text-[13px] font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
+            disabled={signOutPending}
+            onClick={onSignOut}
+            type="button"
           >
-            {user.login}
-          </Link>
-        </p>
-        <button
-          className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
-          disabled={signOutPending}
-          onClick={onSignOut}
-          type="button"
-        >
-          Sign out
-        </button>
+            Sign out
+          </button>
+        </div>
         {signOutError === undefined ? null : (
           // A sign-out Dispatch did not answer as done discarded nothing: every write is as it was.
-          <p className={`mt-1 px-2 text-sm ${railDangerText}`} role="alert">
+          <p className={`mt-1 px-2 text-xs ${railDangerText}`} role="alert">
             {signOutError}{" "}
-            <button className="font-medium underline" onClick={onSignOut} type="button">
+            <button
+              className="font-medium underline underline-offset-2"
+              onClick={onSignOut}
+              type="button"
+            >
               Retry
             </button>
           </p>
@@ -617,11 +619,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const fullWidth = sidebarHidden && !marginColumnShown;
   const mainLayoutClass =
     sidebarHidden && marginRailShown
-      ? "xl:w-full xl:pl-20 xl:pr-20"
+      ? "xl:w-full xl:pl-22 xl:pr-20"
       : sidebarHidden && !hasMargin
-        ? "xl:w-full xl:pl-20"
+        ? "xl:w-full xl:pl-22"
         : sidebarHidden
-          ? "xl:pl-20"
+          ? "xl:pl-22"
           : marginRailShown
             ? "xl:pr-20"
             : "";
@@ -916,10 +918,29 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // read, which the Inbox lists together now. On the Inbox page it stays plain text - the page
   // is the Inbox already, so there is nowhere for it to go. The peek that opened the drawer
   // from this bar stays beside it, without the count it used to carry.
-  const inboxLabel = inboxCount === 0 ? "Inbox" : `Inbox ${inboxCount}`;
-  const inboxBadgeClass = `whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${
-    inboxCount === 0 ? railHoverBg : `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`
-  }`;
+  const compactBarEntry =
+    "inline-flex items-center gap-1.5 rounded-md px-2 text-sm font-medium whitespace-nowrap";
+  const compactBarControl = `${railSecondaryText} ${railHoverBg} ${railHoverText}`;
+  const compactBarBadge =
+    "inline-flex h-5 min-w-5 items-center justify-center rounded px-1.5 text-xs font-medium tabular-nums";
+  // The entry's words are one run of text, "Inbox 2", which is its name and the whole of its
+  // text. What is drawn is the word and the count as a badge beside it: both generated boxes,
+  // which are no text of the entry's, hidden from the accessibility tree so the count is read
+  // and found once.
+  const inboxEntry =
+    inboxCount === 0 ? (
+      "Inbox"
+    ) : (
+      <>
+        <span className="sr-only">{`Inbox ${inboxCount}`}</span>
+        <span aria-hidden="true" className="before:content-['Inbox']" />
+        <span
+          aria-hidden="true"
+          className={`${compactBarBadge} before:content-[attr(data-count)] ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
+          data-count={inboxCount}
+        />
+      </>
+    );
 
   return (
     <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
@@ -951,18 +972,22 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           {connection === "stuck" ? (
             <p
               aria-live="polite"
-              className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium shadow-lg ${calloutDangerBorder} ${calloutDangerBg} ${badgeBlocking.text}`}
+              className={`flex min-h-7 items-center gap-2 rounded-md border px-2.5 text-xs font-medium shadow-lg ${calloutDangerBorder} ${calloutDangerBg} ${badgeBlocking.text}`}
               data-testid="connection-pill"
             >
               Live updates are not reaching this page
-              <button className="underline" onClick={() => window.location.reload()} type="button">
+              <button
+                className="underline underline-offset-2"
+                onClick={() => window.location.reload()}
+                type="button"
+              >
                 Reload
               </button>
             </p>
           ) : connection === "reconnecting" ? (
             <p
               aria-live="polite"
-              className={`rounded-full border px-3 py-1 text-xs font-medium shadow-lg ${calloutWarningBorder} ${statusConnecting.bg} ${statusConnecting.text}`}
+              className={`flex min-h-7 items-center rounded-md border px-2.5 text-xs font-medium shadow-lg ${calloutWarningBorder} ${statusConnecting.bg} ${statusConnecting.text}`}
               data-testid="connection-pill"
             >
               Reconnecting…
@@ -971,44 +996,47 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         </div>
         {isCompactViewport && !issueFrame ? (
           <header
-            className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
+            className={`flex min-h-12 items-center justify-between gap-2 border-b px-4 ${railBorder} ${railBg} ${railText}`}
           >
             {/* The title never shrinks and no count breaks its own words: the counts that do not
-                fit beside the title wrap onto a second row of the bar, with Menu on the right. */}
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <Link className="shrink-0 text-lg font-semibold" to="/">
+                fit beside the title wrap onto a second row of the bar, with Menu on the right.
+                Each entry is a quiet word the height of the bar's controls; a count is a badge
+                inside its entry, so the target is the whole entry and the badge stays 20 px. */}
+            <div className="flex min-w-0 flex-wrap items-center gap-x-1">
+              <Link className="mr-2 shrink-0 text-[15px] font-semibold tracking-tight" to="/">
                 Dispatch
               </Link>
               {routeIsInbox(location.pathname) ? (
-                <span className={inboxBadgeClass}>{inboxLabel}</span>
+                <span className={`${compactBarEntry} ${railText}`}>{inboxEntry}</span>
               ) : (
                 <>
                   <button
                     aria-label="Peek at the inbox without leaving this page"
-                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
+                    className={`${compactBarEntry} ${compactBarControl}`}
                     onClick={() => setInboxDrawerOpen(true)}
                     type="button"
                   >
                     Peek
                   </button>
-                  <Link className={inboxBadgeClass} to="/">
-                    {inboxLabel}
+                  <Link className={`${compactBarEntry} ${compactBarControl}`} to="/">
+                    {inboxEntry}
                   </Link>
                 </>
               )}
               {unreadReplies === 0 ? null : (
-                <Link
-                  className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-                  to="/agents"
-                >
-                  {unreadRepliesLabel(unreadReplies)}
+                <Link className={`${compactBarEntry} ${compactBarControl}`} to="/agents">
+                  <span
+                    className={`${compactBarBadge} ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
+                  >
+                    {unreadRepliesLabel(unreadReplies)}
+                  </span>
                 </Link>
               )}
             </div>
             <button
               aria-expanded={navigationOpen}
               aria-label="Open navigation"
-              className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${railHoverBg}`}
+              className={`-mr-2 shrink-0 justify-center ${compactBarEntry} ${compactBarControl}`}
               onClick={() => setNavigationOpen(true)}
               type="button"
             >
@@ -1020,13 +1048,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           <>
             <div
               aria-hidden="true"
-              className={`fixed inset-0 z-20 ${backdrop50}`}
+              className={`fixed inset-0 z-40 ${backdrop50}`}
               onClick={() => setNavigationOpen(false)}
             />
             <aside
               aria-label="Navigation"
               aria-modal="true"
-              className={`fixed inset-y-0 left-0 z-30 flex w-80 max-w-[calc(100vw-2rem)] flex-col overflow-y-auto border-b p-5 shadow-2xl ${railBorder} ${railBg} ${railText}`}
+              className={`fixed inset-y-0 left-0 z-40 flex w-72 max-w-[calc(100vw-2rem)] flex-col overflow-y-auto border-r p-3 shadow-2xl ${railBorder} ${railBg} ${railText}`}
               ref={drawer.containerRef}
               role="dialog"
             >
@@ -1045,16 +1073,27 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         ) : isCompactViewport || issueFrame ? null : sidebarHidden ? (
           <aside
             aria-label="Collapsed sidebar"
-            className={`fixed inset-y-0 left-0 z-10 flex w-14 justify-center border-r p-2 ${railBorder} ${railBg} ${railText}`}
+            className={`fixed inset-y-0 left-0 z-10 flex w-14 border-r p-2 ${railBorder} ${railBg} ${railText}`}
             data-testid="sidebar-rail"
           >
+            {/* The whole strip is the show control, as on main: the button runs the rail's full
+                height, so a press anywhere on it opens the sidebar, with the chevron at its middle. */}
             <button
               aria-label="Show sidebar"
-              className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
+              className={`flex w-full items-center justify-center rounded-md ${railMutedText} ${railHoverBg} ${railHoverText}`}
               onClick={() => setSidebarHidden(false)}
+              title="Show sidebar"
               type="button"
             >
-              <span aria-hidden="true">›</span>
+              <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 16 16">
+                <path
+                  d="m6.5 4 4 4-4 4"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="1.5"
+                />
+              </svg>
             </button>
           </aside>
         ) : (
@@ -1065,13 +1104,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           // longer shifts what they are looking at.
           <aside
             aria-label="Navigation"
-            className={`relative order-1 w-80 max-w-none border-r [overflow-anchor:none] ${railBorder} ${railBg} ${railText}`}
+            className={`relative order-1 w-68 max-w-none shrink-0 border-r [overflow-anchor:none] ${railBorder} ${railBg} ${railText}`}
           >
             {/* The aside stretches to the page's height, so the navigation is a viewport-tall
                 column that sticks inside it: on a long issue the links stay reachable, and the
                 identity footer sits at the bottom of the screen rather than the bottom of the
                 document. */}
-            <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
+            <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-3">{navigation}</div>
           </aside>
         )}
         {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
@@ -1085,7 +1124,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           className={
             issueFrame
               ? `min-h-dvh min-w-0 flex-1 outline-none md:pl-14 ${pagePaperBg}`
-              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
+              : `min-w-0 flex-1 px-4 pt-4 outline-none sm:px-8 sm:pt-6 xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col pb-4 sm:pb-6" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
           }
           data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
           {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}

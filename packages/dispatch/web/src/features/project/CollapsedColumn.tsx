@@ -49,14 +49,14 @@ export function CollapsedColumn({
       tabIndex={-1}
     >
       <div
-        className={`flex h-full min-h-[52px] flex-col items-center gap-3 rounded-xl border px-1 py-3 ${borderDefault} ${surfaceMutedBg} ${
+        className={`flex h-full min-h-9 flex-col items-center gap-3 rounded-lg border px-1 py-2 ${borderDefault} ${surfaceMutedBg} ${
           isOver ? selectedCardBorder : ""
         }`}
         data-testid="board-column-rail"
       >
         <Pill>{column.issues.length}</Pill>
         <span
-          className={`text-sm font-semibold tracking-wide ${textPrimaryOnSurface}`}
+          className={`text-sm font-semibold ${textPrimaryOnSurface}`}
           style={{ writingMode: "vertical-rl" }}
         >
           {label}

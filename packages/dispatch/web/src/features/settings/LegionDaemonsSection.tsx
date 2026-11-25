@@ -19,30 +19,28 @@ import { api, apiErrorMessage } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { LegionSetting } from "../../api/types";
+import { Button } from "../../components/Button";
+import { Field, Input } from "../../components/Field";
+import { SectionHeader } from "../../components/Layout";
 import { QueryError } from "../../components/QueryError";
+import {
+  tableCellClassName,
+  tableClassName,
+  tableHeadCellClassName,
+  tableHeadRowClassName,
+  tableRowClassName,
+  tableWrapperClassName,
+} from "../../components/Table";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import {
-  borderDefault,
-  dangerHoverText,
-  dangerText,
   textMutedOnCanvas,
   textMutedOnSurface,
-  textPrimaryOnCanvas,
   textPrimaryOnSurface,
-  textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  settingsFieldLabel,
-  settingsMonoInput,
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-} from "./classes";
 import { ProjectSelect } from "./ProjectSelect";
 import { useLegionDaemons } from "./useLegionDaemons";
 
@@ -228,22 +226,25 @@ export function LegionDaemonsSection(): ReactNode {
 
   return (
     <section aria-labelledby="legion-daemons-heading" data-legion-daemons>
-      <h2 className={`text-xl font-semibold ${textPrimaryOnCanvas}`} id="legion-daemons-heading">
-        Legion
-      </h2>
-      <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-        Naming a project&apos;s Legion daemon here makes Dispatch read that daemon&apos;s state once
-        a minute and record what changed. No page shows that record yet. The address is the
-        daemon&apos;s base URL, with no path: Dispatch reads <code>/legion/v1/state</code> under it.
-        Removing one stops the reading; what was read stays.
-        {human ? "" : " Sign in to name one."}
-      </p>
+      <SectionHeader
+        description={
+          <>
+            Naming a project&apos;s Legion daemon here makes Dispatch read that daemon&apos;s state
+            once a minute and record what changed. No page shows that record yet. The address is the
+            daemon&apos;s base URL, with no path: Dispatch reads <code>/legion/v1/state</code> under
+            it. Removing one stops the reading; what was read stays.
+            {human ? "" : " Sign in to name one."}
+          </>
+        }
+        id="legion-daemons-heading"
+        title="Legion"
+      />
 
       {legion.isPending ? (
-        <p className={`mt-6 ${textMutedOnCanvas}`}>Loading Legion daemons…</p>
+        <p className={`text-sm ${textMutedOnCanvas}`}>Loading Legion daemons…</p>
       ) : null}
       {legion.isError ? (
-        <div className="mt-6">
+        <div>
           <QueryError
             message="Couldn't load the Legion daemons."
             onRetry={legion.retry}
@@ -253,21 +254,21 @@ export function LegionDaemonsSection(): ReactNode {
       ) : null}
       {legion.daemons !== undefined && legion.projects !== undefined ? (
         <>
-          <div className={settingsTableWrapper}>
-            <table className="w-full text-left text-sm">
-              <thead className={settingsTableHead}>
-                <tr>
-                  <th className="px-4 py-3 font-semibold" scope="col">
+          <div className={tableWrapperClassName}>
+            <table className={tableClassName}>
+              <thead>
+                <tr className={tableHeadRowClassName}>
+                  <th className={tableHeadCellClassName} scope="col">
                     Project
                   </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
+                  <th className={tableHeadCellClassName} scope="col">
                     Daemon state URL
                   </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
+                  <th className={tableHeadCellClassName} scope="col">
                     Changed
                   </th>
                   {human ? (
-                    <th className="px-4 py-3" scope="col">
+                    <th className={tableHeadCellClassName} scope="col">
                       <span className="sr-only">Actions</span>
                     </th>
                   ) : null}
@@ -275,9 +276,9 @@ export function LegionDaemonsSection(): ReactNode {
               </thead>
               <tbody>
                 {legion.daemons.length === 0 ? (
-                  <tr>
+                  <tr className={tableRowClassName}>
                     <td
-                      className={`px-4 py-5 ${textMutedOnSurface}`}
+                      className={`${tableCellClassName} ${textMutedOnSurface}`}
                       colSpan={human ? 4 : 3}
                       data-legion-daemons-empty
                     >
@@ -287,33 +288,33 @@ export function LegionDaemonsSection(): ReactNode {
                 ) : (
                   legion.daemons.map((setting) => (
                     <tr
-                      className={settingsTableRow}
+                      className={tableRowClassName}
                       data-legion-daemon={setting.project}
                       key={setting.project}
                     >
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
+                      <td className={`${tableCellClassName} font-mono ${textPrimaryOnSurface}`}>
                         {setting.project}
                       </td>
                       <td
-                        className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}
+                        className={`${tableCellClassName} font-mono ${textSecondaryOnSurface}`}
                         data-legion-daemon-url
                       >
                         {setting.state_url}
                       </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
+                      <td className={`${tableCellClassName} ${textSecondaryOnSurface}`}>
                         <Timestamp at={setting.updated_at} className={textMutedOnSurface} />
                       </td>
                       {human ? (
-                        <td className="px-4 py-3 text-right">
-                          <button
+                        <td className={`${tableCellClassName} text-right whitespace-nowrap`}>
+                          <Button
                             aria-label={`Remove the Legion daemon of ${setting.project}`}
-                            className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
                             disabled={writing}
                             onClick={() => removeDaemon.mutate(setting.project)}
-                            type="button"
+                            size="sm"
+                            variant="danger"
                           >
                             Remove
-                          </button>
+                          </Button>
                         </td>
                       ) : null}
                     </tr>
@@ -325,11 +326,10 @@ export function LegionDaemonsSection(): ReactNode {
 
           {human ? (
             <form
-              className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end ${borderDefault}`}
+              className="mt-6 grid gap-4 sm:grid-cols-[minmax(0,16rem)_minmax(0,20rem)_auto] sm:items-end"
               onSubmit={submit}
             >
-              <label className={settingsFieldLabel} htmlFor="legion-project">
-                Legion project
+              <Field htmlFor="legion-project" label="Legion project">
                 <ProjectSelect
                   disabled={writing}
                   id="legion-project"
@@ -337,22 +337,21 @@ export function LegionDaemonsSection(): ReactNode {
                   projects={legion.projects}
                   value={project}
                 />
-              </label>
-              <label className={settingsFieldLabel} htmlFor="legion-state-url">
-                Legion daemon state URL
-                <input
-                  className={settingsMonoInput}
+              </Field>
+              <Field htmlFor="legion-state-url" label="Legion daemon state URL">
+                <Input
                   disabled={writing}
+                  mono
                   id="legion-state-url"
                   onChange={(event) => setStateUrl(event.target.value)}
                   placeholder="https://daemon.example"
                   required
                   value={stateUrl}
                 />
-              </label>
-              <button className={settingsSubmitButton} disabled={writing} type="submit">
+              </Field>
+              <Button className="justify-self-start" disabled={writing} type="submit">
                 Save Legion daemon
-              </button>
+              </Button>
             </form>
           ) : null}
           {failedAction !== undefined ? (

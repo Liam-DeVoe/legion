@@ -7,7 +7,8 @@ import type {
   DeliveryRun,
   DeliverySessionGroup,
 } from "../../api/types";
-import { borderDefault, brushBand, surfaceBg, textMutedOnCanvas } from "../../theme/classes";
+import { cardClassName } from "../../components/Layout";
+import { borderDefault, brushBand, textMutedOnSurface } from "../../theme/classes";
 import { useMediaQuery } from "../shell/useDialog";
 import { type ColorFacet, colorKeyFor, PLACEHOLDER_COLOR } from "./lib/colorScale";
 import type { Filters } from "./lib/facets";
@@ -33,9 +34,29 @@ const INITIAL_VISIBLE_MS = 5 * 86_400_000; // ~5 days on first paint
 // The chart draws on a canvas, so its colours are values, not Tailwind classes: the prototype's
 // own dark palette, and its light counterpart for a light colour scheme.
 const CHART_COLORS = {
-  dark: { axis: "#334155", label: "#94a3b8", split: "#1e293b", outline: "#0f172a" },
-  light: { axis: "#cbd5e1", label: "#64748b", split: "#e2e8f0", outline: "#ffffff" },
+  dark: {
+    axis: "#334155",
+    label: "#94a3b8",
+    split: "#1e293b",
+    outline: "#0f172a",
+    tipBg: "#0f172a",
+    tipBorder: "#334155",
+    tipText: "#f1f5f9",
+    slider: "rgba(148, 163, 184, 0.28)",
+  },
+  light: {
+    axis: "#cbd5e1",
+    label: "#64748b",
+    split: "#f1f5f9",
+    outline: "#ffffff",
+    tipBg: "#ffffff",
+    tipBorder: "#e2e8f0",
+    tipText: "#0f172a",
+    slider: "rgba(100, 116, 139, 0.22)",
+  },
 };
+/** The page's own face, which a canvas does not inherit. */
+const CHART_FONT = "Inter, ui-sans-serif, system-ui, sans-serif";
 const DEPLOY_COLOR = "#22c55e";
 const FAILURE_COLOR = "#ef4444";
 const WAITING_COLOR = "#f59e0b";
@@ -400,6 +421,7 @@ export function Timeline({
     chart.setOption(
       {
         animation: false,
+        textStyle: { fontFamily: CHART_FONT },
         aria: { enabled: true, label: { description: summary } },
         grid: { left: LEFT_AXIS_WIDTH, right: RIGHT_SLIDER_WIDTH, top: 8, bottom: 8 },
         xAxis: { type: "value", min: 0, max: totalLanes, show: false },
@@ -408,12 +430,13 @@ export function Timeline({
           min: windowStartMs,
           max: windowEndMs,
           axisLine: { lineStyle: { color: palette.axis } },
+          axisTick: { lineStyle: { color: palette.axis } },
           // Object form: echarts picks the tick granularity to fit the current zoom level (day
           // ticks zoomed out, hour ticks once zoomed in); this only supplies the format per
           // granularity, so scrolled-back dates stay dated (month + day).
           axisLabel: {
             color: palette.label,
-            fontSize: 10,
+            fontSize: 11,
             formatter: {
               year: "{yyyy}",
               month: "{MMM} {d}",
@@ -443,6 +466,15 @@ export function Timeline({
             width: 12,
             showDetail: false,
             brushSelect: false,
+            // A quiet scroll thumb: no data shadow behind it, no frame, one neutral fill.
+            showDataShadow: false,
+            backgroundColor: "transparent",
+            borderColor: "transparent",
+            fillerColor: palette.slider,
+            handleSize: "100%",
+            handleStyle: { color: palette.axis, borderColor: palette.axis },
+            moveHandleSize: 0,
+            emphasis: { handleStyle: { color: palette.label, borderColor: palette.label } },
             ...zoomRange,
           },
         ],
@@ -451,7 +483,13 @@ export function Timeline({
           // Whole inside the chart, whose wrapper clips (below): confined to it, and wrapping to
           // its width, since ECharts sets nowrap and a long title is wider than a phone's chart.
           confine: true,
-          extraCssText: "white-space: normal; overflow-wrap: anywhere; max-width: min(24rem, 90%);",
+          backgroundColor: palette.tipBg,
+          borderColor: palette.tipBorder,
+          borderWidth: 1,
+          padding: [6, 8],
+          textStyle: { color: palette.tipText, fontSize: 12, fontFamily: CHART_FONT },
+          extraCssText:
+            "white-space: normal; overflow-wrap: anywhere; max-width: min(24rem, 90%); border-radius: 6px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);",
           formatter: (params: unknown) => {
             const data =
               typeof params === "object" && params !== null && "data" in params
@@ -515,12 +553,14 @@ export function Timeline({
   ]);
 
   return (
-    <div className="flex min-h-0 w-full flex-1 flex-col select-none">
+    <div
+      className={`flex min-h-0 w-full flex-1 flex-col overflow-hidden select-none ${cardClassName("none")}`}
+    >
       {/* Lane header row: plain HTML, not echarts, so labels stay crisp and always visible
           without syncing with the chart's zoom and pan. Padding matches the echarts grid's
           left/right margins so columns line up. */}
       <div
-        className={`flex border-b pb-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
+        className={`flex border-b py-2 text-xs ${borderDefault} ${textMutedOnSurface}`}
         style={{ paddingLeft: LEFT_AXIS_WIDTH, paddingRight: RIGHT_SLIDER_WIDTH }}
       >
         <div
@@ -538,7 +578,7 @@ export function Timeline({
             title={`${lane.label} (${lane.count})`}
           >
             <div className="line-clamp-2 break-words">{lane.label}</div>
-            <div className="text-[10px] tabular-nums">{lane.count}</div>
+            <div className="tabular-nums">{lane.count}</div>
           </div>
         ))}
       </div>
@@ -548,7 +588,7 @@ export function Timeline({
       <div className="relative min-h-0 w-full flex-1 overflow-hidden">
         <div
           aria-label={summary}
-          className={`absolute inset-0 touch-none rounded-b-lg ${surfaceBg}`}
+          className="absolute inset-0 touch-none"
           data-testid="delivery-chart"
           ref={containerRef}
           role="img"

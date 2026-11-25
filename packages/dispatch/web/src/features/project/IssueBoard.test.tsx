@@ -126,7 +126,7 @@ test("board collapses Icebox and Done into droppable rails by default", async ()
     const board = await screen.findByRole("region", { name: "Project board" });
     const headers = within(board).getAllByTestId("board-column-header");
     expect(headers).toHaveLength(issueStatuses.length - 2);
-    expect(headers.every((header) => header.classList.contains("min-h-[52px]"))).toBe(true);
+    expect(headers.every((header) => header.classList.contains("h-9"))).toBe(true);
     const rails = within(board).getAllByTestId("board-column-rail");
     expect(rails).toHaveLength(2);
     const done = within(board).getByRole("region", { name: "Done (collapsed)" });

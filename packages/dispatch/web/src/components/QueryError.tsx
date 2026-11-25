@@ -45,7 +45,7 @@ export function QueryError({
       {refilling ? <AgentListRefilling /> : <p>{message}</p>}
       {onRetry === undefined ? null : (
         <button
-          className="font-medium underline disabled:cursor-not-allowed disabled:opacity-50"
+          className="font-medium underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={retrying}
           onClick={onRetry}
           type="button"

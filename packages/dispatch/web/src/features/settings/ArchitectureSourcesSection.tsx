@@ -3,19 +3,24 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage, isSourceNotFound, removedEvenIfGone } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
+import { Button } from "../../components/Button";
+import { Field, Input } from "../../components/Field";
+import { SectionHeader } from "../../components/Layout";
 import { QueryError } from "../../components/QueryError";
+import {
+  tableCellClassName,
+  tableClassName,
+  tableHeadCellClassName,
+  tableHeadRowClassName,
+  tableRowClassName,
+  tableWrapperClassName,
+} from "../../components/Table";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
-  borderDefault,
-  dangerHoverText,
   dangerText,
-  linkHoverText,
-  linkText,
   textMutedOnCanvas,
   textMutedOnSurface,
-  textPrimaryOnCanvas,
   textPrimaryOnSurface,
-  textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
@@ -25,15 +30,7 @@ import {
   useKeyedWrite,
   useRefusalOfSubject,
 } from "../writes/useKeyedWrite";
-import {
-  ownerRepoPattern,
-  settingsFieldLabel,
-  settingsMonoInput,
-  settingsSubmitButton,
-  settingsTableHead,
-  settingsTableRow,
-  settingsTableWrapper,
-} from "./classes";
+import { ownerRepoPattern } from "./classes";
 import { ProjectSelect } from "./ProjectSelect";
 
 /** A source's address: a project and one of its repositories. */
@@ -120,25 +117,17 @@ export function ArchitectureSourcesSection(): ReactNode {
 
   return (
     <section aria-labelledby="architecture-sources-heading">
-      <h2
-        className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
+      <SectionHeader
+        description="A project can import its architecture documents from several repositories, each on one branch. Its component model is every source's components together, so a component id must not repeat across a project's sources. Saving verifies the Dispatch GitHub App can read the repository and that the branch exists in it (a branch name, not a commit or tag); saving a repository the project already has changes its branch."
         id="architecture-sources-heading"
-      >
-        Architecture sources
-      </h2>
-      <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-        A project can import its architecture documents from several repositories, each on one
-        branch. Its component model is every source's components together, so a component id must
-        not repeat across a project's sources. Saving verifies the Dispatch GitHub App can read the
-        repository and that the branch exists in it (a branch name, not a commit or tag); saving a
-        repository the project already has changes its branch.
-      </p>
+        title="Architecture sources"
+      />
 
       {sources.isPending || projects.isPending ? (
-        <p className={`mt-6 ${textMutedOnCanvas}`}>Loading architecture sources…</p>
+        <p className={`text-sm ${textMutedOnCanvas}`}>Loading architecture sources…</p>
       ) : null}
       {sources.isError ? (
-        <div className="mt-6">
+        <div>
           <QueryError
             message="Couldn't load architecture sources."
             onRetry={() => void sources.refetch()}
@@ -148,47 +137,47 @@ export function ArchitectureSourcesSection(): ReactNode {
       ) : null}
       {sources.isSuccess && projects.isSuccess ? (
         <>
-          <div className={settingsTableWrapper}>
-            <table className="w-full text-left text-sm">
-              <thead className={settingsTableHead}>
-                <tr>
-                  <th className="px-4 py-3 font-semibold" scope="col">
+          <div className={tableWrapperClassName}>
+            <table className={tableClassName}>
+              <thead>
+                <tr className={tableHeadRowClassName}>
+                  <th className={tableHeadCellClassName} scope="col">
                     Project
                   </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
+                  <th className={tableHeadCellClassName} scope="col">
                     Repository
                   </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
+                  <th className={tableHeadCellClassName} scope="col">
                     Branch
                   </th>
-                  <th className="px-4 py-3 font-semibold" scope="col">
+                  <th className={tableHeadCellClassName} scope="col">
                     Status
                   </th>
-                  <th className="px-4 py-3" scope="col">
+                  <th className={tableHeadCellClassName} scope="col">
                     <span className="sr-only">Actions</span>
                   </th>
                 </tr>
               </thead>
               <tbody>
                 {sources.data.length === 0 ? (
-                  <tr>
-                    <td className={`px-4 py-5 ${textMutedOnSurface}`} colSpan={5}>
+                  <tr className={tableRowClassName}>
+                    <td className={`${tableCellClassName} ${textMutedOnSurface}`} colSpan={5}>
                       No architecture sources yet.
                     </td>
                   </tr>
                 ) : (
                   sources.data.map((source) => (
-                    <tr className={settingsTableRow} key={`${source.project} ${source.repo}`}>
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
+                    <tr className={tableRowClassName} key={`${source.project} ${source.repo}`}>
+                      <td className={`${tableCellClassName} font-mono ${textPrimaryOnSurface}`}>
                         {source.project}
                       </td>
-                      <td className={`px-4 py-3 font-mono ${textPrimaryOnSurface}`}>
+                      <td className={`${tableCellClassName} font-mono ${textPrimaryOnSurface}`}>
                         {source.repo}
                       </td>
-                      <td className={`px-4 py-3 font-mono ${textSecondaryOnSurface}`}>
+                      <td className={`${tableCellClassName} font-mono ${textSecondaryOnSurface}`}>
                         {source.branch}
                       </td>
-                      <td className={`px-4 py-3 ${textSecondaryOnSurface}`}>
+                      <td className={`${tableCellClassName} ${textSecondaryOnSurface}`}>
                         {source.last_error !== null ? (
                           <>
                             <span className={dangerText}>{source.last_error}</span>
@@ -219,10 +208,11 @@ export function ArchitectureSourcesSection(): ReactNode {
                           "Access verified"
                         )}
                       </td>
-                      <td className="px-4 py-3 text-right">
-                        <button
+                      <td className={`${tableCellClassName} text-right whitespace-nowrap`}>
+                        <Button
                           aria-label={`Refresh architecture source ${source.repo} for ${source.project}`}
-                          className={`mr-4 font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText} ${linkHoverText}`}
+                          className="mr-2"
+                          size="sm"
                           disabled={
                             refreshSource.isPending ||
                             deleteSource.isPending ||
@@ -231,25 +221,24 @@ export function ArchitectureSourcesSection(): ReactNode {
                           onClick={() =>
                             refreshSource.mutate({ project: source.project, repo: source.repo })
                           }
-                          type="button"
                         >
                           {refreshSource.isPending &&
                           refreshSource.variables.project === source.project &&
                           refreshSource.variables.repo === source.repo
                             ? "Refreshing…"
                             : "Refresh"}
-                        </button>
-                        <button
+                        </Button>
+                        <Button
                           aria-label={`Delete architecture source ${source.repo} for ${source.project}`}
-                          className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
                           disabled={deleteSource.isPending || saveSource.isPending}
                           onClick={() =>
                             deleteSource.mutate({ project: source.project, repo: source.repo })
                           }
-                          type="button"
+                          size="sm"
+                          variant="danger"
                         >
                           Delete
-                        </button>
+                        </Button>
                       </td>
                     </tr>
                   ))
@@ -259,11 +248,10 @@ export function ArchitectureSourcesSection(): ReactNode {
           </div>
 
           <form
-            className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-2 sm:items-end ${borderDefault}`}
+            className="mt-6 grid gap-4 sm:grid-cols-[minmax(0,16rem)_minmax(0,16rem)_minmax(0,10rem)_auto] sm:items-end"
             onSubmit={submit}
           >
-            <label className={settingsFieldLabel} htmlFor="architecture-source-project">
-              Source project
+            <Field htmlFor="architecture-source-project" label="Source project">
               <ProjectSelect
                 disabled={saveSource.isPending}
                 id="architecture-source-project"
@@ -271,12 +259,11 @@ export function ArchitectureSourcesSection(): ReactNode {
                 projects={projects.data}
                 value={project}
               />
-            </label>
-            <label className={settingsFieldLabel} htmlFor="architecture-source-repository">
-              Source repository
-              <input
-                className={settingsMonoInput}
+            </Field>
+            <Field htmlFor="architecture-source-repository" label="Source repository">
+              <Input
                 disabled={saveSource.isPending}
+                mono
                 id="architecture-source-repository"
                 onChange={(event) => setRepository(event.target.value)}
                 pattern={ownerRepoPattern}
@@ -284,25 +271,24 @@ export function ArchitectureSourcesSection(): ReactNode {
                 required
                 value={repository}
               />
-            </label>
-            <label className={settingsFieldLabel} htmlFor="architecture-source-branch">
-              Branch
-              <input
-                className={settingsMonoInput}
+            </Field>
+            <Field htmlFor="architecture-source-branch" label="Branch">
+              <Input
                 disabled={saveSource.isPending}
+                mono
                 id="architecture-source-branch"
                 onChange={(event) => setBranch(event.target.value)}
                 required
                 value={branch}
               />
-            </label>
-            <button
-              className={settingsSubmitButton}
+            </Field>
+            <Button
+              className="justify-self-start"
               disabled={saveSource.isPending || deleteSource.isPending}
               type="submit"
             >
               Add source
-            </button>
+            </Button>
           </form>
           {saveSource.isError ? (
             <div className="mt-4">

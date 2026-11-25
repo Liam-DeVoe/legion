@@ -1,14 +1,9 @@
 import { type ReactNode, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
-
 import type { Artifact, AskBlockArtifact, InboxRow, MyReplyRow } from "../../api/types";
+import { Button } from "../../components/Button";
 import { issueProject } from "../../lib/issue-key";
-import {
-  linkHoverText,
-  linkText,
-  secondaryButtonCompact,
-  textMutedOnCanvas,
-} from "../../theme/classes";
+import { linkChrome, textMutedOnCanvas } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
@@ -172,7 +167,7 @@ export function ReadingPaneHead({
     <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <InboxOwnerLink ask={ask} rowOwner />
       {page === undefined ? null : (
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to={page}>
+        <Link className={`shrink-0 text-sm ${linkChrome}`} to={page}>
           Open page
         </Link>
       )}
@@ -193,14 +188,14 @@ export function ReadingPaneHead({
       />
       {reference === undefined ? null : <CopyRefButton route={reference} />}
       {onSkipToAnswer === undefined ? null : (
-        <button className={secondaryButtonCompact} onClick={onSkipToAnswer} type="button">
+        <Button onClick={onSkipToAnswer} size="sm">
           Skip to the answer
-        </button>
+        </Button>
       )}
       {onNextChange === undefined ? null : (
-        <button className={secondaryButtonCompact} onClick={onNextChange} type="button">
+        <Button onClick={onNextChange} size="sm">
           Next change
-        </button>
+        </Button>
       )}
       {artifact === undefined || approval === undefined ? null : (
         <>
@@ -262,10 +257,10 @@ export function ThreadPaneHead({
   return (
     <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <ThreadOwnerLine
-        className={`min-w-0 truncate text-sm font-semibold ${textMutedOnCanvas}`}
+        className={`min-w-0 grow truncate text-sm font-semibold ${textMutedOnCanvas}`}
         thread={thread}
       />
-      <Link className={`text-sm ${linkText} ${linkHoverText}`} data-inbox-owner="" to={page}>
+      <Link className={`shrink-0 text-sm ${linkChrome}`} data-inbox-owner="" to={page}>
         Open page
       </Link>
       {reference === undefined ? null : <CopyRefButton route={reference} />}

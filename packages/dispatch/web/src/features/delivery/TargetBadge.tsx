@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { approvalPill } from "../../theme/classes";
+import { badgeClassName } from "../../components/Badge";
 
 /** The met / missed / no-data pill a delivery card wears against its target: the measures panel's
  *  KPI cards and the Pipeline page's two lead-time cards. `met` is null when there is nothing to
@@ -15,17 +15,14 @@ export function TargetBadge({
   metLabel: string;
   missedLabel: string;
 }): ReactNode {
-  const [label, state] =
+  const [label, tone] =
     met === null
-      ? ["no data", "draft" as const]
+      ? ["no data", "outline" as const]
       : met
-        ? [metLabel, "approved" as const]
-        : [missedLabel, "changes_requested" as const];
+        ? [metLabel, "success" as const]
+        : [missedLabel, "danger" as const];
   return (
-    <span
-      className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap ${approvalPill[state]}`}
-      data-target-met={met === null ? "none" : String(met)}
-    >
+    <span className={badgeClassName(tone)} data-target-met={met === null ? "none" : String(met)}>
       {label}
     </span>
   );

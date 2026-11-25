@@ -7,6 +7,7 @@ import { whoAmIQuery } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import {
   borderDefault,
+  borderStrongHover,
   dangerText,
   hasFocusVisibleRing,
   textMutedOnCanvas,
@@ -557,7 +558,7 @@ export function PriorityDescription({
       {drawn ? (
         // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: dispatch:// link clicks bubble here, as they do on a document; the editor handles the keyboard's activation of its own links.
         <div
-          className={`dispatch-doc dispatch-description rounded-md px-2 py-1 has-focus-visible:ring-2 ${boxed ? `border ${borderDefault}` : "-mx-2"} ${hasFocusVisibleRing}`}
+          className={`dispatch-doc dispatch-description rounded-md has-focus-visible:ring-2 ${boxed ? `border px-3 py-2 ${borderDefault} ${writes ? borderStrongHover : ""}` : "-mx-2 px-2 py-1"} ${hasFocusVisibleRing}`}
           data-read-only={!writes}
           onBlur={(event) => {
             if (

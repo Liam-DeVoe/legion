@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import type { LauncherCredentialResp } from "../../api/types";
-import { textSecondaryOnSurface } from "../../theme/classes";
+import { textSecondaryOnCanvas } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { credentialGrantsQuery } from "./grants";
 import { machineLoginsQuery, machineName } from "./machineLogins";
@@ -42,7 +42,7 @@ const columns: readonly RevocableColumn<LauncherCredentialResp>[] = [
       <>
         {machineName(login)}
         {login.expired ? (
-          <span className={`block text-xs font-normal ${textSecondaryOnSurface}`}>
+          <span className={`block text-xs font-normal ${textSecondaryOnCanvas}`}>
             expired, sessions still running
           </span>
         ) : null}
@@ -89,7 +89,6 @@ export function MachineLoginsSection(): ReactNode {
 
   return (
     <RevocableList
-      className="pt-4"
       columns={columns}
       // A login's subject is the Kubernetes identity its token names, not a writer's text.
       confirm={(login) =>

@@ -9,6 +9,7 @@ import {
   type WriteBounds,
 } from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
+import { Button } from "../../components/Button";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
@@ -16,7 +17,7 @@ import { textMutedOnSurface } from "../../theme/classes";
 import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteReach";
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
-import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
+import { sessionBadgeClassName, sessionChipClassName } from "../refs/SessionChip";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 
 const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds): Promise<void> =>
@@ -357,19 +358,19 @@ export function AskRecipients({
             <ul aria-label="Followers" className="mt-1 flex flex-wrap gap-2">
               {followers.map((follower) => (
                 <li className={sessionChipClassName} key={follower.session_id}>
-                  <span title={follower.session_id}>
+                  <span className={sessionBadgeClassName} title={follower.session_id}>
                     <AgentName sessionId={follower.session_id} storedTitle={undefined} />
                   </span>
-                  <button
-                    className={sessionRemoveButtonClassName}
+                  <Button
                     disabled={unfollow.isPending}
                     onClick={() =>
                       setConfirming({ kind: "follower", sessionId: follower.session_id })
                     }
-                    type="button"
+                    size="sm"
+                    variant="ghost"
                   >
                     Unfollow
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -378,14 +379,16 @@ export function AskRecipients({
             <ul aria-label="Via claim or route" className="mt-1 flex flex-wrap gap-2">
               {issueRows.map((row) => (
                 <li className={sessionChipClassName} key={`${row.via}:${row.id}`}>
-                  {row.reaches ? (
-                    <span title={row.id}>
-                      <AgentName sessionId={row.id} storedTitle={undefined} />
-                    </span>
-                  ) : (
-                    <span title={row.id}>{row.id}</span>
-                  )}
-                  <span className="text-xs italic">{row.via}</span>
+                  <span className={sessionBadgeClassName}>
+                    {row.reaches ? (
+                      <span title={row.id}>
+                        <AgentName sessionId={row.id} storedTitle={undefined} />
+                      </span>
+                    ) : (
+                      <span title={row.id}>{row.id}</span>
+                    )}
+                    <span className="italic">{row.via}</span>
+                  </span>
                   {row.reachUnknown ? (
                     <RouteReachUnknownMarker />
                   ) : row.reaches ? null : (
@@ -411,28 +414,34 @@ export function AskRecipients({
               >
                 {subscribers.map((subscriber) => (
                   <li className={sessionChipClassName} key={subscriber.session_id}>
-                    <span title={subscriber.session_id}>
-                      <AgentName sessionId={subscriber.session_id} storedTitle={subscriber.title} />
+                    <span className={sessionBadgeClassName}>
+                      <span title={subscriber.session_id}>
+                        <AgentName
+                          sessionId={subscriber.session_id}
+                          storedTitle={subscriber.title}
+                        />
+                      </span>
+                      {subscriber.removable ? null : (
+                        <span
+                          className="italic"
+                          title={`Subscribed only via ${subscriber.via}, which also covers other issues and documents — cannot unsubscribe just this one`}
+                        >
+                          via {subscriber.via}
+                        </span>
+                      )}
                     </span>
                     {subscriber.removable ? (
-                      <button
-                        className={sessionRemoveButtonClassName}
+                      <Button
                         disabled={unsubscribe.isPending}
                         onClick={() =>
                           setConfirming({ kind: "subscriber", sessionId: subscriber.session_id })
                         }
-                        type="button"
+                        size="sm"
+                        variant="ghost"
                       >
                         Unsubscribe
-                      </button>
-                    ) : (
-                      <span
-                        className="text-xs italic"
-                        title={`Subscribed only via ${subscriber.via}, which also covers other issues and documents — cannot unsubscribe just this one`}
-                      >
-                        via {subscriber.via}
-                      </span>
-                    )}
+                      </Button>
+                    ) : null}
                   </li>
                 ))}
               </ul>

@@ -82,6 +82,7 @@ function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
         onFiltersChange={noop}
         onPopoverOpenChange={noop}
         rows={rows}
+        search={null}
         selection={["alice"]}
         view={{
           group: "priority",

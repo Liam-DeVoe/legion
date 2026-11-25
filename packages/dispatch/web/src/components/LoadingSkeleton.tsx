@@ -7,7 +7,7 @@ export function LoadingSkeleton({ label }: { label: string }): ReactNode {
     <div
       aria-busy="true"
       aria-label={label}
-      className={`space-y-3 rounded-xl border p-4 ${card} ${borderDefault}`}
+      className={`space-y-3 rounded-lg border p-4 ${card} ${borderDefault}`}
       role="status"
     >
       <div aria-hidden="true" className={`h-4 animate-pulse rounded ${skeletonBg}`} />

@@ -1,15 +1,12 @@
 import { type ReactNode, useId, useRef } from "react";
 
 import type { StatusChangeEntry } from "../../../api/types";
+import { Button } from "../../../components/Button";
 import {
   backdrop50,
   borderDefault,
   card,
   dangerText,
-  secondaryButtonBorder,
-  secondaryButtonDisabledText,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -56,8 +53,6 @@ function entryText(entry: StatusChangeEntry): string {
   return `${entry.key}: ${statusText(entry.status)}, ${parent}`;
 }
 
-const buttonClasses = `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
-
 function ChoiceRow({
   choice,
   question,
@@ -71,19 +66,17 @@ function ChoiceRow({
   const writing = question.writing === option;
   return (
     <li className="space-y-1">
-      <button
+      <Button
         aria-describedby={sentenceId}
-        className={buttonClasses}
         disabled={
           check.state !== "ready" ||
           question.writing !== undefined ||
           question.refusal !== undefined
         }
         onClick={() => question.choose(option)}
-        type="button"
       >
         {writing ? "Saving…" : label}
-      </button>
+      </Button>
       <p className={`text-sm ${textSecondaryOnSurface}`} id={sentenceId}>
         {choiceSentence(option, question.key, question.status)}
       </p>
@@ -173,23 +166,12 @@ export function ParentStatusDialog({ question }: { question: ParentStatusQuestio
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
-            <button
-              className={buttonClasses}
-              disabled={closing}
-              onClick={question.close}
-              ref={keepRef}
-              type="button"
-            >
+            <Button disabled={closing} onClick={question.close} ref={keepRef}>
               Keep as it is
-            </button>
-            <button
-              className={buttonClasses}
-              disabled={closing}
-              onClick={question.close}
-              type="button"
-            >
+            </Button>
+            <Button disabled={closing} onClick={question.close}>
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       </div>

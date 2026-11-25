@@ -2,20 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 
 import { projectIssuesQuery } from "../../api/queries";
+import { buttonClassName } from "../../components/Button";
 import { MultiSelect } from "../../components/MultiSelect";
+import { pillClassName } from "../../components/Pill";
 import { type PageWords, usePageWords, withoutEllipsis } from "../../components/tooltips";
-import {
-  pageLabelChip,
-  pageLineBorder,
-  pageMutedText,
-  pagePaperBg,
-  secondaryButtonBorder,
-  secondaryButtonDisabledText,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-  surfaceMutedStrongBg,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import { pageLabelChip, pageLineBorder, pageMutedText, pagePaperBg } from "../../theme/classes";
 
 const maxLabelLength = 40;
 const maxLabels = 20;
@@ -222,7 +213,7 @@ export function IssueLabels({
             className={
               page === null
                 ? chipClassName === undefined
-                  ? `inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
+                  ? pillClassName("selected-label")
                   : `inline-flex shrink-0 items-center whitespace-nowrap ${chipClassName}`
                 : chipClassName === undefined
                   ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${pageLabelChip}`
@@ -256,11 +247,11 @@ export function IssueLabels({
           // Inside `NoTooltips` each colour is one of the new issue page's: a label above is
           // its label chip (the prototype's `.lchip`), and this trigger its secondary control, the
           // header control's rule and muted words on the paper, with quiet words while it is busy.
-          triggerClassName={`min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${
+          triggerClassName={
             page === null
-              ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`
-              : `${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`
-          }`}
+              ? buttonClassName({ iconOnly: !saving && displayLabels.length > 0, size: "sm" })
+              : `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`
+          }
         >
           {page === null ? (
             saving ? (

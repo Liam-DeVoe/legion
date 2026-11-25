@@ -1,16 +1,9 @@
 import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
-
 import { EmptyState } from "../../components/EmptyState";
+import { PageHeader } from "../../components/Layout";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
-import {
-  borderDefault,
-  dangerText,
-  linkHoverText,
-  linkText,
-  textMutedOnCanvas,
-  textPrimaryOnCanvas,
-} from "../../theme/classes";
+import { dangerText, linkChrome } from "../../theme/classes";
 import { useAgents } from "../conversation/useAgents";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { machineList } from "./machine-model";
@@ -35,17 +28,17 @@ export function MachinesPage(): ReactNode {
 
   return (
     <section aria-label="Machines" data-testid="machines-page">
-      <header className={`mb-5 border-b pb-4 ${borderDefault}`}>
-        <h1 className={`text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}>
-          Machines
-        </h1>
-        <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
-          <span>Every machine a live session names, and how many of its sessions are in tmux.</span>
-          <Link className={`${linkText} ${linkHoverText}`} to="/agents">
-            Agents
+      <PageHeader
+        description="Every machine a live session names, and how many of its sessions are in tmux."
+        // The way back to the page this one hangs off, above the title as every page under
+        // Agents draws it.
+        eyebrow={
+          <Link className={linkChrome} to="/agents">
+            <span aria-hidden>←&nbsp;</span>Agents
           </Link>
-        </p>
-      </header>
+        }
+        title="Machines"
+      />
       {machines.length === 0 ? (
         // Only a current list says that nobody is connected.
         current ? (

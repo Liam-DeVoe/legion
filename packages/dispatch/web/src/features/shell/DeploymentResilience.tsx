@@ -1,16 +1,9 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { REQUEST_DEADLINE_MS } from "../../api/client";
+import { Button } from "../../components/Button";
 import { useFootInset } from "../../hooks/useFootInset";
-import {
-  borderStrong,
-  card,
-  dismissButtonText,
-  focusVisibleRing,
-  primaryButtonBg,
-  primaryButtonHoverBg,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import { borderStrong, card, textSecondaryOnSurface } from "../../theme/classes";
 import * as markdownEngine from "../refs/markdown-engine";
 
 // The tab's recovery reloads, as a JSON array of the epoch-millisecond times they started: a chunk
@@ -332,30 +325,25 @@ export function DeploymentResilience(): ReactNode {
   return (
     <section
       aria-label="A new version is available"
-      className={`fixed right-4 bottom-[calc(var(--foot-page-inset,0px)_+_1rem)] left-4 z-50 mx-auto flex max-w-md items-center justify-between gap-3 rounded-xl border p-3 shadow-lg ${card} ${borderStrong}`}
+      className={`fixed right-4 bottom-[calc(var(--foot-page-inset,0px)_+_1rem)] left-4 z-50 mx-auto flex max-w-md items-center justify-between gap-3 rounded-lg border py-2 pr-2 pl-4 shadow-lg ${card} ${borderStrong}`}
       ref={bannerRef}
       role="status"
     >
       <p className={`text-sm ${textSecondaryOnSurface}`}>A new version is available - Reload</p>
       <div className="flex shrink-0 items-center gap-2">
-        <button
-          className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${primaryButtonBg} ${primaryButtonHoverBg}`}
-          onClick={() => window.location.reload()}
-          type="button"
-        >
+        <Button onClick={() => window.location.reload()} variant="primary">
           Reload
-        </button>
-        <button
+        </Button>
+        <Button
           aria-label="Dismiss update notice"
-          className={`rounded-lg p-1.5 text-sm ${dismissButtonText} focus-visible:ring-2 ${focusVisibleRing}`}
           onClick={() => {
             dismissed.current = true;
             setUpdateAvailable(false);
           }}
-          type="button"
+          variant="ghost"
         >
           Dismiss
-        </button>
+        </Button>
       </div>
     </section>
   );

@@ -1,12 +1,7 @@
 import { type ReactNode, useRef, useState } from "react";
+import { Button } from "../../components/Button";
 
-import {
-  backdrop50,
-  borderDefault,
-  card,
-  textMutedOnSurface,
-  textPrimaryOnSurface,
-} from "../../theme/classes";
+import { backdrop50, borderDefault, card, textPrimaryOnSurface } from "../../theme/classes";
 import type { InboxRoute } from "../refs/routes";
 import { DIALOG_SCOPE } from "../shell/keymap";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
@@ -54,16 +49,11 @@ export function InboxDrawer({ onClose, open }: { onClose: () => void; open: bool
         ref={dialog.containerRef}
         role="dialog"
       >
-        <div className={`mb-4 flex items-center justify-between border-b pb-3 ${borderDefault}`}>
-          <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>Inbox</h2>
-          <button
-            className={`min-h-11 rounded-lg px-3 text-sm font-medium ${textMutedOnSurface}`}
-            onClick={onClose}
-            ref={closeButtonRef}
-            type="button"
-          >
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className={`text-[15px] leading-6 font-semibold ${textPrimaryOnSurface}`}>Inbox</h2>
+          <Button onClick={onClose} ref={closeButtonRef} size="sm" variant="ghost">
             Close
-          </button>
+          </Button>
         </div>
         <Inbox
           filter={filter}

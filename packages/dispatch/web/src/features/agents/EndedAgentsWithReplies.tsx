@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { userAgentStateQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
 import { LabelPill } from "../../components/Pill";
-import { borderDefault, card, textMutedOnCanvas } from "../../theme/classes";
+import { borderDefault, card, textPrimaryOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 
 import { unreadRepliesLabel } from "./unread";
@@ -25,11 +25,13 @@ export function EndedAgentsWithReplies({ live }: { live: readonly Agent[] }): Re
   if (ended.length === 0) return null;
   const title = "Replied, no longer connected";
   return (
-    <section aria-label={title} className="mt-5 space-y-3">
-      <h2 className={`text-xs font-semibold uppercase ${textMutedOnCanvas}`}>{title}</h2>
+    <section aria-label={title} className="mt-3 space-y-2">
+      <h2 className={`flex min-h-8 items-center text-sm font-semibold ${textPrimaryOnCanvas}`}>
+        {title}
+      </h2>
       {ended.map(([sessionID, unread]) => (
         <article
-          className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border px-3 py-1.5 ${card} ${borderDefault}`}
+          className={`flex flex-wrap items-center gap-x-3 gap-y-1 min-h-[46px] rounded-lg border px-3 py-1.5 ${card} ${borderDefault}`}
           key={sessionID}
         >
           <AgentName

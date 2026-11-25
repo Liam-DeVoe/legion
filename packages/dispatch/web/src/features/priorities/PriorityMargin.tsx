@@ -93,11 +93,7 @@ function PriorityHistory({ id }: { id: string }): ReactNode {
             className="space-y-1 text-sm"
             key={`${act.at}|${act.field}|${act.issue}|${act.value}`}
           >
-            {first ? (
-              <p className={`text-xs font-semibold tracking-wide uppercase ${textMutedOnCanvas}`}>
-                {heading}
-              </p>
-            ) : null}
+            {first ? <p className={`text-xs font-medium ${textMutedOnCanvas}`}>{heading}</p> : null}
             <p className={textSecondaryOnCanvas}>
               <AgentName actor={act.actor} inline /> ·{" "}
               <Timestamp at={act.at} className={textMutedOnCanvas} />

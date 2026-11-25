@@ -1,6 +1,6 @@
 import { type ReactNode, useId } from "react";
 
-import { linkHoverText, linkText } from "../../theme/classes";
+import { Button } from "../../components/Button";
 import { earlierRepliesLabel } from "./thread-layout";
 
 /**
@@ -33,15 +33,16 @@ export function EarlierReplies({
   }
   return (
     <>
-      <button
+      <Button
         aria-controls={foldId}
         aria-expanded={open}
-        className={`min-h-11 text-sm font-medium ${linkText} ${linkHoverText}`}
+        className="-ml-2.5"
         onClick={onToggle}
-        type="button"
+        size="sm"
+        variant="ghost"
       >
         {open ? "Show fewer replies" : earlierRepliesLabel(count)}
-      </button>
+      </Button>
       {open ? replies(foldId) : null}
     </>
   );

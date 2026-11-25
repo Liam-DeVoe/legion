@@ -8,8 +8,7 @@ import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   checkboxAccent,
-  linkHoverText,
-  linkText,
+  linkChrome,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
@@ -131,7 +130,7 @@ const renderings = (
     cell: ({ row }) => (
       <span className="flex items-center gap-1 font-semibold whitespace-nowrap">
         <Link
-          className={`${linkText} ${linkHoverText}`}
+          className={linkChrome}
           to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}
           {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
         >
@@ -154,7 +153,7 @@ const renderings = (
         <Link
           aria-label={`${row.original.issue.key} ${row.original.issue.title}`}
           data-issue-link
-          className={`flex w-full min-w-0 ${linkText} ${linkHoverText}`}
+          className="flex w-full min-w-0 underline-offset-2 hover:underline"
           to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}
           {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
         >
@@ -173,7 +172,7 @@ const renderings = (
           <UnreachableRouteMarker issue={row.original.issue} />
           {row.original.issue.parent ? (
             <Link
-              className={`text-xs ${linkText} ${linkHoverText}`}
+              className={`text-xs ${linkChrome}`}
               to={buildIssuePath({ key: row.original.issue.parent, kind: "issue" })}
               {...referenceTriggerProps({ key: row.original.issue.parent, kind: "issue" })}
             >

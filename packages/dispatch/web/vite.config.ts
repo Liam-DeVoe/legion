@@ -162,13 +162,19 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    proxy: {
-      "/api": "http://localhost:8766",
-      "/auth": "http://localhost:8766",
-      "/ws": {
-        target: "ws://localhost:8766",
-        ws: true,
-      },
-    },
+    // `bun run dev` fronts a Dispatch server on 127.0.0.1:8766 (e.g. `DISPATCH_E2E_PORT=8766
+    // bun run dispatch:local`). The server refuses any Host or Origin but its own dashboard
+    // origin, so the proxy presents that origin on every request it forwards.
+    proxy: Object.fromEntries(
+      (["/api", "/auth", "/ws"] as const).map((prefix) => [
+        prefix,
+        {
+          target: "http://127.0.0.1:8766",
+          ws: prefix === "/ws",
+          changeOrigin: true,
+          headers: { origin: "http://127.0.0.1:8766" },
+        },
+      ])
+    ),
   },
 });

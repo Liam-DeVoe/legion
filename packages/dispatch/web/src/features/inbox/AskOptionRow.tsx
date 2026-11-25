@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import type { AskOptionWithTrees } from "../../api/types";
 import {
   borderDefault,
-  cardHoverBorder,
   linkText,
+  rowHoverBg,
   selectedCardBg,
   selectedCardBorder,
   textOptionDescription,
@@ -13,7 +13,7 @@ import {
 import { MarkdownBody } from "../refs/MarkdownBody";
 import type { TextSource } from "../refs/text-references";
 
-const ROW_CLASS = `flex min-h-11 items-start gap-3 rounded-lg border px-3 py-2 text-sm ${borderDefault}`;
+const ROW_CLASS = `flex min-h-9 items-start gap-3 rounded-md border px-3 py-2 text-sm ${borderDefault}`;
 
 /** The label/description column is a flex item; `min-w-0` overrides its `min-width: auto` so it
  *  shrinks to the row and `MarkdownBody`'s own `break-words` folds a long word. The row's parent
@@ -83,10 +83,12 @@ export function AskChoiceRow({
   // choosing and having chosen read alike.
   return (
     <label
-      className={`${ROW_CLASS} cursor-pointer ${checked ? `${selectedCardBorder} ${selectedCardBg}` : cardHoverBorder} ${className}`}
+      className={`${ROW_CLASS} cursor-pointer ${checked ? `${selectedCardBorder} ${selectedCardBg}` : rowHoverBg} ${className}`}
     >
       <input
         checked={checked}
+        // On the first line's centre, whatever the browser's own margin for the control is.
+        className="mt-1 shrink-0"
         data-ask-option={hotkey ? "" : undefined}
         disabled={disabled}
         name={name}

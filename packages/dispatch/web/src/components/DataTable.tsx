@@ -37,9 +37,9 @@ import {
   tableResizeActive,
   tableResizeHover,
   textMutedOnCanvas,
+  textMutedOnSurface,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
-  textSecondaryOnCanvas,
 } from "../theme/classes";
 
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
@@ -390,7 +390,7 @@ export function DataTable<Row>({
   return (
     <>
       <div
-        className={`min-w-0 overflow-auto rounded-xl border ${borderDefault}`}
+        className={`min-w-0 overflow-auto rounded-lg border ${borderDefault}`}
         ref={layout.attachBox}
         data-testid={scrollTestId}
         style={{
@@ -464,7 +464,7 @@ export function DataTable<Row>({
           </table>
         </ViewportAnchor>
         {table.getFilteredRowModel().rows.length === 0 ? (
-          <p className={`p-6 text-center text-sm ${textMutedOnCanvas}`}>{empty}</p>
+          <p className={`px-4 py-8 text-center text-sm ${textMutedOnCanvas}`}>{empty}</p>
         ) : null}
       </div>
 
@@ -531,7 +531,7 @@ function TableHeaderCell<TData>({
   return (
     <th
       aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
-      className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${divider ? "border-r" : ""}`}
+      className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-medium md:px-2 ${borderDefault} ${surfaceBg} ${textMutedOnSurface} ${pinned ? "z-30" : "z-20"} ${divider ? "border-r" : ""}`}
       data-column={column.id}
       onDragOver={(event) => {
         if (dragColumn !== undefined && !pinned) event.preventDefault();
@@ -640,7 +640,7 @@ export function DataTableGroupRow({
           <button
             aria-expanded={expanded}
             aria-label={label}
-            className={`flex min-w-0 items-center gap-2 text-left font-semibold ${textPrimaryOnCanvas}`}
+            className={`flex min-w-0 items-center gap-2 text-left text-sm font-medium ${textPrimaryOnCanvas}`}
             onClick={onToggle}
             type="button"
           >

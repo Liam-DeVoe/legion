@@ -18,7 +18,6 @@ import {
   useRef,
   useState,
 } from "react";
-
 import {
   api,
   apiErrorMessage,
@@ -27,6 +26,7 @@ import {
   isDecisionBlockInBody,
 } from "../../api/client";
 import type { Agent, AskUrgency } from "../../api/types";
+import { Button } from "../../components/Button";
 import { Chip } from "../../components/Chip";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -41,17 +41,10 @@ import {
   calloutWarningBorder,
   calloutWarningText,
   checkboxAccent,
-  dangerHoverBorder,
   dangerText,
-  dismissButtonText,
   focusRing,
-  hoverToDangerText,
-  linkHoverText,
-  linkText,
-  primaryButtonBg,
   quoteAccentBorder,
   quoteBodyText,
-  secondaryButtonText,
   surfaceBg,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
@@ -937,7 +930,7 @@ export function MentionComposer({
         compact
           ? "min-w-0 space-y-2 border-0 p-0"
           : docked
-            ? "min-w-0 border-0 p-0"
+            ? "min-w-0 space-y-2 border-0 p-0"
             : "min-w-0 space-y-3 border-0 p-0"
       }
       disabled={sending}
@@ -952,9 +945,9 @@ export function MentionComposer({
       {compact || anchor === undefined ? null : (
         <div className="flex items-center justify-between gap-3">
           <p className={`text-sm font-semibold ${textPrimaryOnSurface}`}>{title}</p>
-          <button className={`text-sm ${dismissButtonText}`} onClick={closeOrAsk} type="button">
+          <Button onClick={closeOrAsk} size="sm" variant="ghost-muted">
             Close
-          </button>
+          </Button>
         </div>
       )}
       {replyTo === null ? null : (
@@ -1000,10 +993,11 @@ export function MentionComposer({
           <fieldset className="flex gap-1">
             <legend className="sr-only">Kind</legend>
             {(["comment", "suggestion", "ask"] as const).map((next) => (
-              <button
+              <Button
                 aria-pressed={kind === next}
-                className={`min-h-11 rounded-lg px-3 text-sm ${kind === next ? primaryButtonBg : textSecondaryOnSurface}`}
                 key={next}
+                size="sm"
+                variant="ghost"
                 onClick={() => {
                   const refused = onKindChange(next);
                   setKindRefusal(
@@ -1015,7 +1009,7 @@ export function MentionComposer({
                 type="button"
               >
                 {next === "comment" ? "Comment" : next === "suggestion" ? "Suggest" : "Ask"}
-              </button>
+              </Button>
             ))}
           </fieldset>
           {/* Why the kind did not change, where the reader pressed; a switch that takes clears it,
@@ -1131,7 +1125,7 @@ export function MentionComposer({
       {kind === "ask" ? (
         <fieldset className="min-w-0 space-y-3 border-0 p-0" disabled={offered !== undefined}>
           <fieldset>
-            <legend className={`text-sm font-medium ${textSecondaryOnSurface}`}>Urgency</legend>
+            <legend className={`text-xs font-medium ${textSecondaryOnSurface}`}>Urgency</legend>
             <div className="mt-1 flex flex-wrap gap-1">
               {ASK_URGENCIES_ASCENDING.map((value) => (
                 <Chip
@@ -1158,14 +1152,10 @@ export function MentionComposer({
           </label>
           <section aria-label="Options" className="space-y-2">
             <div className="flex items-center justify-between gap-3">
-              <p className={`text-sm font-medium ${textSecondaryOnSurface}`}>Options</p>
-              <button
-                className={`text-sm font-medium ${linkText} ${linkHoverText}`}
-                onClick={addAskOption}
-                type="button"
-              >
+              <p className={`text-xs font-medium ${textSecondaryOnSurface}`}>Options</p>
+              <Button onClick={addAskOption} size="sm" variant="ghost">
                 Add option
-              </button>
+              </Button>
             </div>
             {askOptions.map((option, index) => (
               <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2" key={option.id}>
@@ -1205,9 +1195,10 @@ export function MentionComposer({
                     writing={dispatchWritingBox("ask-option-description", "ask")}
                   />
                 </div>
-                <button
+                <Button
                   aria-label={`Remove option ${index + 1}`}
-                  className={`self-start rounded-lg border px-3 py-2 text-sm font-medium ${borderStrong} ${secondaryButtonText} ${dangerHoverBorder} ${hoverToDangerText}`}
+                  className="self-start"
+                  variant="danger"
                   onClick={() =>
                     setAskOptions((current) =>
                       current.filter((_option, currentIndex) => currentIndex !== index)
@@ -1216,7 +1207,7 @@ export function MentionComposer({
                   type="button"
                 >
                   Remove
-                </button>
+                </Button>
               </div>
             ))}
           </section>
@@ -1271,29 +1262,28 @@ export function MentionComposer({
           deletedReply !== undefined ||
           refusal instanceof SendStoppedError ||
           inline ? (
-            <button
-              className={`text-sm font-medium underline ${dangerText}`}
-              onClick={discard}
-              type="button"
-            >
+            <Button onClick={discard} size="sm" variant="danger">
               Discard draft
-            </button>
+            </Button>
           ) : null}
         </div>
       )}
-      <RefusableButton
-        busy={sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined}
-        refusal={submitReason ?? null}
-        refusalShownBy={footId}
-        type="submit"
-      >
-        {title}
-      </RefusableButton>
-      {/* While Send refuses, the line under it says why - on screen, for a reader with no
-          pointer to hover it - and once the draft can go, how to send it. */}
-      <p className={`text-xs ${textMutedOnSurfaceMuted}`} id={footId}>
-        {submitReason ?? "Ctrl/Cmd+Enter to send · Enter for a new line"}
-      </p>
+      {/* One row: Send, and beside it the line that says why it refuses - on screen, for a
+          reader with no pointer to hover it - or, once the draft can go, how to send it. In a
+          box too narrow for both the line wraps under the button. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <RefusableButton
+          busy={sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined}
+          refusal={submitReason ?? null}
+          refusalShownBy={footId}
+          type="submit"
+        >
+          {title}
+        </RefusableButton>
+        <p className={`min-w-0 text-xs ${textMutedOnSurfaceMuted}`} id={footId}>
+          {submitReason ?? "Ctrl/Cmd+Enter to send · Enter for a new line"}
+        </p>
+      </div>
     </fieldset>
   );
   // A composer closed to its kind, or a finishing one, stays mounted, keeping its draft, and shows
@@ -1320,8 +1310,8 @@ export function MentionComposer({
         compact
           ? "space-y-2"
           : docked
-            ? `${pickerOpen ? "z-20" : "z-[8]"} fixed inset-x-0 bottom-16 space-y-2 border-t px-4 py-2 sm:sticky sm:top-0 sm:z-20 sm:-mx-2 sm:border-b sm:px-2 ${borderDefault} ${surfaceBg}`
-            : `space-y-3 rounded-xl border p-3 ${calloutInfoBorder} ${calloutInfoBg}`
+            ? `${pickerOpen ? "z-20" : "z-[8]"} fixed inset-x-0 bottom-16 space-y-2 border-t px-4 py-2 sm:sticky sm:top-0 sm:z-20 sm:-mx-2 sm:border-t-0 sm:border-b sm:px-2 sm:pt-3 sm:pb-4 ${borderDefault} ${surfaceBg}`
+            : `space-y-3 rounded-lg border p-3 ${calloutInfoBorder} ${calloutInfoBg}`
       }
       onSubmit={submit}
       ref={formRef}

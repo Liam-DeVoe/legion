@@ -27,10 +27,10 @@ import {
   borderDefault,
   borderStrong,
   card,
-  cardHoverBorder,
   focusVisibleRing,
   linkHoverText,
   linkText,
+  rowHoverBg,
   selectedCardBorder,
   surfaceMutedBg,
   textMutedOnCanvas,
@@ -137,7 +137,7 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
   return (
     <article
       aria-label={`${issue.key} ${issue.title}`}
-      className={`cursor-grab rounded-xl border p-3 ${card} ${cardHoverBorder} ${boardFocusRing} ${
+      className={`cursor-grab rounded-lg border p-3 ${card} ${rowHoverBg} ${boardFocusRing} ${
         isDragging ? "opacity-50" : ""
       }`}
       data-board-card={issue.key}
@@ -154,10 +154,10 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
         to={buildIssuePath({ key: issue.key, kind: "issue" })}
         {...referenceTriggerProps({ key: issue.key, kind: "issue" })}
       >
-        <span className="self-start font-semibold">{issue.key}</span>
-        <span className={`mt-1 self-start ${textPrimaryOnSurface}`}>{issue.title}</span>
+        <span className="self-start text-xs font-medium">{issue.key}</span>
+        <span className={`mt-0.5 self-start ${textPrimaryOnSurface}`}>{issue.title}</span>
       </Link>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         {unread ? <UnreadDot /> : null}
         <PriorityControl
           disabled={issue.status === "done"}
@@ -210,13 +210,13 @@ const BoardColumnView = memo(function BoardColumnView({
       tabIndex={-1}
     >
       <header
-        className={`min-h-[52px] rounded-xl border px-3 py-2 ${borderDefault} ${surfaceMutedBg} ${
+        className={`flex h-9 items-center rounded-lg border px-2 ${borderDefault} ${surfaceMutedBg} ${
           isOver ? selectedCardBorder : ""
         }`}
         data-testid="board-column-header"
       >
         <div
-          className={`flex items-center justify-between gap-2 text-base font-semibold ${textPrimaryOnSurface}`}
+          className={`flex w-full items-center justify-between gap-2 text-sm font-semibold ${textPrimaryOnSurface}`}
         >
           <StatusPill>{statusLabel(column.status)}</StatusPill>
           <Pill>{column.issues.length}</Pill>
@@ -227,7 +227,7 @@ const BoardColumnView = memo(function BoardColumnView({
         // status had no work, and the droppable - which is the whole section - was 52 px tall.
         // A dashed body keeps the column's width and its drop area visible.
         <div
-          className={`mt-3 min-h-40 rounded-xl border border-dashed px-3 py-6 text-center text-xs ${textMutedOnCanvas} ${
+          className={`mt-2 min-h-24 rounded-lg border border-dashed px-3 py-6 text-center text-xs ${textMutedOnCanvas} ${
             isOver ? selectedCardBorder : borderStrong
           }`}
         >
@@ -238,7 +238,7 @@ const BoardColumnView = memo(function BoardColumnView({
           items={column.issues.map((issue) => issue.key)}
           strategy={verticalListSortingStrategy}
         >
-          <div className="mt-3 space-y-3">
+          <div className="mt-2 space-y-2">
             {column.issues.map((issue) => (
               <IssueCard
                 issue={issue}
@@ -273,9 +273,7 @@ const BoardLaneRow = memo(function BoardLaneRow({
   const count = boardLane.columns.reduce((total, column) => total + column.issues.length, 0);
   return (
     <section aria-label={`${laneLabel(boardLane.lane)} lane`}>
-      <h2
-        className={`mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${textSecondaryOnSurface}`}
-      >
+      <h2 className={`mb-2 flex items-center gap-2 text-xs font-medium ${textSecondaryOnSurface}`}>
         {laneLabel(boardLane.lane)}
         <Pill>{count}</Pill>
       </h2>
@@ -283,7 +281,7 @@ const BoardLaneRow = memo(function BoardLaneRow({
         className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
         data-testid="board-lane-scroll-container"
       >
-        <div className="flex w-max items-stretch gap-4">
+        <div className="flex w-max items-stretch gap-3">
           {boardLane.columns.map((column) =>
             isCollapsed(column.status) ? (
               <CollapsedColumn column={column} key={column.status} lane={boardLane.lane} />
@@ -694,7 +692,7 @@ export function IssueBoard({
       {error === undefined ? null : (
         <div
           aria-live="assertive"
-          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
+          className={`mb-4 rounded-lg border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
           role="alert"
         >
           {error}
@@ -742,7 +740,7 @@ export function IssueBoard({
               className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
               data-testid="board-scroll-container"
             >
-              <div className="flex w-max items-stretch gap-4">
+              <div className="flex w-max items-stretch gap-3">
                 {columns.map((column) =>
                   isCollapsed(column.status) ? (
                     <CollapsedColumn column={column} key={column.status} />

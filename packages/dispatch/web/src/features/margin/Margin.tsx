@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
-
+import { Button } from "../../components/Button";
 import {
   borderDefault,
   focusVisibleRing,
@@ -133,11 +133,19 @@ export function Margin({
         >
           <button
             aria-label="Show margin"
-            className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
+            className={`flex size-10 items-center justify-center rounded-md ${railHoverBg} ${focusVisibleRing}`}
             onClick={() => onCollapsedChange?.(false)}
             type="button"
           >
-            <span aria-hidden="true">‹</span>
+            <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 16 16">
+              <path
+                d="M10 3.5 5.5 8l4.5 4.5"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.5"
+              />
+            </svg>
           </button>
         </aside>
       ) : null}
@@ -206,14 +214,22 @@ export function Margin({
           collapsed={railShown}
           desktopControl={
             isCompactViewport || onCollapsedChange === undefined ? undefined : (
-              <button
+              <Button
                 aria-label="Hide margin"
-                className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
+                iconOnly
                 onClick={() => onCollapsedChange(true)}
-                type="button"
+                variant="ghost-muted"
               >
-                <span aria-hidden="true">›</span>
-              </button>
+                <svg aria-hidden="true" className="size-4" fill="none" viewBox="0 0 16 16">
+                  <path
+                    d="m6 3.5 4.5 4.5L6 12.5"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="1.5"
+                  />
+                </svg>
+              </Button>
             )
           }
           model={model}

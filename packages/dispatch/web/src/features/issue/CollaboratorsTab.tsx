@@ -10,14 +10,13 @@ import type {
   IssueCollaborators,
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
+import { cardClassName } from "../../components/Layout";
 import { QueryError } from "../../components/QueryError";
 import {
-  borderDefault,
-  card,
   textMutedOnCanvas,
   textMutedOnSurface,
+  textPrimaryOnCanvas,
   textPrimaryOnSurface,
-  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
@@ -63,7 +62,7 @@ export function collaboratorSections(collaborators: IssueCollaborators): Collabo
 }
 
 function SectionHeading({ children }: { children: ReactNode }): ReactNode {
-  return <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>{children}</h2>;
+  return <h2 className={`text-[15px] font-semibold ${textPrimaryOnCanvas}`}>{children}</h2>;
 }
 
 /** One collaborator's row: who, then the line that says how they worked the issue. `card` carries
@@ -72,7 +71,7 @@ function SectionHeading({ children }: { children: ReactNode }): ReactNode {
  *  since the detail line can name another session (the one that replaced this row's). */
 function Row({ detail, name }: { detail: ReactNode; name: ReactNode }): ReactNode {
   return (
-    <li className={`min-w-0 rounded-lg border p-3 break-words ${borderDefault} ${card}`}>
+    <li className={`min-w-0 break-words ${cardClassName("sm")}`}>
       <div className={`min-w-0 font-medium ${textPrimaryOnSurface}`} data-collaborator="">
         {name}
       </div>
@@ -131,7 +130,7 @@ export function CollaboratorsTab({ issueKey }: { issueKey: string }): ReactNode 
   const unavailable = collaborators.legion_registry === "unavailable";
   const empty = agents.length === 0 && sections.people.length === 0;
   return (
-    <div className="min-w-0 space-y-6">
+    <div className="min-w-0 space-y-8">
       {unavailable ? (
         <p className={`text-sm ${textMutedOnCanvas}`} role="status">
           Legion&apos;s record of this issue&apos;s agents could not be read.
@@ -145,7 +144,7 @@ export function CollaboratorsTab({ issueKey }: { issueKey: string }): ReactNode 
           <SectionHeading>Legion agents</SectionHeading>
           {sections.legion.map(({ agents, role }) => (
             <section aria-label={role} className="space-y-2" key={role}>
-              <h3 className={`text-xs font-semibold uppercase ${textMutedOnCanvas}`}>{role}</h3>
+              <h3 className={`text-xs font-medium ${textMutedOnCanvas}`}>{role}</h3>
               <ul className="space-y-2">
                 {agents.map((agent) => (
                   <Row
@@ -181,7 +180,7 @@ export function CollaboratorsTab({ issueKey }: { issueKey: string }): ReactNode 
         </section>
       )}
       {sections.others.length === 0 ? null : (
-        <section aria-label="Other agents" className="space-y-2">
+        <section aria-label="Other agents" className="space-y-3">
           <SectionHeading>Other agents</SectionHeading>
           <ul className="space-y-2">
             {sections.others.map((agent) => (
@@ -197,7 +196,7 @@ export function CollaboratorsTab({ issueKey }: { issueKey: string }): ReactNode 
         </section>
       )}
       {sections.people.length === 0 ? null : (
-        <section aria-label="People" className="space-y-2">
+        <section aria-label="People" className="space-y-3">
           <SectionHeading>People</SectionHeading>
           <ul className="space-y-2">
             {sections.people.map((person) => (

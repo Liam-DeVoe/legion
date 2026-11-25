@@ -1580,7 +1580,9 @@ test("a window resize made while scrolled past the issues table keeps the table'
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.setViewportSize({ width: 900, height: 800 });
+    // 720 high, not 800: the row needs the pager above the window with margin at the end of
+    // the scroll, and the denser spacing of the page leaves little of it at 800.
+    await page.setViewportSize({ width: 900, height: 720 });
     await page.goto(`/priorities/${priority.id}`);
     const table = page.getByRole("region", { exact: true, name: "Work advancing this priority" });
     const box = table.getByTestId("issues-table-scroll");

@@ -1,11 +1,13 @@
 import { dispatchWritingBox, ISSUE_TITLE_MAX } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useId, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue } from "../../api/types";
+import { Button } from "../../components/Button";
+import { Field, fieldLabelClassName, Input, Select } from "../../components/Field";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -13,13 +15,6 @@ import {
   backdrop50,
   borderDefault,
   card,
-  inputClasses,
-  primaryButtonBg,
-  primaryButtonDisabled,
-  primaryButtonEnabledHoverBg,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -104,6 +99,7 @@ export function CreateIssueDialog({
         ...(force ? { force } : {}),
       })
     );
+  const fieldId = useId();
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (canSubmit) {
@@ -126,16 +122,16 @@ export function CreateIssueDialog({
         <form
           aria-label="Create issue"
           aria-modal="true"
-          className={`pointer-events-auto max-h-[100dvh] w-full space-y-3 overflow-y-auto border p-4 shadow-2xl xl:max-h-[calc(100dvh-6rem)] xl:max-w-lg xl:rounded-lg ${card} ${borderDefault}`}
+          className={`pointer-events-auto max-h-[100dvh] w-full space-y-4 overflow-y-auto border p-4 shadow-2xl xl:max-h-[calc(100dvh-6rem)] xl:max-w-lg xl:rounded-lg ${card} ${borderDefault}`}
           onSubmit={handleSubmit}
           ref={dialog.containerRef}
           role="dialog"
         >
-          <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>Create issue</h2>
-          <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
-            Project
-            <select
-              className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)} ${textPrimaryOnSurface}`}
+          <h2 className={`text-[15px] font-semibold ${textPrimaryOnSurface}`}>Create issue</h2>
+          <Field htmlFor={`${fieldId}-project`} label="Project">
+            <Select
+              id={`${fieldId}-project`}
+              surface="recessed"
               disabled={mutation.isPending || available.length === 0}
               onChange={(event) => setProject(event.target.value)}
               value={selectedProject}
@@ -145,8 +141,8 @@ export function CreateIssueDialog({
                   {candidate.key} · {candidate.name}
                 </option>
               ))}
-            </select>
-          </label>
+            </Select>
+          </Field>
           {projects.isSuccess && available.length === 0 ? (
             <p className={`text-sm ${textMutedOnSurface}`}>
               No projects yet — create one under Settings first.
@@ -159,10 +155,10 @@ export function CreateIssueDialog({
               retrying={projects.isFetching}
             />
           ) : null}
-          <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
-            Title
-            <input
-              className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)}`}
+          <Field htmlFor={`${fieldId}-title`} label="Title">
+            <Input
+              id={`${fieldId}-title`}
+              surface="recessed"
               disabled={mutation.isPending}
               maxLength={ISSUE_TITLE_MAX}
               onChange={(event) => {
@@ -173,12 +169,13 @@ export function CreateIssueDialog({
               type="text"
               value={title}
             />
-          </label>
+          </Field>
           <MentionField
             body={spec}
             className="text-sm"
             disabled={mutation.isPending}
             label="Spec (optional)"
+            labelClassName={fieldLabelClassName}
             onChange={(change) => setSpec(change.body)}
             onKeyDown={(event) => submitOnModifiedEnter(event)}
             project={selectedProject}
@@ -210,30 +207,15 @@ export function CreateIssueDialog({
             )
           ) : null}
           <div className="flex items-center justify-end gap-2">
-            <button
-              className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-              onClick={onClose}
-              type="button"
-            >
-              Cancel
-            </button>
+            <Button onClick={onClose}>Cancel</Button>
             {duplicate === undefined ? null : (
-              <button
-                className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-                disabled={!canSubmit}
-                onClick={() => submit(true)}
-                type="button"
-              >
+              <Button disabled={!canSubmit} onClick={() => submit(true)}>
                 Create anyway
-              </button>
+              </Button>
             )}
-            <button
-              className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={!canSubmit}
-              type="submit"
-            >
+            <Button disabled={!canSubmit} type="submit" variant="primary">
               {mutation.isPending ? "Creating…" : "Create"}
-            </button>
+            </Button>
           </div>
         </form>
       </div>

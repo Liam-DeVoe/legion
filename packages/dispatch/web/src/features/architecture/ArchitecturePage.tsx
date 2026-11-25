@@ -19,7 +19,6 @@ import {
   calloutDangerBg,
   calloutDangerBorder,
   card,
-  cardHoverBorder,
   dangerText,
   focusVisibleRing,
   inlineWarningText,
@@ -28,6 +27,8 @@ import {
   progressFill,
   progressFillDone,
   progressTrack,
+  rowHoverBg,
+  surfaceMutedHoverBg,
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnSurface,
@@ -354,11 +355,16 @@ function ArchitectureTreeView({
             source={source}
           />
         ))}
-        <p className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="architecture-scope">
+        <p
+          className="flex flex-wrap items-center gap-x-2 gap-y-1 max-sm:gap-x-4"
+          data-testid="architecture-scope"
+        >
           <span>
             {tree.totals.issues_done}/{tree.totals.issues_total} issues done
           </span>
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true" className="max-sm:hidden">
+            ·
+          </span>
           <ScopeLink
             active={view === "no-work"}
             count={tree.totals.components_without_work}
@@ -369,14 +375,18 @@ function ArchitectureTreeView({
             }
             onToggle={() => update({ view: view === "no-work" ? null : "no-work" })}
           />
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true" className="max-sm:hidden">
+            ·
+          </span>
           <ScopeLink
             active={view === "unassigned"}
             count={tree.totals.unassigned}
             label="unassigned"
             onToggle={() => update({ view: view === "unassigned" ? null : "unassigned" })}
           />
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true" className="max-sm:hidden">
+            ·
+          </span>
           <ScopeLink
             active={view === "none"}
             count={tree.totals.not_architectural}
@@ -385,10 +395,12 @@ function ArchitectureTreeView({
           />
           {tree.totals.retired_links === 0 ? null : (
             <>
-              <span aria-hidden="true">·</span>
+              <span aria-hidden="true" className="max-sm:hidden">
+                ·
+              </span>
               <button
                 aria-pressed={view === "retired"}
-                className={`inline-flex min-h-11 items-center rounded-full px-2 text-xs font-medium md:min-h-6 ${badgeHigh.bg} ${badgeHigh.text}`}
+                className={`inline-flex h-5 items-center rounded px-1.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
                 onClick={() => update({ view: view === "retired" ? null : "retired" })}
                 type="button"
               >
@@ -409,7 +421,7 @@ function ArchitectureTreeView({
           <>
             <span className="font-medium">Components with no tracked work</span>
             <button
-              className={`ml-2 min-h-11 text-xs font-medium md:min-h-0 ${linkText} ${linkHoverText}`}
+              className={`ml-2 text-xs font-medium ${linkText} ${linkHoverText}`}
               onClick={() => update({ view: null })}
               type="button"
             >
@@ -421,10 +433,7 @@ function ArchitectureTreeView({
             {path.length === 0 ? (
               <span className="font-medium">All components</span>
             ) : (
-              <Link
-                className={`min-h-11 md:min-h-0 ${linkText} ${linkHoverText}`}
-                to={{ search: "" }}
-              >
+              <Link className={`${linkText} ${linkHoverText}`} to={{ search: "" }}>
                 All components
               </Link>
             )}
@@ -454,12 +463,12 @@ function ArchitectureTreeView({
       ) : null}
 
       {neverImported ? (
-        <p className={textMutedOnCanvas} data-testid="architecture-empty">
+        <p className={`text-sm ${textMutedOnCanvas}`} data-testid="architecture-empty">
           No model imported yet — Refresh reads .dispatch/architecture from{" "}
           {sources.map((source) => `${source.repo}/${source.branch}`).join(", ")}.
         </p>
       ) : rows.length === 0 ? (
-        <p className={textMutedOnCanvas}>
+        <p className={`text-sm ${textMutedOnCanvas}`}>
           {view === "no-work" ? "Every component has tracked work." : "No components here."}
         </p>
       ) : (
@@ -514,19 +523,23 @@ function SourceLine({
   const refreshing = mine && refresh.pending;
   return (
     <div data-testid="architecture-source">
-      <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 max-sm:gap-x-4">
         <span className={`font-medium ${textSecondaryOnCanvas}`}>
           {source.repo}/{source.branch}
         </span>
         {source.last_commit === null ? null : (
           <>
-            <span aria-hidden="true">·</span>
+            <span aria-hidden="true" className="max-sm:hidden">
+              ·
+            </span>
             <span>
               at <code className="text-xs">{source.last_commit.slice(0, 8)}</code>
             </span>
           </>
         )}
-        <span aria-hidden="true">·</span>
+        <span aria-hidden="true" className="max-sm:hidden">
+          ·
+        </span>
         {state === "never-synced" || source.last_sync_at === null ? (
           <span>never synced</span>
         ) : (
@@ -535,10 +548,12 @@ function SourceLine({
             {state === "stale" ? " (stale)" : null}
           </span>
         )}
-        <span aria-hidden="true">·</span>
+        <span aria-hidden="true" className="max-sm:hidden">
+          ·
+        </span>
         <button
           aria-label={refreshing ? `Refreshing ${source.repo}…` : `Refresh ${source.repo}`}
-          className={`min-h-11 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 ${linkText} ${linkHoverText}`}
+          className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${linkText} ${linkHoverText}`}
           disabled={refresh?.pending === true}
           onClick={onRefresh}
           type="button"
@@ -580,7 +595,7 @@ function ScopeLink({
   return (
     <button
       aria-pressed={active}
-      className={`min-h-11 md:min-h-0 ${active ? "font-semibold" : ""} ${linkText} ${linkHoverText}`}
+      className={`${active ? "font-semibold" : ""} ${linkText} ${linkHoverText}`}
       onClick={onToggle}
       type="button"
     >
@@ -625,7 +640,7 @@ function ComponentRow({
       <article
         aria-current={selected ? "true" : undefined}
         aria-label={`${component.title}, ${tone === "external" ? "external" : tone === "no-work" ? "no tracked work" : `${component.done}/${component.total} issues done`}`}
-        className={`rounded-xl border p-3 ${card} ${cardHoverBorder} ${rowFocusRing} ${
+        className={`rounded-lg border px-2 py-1.5 ${card} ${rowHoverBg} ${rowFocusRing} ${
           distrusted ? `border-dashed ${trustWarningBorder}` : selected ? borderStrong : ""
         }`}
         data-component-row={component.id}
@@ -636,7 +651,7 @@ function ComponentRow({
             {hasChildren ? (
               <Link
                 aria-label={`Open the components inside ${component.title}`}
-                className={`grid size-11 shrink-0 place-items-center rounded-lg md:size-8 ${textSecondaryOnSurface}`}
+                className={`grid size-8 shrink-0 place-items-center rounded-md ${textSecondaryOnSurface} ${surfaceMutedHoverBg}`}
                 to={{ search: rowSearch(component.id) }}
               >
                 <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 16 16">
@@ -650,7 +665,7 @@ function ComponentRow({
                 </svg>
               </Link>
             ) : (
-              <span aria-hidden="true" className="size-11 shrink-0 md:size-8" />
+              <span aria-hidden="true" className="size-8 shrink-0" />
             )}
             <div className="min-w-0 flex-1">
               {parents.length === 0 ? null : (
@@ -665,7 +680,7 @@ function ComponentRow({
                   and the title a `min-w-0` item that truncates inside it. */}
               <div className="flex min-w-0">
                 <Link
-                  className={`flex min-h-11 min-w-0 flex-1 items-center py-2 font-medium md:min-h-0 md:py-0 ${textPrimaryOnSurface} ${linkHoverText}`}
+                  className={`flex min-w-0 flex-1 items-center text-sm font-medium ${textPrimaryOnSurface} ${linkHoverText}`}
                   to={{ search: rowSearch(component.id) }}
                 >
                   <TruncatedText className="min-w-0 flex-1" title={component.title}>
@@ -676,21 +691,21 @@ function ComponentRow({
             </div>
             {tone === "external" ? (
               <span
-                className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
+                className={`inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs font-medium ${badgeLow.bg} ${badgeLow.text}`}
               >
                 external
               </span>
             ) : null}
             {tone === "done-with-gaps" ? (
               <span
-                className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
+                className={`inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
               >
                 contains components with no tracked work
               </span>
             ) : null}
           </div>
           {tone === "external" ? null : (
-            <div className="flex w-full items-center gap-3 md:w-80 md:shrink-0">
+            <div className="flex w-full items-center gap-3 max-md:pb-1 max-md:pl-10 md:w-80 md:shrink-0">
               {tone === "no-work" ? (
                 <div
                   aria-hidden="true"
@@ -713,7 +728,7 @@ function ComponentRow({
                 </div>
               )}
               <span
-                className={`w-32 shrink-0 text-right text-sm ${textSecondaryOnSurface}`}
+                className={`w-32 shrink-0 text-right text-xs tabular-nums ${textMutedOnSurface}`}
                 title={TONE_LABEL[tone]}
               >
                 {tone === "no-work"

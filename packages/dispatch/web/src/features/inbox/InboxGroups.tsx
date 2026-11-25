@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
+import { Button } from "../../components/Button";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
-import { borderDefault, linkHoverText, linkText, textMutedOnCanvas } from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
 import type { InboxGroup } from "./grouping";
 import type { InboxListRow } from "./list-row";
 
@@ -45,9 +46,9 @@ export function groupItems({
       // A plain list item: `role="presentation"` here took the item out of the list while
       // leaving it a child of the `<ul>`, which is a list element with a child that is no list
       // item (axe's `list`, serious). The band divider is an item of the list it divides.
-      <li className="pt-2" key={`heading-${group.key}`}>
+      <li className="pt-4 first:pt-0" key={`heading-${group.key}`}>
         {/* A band divider, not a heading that competes with the rows under it. */}
-        <h2 className={`text-xs font-semibold tracking-wide uppercase ${textMutedOnCanvas}`}>
+        <h2 className={textMutedOnCanvas}>
           <DisclosureToggle
             expanded={!folded}
             label={`${group.label} (${group.rows.length})`}
@@ -61,16 +62,11 @@ export function groupItems({
     heading,
     ...rows.map((row) => renderRow(row)),
     held > 0 && !folded ? (
-      <li key={`more-${group.key}`}>
-        <button
-          className={`min-h-11 rounded-lg border px-3 py-1.5 text-sm font-medium ${borderDefault} ${linkText} ${linkHoverText}`}
-          data-inbox-show-more={group.key}
-          onClick={() => onShowMore(group.key)}
-          type="button"
-        >
+      <li className="mt-2" key={`more-${group.key}`}>
+        <Button data-inbox-show-more={group.key} onClick={() => onShowMore(group.key)} size="sm">
           Show {Math.min(held, GROUP_PAGE)} more
           {group.label === undefined ? "" : ` in ${group.label}`}
-        </button>
+        </Button>
       </li>
     ) : null,
   ];

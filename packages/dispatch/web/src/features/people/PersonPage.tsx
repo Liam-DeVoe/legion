@@ -1,10 +1,10 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
-
 import { api } from "../../api/client";
 import { nextOffsetPage } from "../../api/queries";
 import { EmptyState } from "../../components/EmptyState";
+import { PageHeader } from "../../components/Layout";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
 import { ShowMore } from "../../components/ShowMore";
@@ -12,10 +12,8 @@ import {
   borderDefault,
   card,
   dangerText,
-  linkHoverText,
-  linkText,
+  linkChrome,
   textMutedOnCanvas,
-  textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { PostPreview } from "../refs/PostBody";
 import { EditedMark } from "../refs/PostMarks";
@@ -60,60 +58,65 @@ export function PersonPage(): ReactNode {
 
   return (
     <section aria-label="Person">
-      <header className={`mb-5 border-b pb-4 ${borderDefault}`}>
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to="/">
-          ← Inbox
-        </Link>
-        <h1 className={`mt-1 text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}>
-          {nodes.data.pages[0]?.person ?? login}
-        </h1>
-        <p className={`mt-1 text-sm ${textMutedOnCanvas}`}>
-          What this person wrote and what reached them, newest first.
-        </p>
-      </header>
+      <PageHeader
+        description="What this person wrote and what reached them, newest first."
+        eyebrow={
+          <Link className={linkChrome} to="/">
+            ← Inbox
+          </Link>
+        }
+        title={<span className="break-words">{nodes.data.pages[0]?.person ?? login}</span>}
+      />
       {rows.length === 0 ? (
         <EmptyState
           label="Person empty state"
           message="Nothing this person wrote and nothing delivered to them is recorded yet."
         />
       ) : (
-        <ul aria-label="Person nodes" className="space-y-3">
+        <ul aria-label="Person nodes" className="space-y-2">
           {rows.map((row) => {
             const deleted = postDeletion(row);
             return (
+              // What was written leads; under it one muted line says what it is and when, and
+              // Open sits at the row's right, so a row is two lines and not four.
               <li
-                className={`rounded-xl border p-3 ${card} ${borderDefault}`}
+                className={`flex items-center gap-x-4 rounded-lg border px-4 py-3 ${card} ${borderDefault}`}
                 key={`${row.kind}:${row.id}`}
               >
-                <div className={`flex flex-wrap items-center gap-2 text-xs ${textMutedOnCanvas}`}>
-                  <Timestamp at={row.created_at} />
-                  <span>
-                    {row.kind}
-                    <EditedMark at={row.edited_at} deleted={deleted} />
-                  </span>
-                  {(row.relations ?? []).map((relation) => (
-                    <LabelPill key={relation}>{RELATION_LABELS[relation] ?? relation}</LabelPill>
-                  ))}
+                <div className="min-w-0 flex-1">
+                  {/* The line reaches the page with no tree: the person nodes read sends none, so
+                      the preview parses it (`UNTREED_ROWS` in `refs/surface-lists.test.ts`). */}
+                  <PostPreview
+                    className="text-sm"
+                    deleted={deleted}
+                    fullTitle
+                    lines={2}
+                    markdown={row.title}
+                    source={textSourceOf(
+                      textSourceKind(row.kind),
+                      row.id,
+                      // The row carries no issue key; a comment on an issue links to that issue's
+                      // conversation, so a role reference in its line is read by that issue.
+                      parseIssuePath(row.href)?.key
+                    )}
+                    surface="person-node-title"
+                  />
+                  <div
+                    className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnCanvas}`}
+                  >
+                    {(row.relations ?? []).map((relation) => (
+                      <LabelPill key={relation}>{RELATION_LABELS[relation] ?? relation}</LabelPill>
+                    ))}
+                    <span>
+                      {row.kind}
+                      <EditedMark at={row.edited_at} deleted={deleted} />
+                    </span>
+                    <span aria-hidden>·</span>
+                    <Timestamp at={row.created_at} />
+                  </div>
                 </div>
-                {/* The line reaches the page with no tree: the person nodes read sends none, so
-                    the preview parses it (`UNTREED_ROWS` in `refs/surface-lists.test.ts`). */}
-                <PostPreview
-                  className="mt-2 text-sm"
-                  deleted={deleted}
-                  fullTitle
-                  lines={2}
-                  markdown={row.title}
-                  source={textSourceOf(
-                    textSourceKind(row.kind),
-                    row.id,
-                    // The row carries no issue key; a comment on an issue links to that issue's
-                    // conversation, so a role reference in its line is read by that issue.
-                    parseIssuePath(row.href)?.key
-                  )}
-                  surface="person-node-title"
-                />
                 <Link
-                  className={`mt-2 inline-block min-h-11 py-2 text-sm ${linkText} ${linkHoverText}`}
+                  className={`inline-flex h-8 shrink-0 items-center text-sm font-medium ${linkChrome}`}
                   to={row.href}
                 >
                   Open

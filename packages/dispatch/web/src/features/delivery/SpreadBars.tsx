@@ -1,6 +1,7 @@
 // The prototype's web/src/components/SpreadBars.tsx, ported as it is; its fills are the
 // `chartBar` tokens, since no component writes a colour utility of its own.
 import { chartBar } from "../../theme/classes";
+import { BarSlots, BarTooltip, barGeometry } from "./BarSlots";
 import { barScale } from "./lib/barScale";
 
 export interface SpreadBarDay {
@@ -24,7 +25,7 @@ const HEIGHT = 36;
 
 /** One bar per day: the p90 drawn faint behind the median. With a target, a dashed line marks it
  * and a bar is green under it, red at or over it. Today's partial day is faded. Plain SVG, like
- * `Sparkbars`. */
+ * `Sparkbars`, with its bar width, hover tint and tooltip. */
 export function SpreadBars({ days, target, noun, format }: Props) {
   const y = barScale(
     1,
@@ -33,10 +34,48 @@ export function SpreadBars({ days, target, noun, format }: Props) {
     HEIGHT
   );
   return (
+    <BarSlots
+      className="h-9 w-full"
+      count={days.length}
+      tooltip={(index) => {
+        const d = days[index];
+        if (d === undefined) return null;
+        return (
+          <BarTooltip
+            day={d.day}
+            note={d.partial ? "today so far" : undefined}
+            rows={
+              d.median_minutes === null || d.p90_minutes === null
+                ? [{ value: `no ${noun}` }]
+                : [
+                    { label: "median", value: format(d.median_minutes) },
+                    { label: "p90", value: format(d.p90_minutes) },
+                    { label: noun, value: String(d.n) },
+                  ]
+            }
+          />
+        );
+      }}
+    >
+      {(widthPx) => <Chart {...{ days, target, noun, format, y }} widthPx={widthPx} />}
+    </BarSlots>
+  );
+}
+
+function Chart({
+  days,
+  target,
+  noun,
+  format,
+  y,
+  widthPx,
+}: Props & { y: (value: number) => number; widthPx: number }) {
+  const bar = barGeometry(BAR, days.length, widthPx);
+  return (
     <svg
       viewBox={`0 0 ${days.length * BAR} ${HEIGHT}`}
       preserveAspectRatio="none"
-      className="block h-9 w-full"
+      className="block h-full w-full"
       role="img"
       aria-label="per-day median and p90"
     >
@@ -52,18 +91,18 @@ export function SpreadBars({ days, target, noun, format }: Props) {
           <rect x={i * BAR} y={0} width={BAR} height={HEIGHT} fill="transparent" />
           {d.median_minutes === null || d.p90_minutes === null ? (
             <rect
-              x={i * BAR + 1}
+              x={i * BAR + bar.inset}
               y={HEIGHT - 1}
-              width={BAR - 2}
+              width={bar.width}
               height={1}
               className={chartBar.empty}
             />
           ) : (
             <>
               <rect
-                x={i * BAR + 1}
+                x={i * BAR + bar.inset}
                 y={y(d.p90_minutes)}
-                width={BAR - 2}
+                width={bar.width}
                 height={Math.max(HEIGHT - y(d.p90_minutes), 1)}
                 className={
                   target === undefined
@@ -74,9 +113,9 @@ export function SpreadBars({ days, target, noun, format }: Props) {
                 }
               />
               <rect
-                x={i * BAR + 1}
+                x={i * BAR + bar.inset}
                 y={y(d.median_minutes)}
-                width={BAR - 2}
+                width={bar.width}
                 height={Math.max(HEIGHT - y(d.median_minutes), 1)}
                 className={
                   target === undefined

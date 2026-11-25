@@ -1,19 +1,9 @@
-import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
 
+import { Button } from "../../components/Button";
+import { Field, Input } from "../../components/Field";
 import { inputMethodKey } from "../../lib/input-method-key";
-import {
-  backdrop40,
-  card,
-  dangerText,
-  inputClasses,
-  primaryButtonBg,
-  primaryButtonDisabled,
-  primaryButtonEnabledHoverBg,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import { backdrop40, card, dangerText, textPrimaryOnSurface } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 
@@ -41,6 +31,7 @@ export function NameVersionDialog({
 }: NameVersionDialogProps): ReactNode {
   const [summary, setSummary] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const inputId = useId();
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: inputRef, onClose, open });
 
   if (!open) {
@@ -78,19 +69,19 @@ export function NameVersionDialog({
           ref={dialog.containerRef}
           role="dialog"
         >
-          <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Name this version</h2>
-          <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
-            What changed?
-            <input
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
+          <h2 className={`text-[15px] font-semibold ${textPrimaryOnSurface}`}>Name this version</h2>
+          <Field htmlFor={inputId} label="What changed?">
+            <Input
               disabled={saving}
+              id={inputId}
               onChange={(event) => setSummary(event.target.value)}
               onKeyDown={handleInputKeyDown}
               ref={inputRef}
+              surface="recessed"
               type="text"
               value={summary}
             />
-          </label>
+          </Field>
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
               {/* A version the reader stopped may have been named, and Save is a press of its
@@ -103,21 +94,10 @@ export function NameVersionDialog({
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
-            <button
-              className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-              onClick={onClose}
-              type="button"
-            >
-              Cancel
-            </button>
-            <button
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={trimmed === "" || saving}
-              onClick={commit}
-              type="button"
-            >
+            <Button onClick={onClose}>Cancel</Button>
+            <Button disabled={trimmed === "" || saving} onClick={commit} variant="primary">
               {saving ? "Saving…" : "Save"}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

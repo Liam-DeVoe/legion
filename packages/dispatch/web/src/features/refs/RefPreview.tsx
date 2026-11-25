@@ -725,7 +725,7 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
   });
   return (
     <div
-      className={`fixed top-0 left-0 z-[60] w-80 max-w-[calc(100vw-1rem)] rounded-xl border p-3 text-sm shadow-lg ${card}`}
+      className={`fixed top-0 left-0 z-[60] w-80 max-w-[calc(100vw-1rem)] rounded-lg border p-3 text-sm shadow-lg ${card}`}
       id={REF_PREVIEW_CARD_ID}
       ref={element}
       role="tooltip"

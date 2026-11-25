@@ -1,13 +1,13 @@
 import { dispatchWritingBox } from "@legion/contracts";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-
 import type {
   ArchitectureTree,
   ArchitectureTreeIssueRef,
   ArchitectureTreeNoneRead,
   ArchitectureTreeRetired,
 } from "../../api/types";
+import { Button } from "../../components/Button";
 import { StatusPill } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
 import {
@@ -17,7 +17,6 @@ import {
   dangerText,
   linkHoverText,
   linkText,
-  secondaryButtonCompact,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -31,8 +30,6 @@ import { buildIssuePath } from "../refs/routes";
 import { ComponentPicker } from "./ComponentPicker";
 
 export type AttachmentView = "unassigned" | "none" | "retired";
-
-const secondaryButton = secondaryButtonCompact;
 
 /** The write's server-side refusal, under the row it belongs to. */
 function RowError({ error }: { error: string | null }): ReactNode {
@@ -183,19 +180,19 @@ function ListSection<Row extends ArchitectureTreeIssueRef>({
   return (
     <section
       aria-labelledby={headingId}
-      className={`rounded-xl border p-4 ${card} ${borderDefault}`}
+      className={`rounded-lg border p-4 ${card} ${borderDefault}`}
       data-testid={testId}
     >
-      <h2 className={`text-lg font-semibold ${textPrimaryOnSurface}`} id={headingId}>
+      <h2 className={`text-[15px] font-semibold ${textPrimaryOnSurface}`} id={headingId}>
         {heading} <span className={`text-sm font-normal ${textMutedOnSurface}`}>{rows.length}</span>
       </h2>
       {visible.length === 0 ? (
         <p className={`mt-2 text-sm ${textMutedOnSurface}`}>{emptyMessage}</p>
       ) : (
-        <ul className="mt-2 space-y-2" ref={listRef}>
+        <ul className="mt-3 space-y-1" ref={listRef}>
           {visible.map((row) => (
             <li
-              className={`rounded-lg border px-3 py-2 ${borderDefault}`}
+              className={`rounded-md border px-3 py-1.5 ${borderDefault}`}
               data-testid={`attachment-${row.key}`}
               key={row.key}
             >
@@ -234,7 +231,7 @@ function RowHead({ issue }: { issue: ArchitectureTreeIssueRef }): ReactNode {
       {/* Phone styles.css makes every `a` inline-flex, so `truncate` must sit on an inner
           span: a flex container cannot ellipsize its own nowrap text. */}
       <Link
-        className={`flex min-w-0 flex-1 font-medium ${linkText} ${linkHoverText}`}
+        className={`flex min-w-0 flex-1 text-sm font-medium ${linkText} ${linkHoverText}`}
         to={buildIssuePath({ key: issue.key, kind: "issue" })}
         {...referenceTriggerProps({ key: issue.key, kind: "issue" })}
       >
@@ -286,14 +283,13 @@ function UnassignedRow({
             >
               Attach to…
             </ComponentPicker>
-            <button
+            <Button
               aria-expanded={reasonOpen}
-              className={secondaryButton}
               onClick={() => setReasonOpen((open) => !open)}
-              type="button"
+              size="sm"
             >
               Not architectural…
-            </button>
+            </Button>
           </>
         )}
       </div>
@@ -304,18 +300,18 @@ function UnassignedRow({
               browser, the box being the shared field now. */}
           <MentionField
             body={reason}
-            className="min-h-11! text-sm"
+            className="min-h-16! text-sm"
             issueKey={issue.key}
             label={`Why ${issue.key} is not architectural`}
-            labelClassName={`grid flex-1 gap-1 text-xs font-medium ${textSecondaryOnSurface}`}
+            labelClassName={`grid flex-1 gap-1.5 text-xs font-medium ${textSecondaryOnSurface}`}
             onChange={(change) => setReason(change.body)}
             project={project}
             rows={2}
             writing={dispatchWritingBox("architecture-reason", "architecture-reason")}
           />
-          <button className={secondaryButton} type="submit">
+          <Button size="sm" type="submit">
             Save reason
-          </button>
+          </Button>
         </form>
       ) : null}
       <RowError error={write.error} />
@@ -350,13 +346,9 @@ function NotArchitecturalRow({
         ) : write.pending ? (
           <SavingNote />
         ) : (
-          <button
-            className={secondaryButton}
-            onClick={() => void write.submit({ mode: "inherit" })}
-            type="button"
-          >
+          <Button onClick={() => void write.submit({ mode: "inherit" })} size="sm">
             Reconsider
-          </button>
+          </Button>
         )}
       </div>
       <p className={`text-sm ${textSecondaryOnSurface}`}>
@@ -404,7 +396,7 @@ function RetiredRow({
         <RowHead issue={issue} />
         {(issue.ids ?? []).map((id) => (
           <span
-            className={`rounded-full px-2 py-0.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
+            className={`inline-flex h-5 items-center rounded px-1.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
             key={id}
           >
             retired: {id}

@@ -3319,7 +3319,8 @@ test("inside NoTooltips AgentName's link draws in the page's ink with its underl
     ).toEqual([
       mainLink,
       `${mainLink} dispatch-inline-link underline`,
-      `ml-1 px-1 ${mainLink}`,
+      // The live link outside `NoTooltips` is a quiet square icon, not a link-blue arrow.
+      "ml-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded align-middle outline-none focus-visible:ring-2 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800",
       `${mainLink} dispatch-inline-link underline`,
     ]);
   });

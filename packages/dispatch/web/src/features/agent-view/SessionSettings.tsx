@@ -8,9 +8,10 @@ import {
   useState,
 } from "react";
 
+import { Select } from "../../components/Field";
 import { pillClassName } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
-import { inputClasses, textMutedOnCanvas } from "../../theme/classes";
+import { textMutedOnCanvas } from "../../theme/classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { textSourceOf } from "../refs/text-references";
 import type { SessionSettingsView } from "./conversation";
@@ -22,7 +23,7 @@ import type { SwitchRequest, SwitchStatus } from "./use-session-switch";
  *  the directory beside it takes what is left and shortens (INFRA-812, R6). A held picker
  *  (`aria-disabled`, `useKeySteps`) looks disabled through the `refused:` variant
  *  (`styles.css`). */
-const selectClasses = `min-h-8 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-xs refused:opacity-50 ${inputClasses(false)}`;
+const selectPlacement = "w-auto max-w-56 shrink-0 has-[[aria-disabled=true]]:opacity-50";
 
 /** The values a picker offers: the session's list, with the current value added when the list
  *  lacks it (a fallback model can be one the session does not list), so the picker always shows
@@ -249,9 +250,10 @@ function ModelPicker({
   const { groups, loose } = useMemo(() => modelOptions(models, current), [models, current]);
   const keySteps = useKeySteps(current ?? "", pending, (value) => onPick({ kind: "model", value }));
   return (
-    <select
+    <Select
       aria-label="Model"
-      className={selectClasses}
+      className={selectPlacement}
+      size="sm"
       data-testid="agent-model-picker"
       {...keySteps}
       title={current}
@@ -267,7 +269,7 @@ function ModelPicker({
           {ids.map((id) => choice(id, current, "agent-session-model"))}
         </optgroup>
       ))}
-    </select>
+    </Select>
   );
 }
 
@@ -310,9 +312,10 @@ function ThinkingControl({
   }
   const current = thinking.level ?? undefined;
   return (
-    <select
+    <Select
       aria-label="Thinking level"
-      className={selectClasses}
+      className={selectPlacement}
+      size="sm"
       data-testid="agent-thinking-picker"
       {...keySteps}
     >
@@ -324,6 +327,6 @@ function ThinkingControl({
       {withCurrent(thinking.levels, current).map((level) =>
         choice(level, current, "agent-session-thinking")
       )}
-    </select>
+    </Select>
   );
 }

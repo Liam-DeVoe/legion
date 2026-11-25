@@ -1,20 +1,18 @@
 import { type FocusEvent, type ReactNode, useId, useRef, useState } from "react";
-
 import type { Project } from "../../api/types";
+import { Button } from "../../components/Button";
 import { Chip } from "../../components/Chip";
+import { ChevronIcon } from "../../components/DisclosureToggle";
+import { Input } from "../../components/Field";
 import {
-  borderDefault,
-  card,
-  inputClasses,
-  surfaceMutedHoverBg,
+  popoverPanel,
+  rowHoverBg,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { issueStatuses, statusLabel } from "../project/board-model";
 import { type SearchBarFilters, type SearchFilterName, searchFilterChips } from "./search-filters";
-
-const field = `min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`;
 
 /**
  * One value picked from a short list: a trigger that names the filter and a list of plain
@@ -50,29 +48,32 @@ function FilterMenu({
 
   return (
     <div className="relative" ref={wrapper}>
-      <button
+      <Button
         aria-controls={listId}
         aria-expanded={open}
-        className={field}
+        className="pr-2"
         onBlur={closeOnLeave}
         onClick={() => setOpen(!open)}
-        type="button"
+        size="sm"
       >
         {label}
-      </button>
+        <span className={textMutedOnSurface}>
+          <ChevronIcon expanded={open} />
+        </span>
+      </Button>
       {open ? (
         <ul
           aria-label={label}
-          className={`absolute z-10 mt-1 max-h-64 w-48 overflow-y-auto rounded-lg border py-1 shadow-lg ${card} ${borderDefault}`}
+          className={`absolute z-10 mt-1 max-h-64 w-48 overflow-y-auto p-1 ${popoverPanel}`}
           id={listId}
         >
           {options.length === 0 ? (
-            <li className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>{emptyText}</li>
+            <li className={`px-2 py-1.5 text-sm ${textMutedOnSurface}`}>{emptyText}</li>
           ) : (
             options.map(({ text, value }) => (
               <li key={value}>
                 <button
-                  className={`block min-h-11 w-full px-3 py-2 text-left text-sm ${textPrimaryOnSurface} ${surfaceMutedHoverBg}`}
+                  className={`block h-8 w-full rounded-md px-2 text-left text-sm ${textPrimaryOnSurface} ${rowHoverBg}`}
                   onBlur={closeOnLeave}
                   onClick={() => {
                     setOpen(false);
@@ -112,6 +113,7 @@ export function SearchFilterBar({
   projects: readonly Project[];
 }): ReactNode {
   const [author, setAuthor] = useState("");
+  const sinceId = useId();
   const set = (patch: SearchBarFilters) => onFilters({ ...filters, ...patch });
   const takeAuthor = () => {
     const typed = author.trim();
@@ -163,9 +165,11 @@ export function SearchFilterBar({
         />
       ) : null}
       {filters.author === undefined ? (
-        <input
+        <Input
           aria-label="Author"
-          className={`${field} w-32`}
+          className="w-32"
+          size="sm"
+          surface="recessed"
           onBlur={takeAuthor}
           onChange={(event) => setAuthor(event.target.value)}
           onKeyDown={(event) => {
@@ -182,10 +186,16 @@ export function SearchFilterBar({
       {/* The date box carries its words on screen: a browser draws an empty one as its own date
           format and nothing else, so without them a reader cannot tell what the box narrows. */}
       {filters.updatedSince === undefined ? (
-        <label className={`inline-flex items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
+        <label
+          className={`inline-flex items-center gap-2 text-xs ${textSecondaryOnSurface}`}
+          htmlFor={sinceId}
+        >
           Updated since
-          <input
-            className={field}
+          <Input
+            className="w-36"
+            id={sinceId}
+            size="sm"
+            surface="recessed"
             onChange={(event) => {
               if (event.target.value !== "") {
                 set({ updatedSince: event.target.value });

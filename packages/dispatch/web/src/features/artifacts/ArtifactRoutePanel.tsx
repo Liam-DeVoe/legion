@@ -47,19 +47,19 @@ export function ArtifactRoutePanel({
           <ArtifactsTab isClosed={isClosed} />
         ) : artifactRoute !== undefined && !isPrimaryArtifactRoute ? (
           artifact === undefined ? (
-            <section className="space-y-3">
-              <p className={dangerText}>
+            <section className="space-y-2 pt-3">
+              <p className={`text-sm ${dangerText}`}>
                 No artifact {artifactRoute.slug} on {artifactRoute.key}.
               </p>
               <Link
-                className={`font-medium underline ${linkText} ${linkHoverText}`}
+                className={`text-sm font-medium hover:underline ${linkText} ${linkHoverText}`}
                 to={buildIssuePath({ key: artifactRoute.key, kind: "artifacts" })}
               >
                 View artifacts
               </Link>
             </section>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-4 pt-3">
               <ArtifactHeader
                 artifact={artifact}
                 highlight

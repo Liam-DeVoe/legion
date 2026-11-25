@@ -8,7 +8,8 @@
 import type { ReactNode } from "react";
 
 import type { AskUrgency, IssuePriority } from "../../api/types";
-import { badgeBlocking, badgeHigh, badgeLow, badgeMed, priorityBadge } from "../../theme/classes";
+import { type BadgeTone, badgeClassName } from "../../components/Badge";
+import { badgeMed } from "../../theme/classes";
 import { URGENCY_LABELS } from "./ask-urgency";
 import { TYPE_LABELS } from "./grouping";
 import type { InboxRowType } from "./list-row";
@@ -22,14 +23,16 @@ const TYPE_GLYPHS: Record<InboxRowType, string> = {
   reply: "↩",
 };
 
-/** The badge tone of each urgency, on the canvas rather than on a decision block's tint, where
- *  `askBlockPill` lifts the same hues one step. */
-const URGENCY_BADGES: Record<AskUrgency, { bg: string; text: string }> = {
-  blocking: badgeBlocking,
-  high: badgeHigh,
-  low: badgeLow,
-  med: badgeMed,
+/** The badge tone of each urgency: the system's own (`Badge`), where colour means state. */
+const URGENCY_TONES: Record<AskUrgency, BadgeTone> = {
+  blocking: "danger",
+  high: "warning",
+  low: "neutral",
+  med: "info",
 };
+
+/** The same for an issue's priority, P0 to P3, as the board and the issue header tone it. */
+const PRIORITY_TONES: readonly BadgeTone[] = ["danger", "warning", "neutral", "neutral"];
 
 /** What the row is, at the left edge of its first line. The glyph is decoration; the name is
  *  the image's own label, so a reader who cannot see it is told the kind just the same. */
@@ -50,12 +53,8 @@ export function RowKindIcon({ type }: { type: InboxRowType }): ReactNode {
  *  whose issue has none, and every row with no issue at all, wears nothing. */
 export function RowPriorityTag({ priority }: { priority: IssuePriority | null }): ReactNode {
   if (priority === null) return null;
-  const tone = priorityBadge[priority];
   return (
-    <span
-      className={`inline-flex shrink-0 items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold whitespace-nowrap ${tone.bg} ${tone.text}`}
-      data-inbox-priority={`P${priority}`}
-    >
+    <span className={badgeClassName(PRIORITY_TONES[priority])} data-inbox-priority={`P${priority}`}>
       P{priority}
     </span>
   );
@@ -65,12 +64,8 @@ export function RowPriorityTag({ priority }: { priority: IssuePriority | null })
  *  row wears no mark at all. */
 export function RowUrgencyMark({ urgency }: { urgency: AskUrgency | null }): ReactNode {
   if (urgency === null) return null;
-  const tone = URGENCY_BADGES[urgency];
   return (
-    <span
-      className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap ${tone.bg} ${tone.text}`}
-      data-inbox-urgency={urgency}
-    >
+    <span className={badgeClassName(URGENCY_TONES[urgency])} data-inbox-urgency={urgency}>
       {URGENCY_LABELS[urgency]}
     </span>
   );

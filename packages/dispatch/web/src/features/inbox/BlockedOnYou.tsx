@@ -2,18 +2,11 @@ import { awaitsDecision } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
+import { buttonClassName } from "../../components/Button";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
-import {
-  borderDefault,
-  surfaceMutedBg,
-  surfaceMutedStrongBg,
-  textSecondaryHoverToPrimary,
-  textSecondaryOnSurface,
-  textSecondaryOnSurfaceMuted,
-} from "../../theme/classes";
+import { textSecondaryHoverToPrimary } from "../../theme/classes";
 import { useCredentialRequests } from "../credentials/pending";
 import { formatAskAge } from "./ask-age";
 import { isMine } from "./sections";
@@ -117,7 +110,8 @@ export function BlockedOnYou({
   if (variant === "pill") {
     return (
       <Link
-        className={`${className ?? ""} inline-flex min-h-11 items-center rounded-full px-3 text-xs font-medium md:min-h-9 md:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
+        // A link in a page head, in the shape of the buttons beside it: the secondary `sm`.
+        className={`${className ?? ""} ${buttonClassName({ size: "sm" })}`}
         to="/"
       >
         Blocked on you · {count}
@@ -130,10 +124,7 @@ export function BlockedOnYou({
   // 1280 px an unlayered `a:not(.prose a) { display: inline-flex }` in styles.css beats
   // Tailwind's `block`, and without it the strip sits beside the controls above the list.
   return (
-    <Link
-      className={`block w-full rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnSurfaceMuted}`}
-      to="/"
-    >
+    <Link className={`block w-full text-xs font-medium ${textSecondaryHoverToPrimary}`} to="/">
       Blocked on you: {count} {count === 1 ? "item" : "items"}
       {oldest === undefined ? null : `, oldest ${formatAskAge(oldest)}`}
     </Link>

@@ -12,24 +12,23 @@ import {
   useState,
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
+import { Button } from "../../components/Button";
 import { EmptyState } from "../../components/EmptyState";
+import { Input } from "../../components/Field";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import { useTooltips } from "../../components/tooltips";
 import { capSearchQuery } from "../../lib/query-param";
 import {
-  borderDefault,
   checkboxAccent,
   dangerText,
   focusVisibleRing,
-  inputClasses,
-  linkHoverText,
-  linkText,
-  surfaceMutedBg,
+  rowHoverBg,
+  rowSelectedBg,
   textMutedOnCanvas,
-  textMutedOnSurfaceMuted,
+  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { searchWords } from "../agents/agent-search";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
@@ -46,7 +45,6 @@ import {
   type InboxShow,
   parseInboxSearch,
 } from "../refs/routes";
-import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
@@ -249,8 +247,14 @@ function InboxRowShell({
        biome-ignore lint/a11y/useKeyWithClickEvents: explained just above. */
     <li
       aria-current={selected ? "true" : undefined}
-      className={`group rounded-xl outline-none focus-visible:ring-2 ${focusVisibleRing} ${
-        selected ? surfaceMutedBg : ""
+      className={`group outline-none focus-visible:ring-2 ${focusVisibleRing} ${
+        // A short row is the thing the pointer picks, so it answers the pointer: a tint under
+        // it, the same tint held on the row the column shows. The tint runs 8 px past the text
+        // on both sides (the list's scroller gives it the room), so the checkbox keeps the
+        // page's left edge. A card row is not pressed as a whole and takes neither.
+        onSelect === undefined
+          ? "mt-4 rounded-lg first:mt-0"
+          : `mt-0.5 -ml-2 cursor-pointer rounded-md px-2 ${selected ? rowSelectedBg : rowHoverBg}`
       }`}
       data-inbox-group={groupKey}
       data-inbox-row={id}
@@ -316,6 +320,7 @@ function ShortRowFrame({
   section: InboxSection;
   title: ReactNode;
 }): ReactNode {
+  const tooltips = useTooltips();
   return (
     <InboxRowShell
       group={groupKey}
@@ -325,19 +330,24 @@ function ShortRowFrame({
       section={section}
       selected={selected}
     >
-      <div className="flex flex-col gap-0.5 py-1.5">
+      <div className="flex flex-col gap-1 py-2">
         <div className="flex items-center gap-2">
           {check}
           <RowKindIcon type={rowType(row)} />
           {title}
+          {/* The short age, with the exact moment as its title, as `Timestamp` gives one. */}
           <time
-            className={`shrink-0 text-xs ${textMutedOnSurfaceMuted}`}
+            // On the selected row's fill the words are the secondary text: the muted grey is
+            // not registered there.
+            className={`shrink-0 text-xs tabular-nums ${selected ? textSecondaryOnCanvas : textMutedOnCanvas}`}
             dateTime={rowLastActivityAt(row)}
+            title={exactTitle(rowLastActivityAt(row), tooltips)}
           >
             {age}
           </time>
         </div>
-        <div className="flex min-w-0 items-baseline gap-2 pl-6">
+        {/* Under the title, not under the marks: checkbox, gap, icon, gap is 52 px. */}
+        <div className="flex h-5 min-w-0 items-center gap-2 pl-13 text-xs">
           <RowPriorityTag priority={rowPriority(row)} />
           <RowUrgencyMark urgency={rowUrgency(row)} />
           {owner}
@@ -345,6 +355,13 @@ function ShortRowFrame({
       </div>
     </InboxRowShell>
   );
+}
+
+/** The exact moment a short age stands for, as a hover title; none where the page draws no
+ *  tooltips, or for a time the browser cannot read. */
+function exactTitle(at: string, tooltips: boolean): string | undefined {
+  const date = new Date(at);
+  return tooltips && !Number.isNaN(date.getTime()) ? date.toLocaleString() : undefined;
 }
 
 /** An open question beside the reading column: its first line, how long it has waited, and the
@@ -374,7 +391,7 @@ function AskShortRow({
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
-      owner={<InboxOwnerLink ask={ask} rowOwner />}
+      owner={<InboxOwnerLink ask={ask} meta rowOwner />}
       row={row}
       section={section}
       selected={selected}
@@ -416,23 +433,32 @@ function ThreadShortRow({
   const reference = threadReferenceRoute(thread);
   return (
     <ShortRowFrame
-      age={<Timestamp at={rowLastActivityAt(row)} />}
+      age={formatAskAge(rowLastActivityAt(row))}
       check={<ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />}
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
       owner={
         <>
-          <ThreadOwnerLine className={`truncate text-sm ${textMutedOnCanvas}`} thread={thread} />
+          <ThreadOwnerLine
+            className={`truncate text-xs ${selected ? textSecondaryOnCanvas : textMutedOnCanvas}`}
+            meta
+            thread={thread}
+          />
           {reference === undefined ? null : <CopyRefButton route={reference} />}
-          <DismissControl shown={selected} thread={thread} />
+          <DismissControl compact shown={selected} thread={thread} />
         </>
       }
       row={row}
       section={section}
       selected={selected}
       title={
-        <ThreadTitle className="min-w-0 grow truncate text-sm" href={thread.ref} thread={thread} />
+        <ThreadTitle
+          className="min-w-0 grow truncate text-sm"
+          href={thread.ref}
+          selected={selected}
+          thread={thread}
+        />
       }
     />
   );
@@ -484,7 +510,7 @@ function InboxCardRow({
           reroute it on the right. It wraps rather than overlapping - a refusal from Snooze or
           Assign to me is a full-width row inside the right group, so it never draws over the
           issue key. */}
-      <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+      <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
         {reads}
         <MarkCheckbox id={ask.id} marked={marked} name={name} onMark={onMark} />
         <RowKindIcon type={rowType(row)} />
@@ -549,11 +575,11 @@ function ThreadCardRow({
       section={section}
       selected={false}
     >
-      {/* The mark sits where a question card's does, on a line of its own above the card. */}
-      <div className="mb-1.5 flex items-center gap-2">
-        <ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />
-      </div>
-      <ThreadRowCard thread={thread} />
+      {/* The mark sits where a question card's does: at the head of the line above the card. */}
+      <ThreadRowCard
+        check={<ThreadMarkCheckbox marked={marked} onMark={onMark} row={row} thread={thread} />}
+        thread={thread}
+      />
     </InboxRowShell>
   );
 }
@@ -1561,19 +1587,22 @@ export function Inbox({
       threadCount={selectedThreads.length}
     />
   ) : null;
-  // The box above the bar's own fields, on a line of its own so the fields it searches stay
-  // readable in its placeholder at a phone's width. Its classes are the Agents page's own field,
-  // the 44 px tap target included, plus the focus ring `inputClasses` does not carry: `f` lands
-  // the focus here, and a reader who arrived by key must see where they are. The cap is said in
-  // the title rather than enforced by a `maxLength`, so `capSearchQuery` in the change handler
-  // is the one rule that cuts what is written and what is filtered by.
+  // The box at the head of the bar's one row, taking all of the row the buttons leave and the
+  // primary search's 40 px height: it is the control the Inbox is used through. At a phone's
+  // width it takes a line of its own
+  // (`basis-64` and the row's wrap), so the fields it searches stay readable in its placeholder.
+  // It carries the focus ring `inputClasses` does not: `f` lands the focus here, and a reader
+  // who arrived by key must see where they are. The cap is said in the title rather than
+  // enforced by a `maxLength`, so `capSearchQuery` in the change handler is the one rule that
+  // cuts what is written and what is filtered by.
   const searchBox = (
-    <input
+    <Input
       aria-label="Search asks"
-      className={`min-h-11 min-w-0 flex-1 basis-64 rounded-lg border px-3 py-2 text-sm outline-none focus-visible:ring-2 ${inputClasses(true)} ${focusVisibleRing}`}
+      className="flex-1 basis-full sm:basis-64"
       onChange={(event) => typeQuery(event.target.value)}
       placeholder="Issue, title, question or author"
       ref={searchRef}
+      size="lg"
       title={`At most ${SEARCH_QUERY_MAX} characters`}
       type="search"
       value={filter.q ?? ""}
@@ -1582,11 +1611,10 @@ export function Inbox({
   // Everything above the list, the same whether or not any band has a row, and a sibling of the
   // scrolling list rather than an item in it: the bar stays put while the rows move.
   const header = (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <CredentialRequestsSection credentials={credentials} />
-      {/* The box narrows the same list the bar's fields narrow, so it stands with them, above
-          the chrome that opens them. */}
-      <div className="flex flex-wrap items-center gap-2">{searchBox}</div>
+      {/* The box narrows the same list the bar's fields narrow, so it stands with them, at the
+          head of the row that opens them. */}
       <InboxBar
         agentToken={agentChip}
         assignees={filter.assignees}
@@ -1599,6 +1627,7 @@ export function Inbox({
         }
         onPopoverOpenChange={setOpenPopover}
         rows={candidates}
+        search={searchBox}
         selection={selection}
         view={{
           group: groupBy,
@@ -1830,7 +1859,8 @@ export function Inbox({
     // keeps the reader's row where it was in it. Without the pane the rows scroll in whatever
     // the host gives (the drawer's own `aside`), and in the window when it gives nothing.
     <div
-      className={paneShown ? "min-w-0 flex-1 overflow-y-auto pr-1" : undefined}
+      // `-ml-2 pl-2`: the room a row's tint and focus ring take to the left of the page's edge.
+      className={paneShown ? "-ml-2 min-w-0 flex-1 overflow-y-auto pl-2" : undefined}
       data-testid="inbox-list"
       ref={listScroller}
     >
@@ -1842,7 +1872,9 @@ export function Inbox({
         rootRef={listRef}
         scroller={paneShown ? listScroller : scroller}
       >
-        <ul className="space-y-3">
+        {/* The gaps are the items' own (`InboxRowShell`, `groupItems`): a short row sits 2 px
+            under the one above it and a card 16 px. */}
+        <ul>
           {drawn.flatMap(({ band, rows: visible }) =>
             groupItems({
               folded: folded.has(band.key),
@@ -1858,15 +1890,15 @@ export function Inbox({
         {/* The Dismissed view's own **Show more**: the next page of dismissals, read from the
             cursor the last page named, rather than rows this page is holding back. */}
         {threads.showMore === undefined ? null : (
-          <button
-            className={`min-h-11 rounded-lg border px-3 py-1.5 text-sm font-medium ${borderDefault} ${linkText} ${linkHoverText}`}
+          <Button
+            className="mt-2"
             data-inbox-show-more="dismissed"
             disabled={threads.showingMore}
             onClick={threads.showMore}
-            type="button"
+            size="sm"
           >
             {threads.showingMore ? "Loading…" : `Show ${INBOX_DISMISSED_PAGE} more`}
-          </button>
+          </Button>
         )}
       </ViewportAnchor>
     </div>

@@ -24,7 +24,8 @@ import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { type AskBlockFacts, type AskBlockHost, askBlockFacts } from "./typed-block-drawing";
 
-const PILL_CLASS = "rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase";
+/** The badge family's shape (`components/Badge.tsx`), in the urgency's own colours. */
+const PILL_CLASS = "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs font-medium";
 
 export interface AskBlockCardProps {
   /** The indexed ask row for this block, once the server has created it. */

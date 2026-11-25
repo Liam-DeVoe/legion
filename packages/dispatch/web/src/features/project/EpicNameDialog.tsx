@@ -1,20 +1,9 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
-import { type FormEvent, type ReactNode, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useId, useRef, useState } from "react";
+import { Button } from "../../components/Button";
+import { fieldLabelClassName, Input } from "../../components/Field";
 
-import {
-  backdrop50,
-  borderDefault,
-  card,
-  inputClasses,
-  primaryButtonBg,
-  primaryButtonDisabled,
-  primaryButtonEnabledHoverBg,
-  secondaryButtonBorder,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-  textPrimaryOnSurface,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+import { backdrop50, borderDefault, card, textPrimaryOnSurface } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
 
 /**
@@ -43,6 +32,7 @@ export function EpicNameDialog({
     open: true,
   });
   const [name, setName] = useState(initial);
+  const nameId = useId();
   const trimmed = name.trim();
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -60,11 +50,13 @@ export function EpicNameDialog({
           ref={dialog.containerRef}
           role="dialog"
         >
-          <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>{title}</h2>
-          <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
+          <h2 className={`text-[15px] font-semibold ${textPrimaryOnSurface}`}>{title}</h2>
+          <label className={fieldLabelClassName} htmlFor={nameId}>
             Name
-            <input
-              className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)}`}
+            <Input
+              className="mt-1.5 font-normal"
+              id={nameId}
+              surface="recessed"
               maxLength={ISSUE_TITLE_MAX}
               onChange={(event) => setName(event.target.value)}
               ref={nameRef}
@@ -73,20 +65,10 @@ export function EpicNameDialog({
             />
           </label>
           <div className="flex items-center justify-end gap-2">
-            <button
-              className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-              onClick={onCancel}
-              type="button"
-            >
-              Cancel
-            </button>
-            <button
-              className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={trimmed === ""}
-              type="submit"
-            >
+            <Button onClick={onCancel}>Cancel</Button>
+            <Button disabled={trimmed === ""} type="submit" variant="primary">
               {submitLabel}
-            </button>
+            </Button>
           </div>
         </form>
       </div>

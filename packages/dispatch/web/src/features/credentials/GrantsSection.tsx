@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import type { ApproverGrantResp } from "../../api/types";
-import { textSecondaryOnSurface } from "../../theme/classes";
+import { textSecondaryOnCanvas } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { credentialGrantsQuery } from "./grants";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
@@ -65,7 +65,7 @@ const columns: readonly RevocableColumn<ApproverGrantResp>[] = [
       <>
         {grant.enrollment.kind} · {grant.enrollment.runtime_id} · {grant.enrollment.operator || "—"}
         {grant.enrollment.slot ? (
-          <span className={`block text-xs font-normal ${textSecondaryOnSurface}`}>
+          <span className={`block text-xs font-normal ${textSecondaryOnCanvas}`}>
             slot {grant.enrollment.slot}
           </span>
         ) : null}
@@ -107,7 +107,6 @@ export function GrantsSection(): ReactNode {
 
   return (
     <RevocableList
-      className="mt-10"
       columns={columns}
       description="Every live grant of your sessions, given automatically or on approval, and the grants you approved. Revoking one ends its access immediately; after you revoke an automatic grant, that session asks before it gets those secrets again. Grants that belong to no person — the ones a service's machine login, or a person's pod the broker no longer maps, took without asking — are listed here to everyone who may see them and cannot be revoked one at a time: revoke that machine login to end every session under it."
       empty="No live grants."

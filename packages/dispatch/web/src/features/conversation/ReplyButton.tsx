@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { linkHoverText, linkText } from "../../theme/classes";
+import { buttonClassName } from "../../components/Button";
 
 /** The Reply action on a message turn: an icon-only button whose 44 px tap target shrinks to
  *  32 px on desktop like the copy-reference and pin controls beside it. `disabled` holds it while
@@ -17,7 +17,7 @@ export function ReplyButton({
   return (
     <button
       aria-label="Reply"
-      className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${linkText} ${linkHoverText} ${className}`}
+      className={`${buttonClassName({ iconOnly: true, size: "sm", variant: "ghost-muted" })} ${className}`}
       disabled={disabled}
       onClick={onClick}
       title="Reply"

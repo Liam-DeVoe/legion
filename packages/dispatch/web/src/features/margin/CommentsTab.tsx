@@ -8,7 +8,7 @@ import {
   borderDefault,
   highlightRing,
   textMutedOnSurfaceMuted,
-  textPrimaryOnSurface,
+  textSecondaryOnSurface,
 } from "../../theme/classes";
 import type { ComposerAnchor, ComposerKind, ComposerOwner } from "../conversation/composer-model";
 import { useHeldSend, useHeldSends } from "../conversation/held-sends";
@@ -219,7 +219,7 @@ export function MarginAskCard({
   return (
     <div
       aria-current={selected ? "true" : undefined}
-      className={selected ? `rounded-xl ${highlightRing}` : undefined}
+      className={selected ? `rounded-lg ${highlightRing}` : undefined}
       data-margin-item={ask.id}
       data-margin-section={section}
     >
@@ -281,7 +281,7 @@ export function CommentsTab({
   const askRows: ReactNode[] = [];
   if (needsYou.length > 0) {
     askRows.push(
-      <h2 className={`text-sm font-semibold ${textPrimaryOnSurface}`} key="needs-you">
+      <h2 className={`pt-1 text-sm font-medium ${textSecondaryOnSurface}`} key="needs-you">
         Needs you
       </h2>
     );

@@ -8,7 +8,6 @@ import {
   useRef,
   useState,
 } from "react";
-
 import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type {
   AnswerAskInput,
@@ -18,6 +17,8 @@ import type {
   Comment,
   CreateCommentInput,
 } from "../../api/types";
+import { badgeClassName } from "../../components/Badge";
+import { buttonClassName } from "../../components/Button";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
@@ -27,15 +28,10 @@ import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   askUrgencyAccent,
-  badgeBlocking,
-  badgeHigh,
-  badgeLow,
-  badgeMed,
-  borderDefault,
   card,
-  cardHoverBorder,
   focusBorder,
   inlineWarningText,
+  linkChrome,
   linkHoverText,
   linkText,
   pageFailedText,
@@ -47,10 +43,6 @@ import {
   pagePaperBg,
   pageQuietText,
   pageStateText,
-  primaryButtonBg,
-  primaryButtonDisabled,
-  primaryButtonEnabledHoverBg,
-  surfaceBg,
   textMutedHoverToSecondary,
   textMutedOnSurface,
   textPrimaryOnSurface,
@@ -156,15 +148,10 @@ export interface AskCardProps {
   /** The reply a deep link named: the Conversation marks that reply and opens the card's
    *  collapsed thread over it. No other surface lands on a reply. */
   currentReplyId?: string;
+  /** A host's own control for the card as a whole (the Conversation's pin), drawn at the end of
+   *  the meta row beside the copy control, so the card keeps the host's full width. */
+  metaActions?: ReactNode;
 }
-
-/** The urgency notch's text colour, matching the urgency badge of the same level. */
-const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
-  blocking: badgeBlocking.text,
-  high: badgeHigh.text,
-  low: badgeLow.text,
-  med: badgeMed.text,
-};
 
 /** What the unsent answer's box says, on today's pages and inside `NoTooltips` alike. */
 const UNSENT_ANSWER_WHY =
@@ -269,6 +256,7 @@ export function AskCard({
   markRead = false,
   unread,
   currentReplyId,
+  metaActions,
 }: AskCardProps): ReactNode {
   const {
     answerFailure,
@@ -334,6 +322,12 @@ export function AskCard({
   const referencesPanelId = useId();
   const isCompact = variant === "compact";
   const inBlock = frame === "block";
+  // Whether the card names the document its decision block is written in.
+  const blockLinked =
+    !inBlock &&
+    displayedAsk.block_id !== undefined &&
+    displayedAsk.block_id !== null &&
+    displayedAsk.block_artifact !== undefined;
   // `document` is the Inbox row's: the ask read carries no owner, so the fresher `displayedAsk`
   // cannot name it and this card's own row is where it is read.
   const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
@@ -587,12 +581,14 @@ export function AskCard({
 
   // Inside `NoTooltips` the actions are the page's (`ON_PAGE`): filled with the ink, or its
   // header control's rule and muted words.
+  // Everywhere else they are the system's buttons (`buttonClassName`), on elements that stay
+  // plain `<button>`s for the refusal attributes and the focus refs they carry.
   const filledLook = tooltips
-    ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`
-    : ON_PAGE.filled;
+    ? buttonClassName({ variant: "primary" })
+    : `min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${ON_PAGE.filled}`;
   const secondaryLook = tooltips
-    ? `${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`
-    : ON_PAGE.action;
+    ? buttonClassName()
+    : `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${ON_PAGE.action}`;
   const answerField = (
     <>
       {/* Inside `NoTooltips` the box is the page's (`ON_PAGE.field`), with its label and the line
@@ -645,7 +641,7 @@ export function AskCard({
       // card refuses, that is read from the form as the refusal found it (`held`).
       aria-disabled={cannotAnswer || uploading ? undefined : refusedWhileOut}
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
-      className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
+      className={filledLook}
       disabled={cannotAnswer || disabledWhileOut || uploading}
       title={tooltips ? submitHint : undefined}
       type="submit"
@@ -669,7 +665,7 @@ export function AskCard({
     <fieldset aria-label="Question-shaped answer" className="flex gap-2">
       <button
         aria-disabled={refusedWhileOut}
-        className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
+        className={filledLook}
         disabled={disabledWhileOut}
         onClick={() => {
           if (!refusing) sendClarification();
@@ -681,7 +677,7 @@ export function AskCard({
       </button>
       <button
         aria-disabled={refusedWhileOut}
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
+        className={secondaryLook}
         disabled={disabledWhileOut}
         onClick={() => {
           if (!refusing) sendAnswer(answerText);
@@ -698,7 +694,7 @@ export function AskCard({
         {changing ? (
           <button
             aria-disabled={refusedWhileOut}
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
+            className={secondaryLook}
             disabled={disabledWhileOut}
             onClick={() => {
               if (!refusing) cancelChanging();
@@ -713,7 +709,7 @@ export function AskCard({
             // while the card refuses, that is read from the form as the refusal found it (`held`),
             // so the text the landing clears leaves it refused and not `disabled`.
             aria-disabled={nothingToAskBack || uploading ? undefined : refusedWhileOut}
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
+            className={secondaryLook}
             disabled={nothingToAskBack || disabledWhileOut || uploading}
             onClick={() => {
               if (!refusing) sendClarification();
@@ -775,7 +771,12 @@ export function AskCard({
       className={
         inBlock
           ? "relative mt-3"
-          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${tooltips ? `${card} ${askUrgencyAccent[urgency]}` : `${ON_PAGE.frame} ${PAGE_URGENCY_ACCENT[urgency]}`}`
+          : tooltips
+            ? // The frame the decision block and the thread cards draw: 8 px corners, a hairline,
+              // a 3 px rule in the urgency's colour, no shadow. The urgency's word is a badge on
+              // the meta row, so the frame leaves no room above itself for a notch.
+              `relative rounded-lg border border-l-[3px] ${isCompact ? "p-3" : "p-4"} ${card} ${askUrgencyAccent[urgency]}`
+            : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${hasUrgencyNotch ? "mt-3" : ""} ${ON_PAGE.frame} ${PAGE_URGENCY_ACCENT[urgency]}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
       // key that must not fire while the reader is answering an ask (the issue page's priority
@@ -786,28 +787,32 @@ export function AskCard({
       data-testid={`ask-${displayedAsk.id}`}
     >
       {questionReads}
-      {hasUrgencyNotch ? (
+      {hasUrgencyNotch && !tooltips ? (
         <span
           aria-hidden="true"
-          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${tooltips ? `${surfaceBg} ${URGENCY_NOTCH_TEXT[urgency]}` : `${ON_PAGE.notch} ${PAGE_URGENCY_NOTCH_TEXT[urgency]}`}`}
+          className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${ON_PAGE.notch} ${PAGE_URGENCY_NOTCH_TEXT[urgency]}`}
         >
           {URGENCY_LABELS[urgency].toUpperCase()}
         </span>
       ) : null}
       <AskAnchorHeader ask={displayedAsk} inBlock={inBlock} quoteSpacing="roomy" tone="surface" />
       <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={displayedAsk} />
-      {inBlock ||
-      displayedAsk.block_id === undefined ||
-      displayedAsk.block_id === null ||
-      displayedAsk.block_artifact === undefined ? null : (
-        <p className={`mt-2 text-sm ${tooltips ? `${linkText} ${linkHoverText}` : ON_PAGE.link}`}>
+      {/* Inside `NoTooltips` the block's link keeps its own line above the question; everywhere
+          else it is the last thing on the meta row below. */}
+      {tooltips || !blockLinked ? null : (
+        <p className={`mt-2 text-sm ${ON_PAGE.link}`}>
           <AskBlockLink ask={displayedAsk} />
         </p>
       )}
       <div>
         {isApproval ? (
           <p
-            className={`text-[10px] font-semibold uppercase tracking-wide ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
+            className={
+              tooltips
+                ? // A meta line in sentence case, as every other label of the card is.
+                  `text-xs font-medium ${textMutedOnSurface}`
+                : `text-[10px] font-semibold uppercase tracking-wide ${ON_PAGE.quiet}`
+            }
           >
             Approval requested
           </p>
@@ -843,8 +848,19 @@ export function AskCard({
             280 px margin, where a single row could not hold five copy controls without pushing
             the reference out of reach. */}
         <div
-          className={`@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}
+          className={`@container mt-1.5 flex flex-wrap gap-x-1.5 text-xs ${tooltips ? `items-start ${textMutedOnSurface}` : `items-center ${ON_PAGE.quiet}`}`}
         >
+          {/* How urgent, in the urgency's own badge and word, at the head of the row. The
+              article's name already says it, so the badge is for the eye alone. */}
+          {hasUrgencyNotch && tooltips ? (
+            <span
+              aria-hidden="true"
+              className={badgeClassName(urgency === "blocking" ? "danger" : "warning")}
+              data-ask-urgency={urgency}
+            >
+              {URGENCY_LABELS[urgency]}
+            </span>
+          ) : null}
           {/* Turn, author and time are one group whose names truncate: a separator that wrapped
               left a line opening - or ending - on a bare "·", and the agents are the only parts
               that can give up width ("Waiting on you" never does). Below 24rem of line (a phone,
@@ -856,11 +872,16 @@ export function AskCard({
               are values, which wrap there: each name breaks anywhere inside its own part of the
               group, which still holds its one line, so no separator opens a line there either. */}
           <span
-            className={`flex min-w-0 items-center gap-x-1.5 ${tooltips ? "whitespace-nowrap " : ""}@max-sm:flex-wrap`}
+            // It takes the row's free width and holds the row's line height, so the block's
+            // link and the copy control sit at the row's right end, on its first line. On a narrow
+            // card (a phone, a margin) the group is no box of its own: the turn shares the first
+            // line with those controls, and the asker and the time take the whole of the next,
+            // so the controls' width is never taken from the asker's name.
+            className={`flex min-w-0 items-center gap-x-1.5 ${tooltips ? "min-h-5 flex-1 whitespace-nowrap @max-sm:contents" : "@max-sm:flex-wrap"}`}
           >
             {turnHolder === null ? null : (
               <span
-                className={`${turnHolder === "you" ? "shrink-0" : tooltips ? "min-w-0 truncate" : "min-w-0 [overflow-wrap:anywhere]"} font-semibold @max-sm:basis-full ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
+                className={`${turnHolder === "you" ? "shrink-0" : tooltips ? "min-w-0 truncate" : "min-w-0 [overflow-wrap:anywhere]"} font-semibold ${tooltips ? `@max-sm:grow @max-sm:leading-5 ${textSecondaryOnSurface}` : `@max-sm:basis-full ${ON_PAGE.muted}`}`}
                 data-testid={`turn-${displayedAsk.id}`}
               >
                 Waiting on {turnHolder === "you" ? "you" : <AgentName actor={turnHolder} inline />}
@@ -871,7 +892,9 @@ export function AskCard({
                 ·
               </span>
             )}
-            <span className="flex min-w-0 items-center gap-x-1.5">
+            <span
+              className={`flex min-w-0 items-center gap-x-1.5 ${tooltips ? "@max-sm:order-1 @max-sm:basis-full" : ""}`}
+            >
               {sessionAuthor === undefined ? (
                 askerName(
                   displayedAsk.author.id === "" ? (
@@ -908,9 +931,21 @@ export function AskCard({
               <Timestamp at={displayedAsk.created_at} />
             </span>
           </span>
-          {reference === undefined ? null : <CopyRefButton route={reference} />}
+          {tooltips && blockLinked ? (
+            <span className={`flex h-5 shrink-0 items-center text-[13px] ${linkChrome}`}>
+              <AskBlockLink ask={displayedAsk} />
+            </span>
+          ) : null}
+          {reference === undefined && metaActions === undefined ? null : (
+            // The controls are taller than the line: they are centred on the first one, and wrap
+            // together on a narrow card.
+            <span className={tooltips ? "ml-auto flex h-5 shrink-0 items-center" : "contents"}>
+              {reference === undefined ? null : <CopyRefButton route={reference} />}
+              {metaActions}
+            </span>
+          )}
           {!handlesOpen ? null : (
-            <span className="flex basis-full flex-wrap items-center gap-x-1.5">
+            <span className="order-2 flex basis-full flex-wrap items-center gap-x-1.5">
               {sessionAuthor === undefined ? null : (
                 <CopyButton value={sessionAuthor.id} what="session ID">
                   ID
@@ -1013,7 +1048,9 @@ export function AskCard({
               <button
                 aria-controls={`${answerFieldId}-disclosure`}
                 aria-expanded={ownWordsOpen}
-                className={`min-h-11 text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`}
+                className={
+                  tooltips ? buttonClassName() : `min-h-11 text-sm font-medium ${ON_PAGE.muted}`
+                }
                 // The Inbox's Enter opens this disclosure to reach the answer box behind it,
                 // and finds the control by this handle, as it finds the box by
                 // `data-ask-answer` and an option by `data-ask-option` (`Inbox.tsx`).
@@ -1026,6 +1063,7 @@ export function AskCard({
                 type="button"
               >
                 Add a note or answer in your own words
+                {tooltips ? <ChevronIcon expanded={ownWordsOpen} /> : null}
               </button>
               {ownWordsOpen ? (
                 <div className="space-y-3 pt-3" id={`${answerFieldId}-disclosure`}>

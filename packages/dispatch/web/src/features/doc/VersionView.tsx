@@ -7,6 +7,8 @@ import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
+import { useTooltips } from "../../components/tooltips";
+import { pageMutedText, textMutedOnCanvas } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
@@ -63,6 +65,7 @@ export function VersionView({
   const [highlightMissing, setHighlightMissing] = useState(false);
   const [renderError, setRenderError] = useState<string | undefined>(undefined);
   const { createEditor } = useContext(DocumentRuntime);
+  const tooltips = useTooltips();
   const versionQuery = useQuery({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
@@ -233,7 +236,7 @@ export function VersionView({
 
   return (
     <section aria-label={`Document version ${version}`} className="space-y-3">
-      <h2>
+      <h2 className={`text-xs font-medium ${tooltips ? textMutedOnCanvas : pageMutedText}`}>
         Version {version}
         {createdAt === undefined ? null : (
           <span>

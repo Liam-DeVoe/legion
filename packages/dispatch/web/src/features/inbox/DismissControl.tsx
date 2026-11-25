@@ -1,7 +1,7 @@
 import { createContext, type ReactNode, useContext } from "react";
 
 import type { MyReplyRow } from "../../api/types";
-import { linkHoverText, linkText } from "../../theme/classes";
+import { Button } from "../../components/Button";
 import type { InboxShow } from "../refs/routes";
 import { ThreadLine } from "./ThreadTitle";
 import { dismissThreadRow, type InboxDismissRow } from "./useInboxDismiss";
@@ -38,9 +38,12 @@ export const RowDismissContext = createContext<RowDismiss | undefined>(undefined
  * card draw it beside their other controls, where there is room for it.
  */
 export function DismissControl({
+  compact = false,
   shown = false,
   thread,
 }: {
+  /** The short row's own: the size of that row's line of marks, at the line's right end. */
+  compact?: boolean;
   /** Whether the control is drawn whatever the reader's hand is doing: the head's and the card's
    *  always are, and so is the selected row's. */
   shown?: boolean;
@@ -60,18 +63,21 @@ export function DismissControl({
   return (
     <ThreadLine thread={thread}>
       {(line) => (
-        <button
+        <Button
           aria-label={`${label}: ${line ?? ""}`}
-          className={`min-h-11 shrink-0 text-sm font-medium md:min-h-8 ${linkText} ${linkHoverText} ${
+          // The short row's sits at the end of its line of marks, its box running into the row's
+          // own padding so the line keeps its height.
+          className={`${compact ? "-mr-1.5 ml-auto" : ""} ${
             shown ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
           }`}
           data-inbox-dismiss={named.id}
           disabled={live}
           onClick={() => dismiss.dismiss(named)}
-          type="button"
+          size="sm"
+          variant="ghost"
         >
           {live ? (restoring ? "Moving…" : "Dismissing…") : label}
-        </button>
+        </Button>
       )}
     </ThreadLine>
   );

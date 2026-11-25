@@ -3,29 +3,24 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import type { Suggestion } from "../../api/types";
+import { Button } from "../../components/Button";
 import { Pill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
   borderDefault,
-  calloutDangerBorder,
-  calloutSuccessBorder,
   card,
-  dangerHoverText,
   dangerText,
   inlineWarningText,
-  linkHoverText,
-  linkText,
   quoteAccentBorder,
   quoteBodyText,
   selectedCardBg,
   selectedCardBorder,
-  successHoverText,
-  successText,
   suggestionAddedBg,
   suggestionAddedText,
   suggestionRemovedBg,
   suggestionRemovedText,
+  surfaceBg,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -64,10 +59,8 @@ import {
 /** The name every comment edit's save sits beneath, followed by the comment's id. */
 const COMMENT_EDIT_SEND_KEY: MutationKey = ["comment-edit"];
 
-/** 44 px tall through tablet widths (the compact sheet's `min-height: 44px` rule in `styles.css`
- *  holds until `xl`), 32 px in the desktop margin. */
-const suggestionActionButton =
-  "min-h-11 rounded-lg border px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed xl:min-h-8 xl:py-1";
+/** The anchored words a thread is about. */
+const anchorQuote = `mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`;
 
 /** The replacement a suggestion proposes: the anchored text struck through, the new text
  *  beneath. `clamp` keeps a collapsed card's preview to two lines of each.
@@ -125,6 +118,9 @@ export interface ThreadCardProps {
    *  for when that reply ends. */
   hideReplyComposer?: boolean;
   expanded: boolean;
+  /** The card is the whole of its view - the phone's thread view - so it draws no frame of its
+   *  own: no rule around it, no fill and no padding at its sides. */
+  flat?: boolean;
   hovered: boolean;
   isClosed: boolean;
   onAction(id: string, action: MarginItemAction): void;
@@ -249,8 +245,20 @@ function CommentBody({
   }
   return (
     <>
+      {/* Who and when stand over what was said, as on every other post in the app, with the
+          copy control at the row's end. */}
+      <p
+        className={`mb-1 flex min-h-6 items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}
+        data-comment-byline=""
+      >
+        <span className="min-w-0 flex-1">
+          <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+          <EditedMark at={comment.edited_at} deleted={deleted} />
+        </span>
+        {showReference && reference !== undefined ? <CopyRefButton route={reference} /> : null}
+      </p>
       {anchor === null ? null : (
-        <blockquote className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}>
+        <blockquote className={anchorQuote}>
           {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
           {anchor.quote}
         </blockquote>
@@ -281,13 +289,6 @@ function CommentBody({
           )}
         </div>
       ) : null}
-      <p className={`mt-2 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}>
-        <span>
-          <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
-          <EditedMark at={comment.edited_at} deleted={deleted} />
-        </span>
-        {showReference && reference !== undefined ? <CopyRefButton route={reference} /> : null}
-      </p>
     </>
   );
 }
@@ -333,24 +334,20 @@ function DeletedCommentEdit({ commentId }: { commentId: string }): ReactNode {
           </p>
         ) : null}
       </div>
-      <div className="flex flex-wrap gap-3">
-        <button
-          className={`text-sm font-medium ${linkText} ${linkHoverText}`}
-          onClick={() => copy(draft.body)}
-          type="button"
-        >
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={() => copy(draft.body)} size="sm">
           Copy my edit
-        </button>
-        <button
-          className={`text-sm font-medium underline ${dangerText}`}
+        </Button>
+        <Button
           onClick={() => {
             if (refused !== undefined) store.discard(mutationKey);
             else unsent.forgetAway(name, { anchor: undefined, replyTo: null });
           }}
-          type="button"
+          size="sm"
+          variant="danger"
         >
           Discard my edit
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -364,6 +361,7 @@ export function ThreadCard({
   composerClassName,
   hideReplyComposer = false,
   expanded,
+  flat = false,
   hovered,
   isClosed,
   onAction,
@@ -452,13 +450,9 @@ export function ThreadCard({
     postDeletion(comment) === null &&
     comment.author.kind === "user" &&
     comment.author.id === viewerLogin ? (
-      <button
-        className={`font-medium ${linkText} ${linkHoverText}`}
-        onClick={() => setEditingId(comment.id)}
-        type="button"
-      >
+      <Button onClick={() => setEditingId(comment.id)} size="sm" variant="ghost">
         Edit
-      </button>
+      </Button>
     ) : null;
   /* Mounted while the card is expanded, under the thread's reply send name, so a reply still
      out or refused - which the held-send store keeps for the thread - is there each time the
@@ -468,7 +462,9 @@ export function ThreadCard({
      no reply, it shows only a reply of its own still out or its refusal, and still sends
      (`finishing`). A deleted root takes no reply either - the server refuses one (409) - so the
      composer stays away from it. Its quote of the root marks the root edited as the root's own
-     byline does (`replyParent`). `contents`, so the composer's own box is the one laid out. It
+     byline does (`replyParent`). Under a host's frame (`composerClassName`) the wrapper is
+     `contents`, so the composer's own box is the one laid out; elsewhere it spaces the composer
+     from the thread, and takes no room while the composer draws nothing. It
      sits next to the newest message: under the root in Newest first, at the foot of the thread
      in Oldest first. Its Cancel reply, and Escape in its field, close the thread and keep the
      draft for it, typed or refused or stopped, which the closed card says (`keptReply`). It
@@ -476,7 +472,10 @@ export function ThreadCard({
      can outlive the comment it names, and it is handed no `listed`. */
   const replyComposer =
     expanded && rootDeleted === null ? (
-      <div className="contents" hidden={hideReplyComposer}>
+      <div
+        className={composerClassName === undefined ? "mt-3 empty:hidden" : "contents"}
+        hidden={hideReplyComposer}
+      >
         <MentionComposer
           box="margin-thread-reply"
           closed={isClosed}
@@ -512,13 +511,9 @@ export function ThreadCard({
           <KeptReply actor={root.author} press={reopenControl ?? "Reply"} />
         </p>
         {reopenControl === undefined ? (
-          <button
-            className={`font-medium ${linkText} ${linkHoverText}`}
-            onClick={onToggle}
-            type="button"
-          >
+          <Button onClick={onToggle} size="sm" variant="ghost">
             Reply
-          </button>
+          </Button>
         ) : null}
       </div>
     ) : null;
@@ -534,8 +529,16 @@ export function ThreadCard({
         aria-current={active ? "true" : undefined}
         aria-busy={pendingAction || undefined}
         aria-expanded={expanded}
-        className={`rounded-xl border p-3 text-sm shadow-sm ${
-          active || hovered ? `${selectedCardBorder} ${selectedCardBg}` : card
+        className={`text-sm ${
+          flat
+            ? ""
+            : `rounded-lg border p-3 ${
+                active
+                  ? `${selectedCardBorder} ${surfaceBg}`
+                  : hovered
+                    ? `${borderDefault} ${selectedCardBg}`
+                    : card
+              }`
         } ${className ?? ""}`}
         data-hovered={hovered ? "true" : undefined}
         data-anchor-block={thread.anchor?.block_id ?? undefined}
@@ -583,22 +586,16 @@ export function ThreadCard({
             <Pill>Suggestion</Pill>
             {actionableSuggestion ? (
               <span className="flex items-center gap-2">
-                <button
-                  aria-label="Accept suggestion"
-                  className={`${suggestionActionButton} ${calloutSuccessBorder} ${successText} ${successHoverText}`}
-                  onClick={() => onAction(root.id, "accept")}
-                  type="button"
-                >
+                <Button aria-label="Accept suggestion" onClick={() => onAction(root.id, "accept")}>
                   Accept
-                </button>
-                <button
+                </Button>
+                <Button
                   aria-label="Reject suggestion"
-                  className={`${suggestionActionButton} ${calloutDangerBorder} ${dangerText} ${dangerHoverText}`}
                   onClick={() => onAction(root.id, "reject")}
-                  type="button"
+                  variant="danger"
                 >
                   Reject
-                </button>
+                </Button>
               </span>
             ) : null}
           </header>
@@ -621,27 +618,19 @@ export function ThreadCard({
               </>
             )}
             {isClosed ? null : (
-              <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
+              <div className="mt-1 -ml-2.5 flex flex-wrap items-center gap-1 empty:hidden">
                 {actionableSuggestion ? null : thread.resolved && !terminalSuggestion ? (
-                  <button
-                    className={`font-medium ${linkText} ${linkHoverText}`}
-                    onClick={() => onAction(root.id, "reopen")}
-                    type="button"
-                  >
+                  <Button onClick={() => onAction(root.id, "reopen")} size="sm" variant="ghost">
                     Reopen
-                  </button>
+                  </Button>
                 ) : !thread.resolved ? (
-                  <button
-                    className={`font-medium ${linkText} ${linkHoverText}`}
-                    onClick={() => onAction(root.id, "resolve")}
-                    type="button"
-                  >
+                  <Button onClick={() => onAction(root.id, "resolve")} size="sm" variant="ghost">
                     Resolve
-                  </button>
+                  </Button>
                 ) : null}
                 {editButton(root)}
                 {pendingAction ? (
-                  <span className={`text-xs ${textMutedOnSurfaceMuted}`} role="status">
+                  <span className={`pl-2.5 text-xs ${textMutedOnSurfaceMuted}`} role="status">
                     Saving…
                   </span>
                 ) : null}
@@ -655,7 +644,10 @@ export function ThreadCard({
             ) : null}
             {composerFirst ? replyComposer : null}
             {shown.length === 0 ? null : (
-              <ol aria-label="Replies" className={`mt-3 space-y-2 border-t pt-3 ${borderDefault}`}>
+              <ol
+                aria-label="Replies"
+                className={`mt-3 space-y-3 border-l-2 pl-3 ${borderDefault}`}
+              >
                 {shown.map((reply) => {
                   // The quoted post, read once in the thread's own items: its author names the
                   // quote, its deletion and its edit mark it, and the record its text is names
@@ -667,7 +659,6 @@ export function ThreadCard({
                   return (
                     <li
                       aria-current={reply.id === currentReplyId ? "true" : undefined}
-                      className={`rounded-lg p-2 ${card}`}
                       data-reply=""
                       key={reply.id}
                       ref={reply === newestReply ? markRead : undefined}
@@ -702,7 +693,9 @@ export function ThreadCard({
                         </>
                       )}
                       {editing(reply) ? null : (
-                        <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
+                        <div className="mt-1 -ml-2.5 flex gap-1 empty:hidden">
+                          {editButton(reply)}
+                        </div>
                       )}
                     </li>
                   );
@@ -711,68 +704,78 @@ export function ThreadCard({
             )}
           </>
         ) : (
-          // The collapsed card is a record a reader reads - it is the Conversation tab's whole
-          // default view of a turn - so its references are links, as they were before the host
-          // decided it (`links="live"` at both previews below). The button around it opens the
-          // thread; it is not the link-or-button shape R6 names, which is a reference drawn
-          // inside a control that navigates somewhere else.
-          <button
-            aria-expanded={false}
-            className={`block w-full text-left ${textPrimaryOnSurface}`}
-            onClick={() => {
-              if (
-                pulseOrphanBlock &&
-                thread.anchor?.orphaned &&
-                typeof thread.anchor.block_id === "string"
-              ) {
-                focusBlock(thread.anchor.block_id);
-              }
-              onToggle();
-            }}
-            type="button"
-          >
-            {/* The compact sheet's stylesheet lays every button out inline-flex, so one block
+          <>
+            {/* A closed card says who wrote it and when, over its words: without the line a
+                reader had to open every card of the margin to learn whose it was. It stands
+                outside the card's own button, since a name is a control of its own. */}
+            <p
+              className={`mb-1 flex min-h-6 items-center text-xs ${textMutedOnSurfaceMuted}`}
+              data-comment-byline=""
+            >
+              <span className="min-w-0 flex-1">
+                <AgentName actor={root.author} inline /> · <Timestamp at={root.created_at} />
+              </span>
+            </p>
+            <button
+              aria-expanded={false}
+              className={`block w-full text-left ${textPrimaryOnSurface}`}
+              onClick={() => {
+                if (
+                  pulseOrphanBlock &&
+                  thread.anchor?.orphaned &&
+                  typeof thread.anchor.block_id === "string"
+                ) {
+                  focusBlock(thread.anchor.block_id);
+                }
+                onToggle();
+              }}
+              type="button"
+            >
+              {/* The compact sheet's stylesheet lays every button out inline-flex, so one block
                 wrapper keeps the preview's rows stacked. */}
-            <span className="block w-full">
-              {rootSuggestion !== null && root.anchor !== null ? (
-                <>
-                  {root.anchor.orphaned ? (
-                    <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>Text changed.</p>
-                  ) : null}
-                  <span className="block space-y-1 font-mono text-xs">
-                    <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
-                  </span>
-                  {root.body === "Suggested replacement." ? null : (
-                    <CollapsedRootPreview
-                      className={`mt-2 text-xs ${textSecondaryOnSurface}`}
-                      comment={root}
-                      deleted={rootDeleted}
-                      lines={1}
-                    />
-                  )}
-                </>
-              ) : (
-                <>
-                  {root.anchor === null ? null : (
-                    <blockquote
-                      className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}
-                    >
-                      {/* The document's own words: the reading list's `anchor-quote`. */}
-                      {root.anchor.quote}
-                    </blockquote>
-                  )}
-                  <CollapsedRootPreview comment={root} deleted={rootDeleted} lines={2} />
-                </>
-              )}
-              {thread.replies.length === 0 ? null : (
-                <p className={`mt-2 text-xs ${textMutedOnSurfaceMuted}`}>
-                  {thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"} · last
-                  reply{" "}
-                  {thread.lastReplyAt === undefined ? null : <Timestamp at={thread.lastReplyAt} />}
-                </p>
-              )}
-            </span>
-          </button>
+              <span className="block w-full">
+                {rootSuggestion !== null && root.anchor !== null ? (
+                  <>
+                    {root.anchor.orphaned ? (
+                      <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>
+                        Text changed.
+                      </p>
+                    ) : null}
+                    <span className="block space-y-1 font-mono text-xs">
+                      <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
+                    </span>
+                    {root.body === "Suggested replacement." ? null : (
+                      <CollapsedRootPreview
+                        className={`mt-2 text-xs ${textSecondaryOnSurface}`}
+                        comment={root}
+                        deleted={rootDeleted}
+                        lines={1}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {root.anchor === null ? null : (
+                      <blockquote className={`line-clamp-2 ${anchorQuote}`}>
+                        {/* The document's own words: the reading list's `anchor-quote`. */}
+                        {root.anchor.quote}
+                      </blockquote>
+                    )}
+                    <CollapsedRootPreview comment={root} deleted={rootDeleted} lines={2} />
+                  </>
+                )}
+                {thread.replies.length === 0 ? null : (
+                  <p className={`mt-2 text-xs ${textMutedOnSurfaceMuted}`}>
+                    {thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"} ·
+                    last reply{" "}
+                    {thread.lastReplyAt === undefined ? null : (
+                      <Timestamp at={thread.lastReplyAt} />
+                    )}
+                  </p>
+                )}
+              </span>
+            </button>
+          </>
         )}
         {keptReply}
         {keptReplyToDeleted}

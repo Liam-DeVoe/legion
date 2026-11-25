@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import { disclosureButtonText, textSecondaryOnCanvas } from "../theme/classes";
+import { disclosureButtonText, surfaceMutedHoverBg, textSecondaryOnCanvas } from "../theme/classes";
 
 /** The fold glyph: a chevron pointing down at rest and up once `expanded`. */
 export function ChevronIcon({ expanded }: { expanded: boolean }): ReactNode {
@@ -40,7 +40,7 @@ export function DisclosureToggle({
   return (
     <button
       aria-expanded={expanded}
-      className={`flex min-h-11 items-center gap-1 text-sm font-medium ${textClassName}`}
+      className={`-mx-1.5 flex h-8 items-center gap-1 rounded-md px-1.5 text-sm font-medium ${textClassName} ${surfaceMutedHoverBg}`}
       onClick={onToggle}
       type="button"
     >

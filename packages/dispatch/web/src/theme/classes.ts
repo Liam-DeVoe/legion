@@ -465,6 +465,13 @@ export const badgeMed = {
   bg: "bg-sky-100 dark:bg-sky-950",
   text: "text-sky-800 dark:text-sky-300",
 };
+/** The empty state of a badge the reader presses to set a value (`features/issue/badge-select`:
+ * no priority, no assignee): muted words and no fill at rest, so a list of unset rows stays
+ * quiet, and `badgeLow`'s fill once the pointer or the keyboard is on the control. */
+export const badgeGhost = {
+  bg: "group-hover/badge-select:bg-slate-100 group-has-[:focus-visible]/badge-select:bg-slate-100 dark:group-hover/badge-select:bg-slate-800 dark:group-has-[:focus-visible]/badge-select:bg-slate-800",
+  text: "text-slate-500 dark:text-slate-400",
+};
 export const badgeLow = {
   bg: "bg-slate-100 dark:bg-slate-800",
   text: "text-slate-700 dark:text-slate-300",
@@ -472,6 +479,12 @@ export const badgeLow = {
 export const badgePrimary = {
   bg: "bg-sky-100 dark:bg-sky-950",
   text: "text-sky-800 dark:text-sky-300",
+};
+
+/** A badge that says a thing is well (connected, passed, live): the connected pill's pair. */
+export const badgeSuccess = {
+  bg: "bg-emerald-100 dark:bg-emerald-950",
+  text: "text-emerald-800 dark:text-emerald-300",
 };
 
 /** Priority is the only badge that uses a geometric tag rather than a pill. P2 and P3 stay
@@ -491,18 +504,6 @@ export const askUrgencyAccent = {
   high: askUrgencyHighBorder,
   low: askUrgencyLowBorder,
   med: askUrgencyMedBorder,
-} as const;
-/** A decision (`:::ask`) block rendered inside a document: the inbox card's left accent above,
- * plus a faint tint of the same hue on the card body so the block reads as a decision before its
- * pill is read. The three urgent tints are the danger/warning/info callout backgrounds; low
- * urgency has no hue of its own and sits on the recessed surface. Its muted text uses the
- * stronger `TEXT_MUTED_ON_SURFACE_MUTED` shade because plain `TEXT_MUTED` measures under AA on
- * the amber tint; its malformed notice is `dangerText`. */
-export const askBlockTint = {
-  blocking: calloutDangerBg,
-  high: calloutWarningBg,
-  low: surfaceRecessedBg,
-  med: calloutInfoBg,
 } as const;
 /** The urgency pill on that tinted card, also the composer's urgency picker. The badge tones'
  * dark backgrounds are the same `*-950` shades as the tint, so a pill built from `badge*` would
@@ -648,7 +649,7 @@ export const primaryButtonDisabled =
   "refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300";
 /** The whole primary button `components/RefusableButton.tsx` draws: shape, colours, the hover
  *  while it can be pressed and the look while it cannot. */
-export const primaryButton = `rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`;
+export const primaryButton = `inline-flex h-8 shrink-0 items-center justify-center rounded-md px-3 text-sm font-medium whitespace-nowrap ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`;
 
 registerText(
   "primary button text (resting)",
@@ -693,16 +694,101 @@ export function inputClasses(recessed: boolean): string {
     : "border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400";
 }
 
-/** The compact secondary button the Architecture lists, the component picker and the broadcast
- *  Sends strip share: a 44 px tap target through phone widths, 28 px from `sm`. */
-export const secondaryButtonCompact = `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;
+// ---------------------------------------------------------------------------------------------
+// The control system (`components/DESIGN.md`): one button in four variants, one field, one
+// badge shape. Each string is the whole colour of its control, resting, under the pointer and
+// while it cannot be pressed, so a call site never assembles a button out of border, text and
+// hover parts. The shape (height, radius, padding, type) is `components/Button.tsx`'s and
+// `components/Field.tsx`'s; the focus ring is the global one in `styles.css`.
+// ---------------------------------------------------------------------------------------------
+
+/** Primary: the filled accent, at most one per view. */
+export const buttonPrimary =
+  "bg-sky-700 text-white not-refused:hover:bg-sky-800 not-refused:active:bg-sky-900 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300";
+/** Secondary: the surface inside a 1px rule. Under the pointer the fill tints; the rule does
+ * not change colour. */
+export const buttonSecondary =
+  "border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600";
+/** Ghost: no rule and no fill until the pointer is over it. Also every icon-only button. */
+export const buttonGhost =
+  "text-slate-700 not-refused:hover:bg-slate-200/70 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600";
+/** Ghost in the muted tone, for an icon beside text it should not compete with (copy, pin,
+ * close): muted at rest, secondary under the pointer. */
+export const buttonGhostMuted =
+  "text-slate-500 not-refused:hover:bg-slate-200/70 not-refused:hover:text-slate-700 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:text-slate-400 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-200 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600";
+/** Danger: the secondary's shape with the danger text; under the pointer the danger tint. */
+export const buttonDanger =
+  "border border-slate-300 bg-white text-rose-700 not-refused:hover:border-rose-300 not-refused:hover:bg-rose-50 not-refused:active:bg-rose-100 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-rose-400 dark:not-refused:hover:border-rose-800 dark:not-refused:hover:bg-rose-950 dark:not-refused:active:bg-rose-900 dark:refused:text-slate-600";
+/** A toggle button while it is on (`aria-pressed`), over any variant: the strong muted fill. */
+export const buttonPressed =
+  "aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100";
+
+/** The compact secondary button as a class string, for a host that is not `Button` yet: the
+ *  system's `sm` secondary. Prefer `<Button size="sm">`. */
+export const secondaryButtonCompact = `inline-flex h-7 shrink-0 items-center justify-center rounded-md px-2.5 text-xs font-medium whitespace-nowrap ${buttonSecondary}`;
+
+registerText("secondary button text (hover)", TEXT_PRIMARY, SURFACE_MUTED);
+registerText("pressed button text", TEXT_PRIMARY, SURFACE_MUTED_STRONG);
+registerText("danger button text (hover)", DANGER_TEXT, CALLOUT_DANGER_BG);
+
+/** An input, select or textarea: its rule, fill, text and placeholder, a slightly stronger rule
+ * under the pointer, and the greyed look while disabled. `canvas` is a field that sits on the
+ * page; `recessed` one inside a `SURFACE` card, whose dark fill reads one level below the card.
+ * The focus ring is the global one (`styles.css`), drawn on the rule. */
+export const fieldControl = {
+  canvas:
+    "border-slate-300 bg-white text-slate-900 placeholder:text-slate-500 enabled:hover:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-400 dark:enabled:hover:border-slate-600 dark:disabled:bg-slate-800 dark:disabled:text-slate-400",
+  recessed:
+    "border-slate-300 bg-white text-slate-900 placeholder:text-slate-500 enabled:hover:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-400 dark:enabled:hover:border-slate-600 dark:disabled:bg-slate-800 dark:disabled:text-slate-400",
+} as const;
+/** A field whose value Dispatch refused (`aria-invalid`): the danger rule. */
+export const fieldInvalid = "aria-invalid:border-rose-500 dark:aria-invalid:border-rose-400";
 
 /** The one height of every control a table's toolbar draws - its search box, its selects, its
- *  buttons and its flag chips - from 1280 px up: the search box's own, a `text-sm` line inside
- *  its padding and border (34 px). Below 1280 px `styles.css` gives each control a 44 px floor,
- *  so a phone keeps its targets; `xl:min-h-0` lifts a host's own 44 px minimum, as a chip's,
- *  where that floor no longer stands. */
+ *  buttons and its flag chips - from 1280 px up: 34 px, the toolbar's search box's own height
+ *  (the Issues tab's toolbar check in e2e/priorities.e2e.ts), over the primitives' 32 px. Below 1280 px `styles.css` gives each control a
+ *  44 px floor, so a phone keeps its targets; `xl:min-h-0` lifts it where it no longer stands.
+ *  A `Select` takes it on its control through `toolbarSelectHeight`, set on its wrapper. */
 export const toolbarControlHeight = "xl:h-8.5 xl:min-h-0";
+export const toolbarSelectHeight = "xl:[&>select]:h-8.5 xl:[&>select]:min-h-0";
+
+/** A picked option's check box in a picker (`MultiSelect`): filled with the accent, its tick in
+ * white, so a picked row is told from an unpicked one at a glance. */
+export const optionCheckOn = "border-sky-700 bg-sky-700 text-white";
+/** A chip at rest under the pointer: one step stronger fill and text, its rule unchanged. */
+export const chipHover =
+  "hover:bg-slate-200 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-300";
+/** A row of a list, a table or a menu under the pointer: a faint tint of the surface it is on,
+ * never a change of its rule's colour. */
+export const rowHoverBg = "hover:bg-slate-100 dark:hover:bg-slate-800/60";
+/** The row a list marks as current or selected: one step stronger than `rowHoverBg` in both
+ * schemes, so the selected row is told from the one under the pointer. Words on it are the
+ * primary or secondary text; the muted grey is not registered on this fill. */
+export const rowSelectedBg = "bg-slate-200/70 dark:bg-slate-700/60";
+/** The hairline a neutral pill, badge or chip draws inside its own edge, so it keeps its shape
+ * on a row whose hover or selected tint equals its fill. `Strong` is the selected label's. */
+export const chipRing = "ring-1 ring-inset ring-slate-200 dark:ring-slate-700";
+export const chipRingStrong = "ring-1 ring-inset ring-slate-300 dark:ring-slate-600";
+/** A link that is chrome (an issue key in a row, a breadcrumb, a nav item): the link colour,
+ * underlined only under the pointer. A link in running text is `linkInline`. */
+export const linkChrome =
+  "text-sky-700 underline-offset-2 hover:text-sky-900 hover:underline dark:text-sky-400 dark:hover:text-sky-300";
+/** A link inside a sentence: the link colour and always underlined, since colour alone does not
+ * tell it from the words around it. */
+export const linkInline =
+  "text-sky-700 underline underline-offset-2 hover:text-sky-900 dark:text-sky-400 dark:hover:text-sky-300";
+/** A floating panel (a menu, a popover, a picker): the card's surface inside its rule, lifted
+ * by one shadow. */
+export const popoverPanel =
+  "rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900";
+/** A key hint: the key's own outline rather than a filled block. */
+export const kbdKey =
+  "border-slate-300 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400";
+
+registerText("row hover: primary text", TEXT_PRIMARY, SURFACE_MUTED);
+registerText("selected row: primary text", TEXT_PRIMARY, SURFACE_MUTED_STRONG);
+registerText("selected row: secondary text", TEXT_SECONDARY, SURFACE_MUTED_STRONG);
+registerText("key hint text on surface", TEXT_MUTED_ON_SURFACE_MUTED, SURFACE);
 
 // ---------------------------------------------------------------------------------------------
 // The navigation rail: a deliberately constant-dark surface (unlike everything else in this
@@ -717,7 +803,9 @@ const railFixed = (swatch: Swatch): ColorPair => ({ dark: swatch, light: swatch 
 
 export const railBg = "bg-slate-950";
 export const railBorder = "border-slate-800";
-export const railHoverBg = "hover:bg-slate-800";
+/** A rail row under the pointer: one step off the rail, lighter than `railActiveBg`, so the
+ * current page stays the strongest row. */
+export const railHoverBg = "hover:bg-slate-900";
 export const railText = "text-slate-100";
 export const railSecondaryText = "text-slate-300";
 export const railMutedText = "text-slate-400";
@@ -734,6 +822,35 @@ export const railBadgeText = "text-slate-950";
 export const railNeedsYouBadgeBg = "bg-amber-500";
 export const railNeedsYouBadgeText = "text-slate-950";
 
+/** A plain count on a rail row (a project's open asks, the priorities' faults): neutral, so the
+ * amber needs-you badge is the only one that asks for the reader. Slate-700 holds on the rail
+ * and on a current row's `railActiveBg` alike. */
+export const railCountBadge = "bg-slate-700 text-slate-100";
+/** The focus ring of a rail row whose link is stretched over the whole row by its `::after`
+ * (`features/sidebar/Sidebar.tsx`): drawn on that box, inside the row, rather than around the
+ * link's own words. */
+export const railRowFocus =
+  "focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-sky-400";
+/** A small control inside a rail row (Peek, the fold) under the pointer: one step above the
+ * row's own hover and above a current row's `railActiveBg`. */
+export const railControlHoverBg = "hover:bg-slate-700";
+/** A rail control's keyboard hint: quiet on the rail in both schemes. */
+export const railKbd = "border-slate-700 text-slate-400";
+
+registerText("rail count badge text", railFixed(P.SLATE_100), railFixed(P.SLATE_700));
+registerText("rail primary text on rail hover", railFixed(P.SLATE_100), railFixed(P.SLATE_900));
+registerText("rail secondary text on rail hover", railFixed(P.SLATE_300), railFixed(P.SLATE_900));
+registerText("rail muted text on rail hover", railFixed(P.SLATE_400), railFixed(P.SLATE_900));
+registerText(
+  "rail primary text on rail active background",
+  railFixed(P.SLATE_100),
+  railFixed(P.SLATE_800)
+);
+registerText(
+  "rail muted text on rail active background",
+  railFixed(P.SLATE_400),
+  railFixed(P.SLATE_800)
+);
 registerText("rail primary text", railFixed(P.SLATE_100), railFixed(RAIL_BG_SWATCH));
 registerText("rail secondary text", railFixed(P.SLATE_300), railFixed(RAIL_BG_SWATCH));
 registerText("rail muted text", railFixed(P.SLATE_400), railFixed(RAIL_BG_SWATCH));

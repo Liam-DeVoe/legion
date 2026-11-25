@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { primaryButtonBg, primaryButtonHoverBg, textSecondaryOnCanvas } from "../../theme/classes";
+import { buttonClassName } from "../../components/Button";
+import { PageHeader } from "../../components/Layout";
 import { useDocumentTitle } from "./useDocumentTitle";
 
 /** Shared not-found view: an unrecognized top-level route, an unrecognized issue sub-route, and
@@ -20,12 +21,8 @@ export function NotFoundPage({
   useDocumentTitle("Not found · Dispatch");
   return (
     <section>
-      <h1 className="mb-2 text-2xl font-semibold">{title}</h1>
-      <p className={textSecondaryOnCanvas}>{detail}</p>
-      <Link
-        className={`mt-4 inline-block rounded-lg px-3 py-2 text-sm font-medium ${primaryButtonBg} ${primaryButtonHoverBg}`}
-        to={backTo}
-      >
+      <PageHeader description={detail} title={title} />
+      <Link className={buttonClassName({ variant: "primary" })} to={backTo}>
         {backLabel}
       </Link>
     </section>

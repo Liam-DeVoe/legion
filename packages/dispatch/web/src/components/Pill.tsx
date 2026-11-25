@@ -3,6 +3,8 @@ import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } fro
 import type { ArtifactApproval } from "../api/types";
 import {
   approvalPill,
+  chipRing,
+  chipRingStrong,
   pageFailedText,
   pageHairBorder,
   pageInkText,
@@ -19,14 +21,15 @@ import {
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
 } from "../theme/classes";
+import { badgeShapeClassName } from "./Badge";
 import { usePageWords } from "./tooltips";
 
 export type PillTone = "label" | "selected-label" | "status";
 
 const pillTones: Record<PillTone, string> = {
-  label: `${surfaceMutedBg} ${textMutedOnSurfaceMuted}`,
-  "selected-label": `${surfaceMutedStrongBg} ${textSecondaryOnSurface}`,
-  status: `${statusPill.bg} ${statusPill.text}`,
+  label: `${surfaceMutedBg} ${textMutedOnSurfaceMuted} ${chipRing}`,
+  "selected-label": `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${chipRingStrong}`,
+  status: `${statusPill.bg} ${statusPill.text} ${chipRing}`,
 };
 
 /** Each tone in the new issue page's colours, for a pill drawn inside `NoTooltips`, where every
@@ -43,8 +46,7 @@ const pagePillTones: Record<PillTone, string> = {
  *  stacking a second text colour after `pillClassName` leaves which of the two paints to the
  *  CSS source order rather than the attribute order, so a pass, a fail or a gap mark could come
  *  out muted. */
-export const pillShapeClassName =
-  "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap";
+export const pillShapeClassName = badgeShapeClassName;
 
 /** The pill's full class string, for a host that must stay one interactive element (a parent
  *  link with a border) while looking identical - a border on a wrapper around a `Pill` would
@@ -147,7 +149,7 @@ export function LabelPill({
 export function StatusPill({ children }: { children: ReactNode }): ReactNode {
   const page = usePageWords();
   return (
-    <Pill className="gap-1.5 font-semibold tracking-wide uppercase" tone="status">
+    <Pill className="gap-1.5" tone="status">
       {/* Inside `NoTooltips` the dot is the page's quiet grey, as neutral there as `main`'s
           slate is here: it names no state, the word beside it does. */}
       <span
@@ -209,6 +211,11 @@ export function approvalPillClassName(
   size: "compact" | "default" = "default",
   onPage = false
 ): string {
-  const height = size === "compact" ? "min-h-6 py-0 leading-[18px]" : "py-1";
-  return `inline-flex min-w-0 items-center rounded-full border px-2 ${height} text-center text-xs font-medium [overflow-wrap:anywhere] ${(onPage ? pageApprovalPill : approvalPill)[approvalTone(state)]}`;
+  // The default is the badge family's shape with a rule: 20 px for one line, growing only when
+  // a long label wraps. The compact one is the new issue page's own, as its prototype draws it.
+  const shape =
+    size === "compact"
+      ? "min-h-6 rounded-full px-2 py-0 leading-[18px]"
+      : "min-h-5 rounded px-1.5 py-0 leading-[18px]";
+  return `inline-flex min-w-0 items-center border ${shape} text-center text-xs font-medium [overflow-wrap:anywhere] ${(onPage ? pageApprovalPill : approvalPill)[approvalTone(state)]}`;
 }

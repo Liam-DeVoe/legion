@@ -1234,7 +1234,7 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
     },
     outside: {
       free: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 ring-1 ring-inset ring-slate-200 dark:ring-slate-700 min-w-0 max-w-full gap-1">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
@@ -1252,7 +1252,7 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '", takeable now"',
       ],
       held: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600 min-w-0 max-w-full gap-1">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
@@ -1261,7 +1261,7 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '<time class="shrink-0">',
       ],
       lapsed: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 ring-1 ring-inset ring-slate-200 dark:ring-slate-700 min-w-0 max-w-full gap-1">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
@@ -1274,7 +1274,7 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '"not running"',
       ],
       unchecked: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600 min-w-0 max-w-full gap-1">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
@@ -1283,7 +1283,7 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '<time class="shrink-0">',
       ],
       waiting: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600 min-w-0 max-w-full gap-1">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
@@ -1452,7 +1452,7 @@ test("the priorities' trigger has the height of its siblings in Details", async 
 test("chipClassName replaces the chip's class and lets labels wrap", async () => {
   const given = "rounded-[5px] border px-1.5 leading-5";
   const mainChip =
-    "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
+    "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600";
   const mainRail = "relative flex shrink-0 flex-nowrap items-center gap-1";
   const labels = (chipClassName: string | undefined) => (
     <IssueLabels
@@ -1507,7 +1507,7 @@ test("inside NoTooltips a label chip wraps a long label and is never cut", () =>
   expect(long).toHaveLength(40);
   expect(long).not.toMatch(/\s/u);
   const mainChip =
-    "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
+    "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600";
   const wraps = ["[overflow-wrap:anywhere]", "max-w-full"];
 
   for (const chipClassName of [undefined, given]) {
@@ -1935,17 +1935,17 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
 test("the default shapes keep main's class strings", async () => {
   const want: Record<string, string | null> = {
     "approvalPillClassName approved":
-      "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-emerald-700 dark:border-emerald-400 text-emerald-700 dark:text-emerald-400",
+      "inline-flex min-w-0 items-center border min-h-5 rounded px-1.5 py-0 leading-[18px] text-center text-xs font-medium [overflow-wrap:anywhere] border-emerald-700 dark:border-emerald-400 text-emerald-700 dark:text-emerald-400",
     "approvalPillClassName awaiting":
-      "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-amber-700 dark:border-amber-400 text-amber-800 dark:text-amber-300",
+      "inline-flex min-w-0 items-center border min-h-5 rounded px-1.5 py-0 leading-[18px] text-center text-xs font-medium [overflow-wrap:anywhere] border-amber-700 dark:border-amber-400 text-amber-800 dark:text-amber-300",
     "approvalPillClassName changes_requested":
-      "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-rose-700 dark:border-rose-400 text-rose-700 dark:text-rose-400",
+      "inline-flex min-w-0 items-center border min-h-5 rounded px-1.5 py-0 leading-[18px] text-center text-xs font-medium [overflow-wrap:anywhere] border-rose-700 dark:border-rose-400 text-rose-700 dark:text-rose-400",
     "approvalPillClassName draft":
-      "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-dashed border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300",
+      "inline-flex min-w-0 items-center border min-h-5 rounded px-1.5 py-0 leading-[18px] text-center text-xs font-medium [overflow-wrap:anywhere] border-dashed border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300",
     "approvalPillClassName stale":
-      "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-amber-700 dark:border-amber-400 text-amber-800 dark:text-amber-300",
+      "inline-flex min-w-0 items-center border min-h-5 rounded px-1.5 py-0 leading-[18px] text-center text-xs font-medium [overflow-wrap:anywhere] border-amber-700 dark:border-amber-400 text-amber-800 dark:text-amber-300",
     badgeSelectWrapper:
-      "relative inline-flex min-h-11 shrink-0 items-center rounded-sm md:min-h-8 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400",
+      "group/badge-select relative inline-flex min-h-11 shrink-0 items-center rounded xl:min-h-5 xl:[&>select]:-inset-y-1.5 xl:[&>select]:h-8 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400",
 
     "ApprovalSteps list's host": "flex w-full min-w-0 flex-col gap-2",
     "ApprovalSteps list": "flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-2",
@@ -1953,13 +1953,13 @@ test("the default shapes keep main's class strings", async () => {
     "ApprovalSteps entry": "flex min-w-0 flex-wrap items-center gap-2",
     "ApprovalSteps step name": "text-xs font-medium text-slate-500 dark:text-slate-400",
     "ApprovalSteps chip":
-      "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-amber-700 dark:border-amber-400 text-amber-800 dark:text-amber-300",
+      "inline-flex min-w-0 items-center border min-h-5 rounded px-1.5 py-0 leading-[18px] text-center text-xs font-medium [overflow-wrap:anywhere] border-amber-700 dark:border-amber-400 text-amber-800 dark:text-amber-300",
     "ApprovalSteps Not requested":
-      "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-dashed border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300",
+      "inline-flex min-w-0 items-center border min-h-5 rounded px-1.5 py-0 leading-[18px] text-center text-xs font-medium [overflow-wrap:anywhere] border-dashed border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300",
     "ApprovalSteps Approve":
-      "min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm bg-sky-700 text-white not-refused:hover:bg-sky-800 not-refused:active:bg-sky-900 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "ApprovalSteps Request changes":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "ApprovalSteps reason":
       "min-w-0 text-xs [overflow-wrap:anywhere] text-slate-700 dark:text-slate-300",
 
@@ -1986,35 +1986,35 @@ test("the default shapes keep main's class strings", async () => {
     // the label around the box, then its own classes and the dialog's text size.
     "ApprovalChip request label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "ApprovalChip request reason box":
-      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100 text-sm",
+      "mt-1 block w-full border font-normal outline-none min-h-24 rounded-md px-2.5 py-1.5 text-sm border-slate-300 bg-white text-slate-900 placeholder:text-slate-500 enabled:hover:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-400 dark:enabled:hover:border-slate-600 dark:disabled:bg-slate-800 dark:disabled:text-slate-400 aria-invalid:border-rose-500 dark:aria-invalid:border-rose-400 text-sm",
     "ApprovalChip request refused": "text-sm text-rose-700 dark:text-rose-400",
     "ApprovalChip request Cancel":
-      "rounded-lg border px-3 py-1.5 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "ApprovalChip request Request changes":
-      "rounded-lg px-3 py-1.5 text-sm font-medium bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm bg-sky-700 text-white not-refused:hover:bg-sky-800 not-refused:active:bg-sky-900 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
 
     "AssigneeControl wrapper":
-      "relative inline-flex min-h-11 shrink-0 items-center rounded-sm md:min-h-8 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400 ",
+      "group/badge-select relative inline-flex min-h-11 shrink-0 items-center rounded xl:min-h-5 xl:[&>select]:-inset-y-1.5 xl:[&>select]:h-8 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400 ",
     "AssigneeControl badge, assigned":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap group-hover/badge-select:brightness-95 dark:group-hover/badge-select:brightness-125 bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
     "AssigneeControl badge, unassigned":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap group-hover/badge-select:brightness-95 dark:group-hover/badge-select:brightness-125 group-hover/badge-select:bg-slate-100 group-has-[:focus-visible]/badge-select:bg-slate-100 dark:group-hover/badge-select:bg-slate-800 dark:group-has-[:focus-visible]/badge-select:bg-slate-800 text-slate-500 dark:text-slate-400",
     "PriorityControl wrapper":
-      "relative inline-flex min-h-11 shrink-0 items-center rounded-sm md:min-h-8 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400 ",
+      "group/badge-select relative inline-flex min-h-11 shrink-0 items-center rounded xl:min-h-5 xl:[&>select]:-inset-y-1.5 xl:[&>select]:h-8 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400 ",
     "PriorityControl badge, P0":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap group-hover/badge-select:brightness-95 dark:group-hover/badge-select:brightness-125 bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300",
     "PriorityControl badge, P1":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap group-hover/badge-select:brightness-95 dark:group-hover/badge-select:brightness-125 bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300",
     "PriorityControl badge, none":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap group-hover/badge-select:brightness-95 dark:group-hover/badge-select:brightness-125 group-hover/badge-select:bg-slate-100 group-has-[:focus-visible]/badge-select:bg-slate-100 dark:group-hover/badge-select:bg-slate-800 dark:group-has-[:focus-visible]/badge-select:bg-slate-800 text-slate-500 dark:text-slate-400",
 
     "ClaimChip, held":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600 min-w-0 max-w-full gap-1",
     "ClaimChip holder": "min-w-0 [overflow-wrap:anywhere] min-w-0 truncate",
     "ClaimChip dot": "shrink-0",
     "ClaimChip age": "shrink-0",
     "ClaimChip, lapsed":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 ring-1 ring-inset ring-slate-200 dark:ring-slate-700 min-w-0 max-w-full gap-1",
     "ClaimChip not running": "shrink-0",
     // `main`'s features/issue/ClaimChip.tsx: the dot before a lapsed claim's "not running", and
     // an unresponsive holder's dot and words.
@@ -2041,10 +2041,10 @@ test("the default shapes keep main's class strings", async () => {
     "IssueComponentsLine line":
       "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
     "IssueComponentsLine chip":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
     "IssueComponentsLine retired chip":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300",
-    "IssueComponentsLine inherited from": "shrink-0 text-xs text-slate-500 dark:text-slate-400",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300",
+    "IssueComponentsLine inherited from": "shrink-0 text-[13px] text-slate-500 dark:text-slate-400",
     "IssueComponentsLine inherited link":
       "dispatch-inline-link underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
     "IssueComponentsLine not attached": "text-slate-500 dark:text-slate-400",
@@ -2055,9 +2055,9 @@ test("the default shapes keep main's class strings", async () => {
 
     "IssueLabels line": "relative mt-2 flex flex-wrap items-center gap-2",
     "IssueLabels chip":
-      "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600",
     "IssueLabels trigger":
-      "min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none size-7 relative after:absolute after:inset-x-0 after:-inset-y-0.5 after:content-[''] border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     // `main`'s features/issue/IssueLabels.tsx: the line at `variant="rail"`.
     "IssueLabels rail line": "relative flex shrink-0 flex-nowrap items-center gap-1",
 
@@ -2090,7 +2090,7 @@ test("the default shapes keep main's class strings", async () => {
     "AgentName inline link":
       "rounded outline-none focus-visible:ring-2 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400 text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300 dispatch-inline-link underline",
     "AgentName live link":
-      "ml-1 px-1 rounded outline-none focus-visible:ring-2 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400 text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
+      "ml-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded align-middle outline-none focus-visible:ring-2 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800",
     "AgentName mark, running":
       "mr-1 inline-block h-2 w-2 shrink-0 rounded-full align-middle bg-emerald-500 dark:bg-emerald-400",
     "AgentName mark, unresponsive":
@@ -2105,48 +2105,48 @@ test("the default shapes keep main's class strings", async () => {
     UnresponsiveRouteMarker:
       "inline-flex min-w-0 max-w-full items-center gap-1 text-xs text-slate-500 dark:text-slate-400",
     UnreachableRouteMarker:
-      "inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950 text-amber-950 dark:text-amber-300",
+      "inline-flex h-5 max-w-full min-w-0 items-center gap-1 rounded border px-1.5 text-xs leading-5 font-medium border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950 text-amber-950 dark:text-amber-300",
 
     "GitHubLink link":
       "inline-flex max-w-full items-center gap-2 text-sm underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
     "GitHubLink state":
-      "shrink-0 rounded-full px-2 py-0.5 text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+      "shrink-0 inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-200 dark:ring-slate-700",
     // `main`'s features/issue/GitHubLink.tsx: a pull request's state chip, merged, and its
     // checks chip.
     "GitHubLink state, merged":
-      "shrink-0 rounded-full px-2 py-0.5 text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+      "shrink-0 inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-200 dark:ring-slate-700",
     "GitHubLink checks":
-      "shrink-0 rounded-full px-2 py-0.5 text-xs bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+      "shrink-0 inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-200 dark:ring-slate-700",
 
     "SubscribedAgents heading": "text-sm font-semibold text-slate-700 dark:text-slate-300",
 
-    Pill: "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 ",
+    Pill: "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 ring-1 ring-inset ring-slate-200 dark:ring-slate-700 ",
     "LabelPill, selected":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 ",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 ring-1 ring-inset ring-slate-300 dark:ring-slate-600 ",
     StatusPill:
-      "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 gap-1.5 font-semibold tracking-wide uppercase",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 ring-1 ring-inset ring-slate-200 dark:ring-slate-700 gap-1.5",
     "StatusPill dot": "size-1.5 rounded-full bg-slate-500 dark:bg-slate-400",
 
     "CopyButton, icon":
-      "inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 min-w-11 justify-center md:min-w-8 text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300 ",
+      "inline-flex shrink-0 items-center size-7 justify-center rounded-md text-slate-500 not-refused:hover:bg-slate-200/70 not-refused:hover:text-slate-700 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:text-slate-400 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-200 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 ",
     "CopyButton, labelled":
-      "inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 max-w-full gap-1 px-1 font-mono text-xs font-medium select-text text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300 ",
+      "inline-flex shrink-0 items-center h-6 max-w-full gap-1 rounded px-1 font-mono text-xs font-medium select-text text-slate-700 not-refused:hover:bg-slate-200/70 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 ",
     "CopyButton copied": "ml-1 text-xs font-medium text-emerald-700 dark:text-emerald-400",
     "CopyButton failed": "ml-1 text-xs font-medium text-rose-700 dark:text-rose-400",
     // `main`'s components/CopyButton.tsx: the `<code>` a failed copy prints the value in.
     "CopyButton failed value": "select-all font-mono",
 
     "PinButton, pinned":
-      "flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 bg-sky-700 text-white not-refused:hover:bg-sky-800 ",
+      "flex shrink-0 items-center justify-center disabled:cursor-not-allowed disabled:opacity-50 size-8 rounded-md bg-sky-700 text-white not-refused:hover:bg-sky-800 not-refused:active:bg-sky-900 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300 ",
     "PinButton, unpinned":
-      "flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 ",
+      "flex shrink-0 items-center justify-center disabled:cursor-not-allowed disabled:opacity-50 size-8 rounded-md border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 ",
     "PinButton, quiet":
-      "flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg disabled:cursor-not-allowed disabled:opacity-50  text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 ",
+      "flex shrink-0 items-center justify-center disabled:cursor-not-allowed disabled:opacity-50 size-7 rounded-md text-slate-500 not-refused:hover:bg-slate-200/70 not-refused:hover:text-slate-700 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:text-slate-400 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-200 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 ",
 
     "RefusableButton primary":
-      "rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300 ",
+      "inline-flex h-8 shrink-0 items-center justify-center rounded-md px-3 text-sm font-medium whitespace-nowrap bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300 ",
     "RefusableButton secondary-compact":
-      "min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600 ",
+      "inline-flex h-7 shrink-0 items-center justify-center rounded-md px-2.5 text-xs font-medium whitespace-nowrap border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 ",
 
     "ConnectionDot connected": "h-2.5 w-2.5 rounded-full bg-emerald-500 dark:bg-emerald-400",
     "ConnectionDot connecting": "h-2.5 w-2.5 rounded-full bg-amber-500 dark:bg-amber-400",
@@ -2155,64 +2155,64 @@ test("the default shapes keep main's class strings", async () => {
     "ConnectionDot notice": "text-xs text-slate-500 dark:text-slate-400",
 
     "MultiSelect trigger":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "MultiSelect panel":
-      "z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800",
+      "z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900",
     "MultiSelect search's host":
-      "sticky top-0 border-b p-2 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900",
+      "sticky top-0 border-b p-1.5 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900",
     "MultiSelect search":
-      "block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
+      "block min-w-0 rounded-md border h-8 px-2.5 text-sm  border-slate-300 bg-white text-slate-900 placeholder:text-slate-500 enabled:hover:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-400 dark:enabled:hover:border-slate-600 dark:disabled:bg-slate-800 dark:disabled:text-slate-400 aria-invalid:border-rose-500 dark:aria-invalid:border-rose-400 w-full",
     "MultiSelect row, active":
-      "flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300 bg-sky-50 dark:bg-sky-950 border-sky-500 dark:border-sky-400",
+      "flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-slate-900 dark:text-slate-100 bg-slate-200/70 dark:bg-slate-700/60",
     "MultiSelect row":
-      "flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300 ",
+      "flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-slate-900 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800/60",
     "MultiSelect checkbox":
       "grid size-4 shrink-0 place-items-center rounded border text-xs leading-none border-slate-300 dark:border-slate-700",
     "MultiSelect option label": "truncate min-w-0 flex-1",
     "MultiSelect option detail": "shrink-0 text-xs tabular-nums text-slate-500 dark:text-slate-400",
-    "MultiSelect empty": "px-3 py-2 text-sm text-slate-500 dark:text-slate-400",
+    "MultiSelect empty": "px-2 py-1.5 text-sm text-slate-500 dark:text-slate-400",
     "MultiSelect refusal":
       "border-t px-3 py-2 text-sm border-slate-200 dark:border-slate-800 text-rose-700 dark:text-rose-400",
     "MultiSelect clear's host":
-      "sticky bottom-0 border-t p-2 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900",
+      "sticky bottom-0 border-t p-1 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900",
     "MultiSelect clear":
-      "min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-7 gap-1 px-2.5 text-[13px] relative after:absolute after:inset-x-0 after:-inset-y-0.5 after:content-[''] text-slate-700 not-refused:hover:bg-slate-200/70 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100 w-full",
 
     // `main`'s features/doc/ProofDocument.tsx: the open-decisions `<nav>`.
     "ProofDocument open decisions navigator": "flex min-h-11 items-center gap-2 md:h-7 md:min-h-0",
     "ProofDocument open decisions":
-      "inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-semibold bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
+      "shrink-0 inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
     "ProofDocument open decision link":
-      "block min-w-0 max-w-[90ch] truncate text-sm font-medium underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
+      "block min-w-0 max-w-[90ch] truncate text-sm font-medium text-sky-700 underline-offset-2 hover:text-sky-900 hover:underline dark:text-sky-400 dark:hover:text-sky-300",
     "ProofDocument Next open decision":
-      "ml-auto flex min-h-11 min-w-11 items-center justify-center rounded-full md:min-h-7 md:min-w-7 border-slate-300 dark:border-slate-700 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 text-slate-700 dark:text-slate-300",
+      "ml-auto inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none size-7 relative after:absolute after:inset-x-0 after:-inset-y-0.5 after:content-[''] text-slate-700 not-refused:hover:bg-slate-200/70 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "ProofDocument block references":
-      "pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
+      "pointer-events-auto absolute right-0 inline-flex h-6 min-w-6 items-center justify-center rounded px-1.5 text-xs font-medium tabular-nums bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
     // `main`'s features/doc/ProofDocument.tsx: the line naming what changed since the reader's
     // last read.
     "ProofDocument read line": "text-sm text-slate-700 dark:text-slate-300",
     "ProofDocument repair refusal": "text-rose-700 dark:text-rose-400",
     "ProofDocument rebuild refusal": "text-rose-700 dark:text-rose-400",
     "ProofDocument Rebuild":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "ProofDocument rebuild failure": "text-rose-700 dark:text-rose-400",
     "ProofDocument load failure": "text-rose-700 dark:text-rose-400",
 
     "AskCard card":
-      "relative rounded-xl border-l-4 shadow-sm px-4 pt-5 pb-4 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-rose-500 dark:border-l-rose-400",
-    "AskCard urgency notch":
-      "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-rose-800 dark:text-rose-300",
+      "relative rounded-lg border border-l-[3px] p-4 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-rose-500 dark:border-l-rose-400",
+    "AskCard urgency notch": null,
     "AskCard question":
       "text-[15px] leading-relaxed font-medium text-slate-900 dark:text-slate-100",
     "AskCard asker line":
-      "@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
+      "@container mt-1.5 flex flex-wrap gap-x-1.5 text-xs items-start text-slate-500 dark:text-slate-400",
     // `main`'s features/inbox/AskCard.tsx: the group of the turn and the asker.
     "AskCard turn and asker":
-      "flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap",
-    "AskCard turn": "shrink-0 font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
+      "flex min-w-0 items-center gap-x-1.5 min-h-5 flex-1 whitespace-nowrap @max-sm:contents",
+    "AskCard turn":
+      "shrink-0 font-semibold @max-sm:grow @max-sm:leading-5 text-slate-700 dark:text-slate-300",
     // `main`'s features/inbox/AskCard.tsx: the turn an agent holds.
     "AskCard turn, an agent's":
-      "min-w-0 truncate font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
+      "min-w-0 truncate font-semibold @max-sm:grow @max-sm:leading-5 text-slate-700 dark:text-slate-300",
     "AskCard asker":
       "flex min-w-0 items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
     // `main`'s features/inbox/AskCard.tsx: the asker's `AgentName`, its class after `main`'s
@@ -2222,7 +2222,7 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard hand-on line":
       "mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-500 dark:text-slate-400",
     "AskCard hand-on badge":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+      "inline-flex h-5 shrink-0 items-center rounded px-1.5 text-xs leading-5 font-medium whitespace-nowrap group-hover/badge-select:brightness-95 dark:group-hover/badge-select:brightness-125 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
     // `main`'s features/inbox/AskCard.tsx: the span that says who handed the question on, which
     // has no class.
     "AskCard handed on": null,
@@ -2231,44 +2231,42 @@ test("the default shapes keep main's class strings", async () => {
     // the field's own classes and the card's weight.
     "AskCard answer label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard answer box":
-      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100 font-normal",
+      "mt-1 block w-full border font-normal outline-none min-h-24 rounded-md px-2.5 py-1.5 text-sm border-slate-300 bg-white text-slate-900 placeholder:text-slate-500 enabled:hover:border-slate-400 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-400 dark:enabled:hover:border-slate-600 dark:disabled:bg-slate-800 dark:disabled:text-slate-400 aria-invalid:border-rose-500 dark:aria-invalid:border-rose-400 font-normal",
     "AskCard Answer":
-      "min-h-11 rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm bg-sky-700 text-white not-refused:hover:bg-sky-800 not-refused:active:bg-sky-900 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "AskCard Ask back":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "AskCard Ask back instead":
-      "min-h-11 rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm bg-sky-700 text-white not-refused:hover:bg-sky-800 not-refused:active:bg-sky-900 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "AskCard Answer with it anyway":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "AskCard compact card":
-      "relative rounded-xl border-l-4 shadow-sm px-3 pt-4 pb-3 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-amber-500 dark:border-l-amber-400",
-    "AskCard compact urgency notch":
-      "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-amber-800 dark:text-amber-300",
-    "AskCard approval requested":
-      "text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400",
+      "relative rounded-lg border border-l-[3px] p-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-amber-500 dark:border-l-amber-400",
+    "AskCard compact urgency notch": null,
+    "AskCard approval requested": "text-xs font-medium text-slate-500 dark:text-slate-400",
     "AskCard approval document":
       "mt-1 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
-    "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
+    "AskCard own words":
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
     "AskCard reason label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
     // `main`'s features/inbox/UnsentText.tsx, as AskCard draws it: the unsent answer's box, its
     // note and its words.
-    "AskCard unsent answer": "rounded-xl border p-3 border-slate-200 dark:border-slate-800 mt-3",
+    "AskCard unsent answer": "rounded-lg border p-3 border-slate-200 dark:border-slate-800 mt-3",
     "AskCard unsent answer note": "text-xs text-slate-500 dark:text-slate-400",
     "AskCard unsent answer words":
       "mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100",
     // `main`'s features/inbox/UnsentText.tsx as UnsentReply draws it with no `className`.
-    "AskThread unsent reply": "rounded-xl border p-3 border-slate-200 dark:border-slate-800 ",
+    "AskThread unsent reply": "rounded-lg border p-3 border-slate-200 dark:border-slate-800 ",
     "AskThread unsent reply note": "text-xs text-slate-500 dark:text-slate-400",
     "AskThread unsent reply words":
       "mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100",
     // `main`'s features/inbox/AskCard.tsx: a decision question's "Open in document" line, the
     // warning that the question changed under the reader, and Cancel while an answer is changed.
-    "AskCard block link":
-      "mt-2 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
+    "AskCard block link": null,
     "AskCard question changed": "mt-3 text-sm font-medium text-amber-800 dark:text-amber-300",
     "AskCard Cancel, changing an answer":
-      "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-sky-400 dark:hover:border-sky-300",
+      "inline-flex shrink-0 items-center justify-center rounded-md font-medium whitespace-nowrap select-none h-8 gap-1.5 px-3 text-sm border border-slate-300 bg-white text-slate-700 not-refused:hover:bg-slate-100 not-refused:hover:text-slate-900 not-refused:active:bg-slate-200 refused:cursor-not-allowed refused:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:not-refused:hover:bg-slate-800 dark:not-refused:hover:text-slate-100 dark:not-refused:active:bg-slate-700 dark:refused:text-slate-600 aria-pressed:bg-slate-200 aria-pressed:text-slate-900 dark:aria-pressed:bg-slate-700 dark:aria-pressed:text-slate-100",
   };
 
   const read: Record<string, string | null> = {};

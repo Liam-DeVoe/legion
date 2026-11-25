@@ -1,19 +1,9 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { type ReactNode, useState } from "react";
-import {
-  borderDefault,
-  focusVisibleRing,
-  surfaceBg,
-  surfaceMutedHoverBg,
-  textPrimaryOnCanvas,
-  toolbarControlHeight,
-} from "../../theme/classes";
+import { Button } from "../../components/Button";
+import { Input } from "../../components/Field";
+import { toolbarControlHeight } from "../../theme/classes";
 import { usePriorityWrites } from "./priority-writes";
-
-/** Each button here, in the classes of the Issues table toolbar's own button (`Clear filters`,
- *  `IssueTableToolbar`), so each is the size of the controls it stands beside: from 1280 px up
- *  the one height of a toolbar's controls (`toolbarControlHeight`). */
-const BUTTON = `rounded-lg border px-2 py-1.5 text-sm ${toolbarControlHeight} ${borderDefault} ${surfaceMutedHoverBg}`;
 
 /**
  * The way a priority is added: a button that opens a one-line form for its title. It stands in
@@ -29,9 +19,9 @@ export function NewPriority(): ReactNode {
   if (!canWrite) return null;
   return (
     <>
-      <button className={BUTTON} onClick={() => setAdding((was) => !was)} type="button">
+      <Button className={toolbarControlHeight} onClick={() => setAdding((was) => !was)}>
         New priority
-      </button>
+      </Button>
       {adding ? (
         <form
           aria-label="New priority"
@@ -45,31 +35,27 @@ export function NewPriority(): ReactNode {
             setAdding(false);
           }}
         >
-          <input
+          <Input
             aria-label="Title of the new priority"
-            className={`w-full min-w-0 flex-none rounded-lg border px-3 py-1.5 text-sm sm:w-auto sm:min-w-64 sm:flex-1 ${toolbarControlHeight} ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+            className={`w-full flex-none sm:w-auto sm:min-w-64 sm:flex-1 ${toolbarControlHeight}`}
             maxLength={ISSUE_TITLE_MAX}
             onChange={(event) => setTitle(event.target.value)}
             placeholder="What the new priority is"
             value={title}
           />
-          <button
-            className={`${BUTTON} disabled:opacity-40 ${focusVisibleRing}`}
-            disabled={title.trim() === ""}
-            type="submit"
-          >
+          <Button className={toolbarControlHeight} disabled={title.trim() === ""} type="submit">
             Add priority
-          </button>
-          <button
-            className={BUTTON}
+          </Button>
+          <Button
             onClick={() => {
               setAdding(false);
               setTitle("");
             }}
-            type="button"
+            className={toolbarControlHeight}
+            variant="ghost"
           >
             Cancel
-          </button>
+          </Button>
         </form>
       ) : null}
     </>

@@ -1,12 +1,7 @@
 import { type ReactNode, useState } from "react";
+import { Button } from "../../components/Button";
 
 import { QueryError } from "../../components/QueryError";
-import {
-  secondaryButtonBorder,
-  secondaryButtonDisabledText,
-  secondaryButtonHoverBorder,
-  secondaryButtonText,
-} from "../../theme/classes";
 import { useIssueAssignee } from "../issue/useIssueAssignee";
 import { useLiveRegistration } from "../writes/useKeyedWrite";
 
@@ -45,18 +40,17 @@ export function AssignToMe({
   useLiveRegistration(write.pending || write.failed ? pressedOn : undefined, onLive);
   return (
     <>
-      <button
+      <Button
         aria-label={`Assign ${issueKey} to me`}
-        className={`min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
         disabled={write.pending}
         onClick={() => {
           setPressedOn(askId);
           write.submit(viewer);
         }}
-        type="button"
+        size="sm"
       >
         {write.pending ? "Assigning…" : "Assign to me"}
-      </button>
+      </Button>
       {write.failed ? (
         <div className="basis-full">
           <QueryError

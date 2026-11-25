@@ -23,7 +23,7 @@ const LOOKS = {
  *  its rule and muted words on the paper, with quiet words while refused. */
 const PAGE_LOOKS: Record<keyof typeof LOOKS, string> = {
   primary: `rounded-lg px-3 py-2 text-sm font-semibold ${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
-  "secondary-compact": `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`,
+  "secondary-compact": `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-[13px] font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`,
 };
 
 /**
